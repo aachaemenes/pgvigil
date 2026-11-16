@@ -803,6 +803,10 @@ func applyTextPolicy(rows []Row, mode string) {
 	}
 }
 
+// NormalizeSQL is the collector's normalizer for the web's read rule (TEXT-NOW, internal/web/textread.go): a text
+// stored under full and read while the instance's policy is normalized is shown as the collector would have stored it.
+func NormalizeSQL(s string) string { return normalizeSQL(s) }
+
 // textHash keys normalized text: FNV-64a as a signed 64-bit value (the column is bigint). It differs
 // from the server-side hashtextextended used under full, so a repository that switches modes keeps two
 // key spaces; each row joins its own text row either way.

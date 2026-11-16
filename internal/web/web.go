@@ -535,6 +535,13 @@ func (s *Server) reply(w http.ResponseWriter, r *http.Request, v any, err error)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// TEXT-NOW: stored statement text follows the instance's query_text policy as this request's doors hold it now
+	// (textread.go); a tagged column gets its name back here
+	if err := s.applyTextNow(r, v); err != nil {
+		s.log.Warn("api text policy read failed", "path", r.URL.Path, "err", err)
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	// a window cut to a part's reach: the reply says what was read (the page's line, the exports, the mail, MCP)
