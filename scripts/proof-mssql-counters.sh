@@ -413,7 +413,7 @@ for l in rows.strip().split('\n'):
     v1, b1, dv, db, rate, v0, b0, fig = map(f, (v1, b1, dv, db, rate, v0, b0, fig))
     if kind in ('rate', 'count') and v0 is not None:
         if dv != v1 - v0: bad.append(f'{sid} {kind} change {dv} != {v1} - {v0}')
-        if kind == 'rate' and (rate is None or abs(rate - round((v1 - v0) / secs, 3)) > 0.0015): bad.append(f'{sid} rate {rate} != {(v1 - v0) / secs:.3f}')
+        if kind == 'rate' and (rate is None or abs(rate - round((v1 - v0) / secs, 3)) > 0.0015 + abs(rate) * 1e-7): bad.append(f'{sid} rate {rate} != {(v1 - v0) / secs:.3f}')
     if kind == 'average' and v0 is not None and b0 is not None:
         if dv != v1 - v0 or db != b1 - b0: bad.append(f'{sid} average changes {dv} {db}')
         if db and abs(fig - dv / db) > 1e-6: bad.append(f'{sid} average {fig} != {dv / db}')

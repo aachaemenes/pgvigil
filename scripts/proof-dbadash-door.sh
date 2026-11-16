@@ -558,7 +558,7 @@ src=$(sq "SELECT (SELECT COUNT(*) FROM dbo.QueryText WHERE sql_handle = $C2H AND
 [[ "$src" == "$c2want" ]] || fail "C2: DBA Dash's tables hold $src of the $c2want seeded tokens"
 mkdir -p "$TMPD/pages-c2"
 # every page of C's count (NPAGE: 10 with B6.3's collectionhealth line, 'ok' with its note on 4.24.1), never a literal
-pages "$TMPD/pages-c2" | grep -c ' ok ' | grep -qx "$NPAGE" || fail "C2: not every page answered after the seeds"
+pages "$TMPD/pages-c2" | grep -c '^page [^ ]* ok ' | grep -qx "$NPAGE" || fail "C2: not every page answered after the seeds"
 c2=$(python3 - "$TMPD/pages-c2" "$C2SID" "$C2JOB" "$C2ALERT" "$C2A" "$C2B" "$C2C" "$C2D" <<'PY'
 import json, os, sys
 d, sid, job, alert, toks = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5:]

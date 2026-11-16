@@ -184,6 +184,7 @@ CFGD=$TMPD/etc; mkdir -p "$CFGD"
 export PGV_FILE_DSN="host=127.0.0.1 port=$PA user=postgres password=$PG_PW dbname=postgres"
 # the collector's login on the server ADMIN_DSN names (its database and roles are made there; a driver's own PostgreSQL
 # may listen on another port than 5432)
+[[ "$ADMIN_DSN" != *://* ]] || fail "ADMIN_DSN must be in keyword form (host=... port=... user=...): its host and port are read for the collector's DSN"
 dsnkey() { sed -n "s/.*\b$1=\([^ ]*\).*/\1/p" <<<"$ADMIN_DSN" | head -1; }
 ADM_HOST=$(dsnkey host); ADM_PORT=$(dsnkey port)
 export PGV_COL_DSN="host=${ADM_HOST:-127.0.0.1} port=${ADM_PORT:-5432} user=$COL password=$COL_PW dbname=$PGDB"
