@@ -1,5 +1,5 @@
 // Package mcp serves the Model Context Protocol over stdio: a fixed set of read-only tools over
-// the pgvigil repository for an AI client on the same machine; with a login that holds pgvigil_agent, also the agent
+// the pgvigil repository for an AI client on the same machine; with a login that holds pgvigil_investigator, also the agent
 // door (investigate.go): the investigation requests people make, claimed, read and reported through the repository's
 // own agent functions, which write only the request's record.
 //
@@ -58,7 +58,7 @@ type Server struct {
 	mu sync.Mutex // one write to out at a time
 }
 
-// WithAgent adds the agent door's tools (a login holding pgvigil_agent, checked by CheckLogin).
+// WithAgent adds the agent door's tools (a login holding pgvigil_investigator, checked by CheckLogin).
 func (s *Server) WithAgent(d *AgentDoor) *Server {
 	s.agent = d
 	return s

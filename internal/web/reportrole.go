@@ -64,7 +64,7 @@ const storeIDSQL = `SELECT pg_postmaster_start_time(), d.oid FROM pg_database d 
 // object is found through the catalogs, never by a qualified name: a name in pgvigil (to_regclass('pgvigil.x'))
 // raises 'permission denied for schema pgvigil' for a login without USAGE - the logins this check exists to refuse
 // with words (reportrole-g1: noinh, none). $1 is the roles the login may be a member of beside itself: pgvigil_reader
-// for the reports login; pgvigil_reader and pgvigil_agent for the agent door's (AgentStoreRefusal).
+// for the reports login; pgvigil_reader and pgvigil_investigator for the agent door's (AgentStoreRefusal).
 const storeCheckSQL = `SELECT session_user::text, r.rolsuper OR r.rolbypassrls,
        coalesce((SELECT string_agg(m.rolname::text, ', ' ORDER BY m.rolname) FROM pg_roles m
                   WHERE m.rolname <> session_user AND NOT (m.rolname = ANY ($1::text[]))
@@ -123,16 +123,16 @@ func storeRights(ctx context.Context, tx pgx.Tx, allow []string) (user string, w
 	return
 }
 
-// agentRule is the agent door's rule (pgvigil mcp on a login holding pgvigil_agent; docs/agents.md quotes it).
-const agentRule = "the agent door runs as a login IN ROLE pgvigil_reader, pgvigil_agent and nothing else ('pgvigil roles' prints it)"
+// agentRule is the agent door's rule (pgvigil mcp on a login holding pgvigil_investigator; docs/agents.md quotes it).
+const agentRule = "the agent door runs as a login IN ROLE pgvigil_reader, pgvigil_investigator and nothing else ('pgvigil roles' prints it)"
 
 // AgentStoreRefusal is the store rule for the agent door's login, asked on its SESSION user at pgvigil mcp's start and
 // again inside the transaction of every run_select (a role set at connect - options=-c role= - or in the run is undone
 // by the run, so the check reads the session user): a superuser, a member of any role but pgvigil_reader and
-// pgvigil_agent (pg_read_all_data, pg_read_server_files, pgvigil_alerter, the owner among them), or a login that may read
+// pgvigil_investigator (pg_read_all_data, pg_read_server_files, pgvigil_alerter, the owner among them), or a login that may read
 // the UI's password hashes is refused with words; "" = it may run.
 func AgentStoreRefusal(ctx context.Context, tx pgx.Tx) (string, error) {
-	user, why, usage, _, _, err := storeRights(ctx, tx, []string{"pgvigil_reader", "pgvigil_agent"})
+	user, why, usage, _, _, err := storeRights(ctx, tx, []string{"pgvigil_reader", "pgvigil_investigator"})
 	if err != nil {
 		return "", fmt.Errorf("reading the agent login's rights: %w", err)
 	}

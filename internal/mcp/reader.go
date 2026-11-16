@@ -74,18 +74,18 @@ func CheckReader(ctx context.Context, dsn string) (user string, err error) {
 	return user, nil
 }
 
-// Login is what CheckLogin found: the login's name and whether it opens the agent door (a member of pgvigil_agent).
+// Login is what CheckLogin found: the login's name and whether it opens the agent door (a member of pgvigil_investigator).
 type Login struct {
 	User  string
 	Agent bool
 }
 
-// sqlAgentLogin reads whether the SESSION user is a member of pgvigil_agent (a role set at connect is undone by
+// sqlAgentLogin reads whether the SESSION user is a member of pgvigil_investigator (a role set at connect is undone by
 // reading the session user), whether it is a superuser (a member of every role: refused here, before the reader's
 // check, which reads current_user and so would pass a superuser that set a reader's role at connect), whether the
 // repository is a standby, and the session user's own CREATE and table writes.
 const sqlAgentLogin = `
-SELECT coalesce(pg_has_role(session_user, to_regrole('pgvigil_agent')::oid, 'MEMBER'), false),
+SELECT coalesce(pg_has_role(session_user, to_regrole('pgvigil_investigator')::oid, 'MEMBER'), false),
        coalesce((SELECT r.rolsuper OR r.rolbypassrls FROM pg_roles r WHERE r.rolname = session_user), false),
        pg_is_in_recovery(),
        coalesce(has_schema_privilege(session_user, to_regnamespace('pgvigil')::oid, 'CREATE'), false),
@@ -93,9 +93,9 @@ SELECT coalesce(pg_has_role(session_user, to_regrole('pgvigil_agent')::oid, 'MEM
                 WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
                   AND has_table_privilege(session_user, c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE'))`
 
-// CheckLogin checks the login before the first message. A login that is not a member of pgvigil_agent gets CheckReader,
+// CheckLogin checks the login before the first message. A login that is not a member of pgvigil_investigator gets CheckReader,
 // as before (the reader's door). A member gets the agent door's rule instead, on its SESSION user: agentRefusal (the
-// store rule: IN ROLE pgvigil_reader, pgvigil_agent and nothing else; no superuser; no read of the UI's password
+// store rule: IN ROLE pgvigil_reader, pgvigil_investigator and nothing else; no superuser; no read of the UI's password
 // hashes), no CREATE in the schema and no table write, and a primary (the door writes the request's record and LISTENs
 // for new requests: a standby can do neither).
 func CheckLogin(ctx context.Context, dsn string, agentRefusal func(context.Context, pgx.Tx) (string, error)) (Login, error) {

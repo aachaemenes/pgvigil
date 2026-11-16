@@ -11,9 +11,9 @@
 --        pgvigil.agent_investigation_renew(bigint, text), pgvigil.agent_investigation_release(bigint, text, text),
 --        pgvigil.agent_investigation_report(bigint, text, text, text, text, jsonb, jsonb, text),
 --        pgvigil.agent_investigation_journal_select(bigint, text, text),
---        pgvigil.agent_investigation_journal_done(bigint, bigint, int, text) TO pgvigil_agent;
---    (no USAGE for pgvigil_agent: the agent's login is IN ROLE pgvigil_reader, pgvigil_agent; the reader's USAGE is its way in)
---    Until then the seven raise for a session user that is not a member of pgvigil_agent (agent_login_check, inside
+--        pgvigil.agent_investigation_journal_done(bigint, bigint, int, text) TO pgvigil_investigator;
+--    (no USAGE for pgvigil_investigator: the agent's login is IN ROLE pgvigil_reader, pgvigil_investigator; the reader's USAGE is its way in)
+--    Until then the seven raise for a session user that is not a member of pgvigil_investigator (agent_login_check, inside
 --    each), and internal/repo/secdef_reader_test.go lists their signatures with that reason; once apply_roles takes the
 --    reader's EXECUTE back, the seven leave that list.
 --

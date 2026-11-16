@@ -24,7 +24,7 @@ import (
 //
 // -dsn is the repository login, IN ROLE pgvigil_reader alone (checked before the first message:
 // a superuser, the owner, a writer, the collector or pgvigil_auth is refused) - or, for the agent door
-// (docs/agents.md), IN ROLE pgvigil_reader, pgvigil_agent and nothing else, checked on its session user.
+// (docs/agents.md), IN ROLE pgvigil_reader, pgvigil_investigator and nothing else, checked on its session user.
 // -config gives the stale check each instance's collection intervals and each instance's query_text policy, as serve
 // has them; without it no policy is known and every instance is read as 'none' (no statement text, plan or deadlock
 // graph is returned: the locked-down default, which an admin relaxes by giving -config). The read tools are answered
