@@ -878,12 +878,19 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
 // instance's HA/DR strip holds DBA Dash's four tabs in its order; a PostgreSQL instance's strip none of the three
 {
   const haOrder = ['mssqlbackups', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag'];
+  // each folder page and the collection it draws (q_mssql_hadr.go's hadrReads); CLICK_SEEDED (proof-clickmap.sh) names the
+  // collections the demo's seed holds rows of: a page with no Instance link is 'not proven' only for a kind the seed holds
+  // none of, and a FAIL for a kind it holds (or when CLICK_SEEDED is not given: what the data holds is then unknown)
+  const haKinds = { mssqlag: ['mssql_ag', 'Availability Groups'], mssqlmirroring: ['mssql_mirroring', 'Mirroring'], mssqllogshipping: ['mssql_logshipping', 'Log Shipping'] };
+  const seeded = process.env.CLICK_SEEDED == null ? null : new Set(process.env.CLICK_SEEDED.split(/\s+/).filter(Boolean));
   for (const t of ['mssqlag', 'mssqlmirroring', 'mssqllogshipping']) {
     await go(`#/${t}`);
     const link = await ev(`(() => { const x = [...document.querySelectorAll('main table a')].find(a => /[?&]i=\\d+/.test(a.getAttribute('href') || '')); return x ? x.getAttribute('href') : null; })()`);
     if (!link) {
+      const [coll, name] = haKinds[t];
       record({ scope: 'root', kind: 'hadr', column: 'Instance drill', engine: 'sqlserver', link: `#/${t}`, landed: 'no row with an Instance link',
-        verdict: t === 'mssqlmirroring' ? 'not proven: no Mirroring row with an Instance link in this data (its links are in Role Changes)' : 'FAIL the folder page has no Instance link' });
+        verdict: seeded && !seeded.has(coll) ? `not proven: no ${name} row in this data (the seed holds no ${coll} row)`
+          : `FAIL the folder page has no Instance link (${seeded ? `the seed holds ${coll} rows` : 'CLICK_SEEDED not given: what the data holds is unknown'})` });
       continue;
     }
     await ev(`(() => { [...document.querySelectorAll('main table a')].find(a => a.getAttribute('href') === ${JSON.stringify(link)})?.click(); })()`);

@@ -341,6 +341,12 @@ chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chro
 CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
+# the HA/DR collections the demo's seed holds rows of (0066's mssql_hadr_reads: each SQL Server instance's last read of a
+# collection and its row count, written by the import the seed goes through): click-check calls an HA/DR folder page with
+# no Instance link 'not proven' only for a kind the seed holds no row of, a FAIL for every other
+SEEDED=$(q "select coalesce(string_agg(collection, ' ' order by collection), '') from (select distinct r.collection from pgvigil.mssql_hadr_reads r join pgvigil.instances i using (instance_id) where i.is_active and i.engine = 'sqlserver' and r.row_count > 0) x") || fail "the demo's HA/DR reads could not be read"
+export CLICK_SEEDED="$SEEDED"
+echo "the demo's seed holds rows of: ${SEEDED:-no HA/DR collection}"
 node scripts/click-check.mjs "$CDP" "$U/" "${PGVIGIL_CLICK_OUT:-$WORK/click.json}" | tee "$WORK/click.txt" || fail "the click map has a FAIL (above)"
 grep -q '^links: .*; 0 FAIL$' "$WORK/click.txt" || fail "click-check.mjs did not end with 0 FAIL"
 # the check found what it was to check (a check that collected nothing passes nothing)
