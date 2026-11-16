@@ -34,10 +34,11 @@ type detected struct {
 
 var detectCache sync.Map // instance name -> detected
 
-// rememberDetect keeps a successful detect of the instance and the instance row it was recorded on; the pool tag is
-// left out (it is the configuration's, set at each use).
+// rememberDetect keeps a successful detect of the instance and the instance row it was recorded on; the pool tag and
+// the linked server test tag (task 409) are left out (they are the configuration's, set at each use).
 func rememberDetect(in config.Instance, info Info, instanceID int, at time.Time) {
 	info.PoolTag = ""
+	info.LinkedServerTest = false
 	detectCache.Store(in.Name, detected{info: info, instanceID: instanceID, dsn: in.DSNRaw, platform: in.Platform, at: at})
 }
 
@@ -53,6 +54,9 @@ func cachedDetect(in config.Instance, now time.Time) (Info, int, bool) {
 		return Info{}, 0, false
 	}
 	d.info.PoolTag = poolTag(in)
+	// task 409: mssql_linkedserver_test applies by the tag (its Applies reads LinkedServerTest), so a cached skip reads
+	// the tag the instance carries now, never the one of the run that was cached
+	d.info.LinkedServerTest = linkedServerTest(in)
 	return d.info, d.instanceID, true
 }
 
@@ -65,4 +69,14 @@ func poolTag(in config.Instance) string {
 		}
 	}
 	return tag
+}
+
+// linkedServerTest: the instance carries the tag pgvigil:linkedserver-test (LinkedServerTestTag, task 409)
+func linkedServerTest(in config.Instance) bool {
+	for _, t := range in.TagPairs() {
+		if t.Key+":"+t.Value == LinkedServerTestTag {
+			return true
+		}
+	}
+	return false
 }

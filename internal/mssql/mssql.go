@@ -588,11 +588,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if tag := poolTag(in); tag != "" {
 		info.PoolTag = tag
 	}
-	for _, t := range in.TagPairs() {
-		if t.Key+":"+t.Value == LinkedServerTestTag { // task 409
-			info.LinkedServerTest = true
-		}
-	}
+	info.LinkedServerTest = linkedServerTest(in) // task 409
 	info.ReadAutoCloseDatabases = in.Reads != nil && in.Reads.AutoCloseDatabases
 	info.CheckBackupFiles = in.Reads != nil && in.Reads.BackupFiles
 	if info.CheckBackupFiles && name == Prefix+"backup_checks" {
