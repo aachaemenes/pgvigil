@@ -232,7 +232,7 @@ type fileWriter struct {
 	f                *os.File
 	sum              hash.Hash
 	n                *countWriter
-	w                *parquet.Writer
+	w                *parquet.Writer //nolint:staticcheck // SA1019: the schema writer the export was built and proven on; the generic writer is a change of its own
 	batch            []parquet.Row
 	fileRows         int64
 	groupRows        int64

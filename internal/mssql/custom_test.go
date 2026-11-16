@@ -64,7 +64,7 @@ func TestCustomErrText(t *testing.T) {
 		{mssqldb.Error{Number: 2812, Message: "Could not find stored procedure"}, proc, "procedure dbo.check does not exist, or the read login may not see it (Msg 2812)"},
 		{mssqldb.Error{Number: 229, Message: "The EXECUTE permission was denied"}, proc, "GRANT EXECUTE on it to the read login"},
 		{context.DeadlineExceeded, plain, "did not finish within 30 s"},
-		{errors.New("Invalid object name 'x'."), plain, "Invalid object name 'x'."},
+		{errors.New("Invalid object name 'x'."), plain, "Invalid object name 'x'."}, //nolint:revive // SQL Server's own message, as the driver hands it back
 	} {
 		if got := customErrText(c.err, c.c); !strings.Contains(got, c.want) {
 			t.Errorf("customErrText(%v) = %q, want %q", c.err, got, c.want)

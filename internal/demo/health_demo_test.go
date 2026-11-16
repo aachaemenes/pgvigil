@@ -87,7 +87,7 @@ func TestDemoHealthKnownPerInstance(t *testing.T) {
 	from, to := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC), time.Date(2026, 11, 14, 10, 9, 0, 0, time.UTC)
 	gap := time.Date(2026, 11, 14, 10, 4, 0, 0, time.UTC)
 	all := healthRows([]*Gen{g0, g1}, []int{1, 2}, from, to, nil)
-	some := healthRows([]*Gen{g0, g1}, []int{1, 2}, from, to, func(i int, m time.Time) bool { return !(i == 0 && m.Equal(gap)) })
+	some := healthRows([]*Gen{g0, g1}, []int{1, 2}, from, to, func(i int, m time.Time) bool { return i != 0 || !m.Equal(gap) })
 	runs := func(rs []demoHealth, id int) (n int) {
 		for _, r := range rs {
 			if r.InstanceID == id {

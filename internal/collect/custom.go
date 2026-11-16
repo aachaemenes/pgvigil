@@ -229,7 +229,7 @@ func (c *CustomCheck) validate(i int) error {
 	c.SQL = strings.TrimSpace(strings.TrimSuffix(c.SQL, ";"))
 	if c.Procedure != "" {
 		if c.Engine == config.EnginePostgres {
-			return fmt.Errorf("custom %q: procedure: is a SQL Server check's (engine: sqlserver); a PostgreSQL check is its sql:", c.Name)
+			return fmt.Errorf("custom %q: procedure: is a SQL Server check's (engine: sqlserver); a PostgreSQL check has sql: instead", c.Name)
 		}
 		if c.SQL != "" {
 			return fmt.Errorf("custom %q: sql: and procedure: are two forms of a check: give one of them", c.Name)

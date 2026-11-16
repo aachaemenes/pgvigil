@@ -218,7 +218,7 @@ func TestLay(t *testing.T) {
 		code  int
 	}{
 		"a table the map does not name":         {append(append([]storeTable{}, store...), storeTable{Name: "newcomer"}), cols, Options{}, "newcomer is not classed", 0},
-		"an excluded name that is no table":     {store, cols, Options{Exclude: []string{"sampels"}}, "sampels", 3},
+		"an excluded name that is no table":     {store, cols, Options{Exclude: []string{"no_such_table"}}, "no_such_table", 3},
 		"instances excluded":                    {store, cols, Options{Exclude: []string{"instances"}}, "instances", 3},
 		"a text column the table does not have": {store, map[string][]Column{"instances": cols["instances"], "samples": cols["samples"], "runs": cols["runs"], "hosts": {id, tx("os"), tx("token")}, "texts": cols["texts"], "trail": cols["trail"], "ui_users": cols["ui_users"], "log": cols["log"]}, Options{}, "hosts has no column cmd", 0},
 		"a time column that is not a time":      {store, map[string][]Column{"instances": cols["instances"], "samples": {id, tx("at")}, "runs": cols["runs"], "hosts": cols["hosts"], "texts": cols["texts"], "trail": cols["trail"], "ui_users": cols["ui_users"], "log": cols["log"]}, Options{}, "samples.at is text", 0},

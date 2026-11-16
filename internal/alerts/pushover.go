@@ -58,9 +58,6 @@ const (
 	poMaxURLTitle = 100
 )
 
-// poQuotaLow is the share of the month's messages left under which the repository raises 'pushover quota low'.
-const poQuotaLow = 0.10
-
 var (
 	poKeyRE    = regexp.MustCompile(`^[A-Za-z0-9]{1,64}$`)
 	poDeviceRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,25}(,[A-Za-z0-9_-]{1,25})*$`)

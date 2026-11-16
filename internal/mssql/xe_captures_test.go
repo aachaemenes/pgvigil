@@ -31,8 +31,16 @@ func TestXECapturesScript(t *testing.T) {
 		}
 	}
 	// the exact names come before the LIKE patterns in a predicate
-	wait := sc[strings.Index(sc, "ADD EVENT sqlos.wait_info("):]
-	wait = wait[:strings.Index(wait, "';")]
+	i := strings.Index(sc, "ADD EVENT sqlos.wait_info(")
+	if i < 0 {
+		t.Fatal("the script has no ADD EVENT sqlos.wait_info(")
+	}
+	wait := sc[i:]
+	j := strings.Index(wait, "';")
+	if j < 0 {
+		t.Fatal("the wait_info event's text has no closing ';")
+	}
+	wait = wait[:j]
 	if strings.Index(wait, "like_i_sql_unicode_string") < strings.LastIndex(wait, "<>N''") {
 		t.Errorf("a LIKE comes before an exact name: %s", wait)
 	}

@@ -142,9 +142,10 @@ func TestProbeFormingHostsOnAStore(t *testing.T) {
 				host := fmt.Sprintf("fh%d-%d-%d", k, crossing, sfx)
 				f9Instance(ctx, t, tx, col, "f9-"+host, host, map[int]int{1: 1, 2: 1, 3: 1})
 				kind := map[bool]string{true: "cross", false: ""}[k <= crossing]
-				if k == crossing+1 {
+				switch k {
+				case crossing + 1:
 					kind = "both"
-				} else if k == crossing+2 {
+				case crossing + 2:
 					kind = "calm"
 				}
 				for m := 1; m <= 6; m++ {
