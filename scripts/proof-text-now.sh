@@ -92,7 +92,7 @@ cfg() {   # $1 name, $2 the file-level policy, $3 'mixed' to name erp01 and sql0
     if [[ "${3:-}" == mixed ]]; then
       echo "instances:"
       echo "  - name: demo-onprem-erp01"; echo "    dsn: \"host=127.0.0.1 port=1 user=nobody dbname=nobody connect_timeout=1\""; echo "    query_text: none"
-      echo "  - name: demo-onprem-sql01"; echo "    engine: sqlserver"; echo "    dsn: \"sqlserver://nobody:nobody@127.0.0.1:1?database=master&connection+timeout=1\""; echo "    query_text: none"
+      echo "  - name: demo-onprem-sql01"; echo "    engine: sqlserver"; echo "    dsn: \"sqlserver://nobody@127.0.0.1:1?database=master&connection+timeout=1\""; echo "    query_text: none"
     fi; } > "$WORK/$1.yaml"
 }
 cfg full full; cfg none none; cfg normalized normalized; cfg mixed full mixed
@@ -223,8 +223,13 @@ for c in walk["calls"]:
 print(f"== {pol}: {sum(shown.values())} reply strings are stored texts; sites shown: {dict(shown)}")
 print(f"   skipped (4xx): {len(walk['skipped'])}; downloads: {walk['downloads']}")
 bad = sorted(set(leaks))
-for l in bad[:40]: print("   LEAK " + l)
-if len(bad) > 40: print(f"   ... {len(bad) - 40} more")
+# every leaking route once, with its sites and how many strings (the whole list: the inventory the walk measured)
+per = collections.defaultdict(lambda: [0, set()])
+for l in bad:
+    route, rest = l.split(" shows ", 1)
+    per[route][0] += 1; per[route][1].add(rest.split(" of instance")[0])
+for route in sorted(per): print(f"   LEAK {route}: {per[route][0]} strings, {', '.join(sorted(per[route][1]))}")
+print("   example leaks: " + " | ".join(bad[:3]))
 if pol == "full":
     sites = sorted(set(t[0] for t in texts))
     print("   sites the seed filled and no reply showed: " + ", ".join(s for s in sites if not shown[s]) or "none")
