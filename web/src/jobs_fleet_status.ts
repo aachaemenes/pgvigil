@@ -232,7 +232,9 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     };
     const countCell = (show: string, label: string) => (v: unknown, r: Row) => {
       if (!Number(v)) return '0';
-      const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label} on ${String(r.instance)}: show them` }, fmtNum(v));
+      // the name starts with the words shown (WCAG 2.5.3 label in name: a voice user says what is on the screen)
+      const shown = fmtNum(v);
+      const b = el('button', { type: 'button', class: 'link', 'aria-label': `${shown} ${label} on ${String(r.instance)}: show them` }, shown);
       b.addEventListener('click', () => goTo(Number(r.instance_id), show));
       return b;
     };
@@ -256,7 +258,7 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
       const words = rateWords(id);
       const n = stats && !statsWhy ? rows.filter(r => Number(r.instance_id) === id && r._rate != null && Number(r._rate) > 0.5).length : 0;
       if (!(n > 0)) return document.createTextNode(words);
-      const b = el('button', { type: 'button', class: 'link', 'aria-label': `jobs failing over half their runs on ${names.get(id) ?? ''}: show them` }, words);
+      const b = el('button', { type: 'button', class: 'link', 'aria-label': `${words} - jobs failing over half their runs on ${names.get(id) ?? ''}: show them` }, words);
       b.addEventListener('click', () => goTo(id, 'failrate'));
       return b;
     }
