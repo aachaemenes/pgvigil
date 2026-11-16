@@ -48,7 +48,8 @@ var credentialKeys = []string{"query", "statement", "detail", "shape", "message"
 //
 // An XML document (a SQL Server showplan, an Extended Events deadlock graph or blocked process report) is masked by
 // MaskXML, value by value, so it stays XML; it also masks a plan's compiled and runtime value of a password-named @
-// parameter.
+// parameter. A cell that is a processing instruction (a community procedure's <?query ... ?> or <?query_plan ... ?>)
+// is taken for a document too, and MaskXML masks the instruction's text.
 //
 // Inside a literal (dynamic SQL, an xp_cmdshell command, a connection string) a value in T-SQL's doubled quotes
 // (two single quotes on each side of it) is one value, and the quote that closes the enclosing literal never starts one: the mask knows the text's
@@ -95,12 +96,20 @@ func MaskCredentials(s string) string {
 // or a text node, and the stored document would no longer be XML (the Plan cache's .sqlplan, the deadlock graph and the
 // blocked process report pages parse it). Each attribute value and each text node is decoded, masked as MaskCredentials
 // masks a text, and written back escaped only when the mask changed it (<masked> as &lt;masked&gt;), so the document
-// stays XML and every value the mask leaves alone keeps its bytes. A CDATA section, a comment and a processing
-// instruction hold raw text and are masked as they stand: sp_WhoIsActive writes a session's sql_text and sql_command
-// as an instruction (<?query -- ... --?>), a statement like any other, and <masked> inside one keeps the document
-// XML (only "?>" ends an instruction). A showplan's ColumnReference of a password-named @ parameter has its compiled
-// and runtime values masked. A tag, a comment, a CDATA section or an instruction the text ends inside (a cut document,
-// no longer XML) is masked as a text. Idempotent, as MaskCredentials is.
+// stays XML and every value the mask leaves alone keeps its bytes. A showplan's ColumnReference of a password-named @
+// parameter has its compiled and runtime values masked.
+//
+// A CDATA section, a comment and a processing instruction hold raw text and are masked as they stand (<masked> inside
+// one keeps the document XML). An instruction can be a whole cell: sp_WhoIsActive's formatted output writes a
+// session's sql_text and sql_command as <?query -- ... --?> (its non-formatted output has no wrapper) and the
+// DarlingData procedures write a statement as <?query ... ?> - a statement like any other. Such a cell is SQL
+// Server's own writing and not always XML: a "?>" inside the statement is written as it is, so an instruction ends
+// at the first "?>" that markup or the text's end follows (piEnd). A showplan an instruction wraps (sp_WhoIsActive's
+// <?query_plan ... ?>) is masked as a document from <ShowPlanXML on (maskRaw).
+//
+// A document the text ends inside is no longer XML: cut inside a tag, the rest is decoded and masked as a text; cut
+// inside a comment, a CDATA section or an instruction, the rest is raw and masked as it stands. Idempotent, as
+// MaskCredentials is.
 func MaskXML(s string) string {
 	if s == "" {
 		return s
@@ -116,35 +125,81 @@ func MaskXML(s string) string {
 		b.WriteString(maskXMLText(s[i : i+lt]))
 		i += lt
 		rest := s[i:]
-		open, closing, raw := "", "", false
+		// open: the section's opening when rest begins a comment, a CDATA section or an instruction (raw text)
+		open, closing := "", ""
 		switch {
 		case strings.HasPrefix(rest, "<!--"):
-			open, closing, raw = "<!--", "-->", true
+			open, closing = "<!--", "-->"
 		case strings.HasPrefix(rest, "<![CDATA["):
-			open, closing, raw = "<![CDATA[", "]]>", true
+			open, closing = "<![CDATA[", "]]>"
 		case strings.HasPrefix(rest, "<?"):
-			open, closing, raw = "<?", "?>", true
+			open, closing = "<?", "?>"
 		}
 		end := -1
-		if open != "" {
+		switch {
+		case open == "<?":
+			end = piEnd(rest)
+		case open != "":
 			if e := strings.Index(rest[len(open):], closing); e >= 0 {
 				end = len(open) + e + len(closing)
 			}
-		} else {
+		default:
 			end = xmlTagEnd(rest)
 		}
 		if end < 0 {
-			b.WriteString(maskXMLCut(rest))
+			if open != "" {
+				b.WriteString(open + maskRaw(open, rest[len(open):]))
+			} else {
+				b.WriteString(maskXMLCut(rest))
+			}
 			break
 		}
-		if raw {
-			b.WriteString(open + MaskCredentials(rest[len(open):end-len(closing)]) + closing)
+		if open != "" {
+			b.WriteString(open + maskRaw(open, rest[len(open):end-len(closing)]) + closing)
 		} else {
 			b.WriteString(maskXMLTag(rest[:end]))
 		}
 		i += end
 	}
 	return b.String()
+}
+
+// piEnd is the length of the processing instruction s begins with (s starts "<?"); -1 when s ends inside it. XML
+// ends an instruction at its first "?>", but SQL Server writes a "?>" inside an instruction's text as it is (a
+// statement that holds one, in a community procedure's <?query ... ?> cell), and ending there would leave the rest of
+// the statement - the tail of a value - behind as a text node. Markup or the text's end follows an instruction in
+// the documents stored here, so the end is the first "?>" that white space and then "<" or the text's end follows;
+// where no "?>" is followed so, the first one. A "?>" inside the statement that "<" follows still ends it.
+func piEnd(s string) int {
+	first := -1
+	for from := 2; ; {
+		e := strings.Index(s[from:], "?>")
+		if e < 0 {
+			return first
+		}
+		end := from + e + 2
+		if first < 0 {
+			first = end
+		}
+		if t := strings.TrimLeft(s[end:], " \t\r\n"); t == "" || t[0] == '<' {
+			return end
+		}
+		from = end
+	}
+}
+
+// maskRaw masks the raw text of a comment, a CDATA section or a processing instruction (body is what stands after
+// open): MaskCredentials over it as it stands, nothing decoded. A showplan an instruction wraps - sp_WhoIsActive
+// writes a plan that cannot be an xml value as <?query_plan ... ?>, to be saved as a .sqlplan file - is masked as
+// the document it is from "<ShowPlanXML" on: a password-named parameter's values are masked (the text mask has no
+// rule for them), and a masked value is written escaped, so the plan taken out of the wrapper stays XML.
+func maskRaw(open, body string) string {
+	if open == "<?" {
+		if k := strings.Index(body, "<ShowPlanXML"); k >= 0 {
+			return MaskCredentials(body[:k]) + MaskXML(body[k:])
+		}
+	}
+	return MaskCredentials(body)
 }
 
 // xmlTagEnd is the length of the tag s begins with (s[0] is '<'), its quoted values skipped; -1 when s ends inside it.
@@ -246,8 +301,10 @@ func xmlTextEscape(v string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(v)
 }
 
-// looksXML: s begins (after white space) with a tag, a declaration or a comment. A statement or a message of either
-// engine does not; PostgreSQL's placeholders (<IDLE>, <insufficient privilege>) read as one tag with nothing to mask.
+// looksXML: s begins (after white space) with a tag, a declaration, a processing instruction or a comment. A statement
+// or a message of either engine does not - but a cell a community procedure writes as an instruction (<?query ... ?>)
+// does, and MaskXML masks its text as the statement it is. PostgreSQL's placeholders (<IDLE>, <insufficient
+// privilege>) read as one tag with nothing to mask.
 func looksXML(s string) bool {
 	t := strings.TrimLeft(s, " \t\r\n")
 	if len(t) < 2 || t[0] != '<' {
