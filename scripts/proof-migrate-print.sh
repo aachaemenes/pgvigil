@@ -170,7 +170,7 @@ grep -qx -- "-- file ${FILES[$((K - 1))]} ($K of $NFILES)" "$WORK/part.sql" || f
 [ "$(grep -v '^[[:space:]]*$' "$WORK/part.sql" | tail -1)" = "COMMIT;" ] || fail "I: the cut does not end on a file's COMMIT"
 rc=0; psql "$ADMIN dbname=$PARTIAL" -X -q -f "$WORK/part.sql" > "$WORK/i1.out" 2>&1 || rc=$?
 [ "$rc" = 0 ] || { tail -20 "$WORK/i1.out" >&2; fail "I: the cut script: psql exit $rc"; }
-n=$(q "$PARTIAL" "select count(*) from pgvigil.schema_version"); [ "$n" = "$K" ] || fail "I: schema_version holds $n files, not $K"
+n=$(q "$PARTIAL" "select count(*) from pgvigil.schema_version") || fail "I: schema_version not read"; [ "$n" = "$K" ] || fail "I: schema_version holds $n files, not $K"
 PGVIGIL_REPO_DSN="$ADMIN dbname=$PARTIAL" "$BIN" migrate -config "$CFG" -print > "$WORK/rest.sql" 2>/dev/null || fail "I: -print"
 grep -qx -- "-- pending: 3 file(s): ${FILES[$K]} .. $NEWEST" "$WORK/rest.sql" || fail "I: header: $(grep -- '-- pending' "$WORK/rest.sql")"
 rc=0; psql "$ADMIN dbname=$PARTIAL" -X -q -f "$WORK/rest.sql" > "$WORK/i2.out" 2>&1 || rc=$?

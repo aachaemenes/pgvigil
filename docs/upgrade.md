@@ -215,9 +215,10 @@ to it first: objects a superuser made would belong to the superuser, and the nex
 them), and a guard stops it unless the repository is exactly the one it was printed for - none of its files recorded
 since and none of the recorded ones gone (print it again). Its header names the build, the repository, how many files
 are applied and pending, and any version a newer pgvigil recorded. With nothing pending the script is its header alone.
-One step of `pgvigil migrate` is not in the script, and its header says so: the partitions made ahead after its files
-(this month's and the next month's); `pgvigil run` and `pgvigil collect` make the same partitions at their start and
-`pgvigil run` every hour, so the collector's first pass after the script does it.
+One step of `pgvigil migrate` is not in the script (with a file pending, its header says so): the partitions made
+ahead after its files (this month's and the next month's, and the next two days of `mssql_requests`); `pgvigil run`
+and `pgvigil collect` make the same partitions at their start and `pgvigil run` every hour, so the collector's first
+pass after the script does it.
 `-print` exits 0 when the script is written, 1 when the repository cannot be read or a flag is wrong (nothing on
 stdout), 3 on a configuration error.
 

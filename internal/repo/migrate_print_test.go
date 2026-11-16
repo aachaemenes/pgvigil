@@ -150,8 +150,8 @@ func TestMigratePrintBodyVerbatim(t *testing.T) {
 // T5b a last statement ended by ';' with a comment after it on the same line (0155_restart_findings.sql's last line,
 // '...));  -- the log's time ...') is ended: the version row starts on the next line, after the comment. The text before
 // the line's first '--' decides; a ';' only inside the comment (at its end too: 'SELECT 1 -- no end;'), or a line
-// without one before it, still refuses (T6). A '--' inside a string before the line's ';' refuses as well: the
-// printer does not parse strings, so it fails closed there.
+// without one before it, still refuses (T6). A '--' that may sit inside a literal or a block comment refuses as well
+// (an odd number of "'", or a '"', '$' or '/*' before it): the printer does not parse strings, so it fails closed there.
 func TestMigratePrintTrailingComment(t *testing.T) {
 	for _, body := range []string{
 		"SELECT 1\n  FROM pg_class c\n WHERE c.oid > 0;  -- the server's clock (a note)\n",
@@ -164,8 +164,8 @@ func TestMigratePrintTrailingComment(t *testing.T) {
 		}
 		inOrder(t, out, "BEGIN;\n"+body+"INSERT INTO pgvigil.schema_version (version) VALUES ('0001_a.sql');\n")
 	}
-	for _, bad := range []string{"SELECT 1 -- no end; here\n", "SELECT ';' -- in a string\n", "SELECT 1 -- no end;\n",
-		"SELECT 'a -- b';\n"} {
+	for _, bad := range []string{"SELECT 1 -- no end; here\n", "SELECT 'a; -- b'\n", "SELECT 1 -- no end;\n",
+		"SELECT 'a -- b';\n", "SELECT 1 /* x; -- y */\n", "SELECT \"a; -- b\"\n", "SELECT $$a; -- b$$\n"} {
 		if _, err := printFor(t, migratePrintMeta{Build: "b", Database: "d", Server: "16.4"}, []string{"0001_a.sql"}, nil,
 			map[string]string{"0001_a.sql": bad}); err == nil {
 			t.Errorf("no refusal of %q", bad)

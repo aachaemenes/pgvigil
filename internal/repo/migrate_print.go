@@ -129,7 +129,7 @@ func migrateScript(w io.Writer, meta migratePrintMeta, names, applied []string, 
 	s.WriteString("-- run it with psql as the repository owner (the owner of schema pgvigil; SET ROLE to it first otherwise):\n")
 	s.WriteString("--   psql -X -v ON_ERROR_STOP=1 -d <the repository database> -f <this file>\n")
 	s.WriteString("-- (each file commits on its own, as migrate commits them: a failure stops at that file, the ones before it stay applied)\n")
-	s.WriteString("-- not in this script: migrate's partitions-ahead pass after its files (this month's and the next month's partitions); pgvigil run and pgvigil collect make them at their start, pgvigil run every hour\n\n")
+	s.WriteString("-- not in this script: migrate's partitions-ahead pass after its files (this month's and the next month's partitions, and the next two days of mssql_requests); pgvigil run and pgvigil collect make them at their start, pgvigil run every hour\n\n")
 
 	// psql only, and the first statement: a run without ON_ERROR_STOP would go on past a failed file (and leave a gap a
 	// later migrate fills out of order); a tool that is not psql fails on this line before anything runs
@@ -222,9 +222,10 @@ func sqlTextArray(ss []string) string {
 
 // endsWithSemicolon: the file's last statement ends with ';' once trailing blank lines and whole-line '--' comments are
 // set aside. On the last line only the text before its first '--' decides: '...; -- a note' is ended (the version row
-// starts on the next line, after the comment's end), 'SELECT 1 -- no end;' is not. Strings are not parsed, so a '--'
-// inside one before the line's ';' ("VALUES ('a -- b');") refuses; a block comment is not looked into either: such a
-// file fails closed.
+// starts on the next line, after the comment's end), 'SELECT 1 -- no end;' is not. Strings are not parsed, so that '--'
+// counts as a comment only when nothing before it can hold one inside a literal: an odd number of "'", or any '"', '$'
+// or '/*' before it refuses ("VALUES ('a -- b');", "SELECT 'a; -- b'", "SELECT 1 /* x; -- y */"). A literal opened on an
+// earlier line is not looked into: such a file fails at run time, ON_ERROR_STOP stopping at it.
 func endsWithSemicolon(b []byte) bool {
 	lines := strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -234,6 +235,9 @@ func endsWithSemicolon(b []byte) bool {
 		}
 		if j := strings.Index(l, "--"); j >= 0 {
 			l = strings.TrimSpace(l[:j])
+			if strings.Count(l, "'")%2 == 1 || strings.ContainsAny(l, "\"$") || strings.Contains(l, "/*") {
+				return false
+			}
 		}
 		return strings.HasSuffix(l, ";")
 	}
