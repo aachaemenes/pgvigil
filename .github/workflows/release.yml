@@ -12,7 +12,10 @@
 # three files go into dist BEFORE the checksums, so the one signed SHA256SUMS lists every file of a bundle;
 # scripts/package-offline.sh then lays out pgvigil-offline-<tag>-linux-amd64.tar.gz and -windows-amd64.zip, and
 # SHA256SUMS.offline lists the two archives under a keyless signature of its own (an archive cannot sit in the list it
-# carries). The trust-root files are a convenience: a site verifies with its own (docs/airgap.md).
+# carries). The trust-root files are a convenience: a site verifies with its own (docs/airgap.md). The remote collector's
+# two archives (task 11, R15: pgvigil-remote-<tag>-linux-amd64.tar.gz and -windows-amd64.zip, the same binaries, the
+# installer, docs/remote-collector.md, airgap.md and the sample deploy/pgvigil-remote.yaml) are laid out by the same
+# script from the same signed list and listed in SHA256SUMS.offline beside the offline bundles.
 name: release
 
 on:
@@ -111,6 +114,7 @@ jobs:
         run: |
           set -euo pipefail
           cp docs/install.sh docs/install.ps1 docs/airgap.md docs/upgrade.md docs/uninstall.md dist/
+          cp docs/remote-collector.md deploy/pgvigil-remote.yaml dist/   # the remote collector's archives
           # the trust root as three key files, as docs/airgap.md writes them on a site's connected machine
           cosign initialize
           TROOT=$(find ~/.sigstore -name trusted_root.json | head -n 1)
@@ -141,12 +145,12 @@ jobs:
           cosign verify-blob --bundle dist/SHA256SUMS.bundle \
             --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com dist/SHA256SUMS
-      - name: the offline bundles, listed in SHA256SUMS.offline under a keyless signature of its own
+      - name: the offline bundles and the remote collector's archives, listed in SHA256SUMS.offline under a keyless signature of its own
         run: |
           set -euo pipefail
           V="${GITHUB_REF_NAME}"
           bash scripts/package-offline.sh dist "$V"
-          (cd dist && sha256sum -- pgvigil-offline-* > SHA256SUMS.offline && cat SHA256SUMS.offline)
+          (cd dist && sha256sum -- pgvigil-offline-* pgvigil-remote-*-amd64.* > SHA256SUMS.offline && cat SHA256SUMS.offline)
           cosign sign-blob --yes --bundle dist/SHA256SUMS.offline.bundle --output-signature dist/SHA256SUMS.offline.sig \
             --output-certificate dist/SHA256SUMS.offline.pem dist/SHA256SUMS.offline
           cosign verify-blob --bundle dist/SHA256SUMS.offline.bundle \

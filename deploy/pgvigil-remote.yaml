@@ -1,0 +1,22 @@
+# pgvigil-remote.yaml - the remote collector's configuration (docs/remote-collector.md), a sample to edit.
+# Copy it before running the installer with --remote (-Remote on Windows):
+#   Linux:   /etc/pgvigil-remote/pgvigil-remote.yaml   (secrets for env: in /etc/pgvigil-remote/pgvigil-remote.env)
+#   Windows: C:\ProgramData\pgvigil-remote\pgvigil-remote.yaml
+# The collector reads only this file, writes only the two folders below and needs no repository.
+remote:
+  site: site-name             # the site's name on the hub: lower-case letters, digits, _ . - ; a letter or digit first
+  collector: c1               # this box's name within the site
+  interval: 5m                # how long a bundle covers: 1m to 60m
+  outbox: /var/lib/pgvigil-remote/outbox      # Windows: C:\ProgramData\pgvigil-remote\outbox
+  state_dir: /var/lib/pgvigil-remote/state    # Windows: C:\ProgramData\pgvigil-remote\state
+  keep_days: 7                # a bundle stays this long after it was pushed (or written, without push:)
+  max_mb: 2048                # the outbox's cap: past it the oldest bundle goes first
+  sign: false                 # true: each manifest signed with this box's key (pgvigil-remote remote init)
+  # push:                     # optional: the direct push to Azure Blob (docs/remote-collector.md)
+query_text: hash              # hash (a fingerprint that still groups) or none; no statement text leaves the box
+instances:
+  - name: pg-orders
+    dsn: env:PG_ORDERS_DSN    # a line PG_ORDERS_DSN=host=... user=... in the env file
+  - name: SQL01
+    engine: sqlserver
+    dsn: file:/etc/pgvigil-remote/sql01.dsn   # Windows: file:C:\ProgramData\pgvigil-remote\sql01.dsn
