@@ -148,8 +148,15 @@ LiteSpeed's command-line tools' `--Key`, `--TgtKey`, `--JobP` / `-jobp` and `-Ba
 of them (`sqllitespeed`, `slssqlmaint`, `slsfastcompression`, `extractor`: sqlcmd's own `-K ReadOnly` stays readable);
 the string given to `ConvertTo-SecureString` (each of these values bare, quoted, or with its quotes doubled inside
 another string such as `xp_cmdshell`'s); the password of `net use \\host\share <password>`; dtexec's `/DE` and
-`/Decrypt`. A SQL Server job's description is masked the same way (a pgAgent job's already was, with its whole
-definition). The command is stored masked (in the job row and in every version). A password in any other form is stored
+`/Decrypt`; PostgreSQL's role password, `[ ENCRYPTED ] PASSWORD` and a string constant (`CREATE` / `ALTER ROLE`
+and `USER`: `'...'`, `E'...'`, `U&'...'`, `$$...$$` or `$tag$...$tag$`, each stored as `'<masked>'`; `PASSWORD NULL`, a
+`format()` placeholder and a `$1` parameter stay readable; a comment may stand before the value; inside another string
+the value's quotes doubled, or `\'...\'` inside an escape string, while a quote right after the word that closes the
+string around it is never read as a value: `EXECUTE 'ALTER ROLE r PASSWORD ' || quote_literal(v)` stays as written)
+and a user mapping's `password` and `sslpassword` options (`OPTIONS (password '...')`, `OPTIONS (SET password '...')`,
+the option's name quoted or not). A SQL Server job's description is masked the same way (a pgAgent job's already was,
+with its whole definition; pgvigil's own query of pgAgent masks a step's `PASSWORD '...'` before it leaves the
+server). The command is stored masked (in the job row and in every version). A password in any other form is stored
 as read: keep secrets out of job steps (a credential, a proxy, a vault lookup).
 
 ### Known limits
@@ -160,7 +167,8 @@ as read: keep secrets out of job steps (a credential, a proxy, a vault lookup).
   job dropped.
 - A key inside dynamic SQL that is itself inside dynamic SQL (its quotes doubled twice) is not read as one value: its
   text after the first pair of quotes is stored as read. `xp_encrypt_backup_key`'s `@key` (a name too generic to mask
-  by) is stored as read.
+  by) is stored as read. PostgreSQL's `PASSWORD'...'` with no space between the word and the quote is stored as read
+  (a space or a comment there is read).
 - Migration 0272 masks again, by the same rules, the job texts an older build stored - on both engines: pg_cron's
   and pgAgent's jobs and runs (`jobs`, `job_runs`), SQL Server's jobs and runs (`mssql_jobs`, `mssql_job_runs`) and
   every job version (definition, script, changes) - so no key an older build missed stays in the store: a text that

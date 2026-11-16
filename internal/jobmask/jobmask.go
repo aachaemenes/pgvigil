@@ -26,7 +26,9 @@ import (
 //     quoted or not); the user:password@ of a URI;
 //   - a command line's -Password, -pw, -pwd, -P on a line naming bcp, sqlcmd, osql or isql (a PowerShell -Path
 //     stays), LiteSpeed's tools' --Key, --TgtKey, --JobP / -jobp and -BackupKey, and -K on a line naming one of
-//     them (sqllitespeed, slssqlmaint, slsfastcompression, extractor: sqlcmd's -K ReadOnly stays); the string
+//     them (sqllitespeed, slssqlmaint, slsfastcompression, extractor: sqlcmd's -K ReadOnly stays); PostgreSQL's
+//     role password ([ ENCRYPTED ] PASSWORD and a string constant: '..', E'..', U&'..', $tag$..$tag$; PASSWORD NULL
+//     stays) and a user mapping's password option; the string
 //     given to ConvertTo-SecureString (each value bare, in quotes, or
 //     inside another string with its quotes doubled, as in xp_cmdshell's string); the password of
 //     'net use \\host\share <password>'; dtexec's /DE and /Decrypt.
@@ -48,7 +50,10 @@ var (
 	lineToolsP = regexp.MustCompile(`(?i)(?:^|[\s\\/'"(&$%{])(?:bcp|sqlcmd|osql|isql)(?:\.exe)?(?:\s|$|['"%}])`)
 	lineToolsK = regexp.MustCompile(`(?i)(?:^|[\s\\/'"(&$%{])(?:sqllitespeed|slssqlmaint|slsfastcompression|extractor)(?:\.exe)?(?:\s|$|['"%}])`)
 	// -P's rule never reads -Password, -Pwd or -Pw (names maskArgRE masks the value of): its value would be the name's rest
-	notArgP      = regexp.MustCompile(`^-(?i:Password|pwd|pw)\b`)
+	notArgP = regexp.MustCompile(`^-(?i:Password|pwd|pw)\b`)
+	// PostgreSQL's role password, [ ENCRYPTED ] PASSWORD and a string constant with no '=' (CREATE / ALTER ROLE and
+	// USER), and a user mapping's password option (OPTIONS (password '...'), ALTER's SET password '...')
+	maskPGRE     = regexp.MustCompile(`(?i)(?:\b(?:ssl)?password|"(?:ssl)?password")\s+(?:/\*[^*]*\*/\s*)*`)
 	maskSecureRE = regexp.MustCompile(`(?i)ConvertTo-SecureString\s+(?:-String\s+)?`)
 	maskNetUseRE = regexp.MustCompile(`(?i)(\bnet\s+use\s+\S+\s+)([^/\s]\S*)`)
 	maskDtsRE    = regexp.MustCompile(`(?i)(/(?:DE|Decrypt)\s+)("[^"]*"|\S+)`)
@@ -70,6 +75,21 @@ var (
 	valWordArg    = regexp.MustCompile(`^\S+`)
 	valWordKeep   = regexp.MustCompile(`(?i)^(?:NULL|DEFAULT)$`)
 	nameBareKey   = regexp.MustCompile(`(?i)^@(?:EncryptionKey|jobp)$`)
+	// PostgreSQL's other string constants: an escape string (backslash escapes, E either case), a Unicode one, a
+	// dollar-quoted one's opening ($tag$, the tag an identifier without $); each also cut by a read
+	valPGEsc    = regexp.MustCompile(`^[Ee]'(?:[^'\\]|\\.|'')*'`)
+	valPGEscEnd = regexp.MustCompile(`^[Ee]'(?:[^'\\]|\\.|'')*\\?$`)
+	// the same inside another string, each quote doubled (dblink_exec's or EXECUTE's string)
+	valPGEsc2    = regexp.MustCompile(`^[Ee]''(?:[^'\\]|\\(?:''|.)|'''')*''`)
+	valPGEsc2End = regexp.MustCompile(`^[Ee]''(?:[^'\\]|\\(?:''|.)|'''')*\\?$`)
+	valPGUni2    = regexp.MustCompile(`^[Uu]&''(?:[^']|'''')*''`)
+	// a value inside an escape string, its quotes written \' (EXECUTE E'.. PASSWORD \'x\'')
+	valPGBack   = regexp.MustCompile(`^\\'(?:[^'\\]|\\.)*?\\'`)
+	valPGUni    = regexp.MustCompile(`^[Uu]&'(?:[^']|'')*'`)
+	valPGUniEnd = regexp.MustCompile(`^[Uu]&'(?:[^']|'')*$`)
+	valPGDollar = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$`)
+	// HoldsKey reads PostgreSQL's rule only before a string constant (not before prose: 'the password monthly')
+	keyIfPGConst = regexp.MustCompile(`^(?:[EeNn]?'|[Uu]&'|\\'|\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$)`)
 )
 
 // valueForm is one way a value is written and its masked form where the value's quoting is kept.
@@ -95,6 +115,8 @@ type maskRule struct {
 	keep   *regexp.Regexp // a word that is no secret (NULL), nil = none
 	line   *regexp.Regexp // the rule only on a (logical) line this matches (the tool's name), nil = on any line
 	unless *regexp.Regexp // not where the switch (from its -) matches this, nil = never
+	pg     bool           // PostgreSQL's string constants too (E'..', U&'..', $tag$..$tag$), each masked as '<masked>'
+	keyIf  *regexp.Regexp // HoldsKey reads the rule only where the value matches this, nil = everywhere
 }
 
 var (
@@ -104,6 +126,7 @@ var (
 	maskArg    = maskRule{name: maskArgRE, dq: true, word: valWordArg}
 	maskArgP   = maskRule{name: maskArgPRE, dq: true, word: valWordArg, line: lineToolsP, unless: notArgP}
 	maskArgK   = maskRule{name: maskArgKRE, dq: true, word: valWordArg, line: lineToolsK}
+	maskPG     = maskRule{name: maskPGRE, quoted: true, pg: true, keyIf: keyIfPGConst}
 	maskSecure = maskRule{name: maskSecureRE, dq: true, word: valWordArg}
 )
 
@@ -116,6 +139,7 @@ func Text(s string) string {
 	s = maskArg.apply(s)
 	s = maskArgP.apply(s)
 	s = maskArgK.apply(s)
+	s = maskPG.apply(s) // after the switches: -Password 'x' is theirs
 	s = maskSecure.apply(s)
 	s = maskNetUseRE.ReplaceAllString(s, "${1}<masked>")
 	return maskDtsRE.ReplaceAllString(s, "${1}<masked>")
@@ -177,6 +201,20 @@ func (r maskRule) value(v string, inside bool, name string) (int, string) {
 			return loc[1], "<masked>"
 		}
 	}
+	if r.pg {
+		if n, m := pgConst(v, inside); n > 0 {
+			return n, m
+		}
+		if inside {
+			// inside a string a lone quote after the word is that string's end, never a value: only a doubled value
+			for _, f := range []valueForm{{valDoubled, "''<masked>''"}, {valDoubledEnd, "''<masked>"}} {
+				if loc := f.re.FindStringIndex(v); loc != nil {
+					return loc[1], f.mask
+				}
+			}
+			return 0, ""
+		}
+	}
 	forms := formsOutside
 	if inside {
 		forms = formsInside
@@ -194,6 +232,35 @@ func (r maskRule) value(v string, inside bool, name string) (int, string) {
 	}
 	if loc := r.word.FindStringIndex(v); loc != nil && (r.keep == nil || !r.keep.MatchString(v[:loc[1]])) {
 		return loc[1], "<masked>"
+	}
+	return 0, ""
+}
+
+// pgConst reads a PostgreSQL string constant other than '...' at the start of v (an escape string, a Unicode one or a
+// dollar-quoted one; a value its text never closes runs to the end) and returns its length and its mask: '<masked>'
+// in place of the whole constant, its quotes doubled inside another string; 0 when none is there.
+func pgConst(v string, inside bool) (int, string) {
+	whole, cut := "'<masked>'", "'<masked>"
+	if inside {
+		whole, cut = "''<masked>''", "''<masked>"
+	}
+	if tag := valPGDollar.FindString(v); tag != "" {
+		if j := strings.Index(v[len(tag):], tag); j >= 0 {
+			return len(tag) + j + len(tag), whole
+		}
+		return len(v), cut
+	}
+	if loc := valPGBack.FindStringIndex(v); loc != nil {
+		return loc[1], `\'<masked>\'`
+	}
+	forms := []valueForm{{valPGEsc, whole}, {valPGEscEnd, cut}, {valPGUni, whole}, {valPGUniEnd, cut}}
+	if inside {
+		forms = []valueForm{{valPGEsc2, whole}, {valPGEsc2End, cut}, {valPGUni2, whole}}
+	}
+	for _, f := range forms {
+		if loc := f.re.FindStringIndex(v); loc != nil {
+			return loc[1], f.mask
+		}
 	}
 	return 0, ""
 }
@@ -216,7 +283,7 @@ var (
 )
 
 // markEnds is what may follow a complete mark: the value ended there.
-const markEnds = " \t\r\n,;)\"@}]+"
+const markEnds = " \t\r\n,;)\"@}]+$" // $: a dollar quote's close (a pg_cron script's $cmd$, pgAgent's $code$)
 
 // widen drops the rest of each value an older build's rules masked only in part (see Stored), keeping its mark.
 func widen(s string) string {
@@ -332,9 +399,9 @@ func StoredScript(s string) string {
 // (-P and -K on their tools' lines only) followed by a value that is neither <masked> nor empty, NULL, DEFAULT or a
 // @variable, or text right after a <masked> mark inside the value (the rest of a value the rules read in part).
 func HoldsKey(s string) bool {
-	for _, r := range []maskRule{maskTSQL, maskSqb, maskKV, maskArg, maskArgP, maskArgK, maskSecure} {
+	for _, r := range []maskRule{maskTSQL, maskSqb, maskKV, maskArg, maskArgP, maskArgK, maskPG, maskSecure} {
 		for _, m := range r.name.FindAllStringIndex(s, -1) {
-			if !r.at(s, m) {
+			if !r.at(s, m) || (r.keyIf != nil && !r.keyIf.MatchString(s[m[1]:])) {
 				continue
 			}
 			if keyAfter(s[m[1]:]) {
@@ -350,12 +417,15 @@ func keyAfter(v string) bool {
 	if len(v) > 1 && (v[0] == 'N' || v[0] == 'n') && v[1] == '\'' {
 		v = v[1:]
 	}
-	v = strings.TrimLeft(v, `'["`)
+	if valPGDollar.MatchString(v) {
+		return true // a dollar-quoted value no rule masked (a masked one is written '<masked>')
+	}
+	v = strings.TrimLeft(v, `'["\`)
 	if rest, ok := strings.CutPrefix(v, "<masked>"); ok {
 		if restBracket.MatchString(rest) {
 			return true // a bracketed value's rest after a cut mark
 		}
-		rest = strings.TrimLeft(rest, `'"]`)
+		rest = strings.TrimLeft(rest, `'"]\`)
 		return rest != "" && !strings.ContainsRune(markEnds, rune(rest[0]))
 	}
 	if v == "" || strings.ContainsRune(markEnds, rune(v[0])) || v[0] == '@' {
@@ -393,10 +463,34 @@ func continued(s string) bool {
 	return t != "" && strings.ContainsRune("`^\\", rune(t[len(t)-1]))
 }
 
+// dollarBody is the length of the PostgreSQL dollar-quoted string ($tag$ .. $tag$, the tag empty or an identifier)
+// that opens at byte i of s, or 0: none opens there (a $ inside an identifier, such as a$b, opens none) or its
+// closing tag never comes (the text is read on as before).
+func dollarBody(s string, i int) int {
+	if s[i] != '$' || (i > 0 && isIdentByte(s[i-1])) {
+		return 0
+	}
+	tag := valPGDollar.FindString(s[i:])
+	if tag == "" {
+		return 0
+	}
+	j := strings.Index(s[i+len(tag):], tag)
+	if j < 0 {
+		return 0
+	}
+	return len(tag) + j + len(tag)
+}
+
+// isIdentByte: a byte an identifier may hold after its first (a letter, a digit, _ or $).
+func isIdentByte(b byte) bool {
+	return b == '_' || b == '$' || (b >= '0' && b <= '9') || (b|0x20 >= 'a' && b|0x20 <= 'z') || b >= 0x80
+}
+
 // insideLiteral tells, for each byte of s and for its end, whether it lies inside a single-quoted literal as T-SQL
 // reads the text: a quote opens a literal, two quotes inside one stand for a quote, the next lone quote closes it;
 // outside a literal a -- comment (to the line's end), a /* */ comment, a [name] (]] inside) and a "name" hide the
-// quotes they hold.
+// quotes they hold; a PostgreSQL dollar-quoted body ($tag$ .. $tag$) is read on its own, the reading after it going on
+// where it was.
 func insideLiteral(s string) []bool {
 	const (
 		code = iota
@@ -416,6 +510,15 @@ func insideLiteral(s string) []bool {
 		}
 		switch st {
 		case code:
+			if n := dollarBody(s, i); n > 0 {
+				// a PostgreSQL dollar-quoted body is read on its own (its quotes are its own text's), then the
+				// reading goes on after the closing tag where it was
+				tag := valPGDollar.FindString(s[i:])
+				body := insideLiteral(s[i+len(tag) : i+n-len(tag)])
+				copy(in[i+len(tag):i+n-len(tag)], body)
+				i += n - 1
+				continue
+			}
 			switch {
 			case c == '\'':
 				st = literal

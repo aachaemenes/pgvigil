@@ -136,6 +136,41 @@ func TestMaskJobTextExact(t *testing.T) {
 		{`sqlcmd -S s -U u -Password pw34 -Q "SELECT 1"`, `sqlcmd -S s -U u -Password <masked> -Q "SELECT 1"`},
 		{`osql -S s -U u -Pwd pw35`, `osql -S s -U u -Pwd <masked>`},
 		{`osql -S s -U u -Pw0rd36 -Q x`, `osql -S s -U u -P<masked> -Q x`},
+		// PostgreSQL's role password (S16b): [ ENCRYPTED ] PASSWORD and a string constant, no '=' (CREATE / ALTER ROLE
+		// and USER), and a user mapping's password option; each string constant form, inside another string doubled
+		{`ALTER ROLE app PASSWORD 'pgr1'`, `ALTER ROLE app PASSWORD '<masked>'`},
+		{`ALTER ROLE app WITH LOGIN ENCRYPTED PASSWORD 'pgr2' VALID UNTIL 'infinity'`, `ALTER ROLE app WITH LOGIN ENCRYPTED PASSWORD '<masked>' VALID UNTIL 'infinity'`},
+		{`CREATE ROLE r LOGIN PASSWORD $$pgr3$$`, `CREATE ROLE r LOGIN PASSWORD '<masked>'`},
+		{`CREATE USER u PASSWORD $pw$pgr4'x$pw$; SELECT 1`, `CREATE USER u PASSWORD '<masked>'; SELECT 1`},
+		{`ALTER USER app PASSWORD E'pgr5\'x' VALID UNTIL 'infinity'`, `ALTER USER app PASSWORD '<masked>' VALID UNTIL 'infinity'`},
+		{`ALTER ROLE app PASSWORD U&'pgr6\0061'`, `ALTER ROLE app PASSWORD '<masked>'`},
+		{`SELECT dblink_exec('dbname=postgres', 'ALTER ROLE app PASSWORD ''pgr7''')`, `SELECT dblink_exec('dbname=postgres', 'ALTER ROLE app PASSWORD ''<masked>''')`},
+		{`CREATE USER MAPPING FOR app SERVER s OPTIONS (user 'app', password 'pgr8')`, `CREATE USER MAPPING FOR app SERVER s OPTIONS (user 'app', password '<masked>')`},
+		{`ALTER USER MAPPING FOR app SERVER s OPTIONS (SET password 'pgr9')`, `ALTER USER MAPPING FOR app SERVER s OPTIONS (SET password '<masked>')`},
+		{`alter role app password 'pgr10'`, `alter role app password '<masked>'`},
+		{`ALTER ROLE app PASSWORD 'pgr11cut`, `ALTER ROLE app PASSWORD '<masked>`},
+		{`CREATE ROLE r PASSWORD $$pgr12cut`, `CREATE ROLE r PASSWORD '<masked>`},
+		// readable: PASSWORD NULL, a parameter or a format placeholder, prose, a T-SQL PASSWORD = (its own rule)
+		{`ALTER ROLE app PASSWORD NULL; COMMENT ON ROLE app IS 'reset the password monthly'`, `ALTER ROLE app PASSWORD NULL; COMMENT ON ROLE app IS 'reset the password monthly'`},
+		{`EXECUTE format('ALTER ROLE %I PASSWORD %L', r, v_pw); PREPARE p AS SELECT 1 WHERE $1 = 'password'`, `EXECUTE format('ALTER ROLE %I PASSWORD %L', r, v_pw); PREPARE p AS SELECT 1 WHERE $1 = 'password'`},
+		{`ALTER ROLE app PASSWORD $1`, `ALTER ROLE app PASSWORD $1`},
+		// S16b's review: a quote right after the word is the end of the string around it, never a value (B2)
+		{`DO $$BEGIN EXECUTE 'ALTER ROLE app PASSWORD ' || quote_literal(v_pw); END$$`, `DO $$BEGIN EXECUTE 'ALTER ROLE app PASSWORD ' || quote_literal(v_pw); END$$`},
+		{`DO $$BEGIN EXECUTE 'ALTER ROLE app PASSWORD ' || quote_literal(v_pw) || ' VALID UNTIL ''2027-01-01'''; END$$`, `DO $$BEGIN EXECUTE 'ALTER ROLE app PASSWORD ' || quote_literal(v_pw) || ' VALID UNTIL ''2027-01-01'''; END$$`},
+		{`RAISERROR('wrong password ', 16, 1); PRINT 'done'`, `RAISERROR('wrong password ', 16, 1); PRINT 'done'`},
+		{"Write-Host -Message 'Type the password '\nRead-Host -AsSecureString\nWrite-Host done", "Write-Host -Message 'Type the password '\nRead-Host -AsSecureString\nWrite-Host done"},
+		// an escape or Unicode string inside another string, quotes doubled; a backslash-escaped one; a dollar body's
+		// lone quote does not turn the reading round (3)
+		{`SELECT dblink_exec('dbname=postgres', 'ALTER ROLE app PASSWORD E''pgr13''')`, `SELECT dblink_exec('dbname=postgres', 'ALTER ROLE app PASSWORD ''<masked>''')`},
+		{`SELECT dblink_exec('dbname=postgres', 'ALTER ROLE app PASSWORD U&''pgr14''')`, `SELECT dblink_exec('dbname=postgres', 'ALTER ROLE app PASSWORD ''<masked>''')`},
+		{`DO $d$BEGIN EXECUTE E'ALTER ROLE app PASSWORD \'pgr15\''; END$d$`, `DO $d$BEGIN EXECUTE E'ALTER ROLE app PASSWORD \'<masked>\''; END$d$`},
+		{`ALTER ROLE a PASSWORD $pw$x'y$pw$; ALTER ROLE b PASSWORD E'pgr16'`, `ALTER ROLE a PASSWORD '<masked>'; ALTER ROLE b PASSWORD '<masked>'`},
+		// a user mapping's sslpassword, its option name in double quotes, a comment before the value, a cut after a
+		// backslash (4, 5)
+		{`CREATE USER MAPPING FOR app SERVER s OPTIONS (user 'app', sslpassword 'pgr17')`, `CREATE USER MAPPING FOR app SERVER s OPTIONS (user 'app', sslpassword '<masked>')`},
+		{`CREATE USER MAPPING FOR app SERVER s OPTIONS ("password" 'pgr18')`, `CREATE USER MAPPING FOR app SERVER s OPTIONS ("password" '<masked>')`},
+		{`ALTER ROLE app PASSWORD /* new */ 'pgr19'`, `ALTER ROLE app PASSWORD /* new */ '<masked>'`},
+		{`ALTER ROLE app PASSWORD E'pgr20\`, `ALTER ROLE app PASSWORD '<masked>`},
 		// unchanged: no key given, a variable, NULL
 		{`EXECUTE dbo.DatabaseBackup @Databases = 'USER_DATABASES', @EncryptionKey = NULL, @Verify = 'Y'; EXECUTE dbo.DatabaseBackup @EncryptionKey = @key`, `EXECUTE dbo.DatabaseBackup @Databases = 'USER_DATABASES', @EncryptionKey = NULL, @Verify = 'Y'; EXECUTE dbo.DatabaseBackup @EncryptionKey = @key`},
 		{`EXECUTE master..sqbutility 1032, N'db1', N'D:\b', 'D', '24h', NULL`, `EXECUTE master..sqbutility 1032, N'db1', N'D:\b', 'D', '24h', NULL`},
@@ -195,6 +230,10 @@ func TestStored(t *testing.T) {
 		{`EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = [/b/db1.sqb] WITH PASSWORD = <masked>,rgk16] "'`, `EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = [/b/db1.sqb] WITH PASSWORD = <masked> "'`},
 		{`EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] WITH PASSWORD = <masked>;rgk17] "'`, `EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] WITH PASSWORD = <masked> "'`},
 		{`EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] WITH PASSWORD = <masked>)rgk18] "'`, `EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] WITH PASSWORD = <masked> "'`},
+		// a role's password the older rules did not know (S16b), as a pg_cron job's script holds it
+		{`ALTER ROLE app PASSWORD 'pgst1'`, `ALTER ROLE app PASSWORD '<masked>'`},
+		{`SELECT cron.schedule('j', '0 0 1 1 *', 'ALTER ROLE app PASSWORD ''pgst2''');`, `SELECT cron.schedule('j', '0 0 1 1 *', 'ALTER ROLE app PASSWORD ''<masked>''');`},
+		{`SELECT cron.schedule('j', '0 0 1 1 *', 'CREATE ROLE r PASSWORD $$pgst3$$');`, `SELECT cron.schedule('j', '0 0 1 1 *', 'CREATE ROLE r PASSWORD ''<masked>''');`},
 	}
 	for _, c := range cases {
 		if got := Stored(c.in); got != c.want {
@@ -270,6 +309,10 @@ func TestHoldsKey(t *testing.T) {
 		`extractor.exe -F x -K <masked>sk3'''' -E db1`,
 		`Server=s;Password=sk4;`,
 		`WITH PASSWORD = <masked>,sk5] "'`,
+		`ALTER ROLE app PASSWORD 'sk6'`,
+		`CREATE ROLE r PASSWORD $$sk7$$`,
+		`SELECT cron.schedule('j', '0 0 1 1 *', E'ALTER ROLE app PASSWORD E''sk8\\''x''')`,
+		`DO $d$BEGIN EXECUTE E'ALTER ROLE app PASSWORD \'sk9\''; END$d$`,
 	} {
 		if !HoldsKey(s) {
 			t.Errorf("no key found in %q", s)
@@ -291,6 +334,12 @@ func TestHoldsKey(t *testing.T) {
 		`PASSWORD = <masked> "'`,
 		`sqlcmd -S s -U u -Password <masked> -Q x`,
 		`SELECT dblink_exec('host=h password=<masked>', 'VACUUM t')`,
+		`COMMENT ON ROLE app IS 'reset the password monthly'`,
+		`ALTER ROLE app PASSWORD NULL`,
+		`ALTER ROLE app PASSWORD '<masked>' VALID UNTIL 'infinity'`,
+		`EXECUTE format('ALTER ROLE %I PASSWORD %L', r, v_pw)`,
+		"    command  => $cmd$ALTER ROLE app PASSWORD '<masked>'$cmd$,\n    database => 'postgres',",
+		`DO $d$BEGIN EXECUTE E'ALTER ROLE app PASSWORD \'<masked>\''; END$d$`,
 	} {
 		if HoldsKey(s) {
 			t.Errorf("a key found in %q", s)
@@ -312,5 +361,21 @@ func TestStoredValue(t *testing.T) {
 	}
 	if got := StoredValue(`Server=s;Password=sv2;`); got != `Server=s;Password=<masked>;` {
 		t.Errorf("masked: %q", got)
+	}
+	// a pg_cron script holding an escape string inside an escape string: no rule reads it, the guard does (S16b)
+	esc := `SELECT cron.schedule('j', '0 0 1 1 *', E'ALTER ROLE app PASSWORD E''sv3\\''x''')`
+	if got := StoredValue(esc); got != GuardedText {
+		t.Errorf("an escape string inside a string: %q", got)
+	}
+	inPrefilter(t, esc)
+	// the scripts the collector writes (cronScript, agentJobScript): a command's password last in its dollar-quoted
+	// body is masked and the script stays readable, never guarded (S16b's review, B1)
+	cron := "-- pg_cron job: j\nSELECT cron.schedule_in_database(\n    job_name => 'j',\n    schedule => '0 0 1 1 *',\n    command  => $cmd$ALTER ROLE app PASSWORD 'sv4'$cmd$,\n    database => 'postgres',\n    username => 'postgres',\n    active   => true);\n"
+	if got, want := StoredValue(cron), strings.Replace(cron, "'sv4'", "'<masked>'", 1); got != want {
+		t.Errorf("a pg_cron script:\n got %q\nwant %q", got, want)
+	}
+	agent := "DO $pgagent$\nDECLARE jid integer;\nBEGIN\nINSERT INTO pgagent.pga_jobstep (jstjobid, jstname, jstenabled, jstkind, jstdbname, jstconnstr, jstonerror, jstcode)\nVALUES (\n    jid,\n    'one',\n    true,\n    's',\n    'postgres',\n    '',\n    'f',\n    $code$ALTER ROLE app PASSWORD 'sv5'$code$);\nEND\n$pgagent$;\n"
+	if got, want := StoredValue(agent), strings.Replace(agent, "'sv5'", "'<masked>'", 1); got != want {
+		t.Errorf("a pgAgent script:\n got %q\nwant %q", got, want)
 	}
 }
