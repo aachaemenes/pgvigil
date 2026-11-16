@@ -23,7 +23,9 @@
 #     the function it adds a rule and ends it (2 log rows by 'proof-r'). A login IN ROLE pgvigil_alerter runs
 #     alert_rules_run (an integer back), may INSERT into alert_rule_state, may not INSERT into alert_rules and is
 #     refused import_alert_rule (permission denied for function). A login IN ROLE pgvigil_reader reads
-#     metric_catalog (67 rows: 0085's 62 and 0166's five Collection rows) and is refused by alert_rules_run (permission denied for table alert_rule_state).
+#     metric_catalog - every row the owner reads, at least 67 (0085's 62 and 0166's five Collection rows; a release join adds
+#     families, so the count is the owner's, never a fixed number) - and is refused by alert_rules_run (permission denied
+#     for table alert_rule_state).
 #     [Run 1 graded: the reader was refused, on the table alert_rule_fired: the statement that stores the state ends
 #     in the insert into alert_rule_fired, and that is the table the refusal names. Expected from run 2: permission
 #     denied for one of the sender's two tables, alert_rule_state or alert_rule_fired.]
@@ -208,7 +210,8 @@ out=$(as "$COL" -c "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"u
 [[ $(as "$ALR" -c "select has_table_privilege('pgvigil.alert_rule_state', 'INSERT'), has_table_privilege('pgvigil.alert_rules', 'INSERT')") == "t|f" ]] || fail "R: the alerter's rights on alert_rule_state / alert_rules"
 out=$(as "$ALR" -c "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"ui_user\":\"x\",\"rule_id\":$RRULE}')")
 [[ $out == *"permission denied for function"* ]] || fail "R: the alerter called import_alert_rule: $out"
-[[ $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog") == 67 ]] || fail "R: the reader's metric_catalog: $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog")"
+RCAT=$(as "$RDR" -c "select count(*) from pgvigil.metric_catalog"); OCAT=$(q "select count(*) from pgvigil.metric_catalog")
+[[ $OCAT =~ ^[0-9]+$ && $RCAT == "$OCAT" && $OCAT -ge 67 ]] || fail "R: the reader's metric_catalog: $RCAT rows, the owner's $OCAT (want the same, and at least 0085's 62 and 0166's five)"
 out=$(as "$RDR" -c "select pgvigil.alert_rules_run(now())")
 [[ $out == *"permission denied for table alert_rule_state"* || $out == *"permission denied for table alert_rule_fired"* ]] || fail "R: the reader ran alert_rules_run: $out"
 [[ $(as "$RDR" -c "select has_table_privilege('pgvigil.alert_rule_state', 'INSERT'), has_table_privilege('pgvigil.alert_rule_fired', 'INSERT')") == "f|f" ]] || fail "R: the reader may write the sender's tables"
