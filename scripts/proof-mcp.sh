@@ -8,7 +8,7 @@
 #  (1) the owner's login is refused before any message is read: exit 3, "refused", nothing on stdout; (1b) a
 #      pgvigil_reader login that also holds DELETE on one repository table is refused the same way;
 #  (2) initialize answers protocolVersion 2025-06-18 (the client's) with serverInfo.name pgvigil and a tools capability;
-#  (3) tools/list names exactly the nine tools, each with an object inputSchema and readOnlyHint true;
+#  (3) tools/list names exactly the ten tools, each with an object inputSchema and readOnlyHint true;
 #  (4) every tool answers once, isError false, with its own content: fleet_summary lists the demo's instances,
 #      instance_findings has checks, blocking_chain has a snapshot, top_statements has rows, plan_findings by id has
 #      the plan, table_state has the table, storage_forecast has volumes; statement_everywhere echoes its hash and
@@ -92,11 +92,11 @@ ok "(2) initialize: protocol 2025-06-18, server pgvigil, tools capability"
 # (3) tools/list
 r=$(rpc 2 tools/list '{}')
 names=$(jq -r '[.result.tools[].name]|sort|join(",")' <<<"$r")
-want="blocking_chain,find_statements,fleet_summary,instance_findings,plan_findings,statement_everywhere,storage_forecast,table_state,top_statements"
+want="alert_history,blocking_chain,find_statements,fleet_summary,instance_findings,plan_findings,statement_everywhere,storage_forecast,table_state,top_statements"
 [[ "$names" == "$want" ]] || fail "(3) tools: $names, want $want"
 jq -e 'all(.result.tools[]; .inputSchema.type=="object" and .annotations.readOnlyHint==true and .annotations.destructiveHint==false)' <<<"$r" >/dev/null \
   || fail "(3) a tool without an object schema or the read-only marks"
-ok "(3) tools/list: the nine tools, each read-only with an object schema"
+ok "(3) tools/list: the ten tools, each read-only with an object schema"
 
 # (4) every tool once
 r=$(tool fleet_summary '{}'); [[ $(jq -r '.result.isError' <<<"$r") == false ]] || fail "(4) fleet_summary: $r"

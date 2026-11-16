@@ -4,7 +4,7 @@
 
 ## What it is and what it is not
 
-- Read only. Nine tools, each a read of the repository; none writes, cancels, terminates, runs EXPLAIN or takes SQL. A call to any other tool name, or to any method beyond `initialize`, `ping`, `tools/list` and `tools/call` (the empty `resources/list`, `resources/templates/list` and `prompts/list` answer too), is refused with a JSON-RPC error.
+- Read only. Ten tools, each a read of the repository; none writes, cancels, terminates, runs EXPLAIN or takes SQL. A call to any other tool name, or to any method beyond `initialize`, `ping`, `tools/list` and `tools/call` (the empty `resources/list`, `resources/templates/list` and `prompts/list` answer too), is refused with a JSON-RPC error.
 - The same SQL as the web UI's JSON API. Every tool is answered by the API's own handler, called inside the process: the parameter checks, the queries and the results are the API's. The session is the UI's read-only one (`default_transaction_read_only`, a 15 s statement timeout, a 2 s lock timeout).
 - A reader login only. Before it reads a message, `pgvigil mcp` checks its login and refuses (exit 3) a superuser, the schema's owner or any login with CREATE on it, a login that may change a repository table, the collector (`pgvigil_collector`) and the UI's password door (`pgvigil_auth`). The login is IN ROLE `pgvigil_reader` and nothing else.
 - The query_text policy holds. A tool returns the statement text the repository holds, which is what each instance's `query_text` setting (full, normalized or none) let the collector keep; the door never reads a monitored server.
