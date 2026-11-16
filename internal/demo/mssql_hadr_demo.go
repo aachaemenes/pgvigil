@@ -57,7 +57,7 @@ func (g *Gen) mssqlAgDemoRows(t time.Time) []Row {
 		r := Row{"kind": "replica", "group_id": demoAgID, "group_name": "ag_sales", "cluster_type": "WSFC", "is_distributed": 0,
 			"is_contained": 0, "backup_preference": "SECONDARY", "db_failover": 1, "primary_replica": p, "replica_server": name,
 			"endpoint_url": "TCP://" + name + ":5022", "availability_mode": mode, "failover_mode": "AUTOMATIC", "seeding_mode": "AUTOMATIC",
-			"secondary_connections": "READ_ONLY", "backup_priority": 50, "session_timeout": 10, "is_local": b2i(local)}
+			"secondary_connections": "READ_ONLY", "primary_connections": "ALL", "backup_priority": 50, "session_timeout": 10, "is_local": b2i(local)}
 		if visible {
 			r["role"], r["connected_state"], r["synchronization_health"], r["operational_state"], r["recovery_health"] = role, "CONNECTED", "HEALTHY", "ONLINE", "ONLINE"
 			r["group_health"] = "HEALTHY"
