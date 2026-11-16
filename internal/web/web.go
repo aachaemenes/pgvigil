@@ -405,7 +405,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/storage_depth", s.MSSQLStorageDepth) // task 407
 	api.HandleFunc("GET /api/mssql/config_checks", s.MSSQLConfigChecks) // task 409
 	api.HandleFunc("GET /api/mssql/config_expect", s.MSSQLConfigExpect) // task 409
-	api.HandleFunc("POST /api/mssql/config_expect", s.MSSQLConfigExpectWrite)
+	s.post(api, "POST /api/mssql/config_expect", needAdmin, s.MSSQLConfigExpectWrite)
 	api.HandleFunc("GET /api/mssql/maintenance", s.MSSQLMaintenance) // task 410
 	api.HandleFunc("GET /api/mssql/dbio", s.MSSQLDBIO)               // task 407
 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
@@ -486,8 +486,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/jobs/running", s.JobsRunning)
 	s.post(api, "POST /api/jobs/actions/stop", needOperator, s.JobStop)
 	s.post(api, "POST /api/jobs/actions/start", needOperator, s.JobStart)
-	api.HandleFunc("POST /api/jobs/actions/enable", s.JobEnable)   // B9c
-	api.HandleFunc("POST /api/jobs/actions/disable", s.JobDisable) // B9c
+	s.post(api, "POST /api/jobs/actions/enable", needOperator, s.JobEnable)   // B9c
+	s.post(api, "POST /api/jobs/actions/disable", needOperator, s.JobDisable) // B9c
 	api.HandleFunc("GET /api/jobs/steps", s.JobSteps)
 	api.HandleFunc("GET /api/jobs/exclusions", s.JobExclusions)
 	s.post(api, "POST /api/jobs/exclusions", needAdmin, s.JobExclusions)

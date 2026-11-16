@@ -277,7 +277,7 @@ var (
 	pageRawPost  = regexp.MustCompile(`method:\s*['"]POST['"]`)
 	pageOtherRts = map[string][]string{
 		"actions.ts":         {"actions/cancel", "actions/terminate"},
-		"jobs_running.ts":    {"jobs/actions/stop", "jobs/actions/start"},
+		"jobs_running.ts":    {"jobs/actions/stop", "jobs/actions/start", "jobs/actions/enable", "jobs/actions/disable"},
 		"plan.ts":            {"plans/explain", "plans/analyze"},
 		"admin_instances.ts": {"admin/instances", "admin/sources", "admin/proposals"},
 		"migrate.ts":         {"admin/dbadash_moves"},

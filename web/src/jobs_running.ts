@@ -115,8 +115,8 @@ function actButton(ctx: Ctx, st: RunningState, kind: Kind, why: string, r: Row, 
     b.title = buttonTitles[kind];
     b.addEventListener('click', () => { void confirmJobAction(ctx, kind, r, after); });
   }
-  // the role (B24f): a job's stop or start needs operator - after the instance's own reason above
-  return needControl(b, kind === 'job_stop' ? 'jobs/actions/stop' : 'jobs/actions/start');
+  // the role (B24f): a job's stop, start, enable or disable needs operator - after the instance's own reason above
+  return needControl(b, kind === 'job_stop' ? 'jobs/actions/stop' : kind === 'job_start' ? 'jobs/actions/start' : kind === 'job_enable' ? 'jobs/actions/enable' : 'jobs/actions/disable');
 }
 
 // pgJobActionCol is the PostgreSQL jobs grid's column: Run now on a pgAgent job (pg_cron has no run-now call) and (B9c)
@@ -199,7 +199,7 @@ export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () =
   const go = el('button', { type: 'submit', disabled: '' }, `${labels[kind]} ${job}`);
   // the role (B24f, review-18 b24f2 B1): below the need the dialog reads, and go stays off with the role's words
   // whatever is typed - the tree's job menu opens it too
-  const role = dialogRole(go, kind === 'job_stop' ? 'jobs/actions/stop' : 'jobs/actions/start');
+  const role = dialogRole(go, kind === 'job_stop' ? 'jobs/actions/stop' : kind === 'job_start' ? 'jobs/actions/start' : kind === 'job_enable' ? 'jobs/actions/enable' : 'jobs/actions/disable');
   let busy = false;   // one action per dialog: a keystroke after the send never arms the button again
   const check = () => { if (!role.why) go.disabled = busy || typed.value.trim() !== job || reason.value.trim().length < 5; };
   reason.addEventListener('input', check);

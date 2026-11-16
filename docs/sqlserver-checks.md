@@ -85,7 +85,7 @@ root, `tag:<name>`, instance) and its source.
   is dropped) gets a short list: the list says so, a server it does not show is kept, and no linked server visible
   reads 'not read', never 'no linked server'. The test follows the tag in the instance's configuration, the one the
   collector reads.
-- The expected values are set in the page's editor (the same seat as the threshold writes: a signed-in user on a
+- The expected values are set in the page's editor (the same seat as the threshold writes: a signed-in admin on a
   server with the actions door's audit login); a change ends the live row and writes its successor, so who set what
   and when stays. `pgvigil.mssql_config_expect_in_force(instance)` gives the value in force per kind and key with
   where it was set.

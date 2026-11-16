@@ -9,6 +9,7 @@ import { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 import { changedText } from './diff';
 import { loadAckSafe, offBeside, pageNote, seatWhy } from './ack';
+import { needControl } from './needs';
 
 // task 154: every change with valid from / to (/api/config/changes), the fleet pivot with the odd value marked
 // (/api/mssql/config/fleet) and the trace flags with their history (/api/mssql/traceflags). Each part that its
@@ -150,7 +151,8 @@ async function configChecksBox(ctx: Ctx): Promise<HTMLElement> {
       else if (ex instanceof Error) offBeside(b, `the expected values were not read: ${ex.message}`);
       else b.addEventListener('click', () => expectDialog(ctx, keys, rowsOf(ex.tags), rowsOf(ex.in_force), preset,
         () => void draw().then(() => box.querySelector<HTMLElement>('h3')?.focus())));
-      return b;
+      // the role (review B #1): an expected value needs admin - after the seat's own reason above
+      return needControl(b, 'mssql/config_expect');
     };
     const cols: Col[] = [
       { key: 'check_name', label: 'check' }, { key: 'object', label: 'on' }, { key: 'value' }, { key: 'expected' },

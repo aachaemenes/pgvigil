@@ -112,6 +112,8 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/mssql/actions/verify/run` | operator | RESTORE VERIFYONLY of a backup (reads its files on the server; makes no database) |
 | `POST /api/jobs/actions/stop` | operator | stop a job |
 | `POST /api/jobs/actions/start` | operator | start a job |
+| `POST /api/jobs/actions/enable` | operator | enable a PostgreSQL job (pgAgent, or pg_cron on the actions login's own job) |
+| `POST /api/jobs/actions/disable` | operator | disable a PostgreSQL job (pgAgent, or pg_cron on the actions login's own job) |
 | `POST /api/ack` | operator | acknowledge, note, mute or black out one instance with an end (wider or open-ended: admin) |
 | `POST /api/ack/end` | operator | end an acknowledgement |
 | `POST /api/investigations` | operator | ask the site's agent to investigate a finding or answer a question (the agent works through pgvigil mcp) |
@@ -150,6 +152,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/pg/thresholds` | admin | a PostgreSQL threshold |
 | `POST /api/collectionhealth/thresholds` | admin | a Collection Health threshold (a level's own values, or Inherit All) |
 | `POST /api/jobs/thresholds` | admin | a job threshold |
+| `POST /api/mssql/config_expect` | admin | a SQL Server check's expected value at an instance, a tag or the root (set, inherit) |
 | `POST /api/pg/backup_dest` | admin | where a PostgreSQL server's backups go, as a person enters it (beside the value read) |
 | `POST /api/jobs/exclusions` | admin | a job exclusion |
 | `POST /api/mssql/security/config` | admin | a SQL Server security setting (add, end) |
