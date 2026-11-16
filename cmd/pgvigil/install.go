@@ -347,7 +347,9 @@ var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "reports.dsn"
 // nothing but the installer's files: a flat /etc/pgvigil.yaml would hand /etc to the service account
 // and a C:\pgvigil.yaml would rewrite the ACL of C:\.
 func dedicatedFolder(dir, cfgName string) error {
-	if filepath.Base(dir) == "pgvigil" {
+	// a folder named for the hub's or the remote collector's install is that installer's own: install -remote again
+	// over a new binary finds its env file (Linux) or its outbox and state folder (Windows) there
+	if b := filepath.Base(dir); b == "pgvigil" || b == "pgvigil-remote" {
 		return nil
 	}
 	entries, err := os.ReadDir(dir)
