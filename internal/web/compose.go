@@ -138,7 +138,7 @@ func checkPanel(p *PanelSpec, m catalogMetric) error {
 	if _, ok := composeBuckets[p.Bucket]; !ok && p.Bucket != "auto" && p.Bucket != "" {
 		return fmt.Errorf("bucket %q: one of auto, minute, hour, day", p.Bucket)
 	}
-	if p.Bucket == "minute" && !(p.Shape == "over_time" && p.GroupBy == "instance") {
+	if p.Bucket == "minute" && (p.Shape != "over_time" || p.GroupBy != "instance") {
 		return errors.New("a minute bucket only for an over-time panel by instance: across instances read at other times a minute sum saws (auto takes 5 minutes or more)")
 	}
 	switch p.GroupBy {
@@ -315,7 +315,7 @@ func compilePanel(p PanelSpec, m catalogMetric, sc ComposeScope, from, to time.T
 	for _, f := range p.Filters {
 		perDB = perDB || f.Dim == "database"
 	}
-	if perDB && !(sc.Kind == "instances" && len(sc.Instances) == 1) {
+	if perDB && (sc.Kind != "instances" || len(sc.Instances) != 1) {
 		return composed{}, errors.New("a panel by database (grouped or filtered by database) reads one instance: an instances scope of one (the same database name on two instances is two databases)")
 	}
 	if n > composeMaxInstances {
