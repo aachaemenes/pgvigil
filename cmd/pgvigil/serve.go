@@ -30,6 +30,7 @@ import (
 //
 //	pgvigil serve -config pgvigil.yaml [-listen 127.0.0.1:8080] [-dsn env:PGVIGIL_UI_DSN] [-open]
 //	              [-tls-cert pgvigil.crt -tls-key pgvigil.key] [-no-login] [-session-hours 12]
+//	              Windows: [-tls-thumbprint <hex> | -tls-subject <dns name>] [-tls-store LocalMachine\My]   (task B24n)
 //
 // -dsn names the UI's repository login (pgvigil_reader + pgvigil_auth); without it the repository
 // DSN of the config is used. The UI login (pgvigil.ui_users) is on unless -no-login, which a loopback
@@ -42,6 +43,10 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	dsn := fs.String("dsn", "", "UI connection string (or env:NAME / file:path); default the config's repository dsn")
 	tlsCert := fs.String("tls-cert", "", "PEM certificate (with -tls-key): serve HTTPS")
 	tlsKey := fs.String("tls-key", "", "PEM private key (with -tls-cert)")
+	// task B24n: a certificate from the Windows store, its key used where it sits (certstore_windows.go)
+	tlsThumb := fs.String("tls-thumbprint", "", "Windows: serve HTTPS with the certificate of this thumbprint in -tls-store")
+	tlsSubject := fs.String("tls-subject", "", "Windows: serve HTTPS with the newest valid certificate for this DNS name in -tls-store (renewals followed hourly)")
+	tlsStore := fs.String("tls-store", `LocalMachine\My`, "Windows: the certificate store -tls-thumbprint and -tls-subject read")
 	noLogin := fs.Bool("no-login", false, "serve without the UI login (allowed on a loopback listen only)")
 	open := fs.Bool("open", false, "open the UI in an app-mode browser window (Edge or Chrome, its own window) once it listens; the default browser when neither is found")
 	sessionHours := fs.Int("session-hours", 12, "hours a login stays valid")
@@ -87,17 +92,29 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if useTLS && (*tlsCert == "" || *tlsKey == "") {
 		return errors.New("-tls-cert and -tls-key go together")
 	}
+	useStore := *tlsThumb != "" || *tlsSubject != ""
+	if useStore && (useTLS || (*tlsThumb != "" && *tlsSubject != "")) {
+		return errors.New("-tls-thumbprint, -tls-subject and -tls-cert / -tls-key name a certificate each: give one")
+	}
+	useTLS = useTLS || useStore
 	loopback := host == "127.0.0.1" || host == "localhost" || host == "::1"
 	if !loopback {
 		if !useTLS {
-			return fmt.Errorf("a listen on %s is reachable from other machines and needs -tls-cert and -tls-key ('pgvigil cert' writes a self-signed pair)", *listen)
+			return fmt.Errorf("a listen on %s is reachable from other machines and needs -tls-cert and -tls-key ('pgvigil cert' writes a self-signed pair), or on Windows -tls-thumbprint or -tls-subject", *listen)
 		}
 		if *noLogin {
 			return errors.New("-no-login is allowed on a loopback listen (127.0.0.1, localhost, ::1) only")
 		}
 	}
 	var tlsCfg *tls.Config
-	if useTLS {
+	switch {
+	case useStore:
+		get, err := storeServerTLS(ctx, log, *tlsStore, *tlsThumb, *tlsSubject)
+		if err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
+		tlsCfg = &tls.Config{GetCertificate: get, MinVersion: tls.VersionTLS12}
+	case useTLS:
 		pair, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
 		if err != nil {
 			return fmt.Errorf("tls: %w", err)
