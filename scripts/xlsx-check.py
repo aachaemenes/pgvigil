@@ -33,7 +33,9 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
   X6  no pane on any sheet
   X7  each cell's number format is General (id 0 or an empty code), '0', a fixed count of decimals '0.0' .. '0.000000' (a
       column's decimals as its page shows them), '0%', '0.0%', '0.00%', 'yyyy-MM-dd HH:mm' or, for a day alone (a chart's
-      per-day column), 'yyyy-MM-dd'; no unit, text or grouping inside a format
+      per-day column), 'yyyy-MM-dd'; where the page groups a figure's thousands, the same fixed decimals grouped: '#,##0'
+      .. '#,##0.000' (the page's formatting carried; DBA Dash writes General); no unit or text inside a format, no other
+      grouping
   X8  no text cell whose whole value reads as a date-time or a day, ISO or a page's locale form ('10/3/2026, 21:05:00',
       '13/11/2026 21:05:35', '13.11.2026, 21:05:35', '13. 11. 2026 21:05:35', '2026. 11. 13. 21:05:35', 12-hour; a day
       '2026-11-11', '13-11-2026', '2026/11/13'): a date is a number under its format; a column's empty value may be text; a
@@ -75,6 +77,7 @@ DATE_FMT = 'yyyy-MM-dd HH:mm'
 DAY_FMT = 'yyyy-MM-dd'
 FORMATS_OK = {'General', '', '0', '0%', '0.0%', '0.00%', DATE_FMT, DAY_FMT}
 FIXED = re.compile(r'0(?:\.(0{1,6}))?')        # (X7, X13) a fixed count of decimals, no grouping, no unit
+GROUPED = re.compile(r'#,##0(?:\.(0{1,3}))?')   # (X7, X13) a fixed count of decimals with the thousands grouped, where the page groups
 PERCENT = re.compile(r'0(?:\.(0{1,2}))?%')
 HEAD = ('FF0063A3', 'FFFFFFFF')
 # the named pairs: fill -> the text colours allowed on it
@@ -323,6 +326,9 @@ def shown_number(v, fmt):
     fm = FIXED.fullmatch(fmt or '')
     if fm:
         return '%.*f' % (len(fm.group(1) or ''), x)
+    gm = GROUPED.fullmatch(fmt or '')
+    if gm:
+        return '{:,.{}f}'.format(x, len(gm.group(1) or ''))
     if x == int(x) and abs(x) < 1e11:
         return '%d' % x
     for p in range(10, 0, -1):   # General: at most 11 characters
@@ -334,7 +340,7 @@ def shown_number(v, fmt):
 
 def shown_decimals(v, fmt):
     """(X13) how many decimals Excel draws for a number under its format; None for a date, a day or a format X7 refuses"""
-    m = FIXED.fullmatch(fmt or '') or PERCENT.fullmatch(fmt or '')
+    m = FIXED.fullmatch(fmt or '') or GROUPED.fullmatch(fmt or '') or PERCENT.fullmatch(fmt or '')
     if m:
         return len(m.group(1) or '')
     if fmt not in ('General', ''):
@@ -517,7 +523,7 @@ def check(book, page=None):
             if c['row'] == 1 or c['v'] is None:
                 continue
             fmt = c['xf']['fmt']
-            if fmt not in FORMATS_OK and not FIXED.fullmatch(fmt or '') and c['xf']['fmt_id'] != 0:
+            if fmt not in FORMATS_OK and not FIXED.fullmatch(fmt or '') and not GROUPED.fullmatch(fmt or '') and c['xf']['fmt_id'] != 0:
                 out['X7'].append("'%s'!%s format %s" % (nm, c['ref'], fmt))
             text_cell = c['t'] in ('s', 'inlineStr', 'str')
             if text_cell and DATE_TEXT.match(c['v'] or ''):
@@ -565,7 +571,7 @@ def check(book, page=None):
                 if k > cols[h]:
                     out['X13'].append("'%s'!%s '%s' shows %d decimals (%s under %s), the page %d"
                                       % (sn, c['ref'], h, k, c['v'], c['xf']['fmt'] or 'General', cols[h]))
-                elif k < cols[h] and FIXED.fullmatch(c['xf']['fmt'] or ''):
+                elif k < cols[h] and (FIXED.fullmatch(c['xf']['fmt'] or '') or GROUPED.fullmatch(c['xf']['fmt'] or '')):
                     out['X13'].append("'%s'!%s '%s' shows %d decimals under %s, fewer than the page's %d"
                                       % (sn, c['ref'], h, k, c['xf']['fmt'], cols[h]))
             book.judged[1] += len(seen)
