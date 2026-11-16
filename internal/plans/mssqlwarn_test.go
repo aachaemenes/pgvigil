@@ -177,11 +177,14 @@ func newestStat(t *testing.T, plan string) time.Time {
 		t.Fatal(err)
 	}
 	var last time.Time
-	for _, si := range root.all("StatisticsInfo") {
-		if ts, ok := statTime(si.attr("LastUpdate")); ok && ts.After(last) {
-			last = ts
+	root.walk(func(n *xnode) bool { // the whole document: all() stops at each statement
+		if n.name == "StatisticsInfo" {
+			if ts, ok := statTime(n.attr("LastUpdate")); ok && ts.After(last) {
+				last = ts
+			}
 		}
-	}
+		return true
+	})
 	return last
 }
 
@@ -208,6 +211,18 @@ func codesOf(warns []MSSQLWarning, plan string) []string {
 	return out
 }
 
+// part1 are the codes of D401 (rules part 1); PGVIGIL_WARN_PART=1 checks only these while part 2 is not built.
+var part1 = []string{"implicit_conversions", "blitz_implicit_conversion", "is_key_lookup_expensive", "lookup",
+	"missing_index_count", "missing_index_hint", "function_count", "blitz_scalar_udf", "clr_function_count",
+	"is_computed_filter", "is_computed_scalar", "is_mstvf", "tvf_join", "is_table_variable", "is_cursor",
+	"cursor_not_forward_only", "is_cursor_dynamic", "near_parallel", "is_forced_serial", "is_spool_expensive",
+	"is_spool_more_rows", "is_table_spool_expensive", "is_table_spool_more_rows", "is_sort_expensive",
+	"is_remote_query_expensive", "is_big_spills"}
+
+func checked(code string) bool {
+	return os.Getenv("PGVIGIL_WARN_PART") != "1" || slices.Contains(part1, code)
+}
+
 func TestMSSQLPlanWarnings(t *testing.T) {
 	oracle := readOracle(t)
 	for _, c := range readWarnCases(t) {
@@ -231,17 +246,17 @@ func TestMSSQLPlanWarnings(t *testing.T) {
 				njCodes = append(njCodes, j.Code)
 			}
 			for _, code := range c.raise {
-				if !slices.Contains(got, code) {
+				if checked(code) && !slices.Contains(got, code) {
 					t.Errorf("%s not raised (%s; %s); raised %v", code, c.rows, c.note, got)
 				}
 			}
 			for _, code := range c.not {
-				if slices.Contains(got, code) {
+				if checked(code) && slices.Contains(got, code) {
 					t.Errorf("%s raised but must not be (%s; %s)", code, c.rows, c.note)
 				}
 			}
 			for _, code := range c.nj {
-				if !slices.Contains(njCodes, code) {
+				if checked(code) && !slices.Contains(njCodes, code) {
 					t.Errorf("%s not in the not-judged list %v (%s)", code, njCodes, c.note)
 				}
 			}
@@ -320,7 +335,7 @@ func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 			}
 			got := codesOf(warns, plan)
 			for code, oc := range oracleCols {
-				if _, skip := oracleSkip[code]; skip {
+				if _, skip := oracleSkip[code]; skip || !checked(code) {
 					continue
 				}
 				want := oc.fire(r[oc.col])
