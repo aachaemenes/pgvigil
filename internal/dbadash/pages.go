@@ -278,12 +278,14 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
 }
 
 // pageText names, per page, the columns that carry text a person or an application wrote, by the name DBADash's
-// procedure gives the column (4.24.1 and 4.25.0): true marks a statement's text (the sessions page's batch and its
-// statement, dbo.QueryText's text), false an owner's own words (a job's description, an alert's notification
-// message). Every other column of every page is a figure, a status, a name, a path or DBADash's own words, and is shown
-// as DBADash holds it. A page added to Pages names its text columns here.
+// procedure gives the column (4.24.1 and 4.25.0): true marks a statement's text (the sessions page's batch, its
+// statement and the statement of the session's first cursor: dbo.QueryText's text, by the request's handle and by the
+// cursor's; a cursor without a stored text shows DBADash's words for its properties in that column, which then follow
+// the statement rule too), false an owner's own words (a job's description, an alert's notification message). Every
+// other column of every page is a figure, a status, a name, a path or DBADash's own words, and is shown as DBADash
+// holds it. A page added to Pages names its text columns here.
 var pageText = map[string]map[string]bool{
-	"sessions": {"batch_text": true, "text": true},
+	"sessions": {"batch_text": true, "text": true, "cursor_text": true},
 	"jobs":     {"description": false},
 	"alerts":   {"Notification Message": false},
 }
