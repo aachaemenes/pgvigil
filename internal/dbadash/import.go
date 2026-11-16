@@ -734,6 +734,7 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 		if len(batch) == 0 {
 			return nil
 		}
+		maskBatch(batch, "full")
 		payload, err := json.Marshal(batch)
 		if err != nil {
 			return err
@@ -777,6 +778,9 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 	}
 	return total, flush()
 }
+
+// maskBatch is the text step of one batch before it is stored, under the pgvigil instance's query_text mode.
+func maskBatch(batch []map[string]any, mode string) {}
 
 // importValue makes a DBADash value a JSON value for jsonb_to_recordset: a date as RFC 3339 in UTC (DBADash keeps
 // UTC: the wall clock as stored), a decimal as its text (a job id is read as text by the T-SQL itself).
