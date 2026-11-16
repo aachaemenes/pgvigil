@@ -234,7 +234,7 @@ func TestRemoteIngestDoorOnAStore(t *testing.T) {
 			t.Errorf("%s: %v", n, err)
 			continue
 		}
-		got, err := pgx.CollectRows(rows, pgx.RowTo[[]any])
+		got, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) ([]any, error) { return r.Values() })
 		if err != nil || len(got) != 1 {
 			t.Errorf("%s: %d functions (%v), want 1", n, len(got), err)
 			continue

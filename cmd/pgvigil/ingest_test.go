@@ -138,6 +138,12 @@ func TestIngestCommand(t *testing.T) {
 	if err := os.WriteFile(view, bad, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// FOLD 2 B2: on its first sight it waits out the settle time (a copy may still be running); once the hub has seen it
+	// for longer than gap_wait (the sighting aged here), it is set aside
+	want("a bad checksum, first seen", run("a bad checksum, first seen"), "site "+site+": 0 loaded, 1 already in, 0 set aside, 0 still set aside, 0 late, 0 in conflict, 0 gaps gone past, 1 waiting")
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.remote_sightings SET first_seen = now() - interval '1 hour' WHERE site = $1`, site); err != nil {
+		t.Fatal(err)
+	}
 	want("a bad checksum", run("a bad checksum"), "site "+site+": 0 loaded, 1 already in, 1 set aside, 0 still set aside"+tail)
 	// the file put right: the mark holds until -retry, and the line says the bundle is still set aside
 	if err := os.WriteFile(view, good, 0o600); err != nil {

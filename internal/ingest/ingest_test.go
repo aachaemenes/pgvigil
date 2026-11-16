@@ -368,7 +368,8 @@ func TestRoundChecks(t *testing.T) {
 			d.edit(r, "mssql_activity.ndjson.gz", func(b []byte) []byte { return b[:len(b)/2] })
 			return r
 		}, nil, time.Hour, format.KindShort},
-		{"a collector the site does not list", func(d *drop) format.Ref { return d.write("st1", 1, "mssql_activity", nil) }, map[string][][]byte{"c9": nil}, time.Hour, "none"},
+		// FOLD 2 S5: no longer 'none' - the unlisted collector's folder is marked by name
+		{"a collector the site does not list", func(d *drop) format.Ref { return d.write("st1", 1, "mssql_activity", nil) }, map[string][][]byte{"c9": nil}, time.Hour, "unlisted"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -383,9 +384,12 @@ func TestRoundChecks(t *testing.T) {
 				eq(t, "loaded", h.order, []string(nil))
 				eq(t, "marks", h.markKinds(), []string(nil))
 				eq(t, "waiting", r.Waiting, 1)
-			case "none":
+			case "unlisted":
 				eq(t, "loaded", h.order, []string(nil))
-				eq(t, "marks", h.markKinds(), []string(nil))
+				eq(t, "the unlisted collector's mark", h.markKinds(), []string{"/0:" + KindUnlisted})
+				if len(h.marks) == 1 && !strings.Contains(h.marks[0].Reason, "collector c1") {
+					t.Errorf("the mark names the collector: %q", h.marks[0].Reason)
+				}
 			default:
 				eq(t, "loaded", h.order, []string(nil))
 				eq(t, "the mark", h.markKinds(), []string{"st1/1:" + c.kind})
