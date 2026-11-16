@@ -6,8 +6,9 @@
 -- The blocks sit in a table of their own beside the page's row (the lead's Q1): import_admin_instance is not
 -- redefined again; a remove deletes the row and the blocks go with it (ON DELETE CASCADE). Their shape is the
 -- configuration file's minus log_group and dms (Q3, those stay pgvigil.yaml's): aws {region, profile, cluster,
--- db_instance} on a PostgreSQL row only (an aws: block on SQL Server waits for 390b, Q2), azure {subscription,
--- resource_group, server, cloud} on a SQL Server row of platform azuresqldb only. Nothing secret in either: the
+-- db_instance} on a PostgreSQL row only (Q2; on SQL Server an aws: block is pgvigil.yaml's provider replica door
+-- only, 390b, and a page block never carries replicas), azure {subscription, resource_group, server, cloud} on a SQL
+-- Server row of platform azuresqldb only. Nothing secret in either: the
 -- credentials are the collector host's own SDK chains. These rules are Go's own (config.PageCloudShape), so every
 -- block the store takes passes the merge's shape check.
 --

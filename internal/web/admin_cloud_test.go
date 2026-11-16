@@ -163,7 +163,7 @@ func TestProposalCloud(t *testing.T) {
 		t.Errorf("the switch on, the profile listed: %+v %q", a, note)
 	}
 	if a, z, _ := proposalCloud(awsSrc, "aws:123456789012:us-east-2:instance:ms1", config.EngineSQLServer, "rds", tags); a != nil || z != nil {
-		t.Errorf("an RDS SQL Server proposal got a block: %+v %+v (aws: on SQL Server waits for 390b)", a, z)
+		t.Errorf("an RDS SQL Server proposal got a block: %+v %+v (aws: on SQL Server is pgvigil.yaml's provider replica door only, 390b)", a, z)
 	}
 	ztags := []string{"cloud:azure", "region:usgovvirginia", "resource-group:rg-sql", "subscription:0b1f6471-1bf0-4dda-aec3-111122223333"}
 	a, z, _ = proposalCloud(azSrc, "azure:0b1f6471-1bf0-4dda-aec3-111122223333:sql:srv1/app", config.EngineSQLServer, "azuresqldb", ztags)
