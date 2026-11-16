@@ -32,7 +32,7 @@ func TestPgRoundTripThroughDelay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the proxy's listener: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	p := &delayProxy{target: net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))), delay: 50 * time.Millisecond}
 	go p.serve(ln)
 	// through the proxy, in plain text (the proxy reads the messages), with no fallback past it
@@ -44,7 +44,7 @@ func TestPgRoundTripThroughDelay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect through the proxy: %v", err)
 	}
-	defer conn.Close(context.Background())
+	defer func() { _ = conn.Close(context.Background()) }()
 
 	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
 	if !current.CompareAndSwap(nil, h) {
@@ -95,12 +95,12 @@ func (d *delayProxy) serve(ln net.Listener) {
 }
 
 func (d *delayProxy) pipe(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	s, err := net.Dial("tcp", d.target)
 	if err != nil {
 		return
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	go func() { _, _ = io.Copy(c, s); _ = c.Close() }()
 	var n [4]byte
 	if _, err := io.ReadFull(c, n[:]); err != nil {

@@ -110,7 +110,7 @@ func (d *s3Dest) Upload(ctx context.Context, key, local string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil {
 		return err
@@ -164,7 +164,7 @@ func (d *s3Dest) Get(ctx context.Context, key string) ([]byte, error) {
 		}
 		return nil, err
 	}
-	defer out.Body.Close()
+	defer func() { _ = out.Body.Close() }()
 	return io.ReadAll(out.Body)
 }
 

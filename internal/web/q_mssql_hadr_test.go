@@ -237,7 +237,7 @@ func TestHADRFleetOnAStore(t *testing.T) {
 			return x
 		case string:
 			var f float64
-			fmt.Sscan(x, &f)
+			_, _ = fmt.Sscan(x, &f)
 			return f
 		}
 		return -999

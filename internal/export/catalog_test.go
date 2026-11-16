@@ -72,7 +72,7 @@ func TestCatalogEqualsTheCensus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	r := csv.NewReader(f)
 	r.Comma, r.LazyQuotes = '\t', true
 	lines, err := r.ReadAll()

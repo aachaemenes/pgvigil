@@ -362,11 +362,11 @@ func (fw *fileWriter) finish() ([]OutputFile, error) {
 // abort drops what was written (a read that failed part way).
 func (fw *fileWriter) abort() {
 	if fw.f != nil {
-		fw.f.Close()
-		os.Remove(fw.f.Name())
+		_ = fw.f.Close()
+		_ = os.Remove(fw.f.Name())
 	}
 	for _, d := range fw.done {
-		os.Remove(d.local)
+		_ = os.Remove(d.local)
 	}
 	fw.w, fw.f, fw.done = nil, nil, nil
 }

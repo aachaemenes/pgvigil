@@ -70,7 +70,7 @@ func (d *blobDest) Upload(ctx context.Context, key, local string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = d.c.UploadFile(ctx, d.container, d.root+key, f, &azblob.UploadFileOptions{BlockSize: 16 << 20, Concurrency: 2})
 	return err
 }
@@ -96,7 +96,7 @@ func (d *blobDest) Get(ctx context.Context, key string) ([]byte, error) {
 		}
 		return nil, err
 	}
-	defer out.Body.Close()
+	defer func() { _ = out.Body.Close() }()
 	return io.ReadAll(out.Body)
 }
 

@@ -16,11 +16,11 @@ func lockFile(path string) (release func(), held bool, err error) {
 		return nil, false, err
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) {
 			return nil, true, nil
 		}
 		return nil, false, err
 	}
-	return func() { unix.Flock(int(f.Fd()), unix.LOCK_UN); f.Close() }, false, nil
+	return func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN); _ = f.Close() }, false, nil
 }
