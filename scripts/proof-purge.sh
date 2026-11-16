@@ -12,8 +12,9 @@
 # older than 30 days here) and leaves the three current-month partitions; a second run removes 0.
 # Then Query Store's retention (0088): 'ok   Query Store retention: plans 1,3 | queries 1,3,4 | recommendation T1 kept,
 # the rest gone' (the cases in the script). Then the whole list: no partitioned parent of the schema unnamed by purge() (or mssql_running_purge(), the day
-# partitions of mssql_requests); an old-month partition made for every other parent, all dropped by purge -days 30; the
-# reader holds EXECUTE on none of the eight owner-only functions: 'ok   every partitioned parent named by purge(); ...'.
+# partitions of mssql_requests, or an hours table of pgvigil.hours_retention, 0139, which its own function drops at its
+# own age); an old-month partition made for every other parent, all dropped by purge -days 30, the hours tables' kept;
+# the reader holds EXECUTE on none of the eight owner-only functions: 'ok   every partitioned parent named by purge() ...'.
 # Last, past OID 100,000 (the 22008 fault of 2026-11-14): the cluster's OID counter is pushed past 100,000 (large objects
 # made and removed at once) and a table is made whose TOAST table is named pg_toast_<six digits> ending in no month
 # (13-99 or 00); twice - under the plan the database picks, then with the database set to hash joins and scans only -
@@ -82,27 +83,37 @@ qsleft=$(q "select coalesce((select string_agg(plan_id::text, ',' order by plan_
 echo "ok   Query Store retention: plans 1,3 | queries 1,3,4 | recommendation T1 kept, the rest gone"
 
 # the whole list: every partitioned parent of the schema is named by purge() or mssql_running_purge() (the day
-# partitions of mssql_requests); an old-month partition of every other parent is dropped by purge -days 30; the
-# reader may execute none of the owner-only functions
+# partitions of mssql_requests), or is an hours table of pgvigil.hours_retention (0139: its own function, called from
+# purge()'s last block, drops its months at its own age - purge()'s text names none of them); an old-month partition of
+# every other parent is dropped by purge -days 30, an hours table's (100 days old, under its 730) is kept; the reader may
+# execute none of the owner-only functions
+hours="select h.table_name from pgvigil.hours_retention h"
+[[ $(q "select to_regclass('pgvigil.hours_retention') is not null") == t ]] || hours="select null::text where false"
 unnamed=$(q "select coalesce(string_agg(p.relname, ',' order by p.relname), '') from pg_class p join pg_namespace n on n.oid = p.relnamespace
-  where n.nspname = 'pgvigil' and p.relkind = 'p'
+  where n.nspname = 'pgvigil' and p.relkind = 'p' and p.relname not in ($hours)
     and position(quote_literal(p.relname) in pg_get_functiondef('pgvigil.purge(int)'::regprocedure)) = 0
     and position(quote_literal(p.relname) in pg_get_functiondef('pgvigil.mssql_running_purge(int)'::regprocedure)) = 0")
 [ -z "$unnamed" ] || fail "partitioned parents purge() does not name: $unnamed"
-nparents=$(q "select count(*) from pg_class p join pg_namespace n on n.oid = p.relnamespace where n.nspname = 'pgvigil' and p.relkind = 'p' and p.relname <> 'mssql_requests'")
+nhours=$(q "select count(*) from pg_class p join pg_namespace n on n.oid = p.relnamespace where n.nspname = 'pgvigil' and p.relkind = 'p' and p.relname in ($hours)")
+nparents=$(q "select count(*) from pg_class p join pg_namespace n on n.oid = p.relnamespace where n.nspname = 'pgvigil' and p.relkind = 'p' and p.relname <> 'mssql_requests' and p.relname not in ($hours)")
 q "select count(pgvigil.ensure_month_partition(p.relname, now() - interval '100 days')) from pg_class p join pg_namespace n on n.oid = p.relnamespace
   where n.nspname = 'pgvigil' and p.relkind = 'p' and p.relname <> 'mssql_requests'" >/dev/null
-made=$(q "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'pgvigil' and c.relispartition and c.relname like '%\_$old'")
+made=$(q "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent
+  where n.nspname = 'pgvigil' and c.relispartition and c.relname like '%\_$old' and p.relname not in ($hours)")
 [ "$made" = "$nparents" ] || fail "old-month partitions made: $made of $nparents parents"
 "$BIN" purge -config "$CFG" -days 30 >/dev/null
-left=$(q "select coalesce(string_agg(c.relname, ',' order by c.relname), '') from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'pgvigil' and c.relispartition and c.relname like '%\_$old'")
+left=$(q "select coalesce(string_agg(c.relname, ',' order by c.relname), '') from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent
+  where n.nspname = 'pgvigil' and c.relispartition and c.relname like '%\_$old' and p.relname not in ($hours)")
 [ -z "$left" ] || fail "old-month partitions purge -days 30 left: $left"
+kept=$(q "select count(*) from pg_class c join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent join pg_namespace n on n.oid = p.relnamespace
+  where n.nspname = 'pgvigil' and c.relname like '%\_$old' and p.relname in ($hours)")
+[ "$kept" = "$nhours" ] || fail "an hours table's 100-day-old partition: $kept of $nhours kept by purge -days 30 (their own age is longer)"
 owner_only="'apply_roles', 'purge', 'ensure_month_partition', 'mssql_running_purge', 'mssql_ensure_day_partition', 'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge'"
 found=$(q "select count(distinct proname) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname in ($owner_only)")
 [ "$found" = "8" ] || fail "owner-only functions found: $found of 8"
 granted=$(q "select coalesce(string_agg(distinct proname, ','), '') from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname in ($owner_only) and has_function_privilege('pgvigil_reader', p.oid, 'EXECUTE')")
 [ -z "$granted" ] || fail "the reader may execute owner-only functions: $granted"
-echo "ok   every partitioned parent named by purge(); $nparents old-month partitions made and dropped; the reader holds none of the 8 owner-only functions"
+echo "ok   every partitioned parent named by purge() (or an hours table: $nhours); $nparents old-month partitions made and dropped, the hours tables' $nhours kept; the reader holds none of the 8 owner-only functions"
 
 # past OID 100,000: a TOAST table pg_toast_<six digits> whose last two digits are no month must never reach a month parse
 lo=$(q "select lo_create(0)"); q "select lo_unlink($lo)" >/dev/null
