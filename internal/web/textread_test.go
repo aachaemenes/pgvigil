@@ -27,6 +27,8 @@ var storedText = map[string][]string{
 	"mssql_live_plan": {"plan_xml"}, "mssql_statement_text": {"statement"}, "mssql_waiting_tasks": {"statement"},
 	"mssql_versionstore_latest": {"holder_statement"}, "mssql_versionstore_sample": {"holder_statement"},
 	"vacuum_xmin_holders": {"detail"}, "pi_sql": {"digest", "full_text"},
+	// the XE captures' waits and warning samples keep the statement the event carried (0162_mssql_xe_captures.sql)
+	"mssql_xe_waits": {"statement"}, "mssql_xe_warning_samples": {"statement"},
 	// a session SET's text and value: a custom setting's value can carry an application's data (full only, as captured)
 	"session_sets": {"query", "value"},
 	// a finding's value and detail: the checks that quote a statement (internal/textnow's findText) carry stored text,
