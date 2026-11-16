@@ -26,8 +26,8 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
-	"github.com/aachaemenes/pgvigil/internal/repo"
 	"github.com/aachaemenes/pgvigil/internal/secrets"
+	"github.com/aachaemenes/pgvigil/internal/store"
 )
 
 // Prefix starts the name of every SQL Server collection.
@@ -535,7 +535,7 @@ func rowValue(dbType string, v any) any {
 // under RunTimeout; every repository write gets its own repoTimeout on a context the run's deadline (and a
 // shutdown's cancel) does not cut, so a run that timed out is recorded as an error instead of leaving the
 // previous ok row in place.
-func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) (res collect.Result) {
+func RunOnce(ctx context.Context, log *slog.Logger, r store.Store, in config.Instance, name string) (res collect.Result) {
 	c, ok := Get(name)
 	if !ok {
 		return collect.Result{Err: fmt.Errorf("unknown collection %q; known: %v", name, Names())}

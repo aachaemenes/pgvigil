@@ -21,8 +21,8 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/platform"
-	"github.com/aachaemenes/pgvigil/internal/repo"
 	"github.com/aachaemenes/pgvigil/internal/secrets"
+	"github.com/aachaemenes/pgvigil/internal/store"
 )
 
 // Row is one collected record, column name to value.
@@ -185,7 +185,7 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 }
 
 // RunOnce runs one collection against one instance and stores the rows.
-func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) (res Result) {
+func RunOnce(ctx context.Context, log *slog.Logger, r store.Store, in config.Instance, name string) (res Result) {
 	c, ok := Get(name)
 	if !ok {
 		return Result{Err: fmt.Errorf("unknown collection %q; known: %v", name, Names())}

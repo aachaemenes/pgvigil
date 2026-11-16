@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
-	"github.com/aachaemenes/pgvigil/internal/repo"
+	"github.com/aachaemenes/pgvigil/internal/store"
 )
 
 // The HA/DR, Agent jobs and backups collections (mssql_ag, mssql_mirroring, mssql_logshipping, mssql_replication,
@@ -155,7 +155,7 @@ func stringList(v any) ([]string, error) {
 // StoreHADRThresholds writes an instance's thresholds to the repository before a run of one of the HADRCollections
 // (any other collection: nothing happens). RunOnce calls it with the instance's configuration block; an empty or
 // missing block stores the defaults.
-func StoreHADRThresholds(ctx context.Context, r *repo.Repo, instanceID int, collection string, at time.Time, t map[string]any) error {
+func StoreHADRThresholds(ctx context.Context, r store.Store, instanceID int, collection string, at time.Time, t map[string]any) error {
 	if !HADRCollections[collection] {
 		return nil
 	}

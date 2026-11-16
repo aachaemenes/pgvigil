@@ -25,6 +25,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/repo"
+	"github.com/aachaemenes/pgvigil/internal/store"
 )
 
 // oldLoopsWait bounds the wait for a changed instance's old loops before its new ones start: a cancelled run's last
@@ -289,7 +290,7 @@ func (l *pageLease) release() {
 }
 
 // startInstance starts one goroutine per applicable collection of the instance's engine; it answers how many.
-func startInstance(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config, in config.Instance, wg *sync.WaitGroup) int {
+func startInstance(ctx context.Context, log *slog.Logger, r store.Store, cfg *config.Config, in config.Instance, wg *sync.WaitGroup) int {
 	for _, t := range applicationTags(in) {
 		log.Warn("tag not taken: an application is set on Admin > Applications", "instance", in.Name, "tag", t)
 	}
@@ -329,7 +330,7 @@ func firstStart(iv time.Duration) time.Duration {
 	return 0
 }
 
-func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string, iv time.Duration) {
+func loop(ctx context.Context, log *slog.Logger, r store.Store, in config.Instance, name string, iv time.Duration) {
 	jitter := firstStart(iv)
 	select {
 	case <-ctx.Done():

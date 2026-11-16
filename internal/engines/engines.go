@@ -13,7 +13,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
-	"github.com/aachaemenes/pgvigil/internal/repo"
+	"github.com/aachaemenes/pgvigil/internal/store"
 )
 
 // Spec is one collection as the scheduler needs it.
@@ -93,7 +93,7 @@ func Gated(in config.Instance, name string) (skip bool, why string) {
 }
 
 // RunOnce runs one collection against one instance through its engine's collector package.
-func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) collect.Result {
+func RunOnce(ctx context.Context, log *slog.Logger, r store.Store, in config.Instance, name string) collect.Result {
 	e, ok := EngineOf(name)
 	if !ok {
 		return collect.Result{Err: fmt.Errorf("unknown collection %q; known: %v", name, Names())}

@@ -16,7 +16,7 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/platform"
-	"github.com/aachaemenes/pgvigil/internal/repo"
+	"github.com/aachaemenes/pgvigil/internal/store"
 )
 
 // schemaCollector is the hourly schema snapshot (task 59, DBADash's DDL change tracking): per connectable database,
@@ -362,7 +362,7 @@ func LeadNote(lead, note string) string {
 // runBatched is RunOnce's path for a BatchRunner: each part through the instance's text policy into the import, the
 // collection's log line from the parts' collector_error rows. A part's failed import is the collector's to report (the
 // next parts go on); an error returned by RunBatches fails the run.
-func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string, br BatchRunner,
+func runBatched(ctx context.Context, log *slog.Logger, r store.Store, in config.Instance, name string, br BatchRunner,
 	conn *pgx.Conn, info platform.Info, instanceID int, start time.Time) Result {
 	n, parts := 0, 0 // n: the data rows (the last call's seen and end rows are bookkeeping)
 	status, note := "ok", ""
