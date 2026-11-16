@@ -5,8 +5,15 @@
 # sends the ARN (its test and fixture); q_backups.go and queries.go (sqlInstances) select the holder; backups.ts and fleet.ts (Backup FULL) name it on the other instances;
 # README's backups row. Apply with git apply, before or after q7-aurora-reader-wiring.patch (both touch backups.go, different hunks); rebuild the web bundle at the join;
 # judged by proof-pg-hadr.sh AB-AB9.
+# REBUILT 2026-11-15 for the HA join against rel-ha389-prep d7f98768 (rel-j15dl 72b53713 + the five HA merges + the 0190
+# edits + the Q7 wiring): the old patch refused on the join at 0190 (L11) and web/src/backups.ts (L103). 0190: the
+# header lines sit after the join's own (SLOW-CONNECT, the HA join's purge lines, INVALID DATABASES' two), and the SQL
+# (backup_state.arn, import_backups, backup_cluster_holders, backup_status, backup_rule_hits) follows the join's
+# pg_db_options and the slow-connect wiring at the end of the file - both sides kept whole, every line the old patch
+# added is in. backups.ts: the same change at the join's lines (a three-way apply took it with no conflict). The
+# other seven files: the old hunks at the join's line numbers.
 diff --git c/README.md w/README.md
-index ce7458c5..65263826 100644
+index 745968cf..eaaf8f41 100644
 --- c/README.md
 +++ w/README.md
 @@ -51,7 +51,7 @@ The demo fleet (`pgvigil demo`): the Summary (the instances that need attention
@@ -19,10 +26,10 @@ index ce7458c5..65263826 100644
  | plans | 15 min (pg_store_plans), with the log readers (auto_explain), on demand (EXPLAIN) | `pg_store_plans` where installed: the top 100 plans by total time (skipped with the reason where absent; not proven live: unit-tested on a constructed answer, as no proof builds pg_store_plans); every auto_explain line the two log readers see (`duration: N ms  plan:` in text or JSON) parsed into the same shape; the Plan page's EXPLAIN without execution through the monitoring login (a read-only transaction rolled back; a `$n` statement in the generic form) and, opt-in, EXPLAIN ANALYZE through the instance's `explain_dsn` login (`explain_analyze: true`, `explain_timeout` 30 s by default) inside the actions door: the UI login, a confirmation, every attempt in `actions_log`; the viewer is pev2 | `plans` (a current table, one row per plan key, rows older than the window purged), `plan_findings` (the last 7 days: estimates off by 10x, a sort or hash spilled to disk, a nested loop over a large outer, a filter removing most rows of a large table, a lossy bitmap heap scan, index-only scan heap fetches, JIT time, trigger time, workers planned but not launched, a CTE scanned twice, each with why it matters) |
  | storage | 15 min | the WAL directory (`pg_ls_waldir()`), the tablespaces, the RDS allocated storage with its autoscaling maximum, the Aurora cluster volume (VolumeBytesUsed against 128 TiB); growth from the host volumes, the database and table sizes | `storage_state` current, `storage_sample` partitions, `volume_forecast()` (growth per day over 7 and 30 days, days until full), `database_growth()` (days to double), `table_growth()`, `storage_checks` / `storage_findings` (a volume full within 30 days warns, within 7 is critical) |
 diff --git c/internal/collect/backups.go w/internal/collect/backups.go
-index 23d74b2d..a5ee2816 100644
+index 1eb7bbc0..6ce715d6 100644
 --- c/internal/collect/backups.go
 +++ w/internal/collect/backups.go
-@@ -146,7 +146,7 @@ type backupSnap struct {
+@@ -166,7 +166,7 @@ type backupSnap struct {
  // backupsCloudRows reads the platform's backups: on RDS the instance's retention and restorable time and its
  // snapshots; on Aurora the cluster's (the cluster from the config, else from the instance). Rows:
  // {kind:'cloud', name:<resource id>, resource_kind:'instance'|'cluster', retention_days, latest_restorable_time,
@@ -31,7 +38,7 @@ index 23d74b2d..a5ee2816 100644
  // created_at, allocated_gib, encrypted}, the newest backupSnapshotsKept per type; a failed call is a
  // collector_error row and the parts that answered still land.
  func backupsCloudRows(ctx context.Context, api backupsAPI, kind platform.Kind, id, cluster string) []Row {
-@@ -178,7 +178,7 @@ func backupsCloudRows(ctx context.Context, api backupsAPI, kind platform.Kind, i
+@@ -198,7 +198,7 @@ func backupsCloudRows(ctx context.Context, api backupsAPI, kind platform.Kind, i
  			c := dc.DBClusters[0]
  			out = append(out, Row{"kind": "cloud", "name": cluster, "resource_kind": "cluster", "retention_days": c.BackupRetentionPeriod,
  				"latest_restorable_time": utcPtr(c.LatestRestorableTime), "earliest_restorable_time": utcPtr(c.EarliestRestorableTime),
@@ -67,25 +74,24 @@ index 63301c6d..a6061d4d 100644
        "EngineVersion": "17.5",
        "BackupRetentionPeriod": 1,
 diff --git c/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index aa3316fb..353dfa25 100644
+index 64555667..b82fbb0d 100644
 --- c/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
-@@ -11,6 +11,10 @@
- --   task 177 D14 (0124): the mssql_cpu_findings arm; mssql_counter_sample, mssql_counter_read, mssql_session_summary,
- --     mssql_session_group, mssql_session_tempdb and mssql_activity_read among purge()'s monthly partition parents.
- --   CLOUDSQL C4 (0128): mssql_pool_minute among purge()'s monthly partition parents (an elastic pool's minutes).
+@@ -27,6 +27,10 @@
+ --     on purpose: mssql_repl_hourly (its import keeps a year of an instance's hours), mssql_logship_foreign_logs and
+ --     mssql_logship_errors (current rows of 24 hours, replaced by each read), replication_hourly_dirty (working
+ --     ranges a heal removes). The threshold keys' unit check and import_pg_threshold: at their lines below.
 +--   HA join (rel-hadr-s1, the lead's call #4 on Q7): backup_status (0103's) gains cluster_backups_on and
 +--     backup_rule_hits (0103's) raises 'retention under N days' and 'no snapshot in 24 h' once per Aurora cluster
 +--     (backup_cluster_holders, new: the cluster keyed by its ARN, backup_state.arn; import_backups is 0022's with it),
 +--     at the end of this file.
- -- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
- 
- CREATE OR REPLACE VIEW pgvigil.findings AS
-@@ -593,3 +597,160 @@ BEGIN
-     FROM jsonb_to_recordset(v_items) AS x(event text, finding_key text)
-    WHERE x.event IN ('resolved', 'cleared') AND s.channel = v_chan AND s.finding_key = x.finding_key AND s.cleared_at IS NULL;
+ -- The view is 0110's with the new arms; purge() is 0110's with the new parents and lines; apply_roles() is not here
+ -- (0110's, its owner-only list extended in 0110 itself).
+ --   INVALID DATABASES (rel-invxid): pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
+@@ -892,3 +896,159 @@ BEGIN
+   RETURN jsonb_build_object('outcome', 'done', 'detail', 'set', 'threshold_id', v_new);
  END $$;
-+
+ 
 +-- An Aurora cluster's backups are the cluster's: every instance with an aws: block reads the same cluster (its
 +-- retention and snapshots), so 0103's two cloud rules fired on the writer and again on each reader; now once, on the
 +-- cluster's holder (a stable member: backup_cluster_holders). backup_status is
@@ -273,7 +279,7 @@ index 8c9e412b..f729d27a 100644
         (SELECT CASE WHEN bool_or(h.severity = 'critical') THEN 'critical' WHEN count(*) > 0 THEN 'warning' END
            FROM pgvigil.backup_checks h WHERE h.instance_id = b.instance_id) AS worst,
 diff --git c/internal/web/queries.go w/internal/web/queries.go
-index 40862a0f..a2f6fe82 100644
+index dfba3ff6..03ab53b5 100644
 --- c/internal/web/queries.go
 +++ w/internal/web/queries.go
 @@ -1,6 +1,7 @@
@@ -303,7 +309,7 @@ index 40862a0f..a2f6fe82 100644
                        WHERE x.instance_id = i.instance_id
                        ORDER BY x.snapshot_at DESC LIMIT 1) a ON true
 diff --git c/web/src/backups.ts w/web/src/backups.ts
-index b9cef006..9b58c0b7 100644
+index 1ea4a2d8..5aee88c1 100644
 --- c/web/src/backups.ts
 +++ w/web/src/backups.ts
 @@ -1,7 +1,10 @@
@@ -350,7 +356,7 @@ index b9cef006..9b58c0b7 100644
          ['backup retention', retTxt(s.retention_days)],
          ['backup window (UTC)', String(s.backup_window ?? '-')],
          ['latest restorable time', s.latest_restorable_time == null ? 'none' : `${fmtTime(s.latest_restorable_time)} (${ageTxt(s.restorable_age_s)})`],
-@@ -103,8 +109,9 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
+@@ -111,8 +117,9 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
    let rows = rowsOf(d.instances);
    if (keep) rows = rows.filter(keep);
    const failing = rows.filter(r => r.archiver_failing).length;
@@ -361,8 +367,8 @@ index b9cef006..9b58c0b7 100644
 +  const stale = own.filter(r => r.retention_days != null && (r.newest_snapshot_age_s == null || Number(r.newest_snapshot_age_s) > 86400)).length;
    return el('section', {}, el('h2', {}, 'Backups'),
      el('div', { class: 'tiles' },
-       tile('instances', String(rows.length)),
-@@ -119,9 +126,11 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
+       instTile(rows.length),
+@@ -127,9 +134,11 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
        { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt, cls: (v, r) => v == null ? '' : archiverState(r)[1] },
        { key: 'archive_lag_bytes', label: 'archive lag', num: true, fmt: fmtBytes },
        { key: 'failed_count', label: 'failed', num: true },
@@ -377,7 +383,7 @@ index b9cef006..9b58c0b7 100644
      ], 'No backups read yet.'));
  }
 diff --git c/web/src/fleet.ts w/web/src/fleet.ts
-index 373bc556..f882de04 100644
+index f008f791..2fe842ef 100644
 --- c/web/src/fleet.ts
 +++ w/web/src/fleet.ts
 @@ -297,6 +297,8 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
