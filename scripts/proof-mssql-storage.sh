@@ -390,7 +390,7 @@ fi
 sq "CREATE DATABASE [$DBZ] ON (NAME = pvz_data, FILENAME = 'C:\var\opt\mssql\data\\${DBZ}.mdf') LOG ON (NAME = pvz_log, FILENAME = 'C:\var\opt\mssql\data\\${DBZ}_log.ldf');"; MADE_DBZ=1
 [ "$(sq "SELECT COUNT(*) FROM sys.master_files WHERE database_id = DB_ID('$DBZ') AND physical_name LIKE 'C:\%'")" = 2 ] || fail "Z: the server did not keep the C:\ names: $(sq "SELECT physical_name FROM sys.master_files WHERE database_id = DB_ID('$DBZ')")"
 collect mssql_storage >/dev/null
-GOT_Z=$(q "select f.severity || '|' || f.check_name || '|' || f.object from pgvigil.mssql_storage_findings f where f.instance_id = $iid and f.check_name like '%C: drive%' order by 3")
+GOT_Z=$(q "select f.severity || '|' || f.check_name || '|' || f.object from pgvigil.mssql_storage_findings f where f.instance_id = $iid and f.check_name like '%C: drive%' order by f.object")
 WANT_Z="warning|a user database file on the C: drive|$DBZ: pvz_data
 warning|a user database file on the C: drive|$DBZ: pvz_log"
 [ "$GOT_Z" = "$WANT_Z" ] || { echo "$GOT_Z"; fail "Z: 26 on the server's C: database"; }
@@ -403,7 +403,7 @@ q "select pgvigil.import_mssql_storage($zid, now(), '[
   {\"kind\":\"file\",\"database_id\":8,\"database_name\":\"inblob\",\"database_state\":\"ONLINE\",\"file_id\":1,\"file_name\":\"inblob_data\",\"type_desc\":\"ROWS\",\"physical_name\":\"https://acct.blob.core.windows.net/data/inblob.mdf\",\"size_bytes\":1048576,\"used_read\":0,\"growth_bytes\":0,\"growth_pct\":0},
   {\"kind\":\"file\",\"database_id\":2,\"database_name\":\"tempdb\",\"database_state\":\"ONLINE\",\"file_id\":1,\"file_name\":\"tempdev\",\"type_desc\":\"ROWS\",\"physical_name\":\"C:\\\\tempdb.mdf\",\"size_bytes\":1048576,\"used_read\":0,\"growth_bytes\":0,\"growth_pct\":0}
  ]'::jsonb)" >/dev/null
-GOT_P=$(q "select severity || '|' || check_name || '|' || object || '|' || detail from pgvigil.mssql_storage_findings where instance_id = $zid order by 3")
+GOT_P=$(q "select severity || '|' || check_name || '|' || object || '|' || detail from pgvigil.mssql_storage_findings where instance_id = $zid order by object")
 WANT_P='info|a database file in Azure blob storage|inblob: inblob_data|https://acct.blob.core.windows.net/data/inblob.mdf: in Azure blob storage - its latency and throttling are the storage account'"'"'s
 info|a database file on a network share|onshare: onshare_data|\\fs01\sql\onshare.mdf: on a network share - every read and write crosses the network, and an outage of the share is the database'"'"'s'
 [ "$GOT_P" = "$WANT_P" ] || { echo "$GOT_P"; fail "Z: 148 / 149 on imported rows (and tempdb on C: is not 26's)"; }
