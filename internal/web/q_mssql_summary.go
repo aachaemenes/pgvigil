@@ -61,7 +61,10 @@ WITH inst AS (
   SELECT instance_id, severity, setting, value, detail,
          CASE source WHEN 'mssql_running' THEN 'blocking' WHEN 'mssql_xe' THEN 'events'
                      -- DBA Dash's Log Shipping and Mirroring columns apart from Availability Groups (task P08)
-                     WHEN 'mssql_hadr' THEN CASE WHEN setting LIKE 'log shipping%' THEN 'logship' WHEN setting LIKE 'mirroring%' THEN 'mirroring' ELSE 'availability' END
+                     -- (0143's log shipping findings do not start with 'log shipping': by their words, hadr-s3's W19)
+                     WHEN 'mssql_hadr' THEN CASE WHEN setting LIKE '%log shipping%' OR setting LIKE 'a log-shipped database%'
+                                                      OR setting IN ('log restores are behind', 'a database has been restoring for days') THEN 'logship'
+                                                 WHEN setting LIKE 'mirroring%' THEN 'mirroring' ELSE 'availability' END
                      -- a volume's free space is DBA Dash's Drive Space (task 176); the files and the version store its File Space
                      -- DBA Dash's % Max Size apart (a file at or within one growth of its max size, task P08)
                      WHEN 'mssql_storage' THEN CASE WHEN setting = 'a volume under 10 % free' THEN 'disk' WHEN setting LIKE '%max size%' THEN 'pctmax' ELSE 'filespace' END
