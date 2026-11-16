@@ -98,6 +98,21 @@ GO
 CREATE TABLE dbo.cc_t (id int NOT NULL PRIMARY KEY, k int NOT NULL, c AS dbo.f_scalar(k));
 INSERT dbo.cc_t (id, k) SELECT n, n FROM dbo.nums WHERE n <= 5000;
 GO
+-- a procedure with no parameters reading a local variable: its plan has no ParameterList
+CREATE PROCEDURE dbo.p_unparam AS
+BEGIN
+    DECLARE @x int = 5;
+    SELECT /* case:unparam */ id FROM dbo.big2 WHERE k = @x;
+END;
+GO
+-- a second database with automatic statistics off: a column read there has no statistics
+CREATE DATABASE warnlab2;
+GO
+ALTER DATABASE warnlab2 SET AUTO_CREATE_STATISTICS OFF;
+GO
+CREATE TABLE warnlab2.dbo.nostat_t (id int NOT NULL, v int NOT NULL);
+INSERT warnlab2.dbo.nostat_t (id, v) SELECT n, n % 100 FROM dbo.nums WHERE n <= 10000;
+GO
 
 --@case clean runs=2
 SELECT /* case:clean */ id, v FROM dbo.big WHERE id = 5;
@@ -112,7 +127,7 @@ SELECT /* case:lookup_cheap */ pad, v FROM dbo.big WHERE k = 7;
 --@case rid_lookup runs=2
 SELECT /* case:rid_lookup */ pad FROM dbo.heap_t WHERE k = 3;
 --@case missing_ix runs=2
-SELECT /* case:missing_ix */ id FROM dbo.big2 WHERE v = 12;
+SELECT /* case:missing_ix */ b.id FROM dbo.big2 AS b JOIN dbo.tiny AS t ON t.k = b.k WHERE b.v = 12;
 --@case udf_scalar runs=2
 SELECT /* case:udf_scalar */ dbo.f_scalar(k) AS m FROM dbo.big2;
 --@case udf_clr runs=2
@@ -148,7 +163,7 @@ SELECT /* case:np_d */ MIN(v) FROM dbo.np_t WHERE id <= 230000;
 --@case sort_big runs=2
 SELECT /* case:sort_big */ id, pad FROM dbo.big2 ORDER BY v;
 --@case sort_topn runs=2
-SELECT /* case:sort_topn */ TOP (10) id FROM dbo.big2 ORDER BY v;
+SELECT /* case:sort_topn */ TOP (10) id FROM dbo.big2 WHERE id <= 2000 ORDER BY v;
 --@case idx_spool runs=2
 SELECT /* case:idx_spool */ b.id, x.v FROM dbo.big2 AS b CROSS APPLY (SELECT TOP (1) s.v FROM dbo.spool_src AS s WHERE s.k = b.k ORDER BY s.v DESC) AS x OPTION (LOOP JOIN);
 --@case win_spool runs=2
@@ -193,15 +208,23 @@ SELECT /* case:sort_spill */ id, pad FROM dbo.big ORDER BY pad DESC, v OPTION (M
 SELECT /* case:tf_session */ COUNT(*) FROM dbo.big2 WHERE v = 3 AND k = 2;
 --@case compile_to runs=1 timeout=300
 SELECT /* case:compile_to */ COUNT(*) FROM dbo.j01 AS a01 JOIN dbo.j02 AS a02 ON a02.v = a01.v JOIN dbo.j03 AS a03 ON a03.v = a02.v JOIN dbo.j04 AS a04 ON a04.v = a03.v JOIN dbo.j05 AS a05 ON a05.v = a04.v JOIN dbo.j06 AS a06 ON a06.v = a05.v JOIN dbo.j07 AS a07 ON a07.v = a06.v JOIN dbo.j08 AS a08 ON a08.v = a07.v JOIN dbo.j09 AS a09 ON a09.v = a08.v JOIN dbo.j10 AS a10 ON a10.v = a09.v JOIN dbo.j11 AS a11 ON a11.v = a10.v JOIN dbo.j12 AS a12 ON a12.v = a11.v JOIN dbo.j13 AS a13 ON a13.v = a12.v JOIN dbo.j14 AS a14 ON a14.v = a13.v JOIN dbo.j15 AS a15 ON a15.v = a14.v JOIN dbo.j16 AS a16 ON a16.v = a15.v JOIN dbo.j17 AS a17 ON a17.v = a16.v JOIN dbo.j18 AS a18 ON a18.v = a17.v JOIN dbo.j19 AS a19 ON a19.v = a18.v JOIN dbo.j20 AS a20 ON a20.v = a19.v WHERE a01.w = 1 AND a10.w = 2 AND a20.w = 3 AND a05.fk = a15.fk;
---@case long_compile runs=1 timeout=300
+--@case long_compile runs=1 timeout=240
 --@pre DBCC TRACEON (8780) WITH NO_INFOMSGS;
-SELECT /* case:long_compile */ a01.w, COUNT(*) FROM dbo.j01 AS a01 JOIN dbo.j02 AS a02 ON a02.fk = a01.fk JOIN dbo.j03 AS a03 ON a03.fk = a02.fk JOIN dbo.j04 AS a04 ON a04.fk = a03.fk JOIN dbo.j05 AS a05 ON a05.fk = a04.fk JOIN dbo.j06 AS a06 ON a06.fk = a05.fk JOIN dbo.j07 AS a07 ON a07.fk = a06.fk JOIN dbo.j08 AS a08 ON a08.fk = a07.fk JOIN dbo.j09 AS a09 ON a09.fk = a08.fk JOIN dbo.j10 AS a10 ON a10.fk = a09.fk JOIN dbo.j11 AS a11 ON a11.fk = a10.fk JOIN dbo.j12 AS a12 ON a12.fk = a11.fk JOIN dbo.j13 AS a13 ON a13.fk = a12.fk JOIN dbo.j14 AS a14 ON a14.fk = a13.fk JOIN dbo.j15 AS a15 ON a15.fk = a14.fk JOIN dbo.j16 AS a16 ON a16.fk = a15.fk JOIN dbo.j17 AS a17 ON a17.fk = a16.fk JOIN dbo.j18 AS a18 ON a18.fk = a17.fk WHERE a01.v = 1 AND a09.v = 2 AND a18.v = 3 AND a04.w = a14.w GROUP BY a01.w;
+SELECT /* case:long_compile */ COUNT(*) FROM dbo.j01 AS a01 JOIN dbo.j02 AS a02 ON a02.v = a01.v JOIN dbo.j03 AS a03 ON a03.v = a02.v JOIN dbo.j04 AS a04 ON a04.v = a03.v JOIN dbo.j05 AS a05 ON a05.v = a04.v JOIN dbo.j06 AS a06 ON a06.v = a05.v JOIN dbo.j07 AS a07 ON a07.v = a06.v JOIN dbo.j08 AS a08 ON a08.v = a07.v JOIN dbo.j09 AS a09 ON a09.v = a08.v JOIN dbo.j10 AS a10 ON a10.v = a09.v JOIN dbo.j11 AS a11 ON a11.v = a10.v JOIN dbo.j12 AS a12 ON a12.v = a11.v JOIN dbo.j13 AS a13 ON a13.v = a12.v WHERE a01.w = 1 AND a07.w = 2 AND a13.w = 3 AND a03.fk = a11.fk;
 --@case nonsarg_fn runs=2
 SELECT /* case:nonsarg_fn */ id FROM dbo.big WHERE LEFT(s, 3) = 's12';
 --@case nonsarg_like runs=2
 SELECT /* case:nonsarg_like */ id, s FROM dbo.big WHERE s LIKE '%123';
 --@case nojoin runs=2
-SELECT /* case:nojoin */ COUNT(*) FROM dbo.tiny AS a, dbo.big2 AS b WHERE a.v > 3;
+SELECT /* case:nojoin */ TOP (1000) a.k, b.id FROM dbo.tiny AS a CROSS JOIN dbo.big2 AS b;
+--@case nostat runs=2
+SELECT /* case:nostat */ COUNT(*) FROM warnlab2.dbo.nostat_t WHERE v = 5;
+--@case cte_writes runs=2
+WITH r AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM r WHERE n < 200000) SELECT /* case:cte_writes */ MAX(n) FROM r OPTION (MAXRECURSION 0);
+--@case tspool_hit runs=2
+SELECT /* case:tspool_hit */ b.id, x.v FROM dbo.big2 AS b CROSS APPLY (SELECT TOP (3) s.v FROM dbo.spool_src AS s WHERE s.k = b.k % 50 ORDER BY s.v) AS x WHERE b.id <= 5000 OPTION (LOOP JOIN);
+--@case unparam runs=2
+EXEC /* case:unparam */ dbo.p_unparam;
 --@case ddl_create_index runs=1
 CREATE INDEX /* case:ddl_create_index */ ix_ddl ON dbo.ddl_src (v);
 --@case ddl_drop_index runs=1

@@ -142,12 +142,9 @@ open(dst, "w", encoding="utf-8").write(doc + "\n")
 mark = "case:%s */" % case
 stmts = [e for e in root.iter() if e.tag.split("}")[-1] in ("StmtSimple", "StmtCursor", "StmtCond", "StmtReceive", "StmtUseDb")]
 h = "nohash"
-for e in stmts:
-    if mark in (e.get("StatementText") or ""):
-        for d in e.iter():
-            if d.get("QueryHash"):
-                h = d.get("QueryHash"); break
-        break
+for e in stmts:   # the LAST marked statement with its own QueryHash: a procedure's statement under its EXEC
+    if mark in (e.get("StatementText") or "") and e.get("QueryHash"):
+        h = e.get("QueryHash")
 print("%s %d" % (h, len(stmts)))
 PY
 }
@@ -178,8 +175,27 @@ while read -r name runs to; do
     read -r h3 _ <<< "$(plan_of "$WORK/qs.raw" "$OUT/$name.qs.sqlplan" "$name")"
     [[ $h3 == none || $h3 == unparsed:* ]] || { qs=ok; NQS=$((NQS + 1)); }
   fi
-  echo "case $name: est $est, statements $nstmt, hash $hash, exec $ex x$runs, cache $cache, qs $qs"
-  printf 'case\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$hash" "$nstmt" "est=$est" "exec=$ex" "cache=$cache" "qs=$qs" >> "$OUT/capture-meta.tsv"
+  ph=-
+  if [[ $cache == none ]]; then   # by the batch's text: a cursor (its DMV hash is 0x0000000000000000), DDL, a recompiled plan
+    fb=$(printf '%s\n' "SET NOCOUNT ON; SELECT TOP (1) CONCAT('FB ', CONVERT(varchar(200), qs.plan_handle, 1), ' ', CONVERT(varchar(20), qs.query_hash, 1)) FROM sys.dm_exec_query_stats AS qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st WHERE st.text LIKE N'%case' + N':$name */%' ORDER BY qs.last_execution_time DESC;" \
+      | sqi warnlab 120 2>/dev/null | tr -d '\r' | sed -n 's/^FB //p' | head -1) || true
+    if [[ -n "$fb" ]]; then
+      ph=${fb%% *}; dh=${fb##* }
+      printf '%s\n' "SET NOCOUNT ON; SELECT query_plan FROM sys.dm_exec_text_query_plan($ph, DEFAULT, DEFAULT);" \
+        | sqi warnlab 120 > "$WORK/cache.raw" 2>&1 || true
+      read -r h2 _ <<< "$(plan_of "$WORK/cache.raw" "$OUT/$name.cache.sqlplan" "$name")"
+      [[ $h2 == none || $h2 == unparsed:* ]] || { cache="ok (by text)"; NCACHE=$((NCACHE + 1)); }
+      [[ $hash == 0x* ]] || hash=$dh
+    fi
+  fi
+  if [[ $qs == none ]]; then
+    printf '%s\n' "SET NOCOUNT ON; SELECT TOP (1) p.query_plan FROM sys.query_store_plan AS p JOIN sys.query_store_query AS q ON q.query_id = p.query_id JOIN sys.query_store_query_text AS t ON t.query_text_id = q.query_text_id WHERE t.query_sql_text LIKE N'%case' + N':$name */%' ORDER BY p.last_execution_time DESC;" \
+      | sqi warnlab 120 > "$WORK/qs.raw" 2>&1 || true
+    read -r h3 _ <<< "$(plan_of "$WORK/qs.raw" "$OUT/$name.qs.sqlplan" "$name")"
+    [[ $h3 == none || $h3 == unparsed:* ]] || { qs="ok (by text)"; NQS=$((NQS + 1)); }
+  fi
+  echo "case $name: est $est, statements $nstmt, hash $hash, handle ${ph:0:24}, exec $ex x$runs, cache $cache, qs $qs"
+  printf 'case\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$hash" "$nstmt" "est=$est" "exec=$ex" "cache=$cache" "qs=$qs" "$ph" >> "$OUT/capture-meta.tsv"
 done < "$WORK/cases/list"
 
 # ---- the oracle: sp_BlitzCache 8.34 @ExpertMode = 1, its raw columns ------------------------------------------------
@@ -196,17 +212,22 @@ done
 printf '%s\n' "SET NOCOUNT ON;" \
   "EXEC master.dbo.sp_BlitzCache @ExpertMode = 1, @Top = 1000, @DatabaseName = N'warnlab', @HideSummary = 1, @SortOrder = 'CPU';" \
   "IF OBJECT_ID(N'warnlab.dbo.bc_out') IS NOT NULL DROP TABLE warnlab.dbo.bc_out;" \
-  "SELECT CONCAT(N'BC', NCHAR(9), CONCAT_WS(NCHAR(9), $SEL)) AS line INTO warnlab.dbo.bc_out FROM ##BlitzCacheProcs WHERE SPID = @@SPID AND QueryType = N'Statement';" \
+  "SELECT CONCAT(N'BC', NCHAR(9), CONCAT_WS(NCHAR(9), $SEL)) AS line INTO warnlab.dbo.bc_out FROM ##BlitzCacheProcs WHERE SPID = @@SPID AND (QueryType = N'Statement' OR QueryType LIKE N'Statement (parent%');" \
   | sqi master 1800 > "$WORK/bc.out" 2>&1 || fail "sp_BlitzCache: $(tr -d '\r' < "$WORK/bc.out" | grep -m1 -E 'Msg|rror' | cut -c1-200)"
 printf '%s\n' "SET NOCOUNT ON; SELECT line FROM dbo.bc_out;" | sqi warnlab 120 | tr -d '\r' | sed -n 's/^BC\t//p' > "$WORK/bc.tsv"
 python3 -I - "$OUT/capture-meta.tsv" "$WORK/bc.tsv" "$OUT/blitzcache-8.34.tsv" "$COLS" <<'PY'
 import sys
 meta, raw, dst, cols = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4].split()
-case_of = {}
+ZERO = "0X0000000000000000"
+case_of, case_of_ph = {}, {}
 for ln in open(meta, encoding="utf-8"):
     f = ln.rstrip("\n").split("\t")
-    if f[0] == "case" and f[2].startswith("0x"):
+    if f[0] != "case":
+        continue
+    if f[2].startswith("0x") and f[2].upper() != ZERO:
         case_of[f[2].upper()] = f[1]
+    if len(f) > 8 and f[8].startswith("0x"):
+        case_of_ph[f[8].upper()] = f[1]   # a cursor's rows carry a zero hash: by its plan handle
 rows = [ln.rstrip("\n").split("\t") for ln in open(raw, encoding="utf-8") if ln.strip()]
 matched = 0
 with open(dst, "w", encoding="utf-8") as out:
@@ -214,7 +235,7 @@ with open(dst, "w", encoding="utf-8") as out:
     for r in rows:
         if len(r) != len(cols):
             sys.exit("an oracle row has %d fields, not %d" % (len(r), len(cols)))
-        c = case_of.get(r[0].upper(), "-")
+        c = case_of.get(r[0].upper()) or case_of_ph.get(r[1].upper(), "-")
         matched += c != "-"
         out.write(c + "\t" + "\t".join(r) + "\n")
 print("oracle: %d statement rows, %d matched to a case" % (len(rows), matched))

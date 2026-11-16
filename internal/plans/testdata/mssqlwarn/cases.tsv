@@ -29,7 +29,7 @@ lookup_cheap	cache	ctp=5 now=- rt=-	lookup	is_key_lookup_expensive	-	#27,#176	th
 rid_lookup	cache	ctp=5 now=- rt=-	lookup	-	-	#176	trial: a heap's RID Lookup carries IndexScan Lookup
 missing_ix	cache	ctp=5 now=- rt=-	missing_index_count,missing_index_hint	-	-	#8,#177,#15	an unindexed equality column; the hint names big2 (v) EQUALITY
 udf_scalar	cache	ctp=5 now=- rt=-	function_count,blitz_scalar_udf,is_forced_serial	clr_function_count	-	#31,#179,#26	a non-inlined scalar UDF in the select list; the plan's NonParallelPlanReason
-udf_clr	cache	ctp=5 now=- rt=-	clr_function_count,blitz_scalar_udf	-	-	#32	trial: a hierarchyid method as a CLR function
+udf_clr	cache	ctp=5 now=- rt=-	-	clr_function_count	-	#32	hierarchyid's GetLevel is no CLR UDF in the plan (sp_BlitzCache 8.34 counts 0, capture 1): the CLR hit side needs a user assembly - NOT PROVEN
 udf_filter	cache	ctp=5 now=- rt=-	is_computed_filter,blitz_scalar_udf	-	-	#45	trial: the UDF in a Filter, not pushed into the scan
 udf_computed	cache	ctp=5 now=- rt=-	is_computed_scalar,function_count	-	-	#43	a computed column over the UDF
 mstvf_fixed	cache	ctp=5 now=- rt=-	is_mstvf,tvf_join	-	-	#63,#23	interleaved execution off: the fixed 100-row estimate
@@ -39,31 +39,31 @@ cursor_dynamic	cache	ctp=5 now=- rt=-	is_cursor,cursor_not_forward_only,is_curso
 cursor_ff	cache	ctp=5 now=- rt=-	is_cursor	cursor_not_forward_only,is_cursor_dynamic	-	#10,#12,#13	the near miss: a FAST_FORWARD cursor
 cursor_ff	cache	ctp=5 now=- rt=-	is_paul_white_electric	-	-	#60	trial: a FAST_FORWARD cursor's plan holds a Switch
 cursor_keyset	cache	ctp=5 now=- rt=-	is_paul_white_electric,is_cursor	is_cursor_dynamic	-	#60	trial: a KEYSET cursor's plan holds a Switch
-np_a	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	predicted cost 4.33: under the band 4.5 - 5
-np_b	cache	ctp=5 now=- rt=-	near_parallel	-	-	#16	predicted cost 4.67: in the band
-np_b	cache	ctp=6 now=- rt=-	-	near_parallel	-	#16	the same plan, ctp 6: the band 5.4 - 6
-np_c	cache	ctp=5 now=- rt=-	near_parallel	-	-	#16	predicted cost 4.83: in the band
-np_d	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	predicted cost 5.24: over ctp (a parallel plan)
+np_a	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	measured cost 4.12 (capture 1): under the band 4.5 - 5
+np_b	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	measured cost 4.4466 (capture 1; predicted 4.67): under 4.5
+np_d	cache	ctp=6 now=- rt=-	-	near_parallel	-	#16	the in-band plan (4.8717), ctp 6: the band 5.4 - 6
+np_c	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	measured cost 4.491 (capture 1; predicted 4.83): under 4.5
+np_d	cache	ctp=5 now=- rt=-	near_parallel	-	-	#16	measured cost 4.8717, serial (capture 1; predicted 5.24 and parallel): in the band
 sort_big	cache	ctp=5 now=- rt=-	is_sort_expensive	-	-	#44	a full sort of 50,000 wide rows: cost >= 2, the sort >= half
 sort_topn	cache	ctp=5 now=- rt=-	-	is_sort_expensive	-	#44	the near miss: a TOP 10 sort, cost under 2
 idx_spool	cache	ctp=5 now=- rt=-	is_spool_expensive	-	-	#55	trial: an eager index spool on an unindexed heap, cost > ctp / 5 = 1
 idx_spool	cache	ctp=500 now=- rt=-	-	is_spool_expensive	-	#55	the same plan, ctp 500: cost not > 100
 idx_spool	cache	ctp=5 now=- rt=exec:1,rows:1	is_spool_more_rows	-	-	#56	spool rows >= 1 / 1
 idx_spool	cache	ctp=5 now=- rt=exec:1,rows:1000000000	-	is_spool_more_rows	-	#56	spool rows < 1e9 / 1
-win_spool	cache	ctp=5 now=- rt=-	is_table_spool_expensive	-	-	#57	a row-mode windowed SUM: Segment + Table Spool (Lazy Spool)
+win_spool	cache	ctp=5 now=- rt=-	-	is_table_spool_expensive	-	#57	its lazy spool's IO * CPU * rows * rebinds is 0 (sp_BlitzCache's table_spool_cost 0, capture 1): the near miss
 win_spool	cache	ctp=500 now=- rt=-	-	is_table_spool_expensive	-	#57	the same plan, ctp 500
 win_spool	cache	ctp=5 now=- rt=exec:1,rows:1	is_table_spool_more_rows	-	-	#58	spool rows * rebinds >= 1
 win_spool	cache	ctp=5 now=- rt=exec:1,rows:1000000000000	-	is_table_spool_more_rows	-	#58	not >= 1e12
 remote_all	cache	ctp=5 now=- rt=-	is_remote_query_expensive	-	-	#28	trial: a loopback linked server, the whole statement remote
 remote_small	cache	ctp=5 now=- rt=-	-	is_remote_query_expensive	-	#28	trial: a 10-row remote table beside a 300,000-row local scan (remote under 5 %)
-row_goal	cache	ctp=5 now=- rt=-	is_row_goal	-	-	#61	trial: an EXISTS semi join's row goal
+row_goal	cache	ctp=5 now=- rt=-	-	is_row_goal	-	#61	the trial's EXISTS became a hash semi join with no row goal (capture 1): the near miss
 stale_hit	cache	ctp=5 now=+8d rt=-	stale_stats	-	-	#53	200,000 rows changed since a NORECOMPUTE statistic
 stale_hit	cache	ctp=5 now=- rt=-	-	stale_stats	stale_stats	#53	no clock: not judged
 stale_hit	cache	ctp=5 now=+6d rt=-	-	stale_stats	-	#53	6 days: not 7
 stale_low	cache	ctp=5 now=+8d rt=-	-	stale_stats	-	#53	the near miss: 50,000 changed
-bad_est	cache	ctp=5 now=- rt=bc	is_bad_estimate,unparameterized_query	-	-	#59,#7	a local variable on a skewed column: density estimate about 67 rows, 197,000 returned; trial: no ParameterList, an '@' column
+bad_est	cache	ctp=5 now=- rt=bc	is_bad_estimate	unparameterized_query	-	#59,#7	a local variable on a skewed column: density estimate about 67 rows, 197,000 returned; sp_BlitzCache 8.34 does not call the batch unparameterized either (capture 1)
 adaptive	cache	ctp=5 now=- rt=-	is_adaptive	-	-	#54	trial: a columnstore build side, a seekable rowstore probe
-back_scan	cache	ctp=5 now=- rt=-	backwards_scan	-	-	#38	TOP ... ORDER BY id DESC
+back_scan	cache	ctp=5 now=- rt=-	backwards_scan,is_row_goal	-	-	#38,#61	TOP ... ORDER BY id DESC: a backward scan with a row goal
 heap_scan	cache	ctp=5 now=- rt=-	is_table_scan	-	-	#37	a heap's Table Scan
 forced_ix	cache	ctp=5 now=- rt=-	forced_index	-	-	#39	WITH (INDEX (ix_big_k))
 cs_rowmode	cache	ctp=5 now=- rt=-	columnstore_row_mode	-	-	#42	DISALLOW_BATCH_MODE on a columnstore scan
@@ -75,7 +75,7 @@ ddl_drop_index	est	ctp=5 now=- rt=-	index_dml	-	-	#49	DROP INDEX
 ddl_create_table	est	ctp=5 now=- rt=-	table_dml	-	-	#50	CREATE TABLE
 ddl_drop_table	est	ctp=5 now=- rt=-	table_dml	-	-	#50	DROP TABLE (StatementType DROP OBJECT: trial)
 slow_udf	cache	ctp=5 now=- rt=bc	low_cost_high_cpu	-	-	#51	a looping scalar UDF: a near-zero cost, over 5 s of CPU per run
-sort_spill	cache	ctp=5 now=- rt=bc	select_with_writes	-	-	#69	trial: a sort under the minimum grant spills over 1,024 pages written
+sort_spill	cache	ctp=5 now=- rt=bc	-	select_with_writes	-	#69	a sort spill is not a logical write: 5 pages written, 19,936 spilled (capture 1)
 sort_spill	cache	ctp=5 now=- rt=exec:1,writes:1024.9	-	select_with_writes	-	#69	the integer part 1024 is not > 1024
 sort_spill	cache	ctp=5 now=- rt=exec:1,writes:1025	select_with_writes	-	-	#69	1025 > 1024
 tf_session	cache	ctp=5 now=- rt=-	trace_flags_session	-	-	#29	trial: DBCC TRACEON (9481, 4199) in the session, listed in the plan's TraceFlags
@@ -83,4 +83,8 @@ compile_to	est	ctp=5 now=- rt=-	compile_timeout	long_compile	-	#2,#66	trial: a 2
 long_compile	est	ctp=5 now=- rt=-	long_compile	-	-	#66	trial: trace flag 8780 (no timeout) on another 20-table join compiles over 5 s
 nonsarg_fn	cache	ctp=5 now=- rt=-	is_nonsargable	-	-	#65	LEFT() on an indexed column
 nonsarg_like	cache	ctp=5 now=- rt=-	is_nonsargable	-	-	#65	LIKE with a leading wildcard
-nojoin	cache	ctp=5 now=- rt=-	relop_warnings	-	-	#36	trial: an old-style join with no join predicate (NoJoinPredicate)
+nojoin	cache	ctp=5 now=- rt=-	relop_warnings	-	-	#36	a CROSS JOIN with no aggregate (capture 1's aggregate was pushed under the join: no warning)
+nostat	cache	ctp=5 now=- rt=-	relop_warnings	-	-	#36	trial: a column with no statistics (AUTO_CREATE_STATISTICS OFF in warnlab2)
+cte_writes	cache	ctp=5 now=- rt=bc	select_with_writes	-	-	#69	trial: a recursive CTE's stack spool writes over 1,024 pages (not an eager index spool or a lazy table spool)
+tspool_hit	cache	ctp=5 now=- rt=-	is_table_spool_expensive	-	-	#57	trial: a correlated lazy table spool under nested loops, IO * CPU * rows * rebinds >= cost / 4
+unparam	cache	ctp=5 now=- rt=-	unparameterized_query	-	-	#7	trial: a procedure with no parameters reads a local variable: no ParameterList, an '@' column
