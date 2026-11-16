@@ -17,6 +17,7 @@ import { lineChart } from './chart';
 import { fmtMetric } from './alert_rules';
 import { exportButtons } from './export';
 import { loadAckSafe, AckData, offBeside, writeButton } from './ack';
+import { needControl } from './needs';
 import { whatIsThis } from './sqlview';
 import { withMark } from './own';
 
@@ -340,8 +341,8 @@ function dismissBar(door: AckData, key: string, dismissed: Row | undefined, inst
   const said = el('span', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const bar = el('div', { class: 'seg' });
   // by the alert's own instance: on a demo serve the door writes for the demo's instances and for no other
-  if (dismissed) bar.append(writeButton(door, 'Undismiss', 'Undismiss this alert', () => { void dismissEnd(key, said, redraw); }, { instance: instanceId, name }));
-  else bar.append(writeButton(door, 'Dismiss', 'Dismiss this alert with a reason', () => dismissDialog([key], redraw), { instance: instanceId, name }));
+  if (dismissed) bar.append(writeButton(door, 'Undismiss', 'Undismiss this alert', () => { void dismissEnd(key, said, redraw); }, { instance: instanceId, name, route: 'alerts/dismiss' }));
+  else bar.append(writeButton(door, 'Dismiss', 'Dismiss this alert with a reason', () => dismissDialog([key], redraw), { instance: instanceId, name, route: 'alerts/dismiss' }));
   return el('div', {}, bar, said);
 }
 
@@ -366,7 +367,7 @@ export function dismissDialog(keys: string[], after: () => void) {
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const sel = el('select', { 'aria-label': 'reason' }, ...dismissReasons.map(r => el('option', { value: r }, r)), el('option', { value: '' }, 'another reason ...'));
   const other = el('input', { type: 'text', maxlength: '500', 'aria-label': 'another reason', style: 'width:100%' });
-  const ok = el('button', { type: 'submit' }, 'Dismiss'), no = el('button', { type: 'button' }, 'Back');
+  const ok = needControl(el('button', { type: 'submit' }, 'Dismiss'), 'alerts/dismiss'), no = el('button', { type: 'button' }, 'Back');
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   // a typed reason wins over the list's pick: the text box is always there to be typed in
   const reason = () => (other.value.trim() || sel.value).trim();

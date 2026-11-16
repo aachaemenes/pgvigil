@@ -26,6 +26,7 @@ import { badge, cellText, copyText, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmt
 import { reloadTree } from './tree';
 import { loadThresholds, thresholdsDialog } from './mssql_jobs';
 import { confirmJobAction, runningState } from './jobs_running';
+import { markNeed, routeWhy } from './needs';
 import { ackDialog, ackWhy, loadAckSafe } from './ack';
 import { pageConfigureSchedule, pagePauseResume, PageCollections } from './tree_settings';
 import { goDuration } from './settings_model'; // pgvigil.yaml's units: s, m and h (never d)
@@ -444,13 +445,15 @@ function executeJob(n: Extract<TNode, { kind: 'job' }>, back: HTMLElement | null
     } catch (e) { body.replaceChildren(errorBox(e)); return; }
     const job = jobs.find(r => String(r.job_id) === n.job && String(r.scheduler) === n.scheduler) ?? { job_id: n.job, scheduler: n.scheduler, job_name: n.name };
     const run = rowsOf(st.running).find(r => String(r.job_id) === n.job && String(r.scheduler) === n.scheduler);
-    const start = el('button', { type: 'button' }, 'Start'), stop = el('button', { type: 'button' }, 'Stop');
+    const start = markNeed(el('button', { type: 'button' }, 'Start'), 'jobs/actions/start'), stop = markNeed(el('button', { type: 'button' }, 'Stop'), 'jobs/actions/stop');
     // an off Start or Stop: aria-disabled, described by the popup's own line that says why (offP, below the buttons)
     const offP = el('p', { class: 'meta' });
     const why = (b: HTMLButtonElement, reason: string) => { offControl(b, reason, offP); b.classList.add('tm-off'); };
     const startWhy = n.scheduler !== 'pgagent' ? 'pg_cron runs a job at its schedule only: it has no run-now call'
-      : job.active === false ? 'the job is disabled: pgAgent runs no disabled job' : !st.actions?.job_start?.on ? (st.actions?.job_start?.reason || 'job actions are off for this instance') : '';
-    const stopWhy = !run ? 'the job is not running at the newest read' : !st.actions?.job_stop?.on ? (st.actions?.job_stop?.reason || 'job actions are off for this instance') : '';
+      : job.active === false ? 'the job is disabled: pgAgent runs no disabled job' : !st.actions?.job_start?.on ? (st.actions?.job_start?.reason || 'job actions are off for this instance')
+      : routeWhy('jobs/actions/start') ?? '';   // the role (B24f, review-18 b24f2 B1), after the server's own reasons
+    const stopWhy = !run ? 'the job is not running at the newest read' : !st.actions?.job_stop?.on ? (st.actions?.job_stop?.reason || 'job actions are off for this instance')
+      : routeWhy('jobs/actions/stop') ?? '';
     const after = () => { status.textContent = 'Sent. Reading the job again...'; void draw(); };
     if (startWhy) why(start, startWhy); else start.addEventListener('click', () => { void confirmJobAction(ctx, 'job_start', { ...job, job_name: job.job_name ?? n.name }, after); });
     if (stopWhy) why(stop, stopWhy); else stop.addEventListener('click', () => { void confirmJobAction(ctx, 'job_stop', { ...run!, job_name: run!.job_name ?? n.name }, after); });

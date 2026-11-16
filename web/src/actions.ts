@@ -9,6 +9,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtTime, grid } from './ui';
 import { offBeside } from './ack';
+import { dialogRole, needControl } from './needs';
 
 // note: the page's one visible sentence where Cancel and Terminate are off for the WHOLE instance (every row's buttons
 // share that reason and point at it: the page that builds the grid sets it); a row's own reason stands beside its buttons
@@ -49,7 +50,8 @@ export function actionsCol(ctx: Ctx, st: ActionsState, after: () => void): Col {
           b.title = kind === 'cancel' ? 'pg_cancel_backend: stop the running statement, keep the session' : 'pg_terminate_backend: end the session (its open transaction rolls back)';
           b.addEventListener('click', () => confirmAction(ctx, kind, r, after));
         }
-        return b;
+        // the role (B24f): a cancel or a terminate needs operator - after the instance's or the row's own reason
+        return needControl(b, kind === 'cancel' ? 'actions/cancel' : 'actions/terminate');
       };
       return el('span', { style: 'white-space:nowrap' }, mk('cancel', 'Cancel'), mk('terminate', 'Terminate'), ...(own ? [' ', own] : []));
     },
@@ -62,9 +64,11 @@ function confirmAction(ctx: Ctx, kind: 'cancel' | 'terminate', r: Row, after: ()
   const reason = el('textarea', { rows: '3', maxlength: '500', 'aria-label': 'reason', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
   const typed = el('input', { type: 'text', inputmode: 'numeric', 'aria-label': 'type the pid to confirm', placeholder: pid, autocomplete: 'off' });
   const go = el('button', { type: 'submit', disabled: '' }, kind === 'cancel' ? `Cancel pid ${pid}` : `Terminate pid ${pid}`);
+  // the role (B24f, review-18 b24f2 B1): the dialog's own check backs the button that opened it
+  const role = dialogRole(go, kind === 'cancel' ? 'actions/cancel' : 'actions/terminate');
   const no = el('button', { type: 'button' }, 'Back');
   const msg = el('p', { class: 'meta' });
-  const check = () => { go.disabled = typed.value.trim() !== pid || reason.value.trim().length < 5; };
+  const check = () => { if (!role.why) go.disabled = typed.value.trim() !== pid || reason.value.trim().length < 5; };
   reason.addEventListener('input', check);
   typed.addEventListener('input', check);
   const what = kind === 'cancel'
@@ -76,12 +80,13 @@ function confirmAction(ctx: Ctx, kind: 'cancel' | 'terminate', r: Row, after: ()
     el('p', { class: 'meta' }, `${String(r.usename ?? '')} on ${String(r.datname ?? '')}, ${String(r.application_name ?? '')} from ${String(r.client ?? '')}; session started ${fmtTime(r.backend_start)}.`),
     el('label', {}, 'Reason', el('br'), reason), el('br'),
     el('label', {}, `Type the pid ${pid} to confirm `, typed), el('br'),
-    msg, el('div', { style: 'margin-top:.6rem' }, go, ' ', no));
+    role.note, msg, el('div', { style: 'margin-top:.6rem' }, go, ' ', no));
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:34rem' }, form);
   const close = () => { dlg.close(); dlg.remove(); };
   no.addEventListener('click', close);
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
+    if (role.why) return;   // off is off: an Enter in a field submits the form too
     go.disabled = true;
     msg.textContent = 'Sending...';
     try {

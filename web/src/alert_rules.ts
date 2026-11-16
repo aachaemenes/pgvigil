@@ -13,13 +13,15 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { fleet, inTagScope, tagsOf, tagWords, writtenTag } from './fleet';
 import { Ctx, rangeLabel, window_ } from './router';
 import { whatIsThis } from './sqlview';
-import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, showMenu } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, showMenu } from './ui';
 import { offBeside } from './ack';
 import { subNoun } from './metricfam';
+import { Can, markNeed, needControl, routeWhy } from './needs';
 
 // note: the page's one visible sentence where rules cannot be written here - every off control of the page shares that
 // reason and points at it (the page that draws the sentence sets it); without one an off control says the reason beside itself
-export interface RulesDoor { writable: boolean; reason?: string; user: string; note?: HTMLElement }
+// can: what the session's role may do, as the server read it for this answer (B24f): an alert rule needs admin
+export interface RulesDoor { writable: boolean; reason?: string; user: string; note?: HTMLElement; can?: Can | null }
 interface RulesData extends RulesDoor {
   rules?: Table | null; state?: Table | null; log?: Table | null; catalog?: Table | null; sender?: Table | null;
   inforce?: Table | null; inforce_note?: string;
@@ -166,11 +168,11 @@ function starterButton(door: RulesDoor, after: () => void, tag?: string): HTMLEl
 
 // ruleButton: a button that opens the rule dialog; where rules cannot be written here it is off with the reason in
 // words on the page (the page's sentence, door.note, or beside itself)
-export function ruleButton(door: RulesDoor, label: string, aria: string, open: () => void): HTMLButtonElement {
+export function ruleButton(door: RulesDoor, label: string, aria: string, open: () => void, route: 'alertrules' | 'alertrules/end' = 'alertrules'): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
   if (!door.writable) offBeside(b, door.reason || 'alert rules are read only here', door.note);
   else b.addEventListener('click', open);
-  return b;
+  return needControl(b, route, { can: door.can });   // the role (B24f): an alert rule needs admin
 }
 
 // ruleDialog: the one form a rule is made or edited through
@@ -325,27 +327,32 @@ export async function ruleDialog(o: RuleDialog) {
     r ? 'Saving ends this rule and writes its successor (the old row stays with who ended it and when). The alert sender judges the new rule from its next pass.'
       : 'The alert sender judges the rule from its next pass; a firing rule is sent through the alert channels like any finding. A tag or an instance rule overrides a wider rule on the same metric.',
     'Save', () => post<RuleResult>('alertrules', body()), o.after, fields,
-    // a read-only server shows the form (a starter's values can be read anywhere) and says why Save is off
-    () => o.door.writable ? invalid() : `a server where alert rules can be written (${o.door.reason ?? 'read only here'})`,
-    [metricSel, warn, crit, mins, scope, tagSel, instSel, band, zone, tagTicks]);   // the ticks' change events bubble to their box
+    // a read-only server shows the form (a starter's values can be read anywhere) and says why Save is off; below admin
+    // formDialog says the role's words (a starter's values are read by every role, Save is the admin's)
+    () => !o.door.writable ? `a server where alert rules can be written (${o.door.reason ?? 'read only here'})` : invalid(),
+    [metricSel, warn, crit, mins, scope, tagSel, instSel, band, zone, tagTicks], { can: o.door.can, serverOff: !o.door.writable });   // the ticks' change events bubble to their box
 }
 
 // formDialog: a modal with what the write does, its fields, Save / Back, and the server's answer in place. invalid
 // says what Save still needs ('' = nothing): the form shows it, so a disabled Save is never unexplained. One dialog
 // makes one write: after a save the button stays off (a change typed into the still-open form would otherwise be a
 // second rule), and it is off while a save is on its way.
+// at: the route Save posts to, the answer's 'can' and whether the server takes no rule write at all (its own reason in
+// invalid() then comes first): below admin Save is off the B7 way with the role's words (review-18 b24f2 S5)
 function formDialog(title: string, what: string, go: string, run: () => Promise<RuleResult>, after: () => void,
-  fields: HTMLElement[] = [], invalid: () => string = () => '', watch: HTMLElement[] = []) {
+  fields: HTMLElement[] = [], invalid: () => string = () => '', watch: HTMLElement[] = [],
+  at: { route?: 'alertrules' | 'alertrules/end'; can?: Can | null; serverOff?: boolean } = {}) {
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const ok = el('button', { type: 'submit' }, go);
+  const ok = markNeed(el('button', { type: 'submit' }, go), at.route ?? 'alertrules');
+  const role = at.serverOff ? null : routeWhy(at.route ?? 'alertrules', at.can);
   const no = el('button', { type: 'button' }, 'Back');
   const need = el('p', { class: 'meta' });   // not a live region: it changes with every key
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   let busy = false, done = false;
   const check = () => {
     const w = done ? '' : invalid();
-    need.textContent = w ? `${go} needs ${w}.` : '';
-    ok.disabled = busy || done || w !== '';
+    need.textContent = done ? '' : role ? role + '.' : w ? `${go} needs ${w}.` : '';
+    offControl(ok, busy ? 'working' : done ? 'done' : role ?? (w ? `${go} needs ${w}` : null), busy || done ? msg : need);
   };
   for (const w of watch) { w.addEventListener('input', check); w.addEventListener('change', check); }
   check();
@@ -358,7 +365,7 @@ function formDialog(title: string, what: string, go: string, run: () => Promise<
   dlg.addEventListener('cancel', leave);
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
-    if (busy || done) return;
+    if (busy || done || role || invalid()) return;   // off is off: an Enter in a field submits the form too
     busy = true; check();
     msg.textContent = 'Saving...';
     try {
@@ -379,8 +386,8 @@ function formDialog(title: string, what: string, go: string, run: () => Promise<
 }
 
 // confirmWrite: a write with no field (end a rule, switch it on or off)
-function confirmWrite(title: string, what: string, go: string, run: () => Promise<RuleResult>, after: () => void) {
-  formDialog(title, what, go, run, after);
+function confirmWrite(title: string, what: string, go: string, run: () => Promise<RuleResult>, after: () => void, route: 'alertrules' | 'alertrules/end' = 'alertrules') {
+  formDialog(title, what, go, run, after, [], () => '', [], { route });
 }
 
 const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -477,6 +484,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
         else b.addEventListener('click', () => confirmWrite(v ? `Switch rule ${String(r.rule_id)} off?` : `Switch rule ${String(r.rule_id)} on?`,
           v ? 'A rule switched off is in force nowhere: a wider rule on the same metric takes its place, and an alert it raised resolves. The row stays.' : 'The alert sender judges the rule again from its next pass.',
           v ? 'Switch off' : 'Switch on', () => post<RuleResult>('alertrules', { op: v ? 'disable' : 'enable', rule_id: Number(r.rule_id) }), redraw));
+        needControl(b, 'alertrules', { can: d.can });
         return el('span', { class: 'seg', style: 'margin:0' }, b);
       } },
       { key: 'rule_id', label: 'rule', num: true },
@@ -513,7 +521,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
         ruleButton(d, 'Edit', `Edit rule ${String(r.rule_id)} ${label(r)}`, () => { void ruleDialog({ door: d, rule: r, after: redraw }); }), ' · ',
         ruleButton(d, 'End', `End rule ${String(r.rule_id)} ${label(r)}`, () => confirmWrite(`End rule ${String(r.rule_id)}?`,
           'An ended rule is in force nowhere and an alert it raised resolves. The row stays with who ended it and when.', 'End',
-          () => post<RuleResult>('alertrules/end', { rule_id: Number(r.rule_id) }), redraw))) },
+          () => post<RuleResult>('alertrules/end', { rule_id: Number(r.rule_id) }), redraw, 'alertrules/end'), 'alertrules/end')) },
     ];
     wrap.replaceChildren(grid(rows, cols.filter(c => showEnded || c.key !== 'ended_at'), all.length ? 'Every rule is ended: Show ended lists them.' : 'No rule.'));
   };

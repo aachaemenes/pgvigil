@@ -85,6 +85,7 @@ import { installTreeMenu } from './treemenu';
 import { installFileDrop, toolsButton } from './filedrop';
 import { retentionView } from './retention';
 import { dropMenu, el, fmtBytes } from './ui';
+import { roleLine, setWho } from './needs';
 import { cutWords, exportButtons } from './export';
 import { mailButton, mailRenderBoot, reportMailView } from './reportmail';
 import { connectionsView } from './connections';
@@ -341,6 +342,7 @@ function showLogin(message = '') {
     btn.disabled = true; err.hidden = true;
     try {
       session = await post<Session>('login', { username: user.value.trim(), password: pass.value });
+      setWho(session); sessionRead = true;
       pass.value = '';
       loginShown = false;
       document.body.classList.remove('signin');
@@ -358,6 +360,7 @@ function showLogin(message = '') {
 async function signOut() {
   try { await post('logout'); } catch { /* the session is gone either way */ }
   session = { login: true };
+  setWho({ login: false });
   forget();
   showLogin('Signed out.');
 }
@@ -420,9 +423,16 @@ function rangeNote(ctx: Ctx, gen: number): HTMLElement {
   return note;
 }
 
+// sessionRead: GET /api/session answered at least once with this tab's session (a 5xx or a lost network leaves it
+// false); the session is read again at a Refresh and at every render until it has (review-18 b24f2 S3 / N6: the
+// header's role and the pages' role checks follow it)
+let sessionRead = false;
 async function render(force = false) {
   window.clearTimeout(timer);
   timer = undefined;
+  if (force || !sessionRead) {
+    try { session = await get<Session>('session'); setWho(session); sessionRead = true; } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
+  }
   const gen = ++generation;
   dropMenu();   // a grid's copy menu never outlives the page it was opened on (a 30 s refresh included)
   let ctx = parse();
@@ -510,7 +520,9 @@ async function render(force = false) {
   if (session.login && session.user) {
     const out = el('button', { type: 'button', class: 'link' }, 'Sign out');
     out.addEventListener('click', () => { void signOut(); });
-    bar.append(el('span', { class: 'meta' }, session.user), out);
+    // the role beside the name (B24f): what this user may change, said where it signs out; a control that is off for
+    // the role points at this sentence (needs.ts)
+    bar.append(roleLine() ?? el('span', { class: 'meta' }, session.user), out);
   }
 
   // the instance's header and its band's dot (task 177 D29), read beside the page; a failure there leaves them out
@@ -605,6 +617,6 @@ watchHiddenTab(() => loginShown || refreshSecs() === 0);
 setMailRender(mailRenderBoot());   // and a render takes no saved view (views.ts): the schedule's address alone
 // the first load asks who holds this session; a 401 shows the sign-in form before any page
 (async () => {
-  try { session = await get<Session>('session'); } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
+  try { session = await get<Session>('session'); setWho(session); sessionRead = true; } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
   void render();
 })();

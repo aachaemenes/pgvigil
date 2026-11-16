@@ -321,6 +321,8 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
 	if why != "" {
 		out["reason"] = why
 	}
+	// what the session's role may do (B24f, review-16 S6): beside writable / reason, which stay the server's own
+	out["can"] = s.roleCan(r)
 	out["user"] = ""
 	if s.auth != nil {
 		out["user"] = s.sessionUser(r)
@@ -404,6 +406,14 @@ func (s *Server) ackWrite(w http.ResponseWriter, r *http.Request, op string) {
 	var in ackBody
 	if err := json.Unmarshal(raw, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("body: %w", err))
+		return
+	}
+	// a fleet-wide, tag-wide or open-ended mute, silence or blackout needs admin (review-16 S5: configuration others
+	// live with); an operator mutes or blacks out ONE instance, or mutes one alert (finding_key: review-18 b24f1 N5),
+	// with an end at most 7 days away (openEnded). The body's scope is read here, before the instance lookup and the
+	// door's scope
+	one := in.InstanceID > 0 || (in.Kind == "mute" && in.FindingKey != "")
+	if op == "add" && (in.Kind == "mute" || in.Kind == "silence" || in.Kind == "blackout") && (!one || in.Tag != "" || openEnded(in.StartsAt, in.Until, time.Now())) && !s.roleOK(w, r, needAdmin, "a fleet-wide or open-ended mute") {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)

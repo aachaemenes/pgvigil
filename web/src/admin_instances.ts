@@ -9,6 +9,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
 import { fleet, fleetWideNote, inTagScope, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, fmtTime, grid, offControl } from './ui';
+import { Can, routeWhy } from './needs';
 import { moveSection } from './migrate';
 import { instanceChecks } from './admin_checks';
 import { instanceSettings } from './admin_settings';
@@ -35,6 +36,7 @@ interface AdminData {
   // each row whose block the collector will not use, with why
   cloud_blocks?: { on: boolean; off_words: string; notes: Record<string, string> };
   checks?: Table | null; // ST1 (Check all): admin_checks.ts
+  can?: Can | null;   // what the session's role may do (B24f): every write of this page needs admin
 }
 
 // B24p: a row's cloud blocks as the store keeps them (0193)
@@ -113,6 +115,10 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
   async function draw(): Promise<void> {
     editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
     const d = await get<AdminData>('admin/instances');
+    // the role (B24f): below admin the page is read only with the role's words, as it is for the server's own reason
+    // (which comes first): every form and every row action is off and described by the one sentence
+    const role = d.writable ? routeWhy('admin/instances', d.can) : null;
+    if (role) { d.writable = false; d.why_not = role; }
     let inFolder: (r: Row) => boolean = () => true;
     if (scoped) {
       const f = await fleet().catch((e: unknown) => { throw new Error(`the instances of ${tagWords(scoped)} could not be read: ${e instanceof Error ? e.message : String(e)}`); });
@@ -178,6 +184,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
   // never brings an enabled write button back under the read-only note
   let whyNot = '';
   function lock(cell: HTMLElement): HTMLElement {
+    for (const b of cell.querySelectorAll<HTMLElement>('button')) b.dataset.need = 'admin';   // the role proof reads it
     if (whyNot) for (const b of cell.querySelectorAll('button, input')) offRead(b, whyNot);
     return cell;
   }
@@ -185,6 +192,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
   // read only: every control that would write (the forms', the rows' actions) is disabled and says why on hover; the
   // grids' own filters and 'Show more' only read, and stay as they are (as ack.ts and alert_rules.ts do)
   function readOnly(d: AdminData): void {
+    for (const c of root.querySelectorAll<HTMLElement>('form button, .actions button')) c.dataset.need = 'admin';
     if (d.writable) return;
     for (const c of root.querySelectorAll('form button, form input, form select, form textarea, .actions button')) offRead(c, d.why_not);
   }

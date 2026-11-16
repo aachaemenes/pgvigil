@@ -18,6 +18,7 @@ import { hrefWith } from './dbinfo';
 import { mssqlFilesTab } from './mssql_storage';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid } from './ui';
 import { loadAckSafe, offBeside, onDoor, pageNote, seatWhy } from './ack';
+import { needControl, needWords } from './needs';
 
 type Parts<K extends string> = Record<K, Table | null>;
 const lsGet = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -97,6 +98,10 @@ function configureDialog(p: Place, inForce: string, own: Row | undefined, after:
   const save = el('button', { type: 'submit' }, 'Set'), inherit = el('button', { type: 'button' }, 'Inherit'), back = el('button', { type: 'button' }, 'Back');
   // nothing of this level's own to end: Inherit is off with that reason beside it (it already inherits)
   if (!own) offBeside(inherit, 'this level has no threshold of its own: it already inherits the level above');
+  // the role (B24f): a threshold needs admin - below it both are off, described by one sentence of the dialog's
+  // (review-18 b24f2 N4: one note, not one per button)
+  const roleP = el('p', { class: 'meta off-reason' }, needWords('drives/thresholds'));
+  needControl(save, 'drives/thresholds', { note: roleP }); needControl(inherit, 'drives/thresholds', { note: roleP });
   const form = el('form', { method: 'dialog' }, el('h3', {}, `Drive space thresholds: ${p.where}`),
     el('p', {}, 'A drive with less free space than the warning per cent is a warning, less than the critical per cent a critical. '
       + 'The drive\'s own threshold wins, then its instance\'s, a tag\'s (when two of the instance\'s tags carry one, the tag first by name), the root\'s; the default is warning under 20 %, critical under 10 %. '
@@ -104,7 +109,7 @@ function configureDialog(p: Place, inForce: string, own: Row | undefined, after:
     el('p', { class: 'meta' }, `In force now: ${inForce}.`),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, 'Warning under (% free) ', warn)),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, 'Critical under (% free) ', crit)),
-    msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', back));
+    roleP, msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', back));
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:36rem', 'aria-label': `Drive space thresholds: ${p.where}` }, form);
   let done = false;
   const close = () => { dlg.close(); dlg.remove(); if (done) after(); };
@@ -208,6 +213,7 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
     const cfgWhy = seatWhy(ad, 'thresholds', Number(r.instance_id), String(r.instance));
     if (cfgWhy) offBeside(cfg, cfgWhy, offNote(Number(r.instance_id)));
     else cfg.addEventListener('click', () => configureDialog(own, `warning under ${pct(r.warn_pct)}, critical under ${pct(r.crit_pct)} (${levelWords(r)})`, ownRow(thresholds, own), () => void draw()));
+    needControl(cfg, 'drives/thresholds', { can: ad.can });
     const hist = el('button', { type: 'button', class: 'link', 'aria-expanded': 'false', 'aria-label': `History of ${String(r.drive)} on ${String(r.instance)}` }, 'History');
     const histBox = el('div');
     hist.addEventListener('click', () => {
@@ -250,6 +256,7 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
   // is not the demo's points at the page's one sentence; a level wider than one instance says its own reason beside it
   const scopeWhy = seatWhy(ad, 'thresholds', ctx.instance ?? undefined, instName);
   if (scopeWhy) offBeside(configure, scopeWhy, offNote(ctx.instance ?? undefined));
+  needControl(configure, 'drives/thresholds', { can: ad.can });
   await draw();
   return sec;
 }

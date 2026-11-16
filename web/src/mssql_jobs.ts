@@ -18,6 +18,7 @@ import { jsonRows, mssqlFindingCols } from './mssql_hadr';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, offControl, tile } from './ui';
 import { errorCell } from './doclinks';
 import { AckData, ackOn, ackWhy, jobAckCell, jobAcks, loadAckSafe, onDoor, seatWhy } from './ack';
+import { Can, markNeed, routeWhy } from './needs';
 import { fleet } from './fleet';
 import { jobChartSection } from './jobs_chart';
 import { definitionCompare, definitionView, diffCounts, lineDiff, textDiffView } from './diff';
@@ -177,7 +178,7 @@ function versions(rows: Row[], jobName: string): HTMLElement {
 }
 
 // ---- thresholds at three levels (DBA Dash's Agent Job Thresholds: Job Level, Instance Level, Root Level, Inherit)
-export interface Thresholds { writable: boolean; reason?: string; demo?: boolean; levels?: Table | null; status?: Table | null }
+export interface Thresholds { writable: boolean; reason?: string; demo?: boolean; can?: Can | null; levels?: Table | null; status?: Table | null }
 // a server without the route (an older one, or the demo) has no thresholds: the grid then has no status column
 export async function loadThresholds(instance: number): Promise<Thresholds | null> {
   if (!instance) return null;
@@ -205,11 +206,12 @@ const thresholdRows: [string, string, string][] = [
 // does not carry is off in words before any request, the fields too
 let thOffSeq = 0;
 export function thresholdsDialog(instance: number, jobName: string, th: Thresholds, after: () => void, ad?: AckData, instName?: string) {
-  const levelWhy = (lv: Level): string | null => th.writable ? null
+  // the server's own reason first, then the role (B24f: a job threshold needs admin), in the server's words
+  const levelWhy = (lv: Level): string | null => (th.writable ? null
     : ad && onDoor(ad) ? seatWhy(ad, 'thresholds', lv === 'root' ? undefined : instance, instName)
     // a demo serve whose door was not read (GET /api/ack failed): that is the reason, never the door's own words
     : th.demo ? `the demo door's instances were not read: ${ad?.reason || 'the acknowledgement read did not answer'}`
-    : th.reason ?? 'thresholds cannot be written on this server';
+    : th.reason ?? 'thresholds cannot be written on this server') ?? routeWhy('jobs/thresholds', th.can);
   const offP = el('p', { class: 'meta', id: `th-off-${++thOffSeq}` });
   const levels = rowsOf(th.levels);
   const rowAt = (lv: Level) => levels.find(r => r.level === lv && (lv !== 'job' || r.job_name === jobName));
@@ -224,8 +226,8 @@ export function thresholdsDialog(instance: number, jobName: string, th: Threshol
   table.append(el('tr', {}, el('th', { scope: 'row' }, el('label', { for: 'th-lastfail' }, 'The last run failed')), el('td', { colspan: '2' }, lastFail)));
   const state = el('p', { class: 'meta' });
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const save = el('button', { type: 'submit' }, 'Save this level');
-  const inherit = el('button', { type: 'button' }, 'Inherit');
+  const save = markNeed(el('button', { type: 'submit' }, 'Save this level'), 'jobs/thresholds');
+  const inherit = markNeed(el('button', { type: 'button' }, 'Inherit'), 'jobs/thresholds');
   const no = el('button', { type: 'button' }, 'Close');
   const names: Record<Level, string> = { job: `This job (${jobName})`, instance: 'This instance (every job on it)', root: 'Root (every instance)' };
   const fill = () => {

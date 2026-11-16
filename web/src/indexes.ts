@@ -7,6 +7,7 @@ import { indexLink } from './drill';
 import type { Ctx } from './router';
 import { get, post, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
+import { needControl } from './needs';
 import { whatIsThis } from './sqlview';
 import { depthError } from './statements';
 
@@ -106,7 +107,8 @@ function inventorySection(instance: number, dbs: Row[], ctx?: Ctx): HTMLElement 
 // adviseBox: the advisor button for one database and its report.
 function adviseBox(instance: number, dbs: string[]): HTMLElement {
   const pick = el('select', { 'aria-label': 'database to advise on' }, ...dbs.map(d => el('option', { value: d }, d)));
-  const run = el('button', { type: 'button' }, 'Test the suggested indexes');
+  // the advisor runs hypopg and EXPLAIN on the monitored server: it needs operator, as plans/hypo (the lead 13:3x)
+  const run = needControl(el('button', { type: 'button' }, 'Test the suggested indexes'), 'indexes/advise');
   const out = el('div');
   run.addEventListener('click', async () => {
     run.setAttribute('disabled', '');

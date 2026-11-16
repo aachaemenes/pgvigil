@@ -15,8 +15,8 @@ import (
 // UI login on, through the ui_ function the serve login may call (never in the list, one application's answer, an
 // import's answer or an audit row). The writes go through the actions door's audit login like Admin > Instances',
 // with this page's own words when they are off, a body of 64 KB (500 targets of an assign), the source forced
-// 'entered' (only 312's import passes another), and one gate per write (appCanEdit: every signed-in user until the
-// viewer / operator / admin roles exist).
+// 'entered' (only 312's import passes another), and one gate per write (the admin role, checked by s.post before the
+// handler - B24f; appCanEdit is the login check that is left).
 
 // appBodyLimit holds an assign of 500 targets (about 30 KB) with room.
 const appBodyLimit = 64 << 10
@@ -39,8 +39,31 @@ func (s *Server) applicationsOff() string {
 	return ""
 }
 
-// appCanEdit is the one gate of every application write: any signed-in user today (decision E3), the roles' check
-// here when they exist ("" = allowed).
+// appOff is an application answer's why_not ("" = the session may change applications): the server's own reason
+// first (applicationsOff), then the role (admin) in the refusal's words, or the lookup's error when the role could not
+// be read - every answer that carries can_edit says it the same way (review-18 b24f1 S4 / N3).
+func (s *Server) appOff(r *http.Request) string {
+	if off := s.applicationsOff(); off != "" {
+		return off
+	}
+	if s.auth == nil || s.demo != nil {
+		return ""
+	}
+	wh, ok := whoOf(r)
+	if !ok {
+		wh = s.sessionWho(r)
+	}
+	switch {
+	case wh.err != nil:
+		return "the role could not be read: " + wh.err.Error()
+	case roleRank(wh.role) < needAdmin:
+		return roleWords(routeWhat["POST /api/admin/applications"], needAdmin, wh)
+	}
+	return ""
+}
+
+// appCanEdit is the application writes' login check; the role (admin) is s.post's, before the handler runs (B24f:
+// decision E3's one gate is the needs table now) ("" = allowed).
 func (s *Server) appCanEdit(user string) string {
 	if user == "" {
 		return "login required"
@@ -176,8 +199,8 @@ func (s *Server) ApplicationsList(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, fmt.Errorf("file tags: %w", err))
 		return
 	}
-	off := s.applicationsOff()
-	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "applications": apps, "audit": audit, "file_tags": fileTags}, nil)
+	off, can := s.appOff(r), s.roleCan(r)
+	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "can": can, "applications": apps, "audit": audit, "file_tags": fileTags}, nil)
 }
 
 // ApplicationOne is GET /api/applications/{id}: its fields with each one's source, and its servers and databases
@@ -211,8 +234,8 @@ func (s *Server) ApplicationOne(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, fmt.Errorf("databases: %w", err))
 		return
 	}
-	off := s.applicationsOff()
-	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "contacts_off": s.contactsOff(), "application": app, "databases": dbs}, nil)
+	off := s.appOff(r)
+	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "can": s.roleCan(r), "contacts_off": s.contactsOff(), "application": app, "databases": dbs}, nil)
 }
 
 // contactsOff is why an application's contacts are not read here ("" = they are): they are personal data, read with
@@ -256,7 +279,7 @@ func (s *Server) ApplicationContacts(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, fmt.Errorf("channels: %w", err))
 		return
 	}
-	off := s.applicationsOff()
+	off := s.appOff(r)
 	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "contacts": t, "routes": routes, "channels": channels}, nil)
 }
 
@@ -277,6 +300,6 @@ func (s *Server) ApplicationsUnassigned(w http.ResponseWriter, r *http.Request) 
 		s.reply(w, r, nil, fmt.Errorf("marked: %w", err))
 		return
 	}
-	off := s.applicationsOff()
+	off := s.appOff(r)
 	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "unassigned": t, "marked": marked}, nil)
 }

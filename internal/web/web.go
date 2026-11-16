@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -176,15 +177,28 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 		if n == 0 {
 			log.Warn("no UI user can log in yet: run 'pgvigil user add <name>' as the repository owner")
 		}
-		s.auth = newAuth(func(ctx context.Context, user string) (string, error) {
-			var h *string
-			if err := pool.QueryRow(ctx, `SELECT pgvigil.ui_password_hash($1)`, user).Scan(&h); err != nil {
-				return "", err
+		// the roles (B24f): a repository without ui_login_of is older than the role migration (review-16 S2)
+		if _, err := pool.Exec(ctx, `SELECT 1 FROM pgvigil.ui_login_of('')`); err != nil {
+			pool.Close()
+			var pg *pgconn.PgError
+			if errors.As(err, &pg) && pg.Code == "42883" {
+				return nil, errors.New("the repository has no UI roles yet: run 'pgvigil migrate' as the repository owner")
 			}
-			if h == nil {
-				return "", nil
+			return nil, fmt.Errorf("ui role check: %w", err)
+		}
+		s.auth = newAuthRoles(func(ctx context.Context, user string) (string, string, error) {
+			// one row always: the hash and role of an enabled user, NULLs for an unknown or a disabled one
+			var h, role *string
+			if err := pool.QueryRow(ctx, `SELECT password_hash, role FROM pgvigil.ui_login_of($1)`, user).Scan(&h, &role); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return "", "", nil
+				}
+				return "", "", err
 			}
-			return *h, nil
+			if h == nil || role == nil {
+				return "", "", nil
+			}
+			return *h, *role, nil
 		}, o.TLS, o.SessionTTL)
 	}
 	if s.actions, err = s.NewActions(ctx, o.Actions); err != nil {
@@ -234,7 +248,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/tablesize", s.TableSize)
 	api.HandleFunc("GET /api/reports", s.Reports)
 	api.HandleFunc("GET /api/drives", s.Drives)
-	api.HandleFunc("POST /api/drives/thresholds", s.DriveThresholdWrite)
+	s.post(api, "POST /api/drives/thresholds", needAdmin, s.DriveThresholdWrite)
 	api.HandleFunc("GET /api/drives/history", s.DriveHistory)
 	api.HandleFunc("GET /api/dbspace", s.DBSpace)
 	api.HandleFunc("GET /api/dbfiles", s.DBFiles)
@@ -249,25 +263,25 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/export", s.Export)
 	// task 204: Admin > Instances (q_instances_admin.go)
 	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
-	api.HandleFunc("POST /api/admin/instances", s.InstancesAdminWrite)
+	s.post(api, "POST /api/admin/instances", needAdmin, s.InstancesAdminWrite)
 	// task 310: applications (q_applications.go)
 	api.HandleFunc("GET /api/applications", s.ApplicationsList)
 	api.HandleFunc("GET /api/applications/unassigned", s.ApplicationsUnassigned)
 	api.HandleFunc("GET /api/applications/{id}", s.ApplicationOne)
 	api.HandleFunc("GET /api/applications/{id}/contacts", s.ApplicationContacts)
-	api.HandleFunc("POST /api/admin/applications", s.ApplicationsWrite)
-	api.HandleFunc("POST /api/admin/applications/contacts", s.ApplicationContactsWrite)
-	api.HandleFunc("POST /api/admin/applications/assign", s.ApplicationsAssignWrite)
-	api.HandleFunc("POST /api/admin/applications/routes", s.ApplicationRoutesWrite)
+	s.post(api, "POST /api/admin/applications", needAdmin, s.ApplicationsWrite)
+	s.post(api, "POST /api/admin/applications/contacts", needAdmin, s.ApplicationContactsWrite)
+	s.post(api, "POST /api/admin/applications/assign", needAdmin, s.ApplicationsAssignWrite)
+	s.post(api, "POST /api/admin/applications/routes", needAdmin, s.ApplicationRoutesWrite)
 	// task 312: the inventory file (q_app_import.go)
 	api.HandleFunc("GET /api/applications/inventory", s.AppInventory)
 	api.HandleFunc("GET /api/applications/inventory.csv", s.AppInventoryCSV)
-	api.HandleFunc("POST /api/admin/applications/import", s.AppImport)
-	api.HandleFunc("POST /api/admin/sources", s.SourcesAdminWrite)
-	api.HandleFunc("POST /api/admin/proposals", s.ProposalsAdminWrite)
+	s.post(api, "POST /api/admin/applications/import", needAdmin, s.AppImport)
+	s.post(api, "POST /api/admin/sources", needAdmin, s.SourcesAdminWrite)
+	s.post(api, "POST /api/admin/proposals", needAdmin, s.ProposalsAdminWrite)
 	// task 206: Admin > Instances' Move from DBA Dash (q_migrate.go)
 	api.HandleFunc("GET /api/admin/dbadash_moves", s.DBADashMoves)
-	api.HandleFunc("POST /api/admin/dbadash_moves", s.DBADashMovesWrite)
+	s.post(api, "POST /api/admin/dbadash_moves", needAdmin, s.DBADashMovesWrite)
 	api.HandleFunc("GET /api/uptime", s.Uptime)
 	api.HandleFunc("GET /api/pgconfig", s.PGConfig)
 	api.HandleFunc("GET /api/pg/dboptions", s.PGDBOptions)
@@ -277,10 +291,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/findings", s.findings)
 	api.HandleFunc("GET /api/alerts", s.Alerts)
 	api.HandleFunc("GET /api/alertrules", s.AlertRules)
-	api.HandleFunc("POST /api/alertrules", s.AlertRuleWrite)
+	s.post(api, "POST /api/alertrules", needAdmin, s.AlertRuleWrite)
 	api.HandleFunc("GET /api/mssql/protection", s.MSSQLProtection)
 	api.HandleFunc("POST /api/mssql/protection", s.MSSQLProtectionWrite)
-	api.HandleFunc("POST /api/alertrules/end", s.AlertRuleEnd)
+	s.post(api, "POST /api/alertrules/end", needAdmin, s.AlertRuleEnd)
 	api.HandleFunc("GET /api/alertscope", s.AlertScope)          // task 403a: windows, held sends, flapping, overrides, history, digests
 	api.HandleFunc("POST /api/alertwindows", s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator, B24f)
 	// saved page views and dashboards (VIEWS slice A, 0259; q_views.go)
@@ -290,15 +304,15 @@ func (s *Server) Handler() http.Handler {
 	// a dashboard's composed panel, compiled and read (VIEWS slice C; compose.go, q_compose.go)
 	api.HandleFunc("POST /api/compose/run", s.ComposeRun)
 	api.HandleFunc("GET /api/compose/catalog", s.ComposeCatalog)
-	api.HandleFunc("POST /api/alerts/test", s.AlertTest)
-	api.HandleFunc("POST /api/alerts/dismiss", s.AlertDismiss)
-	api.HandleFunc("POST /api/alerts/mute", s.AlertMute)
+	s.post(api, "POST /api/alerts/test", needOperator, s.AlertTest)
+	s.post(api, "POST /api/alerts/dismiss", needOperator, s.AlertDismiss)
+	s.post(api, "POST /api/alerts/mute", needOperator, s.AlertMute)
 	api.HandleFunc("GET /api/metrics", s.Metrics)
 	api.HandleFunc("GET /api/metrics/series", s.MetricSeries)
 	api.HandleFunc("GET /api/ack", s.Ack)
 	api.HandleFunc("GET /api/healthcal", s.HealthCal)
-	api.HandleFunc("POST /api/ack", s.AckAdd)
-	api.HandleFunc("POST /api/ack/end", s.AckEnd)
+	s.post(api, "POST /api/ack", needOperator, s.AckAdd)
+	s.post(api, "POST /api/ack/end", needOperator, s.AckEnd)
 	api.HandleFunc("GET /api/slow", s.slow)
 	api.HandleFunc("GET /api/slowqueries", s.SlowQueries)
 	api.HandleFunc("GET /api/compare", s.Compare)
@@ -343,7 +357,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/pg/state", s.PgState)
 	api.HandleFunc("GET /api/pg/replication", s.PgReplicationFleet)
 	api.HandleFunc("GET /api/pg/thresholds", s.PgThresholds)
-	api.HandleFunc("POST /api/pg/thresholds", s.PgThresholdWrite)
+	s.post(api, "POST /api/pg/thresholds", needAdmin, s.PgThresholdWrite)
 	api.HandleFunc("GET /api/corruption", s.Corruption)
 	api.HandleFunc("GET /api/vacuum", s.Vacuum)
 	api.HandleFunc("GET /api/dbadash", s.DBADash)
@@ -351,12 +365,12 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/custom", s.Custom)
 	// task 170: custom reports and the community tools
 	api.HandleFunc("GET /api/customreports", s.CustomReports)
-	api.HandleFunc("POST /api/customreports", s.CustomReportWrite)
-	api.HandleFunc("POST /api/customreports/run", s.CustomReportRun)
+	s.post(api, "POST /api/customreports", needAdmin, s.CustomReportWrite)
+	s.post(api, "POST /api/customreports/run", needViewer, s.CustomReportRun)
 	api.HandleFunc("GET /api/community", s.Community)
-	api.HandleFunc("POST /api/community/params", s.CommunityParams)
-	api.HandleFunc("POST /api/community/run", s.CommunityRun)
-	api.HandleFunc("POST /api/community/glenn/parse", s.CommunityGlennParse)
+	s.post(api, "POST /api/community/params", needViewer, s.CommunityParams)
+	s.post(api, "POST /api/community/run", needOperator, s.CommunityRun)
+	s.post(api, "POST /api/community/glenn/parse", needViewer, s.CommunityGlennParse)
 	api.HandleFunc("GET /api/community/sample", s.CommunitySample)
 	api.HandleFunc("GET /api/extensions", s.Extensions)
 	api.HandleFunc("GET /api/roles", s.Roles)
@@ -369,11 +383,11 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/perfsummary", s.PerfSummary)
 	api.HandleFunc("GET /api/performance", s.Performance)
 	api.HandleFunc("GET /api/indexes", s.Indexes)
-	api.HandleFunc("POST /api/indexes/advise", s.IndexAdvisor)
+	s.post(api, "POST /api/indexes/advise", needOperator, s.IndexAdvisor) // hypopg and EXPLAIN on the monitored server: as plans/hypo (the lead 13:3x)
 	api.HandleFunc("GET /api/dmsio", s.DMSIO)
 	api.HandleFunc("GET /api/tags", s.Tags(s.tags))
-	api.HandleFunc("POST /api/actions/cancel", s.actions.Cancel)
-	api.HandleFunc("POST /api/actions/terminate", s.actions.Terminate)
+	s.post(api, "POST /api/actions/cancel", needOperator, s.actions.Cancel)
+	s.post(api, "POST /api/actions/terminate", needOperator, s.actions.Terminate)
 	api.HandleFunc("GET /api/actions/log", s.actions.Log)
 	api.HandleFunc("GET /api/mssql/storage", s.MSSQLStorage)
 	api.HandleFunc("GET /api/mssql/storage_depth", s.MSSQLStorageDepth) // task 407
@@ -425,8 +439,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)
 	api.HandleFunc("GET /api/mssql/syshealth", s.MSSQLSysHealth)
 	api.HandleFunc("GET /api/mssql/actions/state", s.MSSQLActionState)
-	api.HandleFunc("POST /api/mssql/actions/preview", s.MSSQLActionPreview)
-	api.HandleFunc("POST /api/mssql/actions/run", s.MSSQLActionRun)
+	s.post(api, "POST /api/mssql/actions/preview", needViewer, s.MSSQLActionPreview)
+	s.post(api, "POST /api/mssql/actions/run", needOperator, s.MSSQLActionRun)
 	// task 301b: verify_backup has its own two routes (a detached run; actions_verify.go)
 	api.HandleFunc("POST /api/mssql/actions/verify/preview", s.MSSQLVerifyPreview)
 	api.HandleFunc("POST /api/mssql/actions/verify/run", s.MSSQLVerifyRun)
@@ -447,16 +461,16 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/config/fleet", s.MSSQLConfigFleet)
 	api.HandleFunc("GET /api/mssql/traceflags", s.MSSQLTraceFlags)
 	api.HandleFunc("GET /api/jobs/thresholds", s.JobThresholds)
-	api.HandleFunc("POST /api/jobs/thresholds", s.JobThresholdWrite)
+	s.post(api, "POST /api/jobs/thresholds", needAdmin, s.JobThresholdWrite)
 	// task 161: the PostgreSQL job actions, Running now, the pgAgent step log, job exclusions, the Deadlocks page
 	api.HandleFunc("GET /api/jobs/running", s.JobsRunning)
-	api.HandleFunc("POST /api/jobs/actions/stop", s.JobStop)
-	api.HandleFunc("POST /api/jobs/actions/start", s.JobStart)
+	s.post(api, "POST /api/jobs/actions/stop", needOperator, s.JobStop)
+	s.post(api, "POST /api/jobs/actions/start", needOperator, s.JobStart)
 	api.HandleFunc("POST /api/jobs/actions/enable", s.JobEnable)   // B9c
 	api.HandleFunc("POST /api/jobs/actions/disable", s.JobDisable) // B9c
 	api.HandleFunc("GET /api/jobs/steps", s.JobSteps)
 	api.HandleFunc("GET /api/jobs/exclusions", s.JobExclusions)
-	api.HandleFunc("POST /api/jobs/exclusions", s.JobExclusions)
+	s.post(api, "POST /api/jobs/exclusions", needAdmin, s.JobExclusions)
 	api.HandleFunc("GET /api/pg/deadlocks", s.PgDeadlocks)
 	api.HandleFunc("GET /api/slow/groups", s.SlowGroups)
 	api.HandleFunc("GET /api/slow/events", s.SlowEvents)
@@ -471,15 +485,15 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/backups", s.MSSQLBackups)
 	api.HandleFunc("GET /api/mssql/backup_files", s.MSSQLBackupFiles) // task 301: where the newest backups went
 	api.HandleFunc("GET /api/mssql/restore", s.MSSQLRestore)          // task 304: the restore chain
-	api.HandleFunc("POST /api/plans/explain", s.actions.Explain)
-	api.HandleFunc("POST /api/plans/analyze", s.actions.ExplainAnalyze)
-	api.HandleFunc("POST /api/plans/hypo", s.actions.HypoIndex)
+	s.post(api, "POST /api/plans/explain", needOperator, s.actions.Explain)
+	s.post(api, "POST /api/plans/analyze", needOperator, s.actions.ExplainAnalyze)
+	s.post(api, "POST /api/plans/hypo", needOperator, s.actions.HypoIndex)
 	// task 171: reports by e-mail (q_reportmail.go)
 	api.HandleFunc("GET /api/reportmail", s.ReportMail)
-	api.HandleFunc("POST /api/reportmail", s.ReportMailWrite)
-	api.HandleFunc("POST /api/reportmail/send", s.ReportMailSend)
-	api.HandleFunc("POST /api/reportmail/test", s.ReportMailTest)
-	api.HandleFunc("POST /api/reportmail/rendered", s.ReportMailRendered)
+	s.post(api, "POST /api/reportmail", needAdmin, s.ReportMailWrite)
+	s.post(api, "POST /api/reportmail/send", needOperator, s.ReportMailSend)
+	s.post(api, "POST /api/reportmail/test", needOperator, s.ReportMailTest)
+	s.post(api, "POST /api/reportmail/rendered", needViewer, s.ReportMailRendered)
 	api.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})
@@ -490,8 +504,8 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /livez", s.livez)
 	mux.HandleFunc("GET /readyz", s.readyz)
-	mux.HandleFunc("POST /api/login", s.login)
-	mux.HandleFunc("POST /api/logout", s.logout)
+	s.post(mux, "POST /api/login", needAnyone, s.login)
+	s.post(mux, "POST /api/logout", needAnyone, s.logout)
 	mux.HandleFunc("GET /api/session", s.sessionInfo)
 	// task 403b K5: the Slack door, outside the UI login (the signature is its authentication); 404 while it is off
 	mux.HandleFunc("POST /api/slack/actions", s.slackActions)

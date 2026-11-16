@@ -14,6 +14,7 @@
 // Every write goes through a dialog that says what it changes; the server answers done or the reason it refused.
 import { get, Row, rowsOf, Table } from './api';
 import { AckBody, AckData, ackDialog, ackWhy, loadAckSafe, offBeside, seatWhy, writeButton } from './ack';
+import { needControl, needWords } from './needs';
 import { Ctx, href } from './router';
 import { fleet, fleetWideNote, inTagScope, tagsOf, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
@@ -60,12 +61,16 @@ export function thresholdDialog(key: Row, place: ThresholdPlace, current: Row | 
   const save = el('button', { type: 'submit' }, 'Set'), inherit = el('button', { type: 'button' }, 'Inherit'), back = el('button', { type: 'button' }, 'Back');
   // nothing of this level's own to end: Inherit is off with that reason beside it (it already inherits)
   if (!own) offBeside(inherit, 'this level has no threshold of its own: it already inherits the level above');
+  // the role (B24f): a threshold needs admin - below it both are off, described by one sentence of the dialog's
+  // (review-18 b24f2 N4: one note, not one per button)
+  const roleP = el('p', { class: 'meta off-reason' }, needWords('pg/thresholds'));
+  needControl(save, 'pg/thresholds', { note: roleP }); needControl(inherit, 'pg/thresholds', { note: roleP });
   const what = `${String(key.label)} at ${place.where}. A ${dir === 'over' ? 'value past' : 'value under'} the warning is a warning, past the critical a critical; an empty box is not judged at this level. Inherit ends this level's own row, so the level above applies. Who and when are kept.`;
   const form = el('form', { method: 'dialog' }, el('h3', {}, `Threshold: ${String(key.key)}`), el('p', {}, what),
     el('p', { class: 'meta' }, `In force now: ${current ? thresholdLine({ ...current, unit: u, direction: dir }) : 'the default'}; built-in default: ${thresholdLine({ warn: key.warn_default, crit: key.crit_default, unit: u, direction: dir, level: 'default' })}.`),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, `Warning ${dir} (${u}) `, warn)),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, `Critical ${dir} (${u}) `, crit)),
-    msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', back));
+    roleP, msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', back));
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:36rem', 'aria-label': `Threshold ${String(key.key)}` }, form);
   let done = false;
   const close = () => { dlg.close(); dlg.remove(); if (done) after(); };
@@ -122,7 +127,7 @@ async function thresholdsSection(rows: Row[], instanceId: number, name: string, 
       const b = el('button', { type: 'button', class: 'link', 'aria-label': `Change ${String(v)} for ${name}` }, 'Change');
       if (note) offBeside(b, why, note);
       else b.addEventListener('click', () => thresholdDialog(k, { level: 'instance', instance_id: instanceId, where: `the instance ${name}` }, rows.find(x => x.key === v), after));
-      return b;
+      return needControl(b, 'pg/thresholds', { can: ad.can });
     } },
   ];
   return el('section', {}, el('h3', {}, 'Thresholds'), el('p', { class: 'meta' }, 'Set here for this instance; the Thresholds page sets them for the fleet, a tag or a database.'), note ?? '', grid(rows, cols, 'No threshold keys (the repository is older than 0103).'));
@@ -346,7 +351,7 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
           if (thrOffP) offBeside(b, thrWhy, thrOffP);
           else b.addEventListener('click', () => thresholdDialog(amKey, { level: 'database', instance_id: id, datname: String(v), where: `the database ${String(v)} of ${name}` },
             { warn: r.warn_days, crit: r.crit_days, level: r.threshold_level }, () => void draw()));
-          return b;
+          return needControl(b, 'pg/thresholds', { can: ad.can });
         } }], 'No database read yet.')));
     out.push(await thresholdsSection(rowsOf(d.thresholds), id, name, () => void draw(), ad, thrOffP));
     box.replaceChildren(...out);
@@ -540,7 +545,7 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
         const b = el('button', { type: 'button', class: 'link', 'aria-label': `${txt}: change ${String(v)} at the root` }, txt);
         if (rootOffP) offBeside(b, rootWhy, rootOffP);
         else b.addEventListener('click', () => thresholdDialog(r, { level: 'root', where: 'the root (every instance)' }, own ? { ...own } : undefined, () => void draw()));
-        return b;
+        return needControl(b, 'pg/thresholds', { can: ad.can });
       } },
     ];
     out.push(el('section', {}, el('h3', {}, 'Keys'), rootOffP ?? '', grid(keys, keyCols)));
@@ -581,6 +586,7 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
       const own = rows.find(x => x.key === k.key && x.level === l && (l === 'tag' ? x.tag === place.tag : Number(x.instance_id) === place.instance_id && (l !== 'database' || x.datname === place.datname)));
       thresholdDialog(k, place, own, () => void draw());
     });
+    needControl(open, 'pg/thresholds', { can: ad.can });
     out.push(el('section', {}, el('h3', {}, 'A tag, an instance or a database'), el('p', {}, kSel, ' ', lSel, ' ', pSel, ' ', db, ' ', open, openSaid)));
     const rowCols: Col[] = [
       { key: 'label', label: 'threshold' }, { key: 'level' },

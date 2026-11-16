@@ -178,7 +178,9 @@ EOF
 "$BIN" migrate -config "$CFG" >"$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "setup: migrate (a binary without the actions wiring refuses actions_dsn on a sqlserver instance)"; }
 declare -A IID
 for n in $I1 $I2 $I3 $I4 $I5 $I6; do IID[$n]=$(q "select pgvigil.ensure_instance('$n', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')"); done
-PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$CFG" "$USR" 2>/dev/null || fail "setup: user add"
+# an operator (B24f): KILL, a job's start and stop and a plan's eviction need no more (preview: viewer) - the role this
+# proof's every row runs at
+PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$CFG" -role operator "$USR" 2>/dev/null || fail "setup: user add -role operator"
 "$BIN" serve -config "$CFG" -listen "127.0.0.1:$PORT" >"$LOG" 2>&1 & SRVPID=$!
 for _ in $(seq 1 50); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.1; done
 kill -0 "$SRVPID" 2>/dev/null || { cat "$LOG" >&2; fail "setup: serve exited"; }

@@ -11,6 +11,7 @@ import { queryHistory } from './mssql_queries';
 import { compareSection, everywherePanel, planStatsPanel, statementSearch } from './mssql_querystore';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, offControl, tile } from './ui';
+import { markNeed, needControl } from './needs';
 
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlPlanCacheTab = 'mssqlplancache';
@@ -241,7 +242,7 @@ async function cachedPlans(ctx: Ctx, row: Row, box: HTMLElement) {
       return b;
     }
     b.addEventListener('click', () => { void evictDialog(ctx, String(e.plan_handle), b, () => { void cachedPlans(ctx, row, box); }); });
-    return b;
+    return needControl(b, 'mssql/actions/run');   // the role (B24f): a plan's eviction needs operator
   };
   const act = (e: Row, label: string, batch: boolean, open: boolean) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: ${String(e.plan_handle)} at ${String(e.stmt_start)}` }, label) as HTMLButtonElement;
@@ -393,7 +394,7 @@ async function evictDialog(ctx: Ctx, handle: string, back: HTMLElement, after: (
     : t.plan_batch ? `the batch '${t.plan_batch.replace(/\s+/g, ' ').trim().slice(0, 60)}'` : (pv.what ?? 'this batch');
   const reason = el('textarea', { rows: '2', cols: '60', minlength: '5', maxlength: '500', 'aria-label': 'Reason (kept in the actions log)' }) as HTMLTextAreaElement;
   const confirm = el('input', { type: 'text', size: '10', autocomplete: 'off', 'aria-label': `Type ${code} to evict the plan of ${words} (handle ${t.plan_handle ?? handle})` }) as HTMLInputElement;
-  const run = el('button', { type: 'button' }, 'Evict the plan');
+  const run = markNeed(el('button', { type: 'button' }, 'Evict the plan'), 'mssql/actions/run');
   const res = el('p', { role: 'status', 'aria-live': 'polite' });
   run.addEventListener('click', async () => {
     res.textContent = 'Sending ...';
