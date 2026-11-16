@@ -10,7 +10,7 @@ import (
 
 // H review part 2 N6, at the merge: a bundle whose end cursors carry the kinds W's writer writes for a set and for a
 // source with nothing yet ('list', 'null') loads like any other - never set aside 'malformed' by an older copy of the
-// format's cursor check.
+// format's cursor check. No names on the list: the same row compiles on H's own tip (its Cursor has none), its red there.
 func TestRoundTakesListAndNullCursors(t *testing.T) {
 	d, h := newDrop(t), newMemHub()
 	to := d.base.Add(5 * time.Minute)
@@ -23,7 +23,7 @@ func TestRoundTakesListAndNullCursors(t *testing.T) {
 	if err := b.AddBatch("mssql_activity", to.Add(-4*time.Minute), []map[string]any{{"session_id": 52}}); err != nil {
 		t.Fatal(err)
 	}
-	cursors := []format.Cursor{{Source: "backup_files", Kind: "list", Names: []string{"full_1.bak", "log_2.trn"}}, {Source: "jobs", Kind: "null"}}
+	cursors := []format.Cursor{{Source: "backup_files", Kind: "list"}, {Source: "jobs", Kind: "null"}}
 	if _, err := b.Close(to, []format.Read{{Collection: "mssql_activity", Status: "ran", Runs: 1, IntervalSecs: 60}}, cursors,
 		format.Heartbeat{Host: "jump01", Started: d.base, At: to, Instances: 1}); err != nil {
 		t.Fatalf("the writer refused a list and a null cursor: %v", err)
