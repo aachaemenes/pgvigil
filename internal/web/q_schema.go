@@ -37,7 +37,7 @@ SELECT d.dbid, d.datname, d.objects, d.ddl_log, d.ddl_log_table, d.ddl_log_note,
 const sqlSchemaChanges = `SELECT * FROM pgvigil.schema_changes_window($1, $2, $3, $4::bigint)`
 
 const sqlSchemaDDL = `
-SELECT l.snapshot_at AS logged_at, l.datname, l.event, l.command_tag, l.object_type, l.object_identity, l.role_name, l.statement
+SELECT l.snapshot_at AS logged_at, l.datname, l.event, l.command_tag, l.object_type, l.object_identity, l.role_name, l.statement AS "statement@stmt"
   FROM pgvigil.schema_ddl_log l
  WHERE l.instance_id = $1 AND l.snapshot_at > $2 AND l.snapshot_at <= $3 AND ($4::bigint IS NULL OR l.dbid = $4)
  ORDER BY l.snapshot_at DESC, l.log_id DESC

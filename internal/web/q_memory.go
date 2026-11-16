@@ -49,7 +49,7 @@ SELECT t.snapshot_at, round(100.0 * t.used_buffers / nullif(t.total_buffers, 0),
 const sqlMemoryTempStatements = `
 SELECT s.queryid, max(s.datname) AS datname, max(s.usename) AS usename, sum(s.temp_written_bytes) AS temp_written_bytes,
        sum(s.temp_read_bytes) AS temp_read_bytes, max(s.temp_written_bytes) AS worst_hour_bytes, count(*) AS hours,
-       (SELECT x.query FROM pgvigil.statement_text x WHERE x.instance_id = $1 AND x.queryid = s.queryid) AS query
+       (SELECT x.query FROM pgvigil.statement_text x WHERE x.instance_id = $1 AND x.queryid = s.queryid) AS "query@stmt"
   FROM pgvigil.temp_sample s
  WHERE s.instance_id = $1 AND s.source = 'statement' AND s.snapshot_at > $2::timestamptz - interval '1 hour' AND s.snapshot_at <= $3
  GROUP BY s.queryid

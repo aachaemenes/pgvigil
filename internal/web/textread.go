@@ -29,6 +29,7 @@ import (
 //	logkind   a log event's kind_of; logdetail its detail (a server message kind keeps it under every policy, an error's
 //	          detail is gone under normalized); logmsg its message (gone under none)
 //	inst      the row's instance_id (kept when named, dropped when the tag has no name: "@inst")
+//	keep      true on a row that holds no stored statement text (a union's other branch): its columns stay as read
 //
 // A reply column is tagged in its SQL by its alias, "<name>@<role>"; reply (web.go) applies the rule to every table
 // it sends and gives each column back its name, so the pages read the same keys. A row with no instance to place it
@@ -268,6 +269,12 @@ func (tr *textRule) table(t *table, def int, defKnown bool) {
 			id, known = instID(v)
 		}
 		pol := tr.policy(id, known)
+		// a row that says it holds no stored statement text (a union's other branch, "@keep") is left as read
+		if k, ok := at(row, "keep"); ok {
+			if b, _ := k.(bool); b {
+				continue
+			}
+		}
 		kind, _ := at(row, "logkind")
 		kindS, _ := kind.(string)
 		for _, c := range cols {
@@ -296,7 +303,8 @@ func (tr *textRule) table(t *table, def int, defKnown bool) {
 				}
 			case "logdetail":
 				switch {
-				case row[c.i] == nil || logparse.DetailIsMessage(logparse.Kind(kindS)):
+				// no kind: not a log event's detail (a union's other engine); a message kind: the server's own words
+				case row[c.i] == nil || kindS == "" || logparse.DetailIsMessage(logparse.Kind(kindS)):
 				case pol == "none", pol == "normalized" && kindS == "error":
 					row[c.i] = nil
 				case pol == "normalized":

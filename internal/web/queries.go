@@ -100,7 +100,7 @@ SELECT s.pid, s.backend_start, s.leader_pid, s.backend_type, s.datname, s.usenam
        extract(epoch FROM s.snapshot_at - s.query_start)::int AS query_secs,
        extract(epoch FROM s.snapshot_at - s.xact_start)::int  AS xact_secs,
        extract(epoch FROM s.snapshot_at - s.state_change)::int AS state_secs,
-       s.backend_xmin_age, s.xid_assigned, s.query_id, q.query
+       s.backend_xmin_age, s.xid_assigned, s.query_id, q.query AS "query@stmt"
   FROM pgvigil.activity_sample s
   LEFT JOIN pgvigil.query_text q ON q.query_hash = s.query_hash
  WHERE s.instance_id = $1 AND s.snapshot_at = $2
