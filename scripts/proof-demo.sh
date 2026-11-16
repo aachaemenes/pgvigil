@@ -143,6 +143,11 @@ PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); pr
 "$BIN" serve -config "$CFG" -no-login -listen "127.0.0.1:$PORT" 2>"$WORK/serve.log" & SPID=$!
 for _ in $(seq 50); do curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.2; done
 api() { curl -fsS "http://127.0.0.1:$PORT/api/$1"; }
+# erp01 -> erp02 (gen.go replicationRows): erp01's sender names no slot type, so it is a physical link, and its
+# replay lag holds near 432 s at the anchor in reads a minute apart - since the HA join (0141) that is ONE row,
+# 'standby lag' on erp01 (the smaller of the last two reads against 30 / 300 s), where 0006 said 'replay lag' there.
+# erp02 keeps 'replay lag': its own receiver row lags the same, and the demo seeds no 'standby' row for it, so no
+# monitored primary's link is paired with it (0141 keeps 0006's standby-side rule for exactly that case).
 EXPECTED_OVERVIEW_FIXED="BurstBalance@demo-rds-orders01
 DMS CDC latency@demo-aurora-dms01
 DMS changes on disk@demo-aurora-dms01
@@ -177,7 +182,6 @@ job failing repeatedly@demo-aurora-crm01
 job schedule missed@demo-rds-billing01
 last archive older than 60 min@demo-onprem-hr01
 no snapshot in 24 h@demo-aurora-reporting01
-replay lag@demo-onprem-erp01
 replay lag@demo-onprem-erp02
 retention under 7 days@demo-aurora-dms01
 retention under 7 days@demo-rds-orders01
@@ -192,6 +196,7 @@ role: pg_monitor@demo-rds-billing01
 role: superuser@demo-azure-portal01
 role: superuser@demo-onprem-erp01
 role: superuser@demo-rds-billing01
+standby lag@demo-onprem-erp01
 swap used@demo-onprem-hr01
 swap used@demo-rds-orders01
 table autovacuum off@demo-onprem-hr01
