@@ -1,0 +1,185 @@
+diff --git i/cmd/pgvigil/report.go w/cmd/pgvigil/report.go
+index 63414bdf..56af0bca 100644
+--- i/cmd/pgvigil/report.go
++++ w/cmd/pgvigil/report.go
+@@ -285,7 +285,7 @@ func osRelease() string {
+ // key this list does not know (a new one, a misspelt one) is masked, never shown.
+ var keepKeys = map[string]bool{
+ 	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
+-	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
++	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true, "read_tools": true,
+ 	// alerts:
+ 	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
+ 	"clear_after": true, "port": true, "tls": true, "format": true,
+@@ -307,7 +307,7 @@ var knownKeys = map[string]bool{
+ 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
+ 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
+ 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
+-	"latency_warn_secs": true, "archive_warn_minutes": true,
++	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true,
+ 	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,
+ 	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
+ 	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,
+diff --git i/deploy/examples/pgvigil.example.yaml w/deploy/examples/pgvigil.example.yaml
+index b7d86755..2d3c29d1 100644
+--- i/deploy/examples/pgvigil.example.yaml
++++ w/deploy/examples/pgvigil.example.yaml
+@@ -37,6 +37,7 @@ instances:
+     #                                  # Audit); they can carry data: absent = the class, command and object only
+     # backups:
+     #   archive_warn_minutes: 60         # the last archived WAL older than this while WAL waits is a finding
++    #   read_tools: true                 # run the backup tool the server names and read its configuration here (off by default)
+     schedules:
+       instance: 30m
+     # The AWS door of an RDS / Aurora instance: the postgresql log over CloudWatch Logs (logs) and the
+diff --git i/internal/collect/backup_readtools_wiring.go w/internal/collect/backup_readtools_wiring.go
+new file mode 100644
+index 00000000..28576a7e
+--- /dev/null
++++ w/internal/collect/backup_readtools_wiring.go
+@@ -0,0 +1,8 @@
++package collect
++
++import "github.com/aachaemenes/pgvigil/internal/config"
++
++// The lead's WIRING of task 302: the read_tools opt-in of an instance's backups: block opens the tool reads.
++func init() {
++	backupReadTools = func(in config.Instance) bool { return in.Backups != nil && in.Backups.ReadTools }
++}
+diff --git i/internal/config/config.go w/internal/config/config.go
+index d8b09d7a..b32669ac 100644
+--- i/internal/config/config.go
++++ w/internal/config/config.go
+@@ -347,6 +347,10 @@ func (d *DMS) LatencyWarn() int {
+ type Backups struct {
+ 	// ArchiveWarnMinutes is the age of the last archived WAL file past which a finding is raised while WAL waits; 0 = 60.
+ 	ArchiveWarnMinutes int `yaml:"archive_warn_minutes"`
++	// ReadTools lets the collector run the backup tool the server names (pgbackrest info, barman list-backups and
++	// show-servers, barman-cloud-backup-list) and read its configuration on the collector's host (task 302's fold F1:
++	// off by default - it runs programs as the collector's account and opens files that hold a repository's keys).
++	ReadTools bool `yaml:"read_tools"`
+ }
+ 
+ // ArchiveWarn returns the archive-age threshold in minutes (60 when unset).
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 4e1430c7..878c193a 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -279,6 +279,9 @@ func (s *Server) Handler() http.Handler {
+ 	// task 162 (q_pg_backups.go): base backups, server state, the fleet Replication page, the thresholds
+ 	api.HandleFunc("GET /api/pg/backups", s.PgBackups)
+ 	api.HandleFunc("GET /api/pg/backups/fleet", s.PgBackupsFleet)
++	api.HandleFunc("GET /api/pg/backup_dest", s.PgBackupDest)
++	api.HandleFunc("GET /api/pg/backup_dest/fleet", s.PgBackupDestFleet)
++	api.HandleFunc("POST /api/pg/backup_dest", s.PgBackupDestWrite)
+ 	api.HandleFunc("GET /api/pg/state", s.PgState)
+ 	api.HandleFunc("GET /api/pg/replication", s.PgReplicationFleet)
+ 	api.HandleFunc("GET /api/pg/thresholds", s.PgThresholds)
+diff --git i/scripts/proof-pg-backups-roles.sh w/scripts/proof-pg-backups-roles.sh
+index c160b610..edfd0883 100755
+--- i/scripts/proof-pg-backups-roles.sh
++++ w/scripts/proof-pg-backups-roles.sh
+@@ -188,10 +188,16 @@ instances:
+   - name: pv-primary
+     dsn: env:MON_DSN
+     tags: [proofpg]
++    backups:
++      read_tools: true
+   - name: pv-standby
+     dsn: env:SB_DSN
++    backups:
++      read_tools: true
+   - name: pv-fileship
+     dsn: env:FS_DSN
++    backups:
++      read_tools: true
+ EOF
+ "$BIN" migrate -config "$CFG" >/dev/null || fail "migrate"
+ SHIM=$WORK/shim; mkdir -p "$SHIM"
+diff --git i/web/src/fleet.ts w/web/src/fleet.ts
+index 61fb3eb1..9bd14c2f 100644
+--- i/web/src/fleet.ts
++++ w/web/src/fleet.ts
+@@ -10,7 +10,7 @@ import { versionCell } from './versions';
+ // pgaudit: the PostgreSQL instances' pgaudit cells (readAuditFleet); pgauditFailed: that read failed
+ // collect: every instance's collection ages and errors (Snapshot Age, Collection Errors (24hrs)); roots: the root's uptime
+ // and memory dump thresholds (the Summary's Options dialogs)
+-export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; collect: Row[]; roots: Row[]; mssqlFailed: boolean; pgaudit: Row[]; pgauditFailed: boolean; at: number }
++export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; collect: Row[]; roots: Row[]; mssqlFailed: boolean; pgaudit: Row[]; pgauditFailed: boolean; pgBaseNotRead: Set<number>; at: number }
+ let cache: Fleet | null = null;
+ let pending: Promise<Fleet> | null = null;
+ // the pgaudit cells are read at most every 5 minutes, a forced refresh included (the Summary's auto refresh forces one
+@@ -35,8 +35,12 @@ export async function fleet(force = false): Promise<Fleet> {
+   pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {}).catch(() => ({ fleet: null })),
+     get<{ cells: Table | null; servers: Table | null; pgdb: Table | null; collect: Table | null; roots: Table | null; failed?: boolean }>('mssql/summary', {})
+       .catch(() => ({ cells: null, servers: null, pgdb: null, collect: null, roots: null, failed: true })),
+-    auditRead()])
+-    .then(([i, c, v, m, a]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), collect: rowsOf(m.collect), roots: rowsOf(m.roots), mssqlFailed: m.failed === true, pgaudit: a.rows, pgauditFailed: a.failed, at: Date.now() }))
++    auditRead(),
++    // task 302: the instances whose base backups are not read (the read_tools opt-in off): their Backup FULL cell is
++    // grey, never green; optional like the versions read (a repository before 0148: no instance is marked)
++    get<{ fleet: Table | null }>('pg/backup_dest/fleet', {}).catch(() => ({ fleet: null }))])
++    .then(([i, c, v, m, a, bd]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), collect: rowsOf(m.collect), roots: rowsOf(m.roots), mssqlFailed: m.failed === true, pgaudit: a.rows, pgauditFailed: a.failed,
++      pgBaseNotRead: new Set(rowsOf(bd.fleet).filter(r => r.base_not_read === true).map(r => Number(r.instance_id))), at: Date.now() }))
+     .finally(() => { pending = null; });
+   return pending;
+ }
+@@ -283,6 +287,11 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
+     if (g.key === 'activity') { out[g.key] = activityCell(r); continue; }
+     if (g.key === 'version') { out[g.key] = versionCellOf(f, id); continue; }
+     const hit = mine.filter(c => g.checks.includes(String(c.check_group)) && (!g.names || g.names(String(c.check_name ?? ''), String(c.check_group))));
++    // Backup FULL on PostgreSQL with the tool read off (task 302's opt-in): no check row is no verdict - grey, never OK
++    if (g.key === 'full' && hit.length === 0 && f.pgBaseNotRead.has(id)) {
++      out[g.key] = { level: 0, n: 0, none: true, text: 'not read', detail: ['base backups not read: the backup tool read is off for this instance (pgvigil.yaml backups: read_tools: true)'] };
++      continue;
++    }
+     // Host and Disk read "no sample" on an instance the host collection has never reached (no system_stats, no
+     // CloudWatch door: Azure, Cloud SQL): an empty check list there is not OK
+     if ((g.key === 'host' || g.key === 'disk') && r.host_at == null && hit.length === 0) {
+diff --git i/web/src/pg_backups.ts w/web/src/pg_backups.ts
+index 5a5b5bb7..9c565da0 100644
+--- i/web/src/pg_backups.ts
++++ w/web/src/pg_backups.ts
+@@ -15,6 +15,7 @@ import { AckBody, AckData, ackDialog, ackWhy, loadAckSafe, offBeside, seatWhy, w
+ import { Ctx, href } from './router';
+ import { fleet, inTagScope } from './fleet';
+ import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
++import { pgBackupDestFleet, pgBackupDestFleetCols, pgBackupDestSection } from './pg_backup_dest';
+ 
+ type Parts<K extends string> = Record<K, Table | null>;
+ 
+@@ -185,6 +186,7 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
+           ['threshold', thresholdLine({ warn: rep.warn_min, crit: rep.crit_min, unit: 'minutes', direction: 'over', level: rep.threshold_level })],
+         ])));
+     }
++    out.push(await pgBackupDestSection(id, name, ad, () => void draw()));
+     out.push(await thresholdsSection(rowsOf(d.thresholds), id, name, () => void draw(), ad));
+     box.replaceChildren(...out);
+   };
+@@ -194,12 +196,14 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
+ 
+ // pgBaseBackupsFleetSection: every self-managed instance's base backups by tool and every standby's replay.
+ export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
+-  const [d, ids] = await Promise.all([get<Parts<'tools' | 'replay'>>('pg/backups/fleet', {}), tagIds(ctx)]);
++  const [d, ids, dest] = await Promise.all([get<Parts<'tools' | 'replay'>>('pg/backups/fleet', {}), tagIds(ctx), pgBackupDestFleet().catch(() => new Map<number, Row>())]);
+   const keep = (r: Row) => !ids || ids.has(Number(r.instance_id));
+   const tools = rowsOf(d.tools).filter(keep), rep = rowsOf(d.replay).filter(keep);
++  // task 302: where the backups go, for EVERY PostgreSQL instance in scope (an rsync, cp or wal-g server has no tool row)
++  const where = [...dest.values()].filter(keep);
+   const cols: Col[] = [
+     { key: 'instance', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgbackups') }, { key: 'tool' }, { key: 'name', label: 'stanza / server' },
+-    { key: 'state', fmt: stateBadge }, { key: 'worst', label: 'rules', fmt: v => v == null ? badge('ok', 'ok') : sev(v) },
++    { key: 'state', fmt: stateBadge }, { key: 'worst', label: 'rules', fmt: (v, r) => v != null ? sev(v) : r.state === 'not_read' ? badge('not read', '') : badge('ok', 'ok') },
+     { key: 'last_label', label: 'last backup' }, { key: 'last_type', label: 'kind' }, { key: 'last_age_h', label: 'age', num: true, fmt: hours },
+     { key: 'full_age_h', label: 'full age', num: true, fmt: hours }, { key: 'last_db_size_bytes', label: 'size', num: true, fmt: fmtBytes },
+     { key: 'wal_since_bytes', label: 'WAL since', num: true, fmt: fmtBytes }, { key: 'message', wide: true },
+@@ -213,6 +217,9 @@ export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement>
+   return el('section', {}, el('h2', {}, 'Base backups (pgBackRest, barman)'),
+     el('p', { class: 'meta' }, `${tools.length} tool read(s) on ${new Set(tools.map(t => t.instance_id)).size} instance(s); ${rep.length} standby(s).`),
+     grid(tools, cols, 'No self-managed server names pgBackRest or barman in its archive_command or restore_command.'),
++    el('h3', {}, 'Where the backups go'),
++    grid(where, [{ key: 'instance', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgbackups') }, ...pgBackupDestFleetCols,
++      { key: 'secret_seen', label: 'a credential in the command', fmt: v => v === true ? badge('yes (not stored)', 'warn') : '' }], 'No PostgreSQL instance in scope.'),
+     el('h3', {}, 'Standbys: replay'), grid(rep, rcols, 'No standby read yet.'));
+ }
+ 

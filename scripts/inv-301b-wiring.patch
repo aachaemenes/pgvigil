@@ -1,0 +1,343 @@
+diff --git c/cmd/pgvigil/report.go i/cmd/pgvigil/report.go
+index 56af0bc..2c23d6a 100644
+--- c/cmd/pgvigil/report.go
++++ i/cmd/pgvigil/report.go
+@@ -286,6 +286,7 @@ func osRelease() string {
+ var keepKeys = map[string]bool{
+ 	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
+ 	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true, "read_tools": true,
++	"backup_files": true, "auto_close_databases": true, "verify_timeout": true,
+ 	// alerts:
+ 	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
+ 	"clear_after": true, "port": true, "tls": true, "format": true,
+@@ -307,7 +308,7 @@ var knownKeys = map[string]bool{
+ 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
+ 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
+ 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
+-	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true,
++	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "backup_files": true, "reads": true, "auto_close_databases": true, "verify_timeout": true,
+ 	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,
+ 	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
+ 	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,
+diff --git c/cmd/pgvigil/serve.go i/cmd/pgvigil/serve.go
+index 687cb06..948968b 100644
+--- c/cmd/pgvigil/serve.go
++++ i/cmd/pgvigil/serve.go
+@@ -177,6 +177,12 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 		}
+ 	}
+ 	srv.SetMSSQLActions(doors)
++	// task 301b: verify_backup's bound, and the verifies a stopped serve left with no end row (now, then hourly)
++	srv.SetVerifyTimeout(cfg.VerifyTimeout.Duration)
++	if err := srv.SweepVerifies(ctx); err != nil {
++		log.Warn("actions: the verifies left by a stopped serve were not swept", "err", err)
++	}
++	go srv.VerifySweepsHourly(ctx)
+ 	dbadash.SetRepositories(cfg.DBADash) // the imported servers' live screens (task 168) read the repositories through serve
+ 	// task 161: a PostgreSQL instance's job actions (job_stop, job_start) are on only where its actions: list names them
+ 	pgJobs := map[string][]string{}
+@@ -212,6 +218,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 	}
+ 	select {
+ 	case <-ctx.Done():
++		srv.StopVerifies(30 * time.Second) // task 301b: a running verify's end row ('cut by shutdown') before serve goes
+ 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+ 		defer cancel()
+ 		return hs.Shutdown(sctx)
+diff --git c/docs/sqlserver-actions.md i/docs/sqlserver-actions.md
+index dfce885..0542bbf 100644
+--- c/docs/sqlserver-actions.md
++++ i/docs/sqlserver-actions.md
+@@ -73,6 +73,40 @@ Both connections are open and the actions login is checked before the last read
+ 
+ A kill rolls the session's open transaction back. A long transaction takes about as long to roll back as it took to run, and the session stays visible in that state until it is done.
+ 
++## verify_backup (task 301b)
++
++RESTORE VERIFYONLY of one backup set from the backup history's grid (a set's Verify, in its right-click menu): it
++reads the backup file(s) and checks the set can be restored, with CHECKSUM where the set has checksums. Off unless
++the instance's `actions:` list names `verify_backup` - and on the site's switch list it says what it opens: **it gives
++the actions login CREATE DATABASE: it can restore a copy of any database whose backup file the SQL Server service
++account can read** (as that login, under a new name, owned by it). RESTORE VERIFYONLY itself creates no database and
++writes no restorehistory row.
++
++The grant, in master only (the narrower of the two forms that work; never dbcreator, never ALTER ANY DATABASE -
++pgvigil refuses a login that holds either, as it refuses sysadmin and CONTROL SERVER):
++
++    USE master;
++    CREATE USER pgvigil_actions FOR LOGIN pgvigil_actions;
++    GRANT CREATE DATABASE TO pgvigil_actions;
++
++How it runs: the request carries the set's backup_set_uuid and what Preview showed; the read login reads the set
++again (its database, type, finish, disk files, position, checksums, size) and any difference refuses; RESTORE HEADERONLY of the file and
++position (on the actions login) must name the set's uuid, else the file now holds another backup set; then RESTORE
++VERIFYONLY with the paths and the position as parameters (the audit keeps the statement with no path in it). The
++verify runs detached from the request, bounded by `verify_timeout` (top level, default 2h), one per instance; the
++audit writes `started`, then `done` or `failed` with the server's own words ('The backup set on file 1 is valid.'),
++`cut by shutdown` when serve stops under it, and `ended unknown` for a verify that has no end while no verify holds
++its instance's lock (serve was killed under it: its session, and the lock, are gone) - looked for at serve's start
++and every hour, whatever the row's age. One verify per instance is a session advisory lock on the repository,
++held on a connection of its own for the run: behind a connection pooler in transaction mode (PgBouncer
++`pool_mode = transaction`) a session lock does not hold, so serve's repository DSN names the server or a session-mode
++pool. Where the read login holds VIEW SERVER STATE, it looks every minute for the verify's session: when the
++session no longer runs the RESTORE twice in a row (the server restarted, failed over or ended it), the verify ends
++`failed` with those words; without that right a lost connection is seen only at `verify_timeout`. A refused attempt
++(a second click while one runs, the wrong typed name) writes `refused` and sends nothing; the grid's last verify
++shows the newest verify that was sent. While serve stops, a new verify is refused ('serve is stopping').
++Not offered: a URL, tape, virtual-device or NUL backup, password-protected media, an encrypted backup.
++
+ ## The log
+ 
+ Every attempt is written to `pgvigil.actions_log` in the repository before the reply is sent: the UI user and their address, the instance, the action, the statement, the target (session id, login, program and host, or the job's name and id), the reason, the outcome and the server's message.
+diff --git c/internal/config/config.go i/internal/config/config.go
+index b32669a..4e63008 100644
+--- c/internal/config/config.go
++++ i/internal/config/config.go
+@@ -25,6 +25,8 @@ type Config struct {
+ 	// always masked), normalized (every literal replaced by ?), none (no statement text at all,
+ 	// only hashes and counters). An instance's own query_text overrides it.
+ 	QueryText string `yaml:"query_text"`
++	// VerifyTimeout bounds one verify_backup (task 301b: RESTORE VERIFYONLY of a large backup runs for hours); 0 = 2h.
++	VerifyTimeout Duration `yaml:"verify_timeout"`
+ 	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
+ 	UI UI `yaml:"ui"`
+ 	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
+@@ -78,13 +80,15 @@ type Instance struct {
+ 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
+ 	// accepted: the password of a login that can stop sessions never sits in the file.
+ 	ActionsDSNRaw string `yaml:"actions_dsn"`
+-	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop; on PostgreSQL job_stop and
++	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop, verify_backup; on PostgreSQL job_stop and
+ 	// job_start (task 161: Stop a pg_cron / pgAgent run, pgAgent's Run now). An action not named here is off even with
+ 	// an actions_dsn; empty (the default) = nothing. PostgreSQL's cancel and terminate need no list: its actions_dsn
+ 	// alone turns them on.
+ 	Actions []string `yaml:"actions"`
+ 	// Backups tunes the backups collection's rules; nil = the defaults.
+ 	Backups *Backups `yaml:"backups"`
++	// Reads holds the opt-ins of reads with a side effect on the server (task 301b); nil = all off.
++	Reads *Reads `yaml:"reads"`
+ 	// ExplainAnalyze turns on the Plan page's EXPLAIN ANALYZE for this instance (it executes the statement: a
+ 	// SELECT only, through explain_dsn, in a read-only transaction rolled back); false (the default) = off.
+ 	ExplainAnalyze bool `yaml:"explain_analyze"`
+@@ -353,6 +357,17 @@ type Backups struct {
+ 	ReadTools bool `yaml:"read_tools"`
+ }
+ 
++// Reads holds the opt-ins of reads that have a side effect on the monitored server; nil = all off.
++type Reads struct {
++	// AutoCloseDatabases lets mssql_backup_checks read an AUTO_CLOSE database's recovery status (task 301b: the read
++	// opens a closed AUTO_CLOSE database - off by default, the database is then 'not read').
++	AutoCloseDatabases bool `yaml:"auto_close_databases"`
++	// BackupFiles lets mssql_backup_checks ask SQL Server whether the newest backups' files are still where msdb says
++	// they were written (task 301b, Database#7: off by default - the SQL Server service account then touches every
++	// backup destination once an hour).
++	BackupFiles bool `yaml:"backup_files"`
++}
++
+ // ArchiveWarn returns the archive-age threshold in minutes (60 when unset).
+ func (b *Backups) ArchiveWarn() int {
+ 	if b == nil || b.ArchiveWarnMinutes <= 0 {
+@@ -520,9 +535,9 @@ func (c *Config) Validate() error {
+ 			seen := map[string]bool{}
+ 			for _, a := range in.Actions {
+ 				switch a {
+-				case "kill", "job_start", "job_stop":
++				case "kill", "job_start", "job_stop", "verify_backup":
+ 				default:
+-					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop)", in.Name, a)
++					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, verify_backup)", in.Name, a)
+ 				}
+ 				if seen[a] {
+ 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)
+diff --git c/internal/config/config_test.go i/internal/config/config_test.go
+index 0651639..9a29975 100644
+--- c/internal/config/config_test.go
++++ i/internal/config/config_test.go
+@@ -189,7 +189,10 @@ func TestEngine(t *testing.T) {
+ 	}}
+ 	ok.Instances = append(ok.Instances,
+ 		Instance{Name: "ms-act", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "job_start", "job_stop"}},
+-		Instance{Name: "ms-act-none", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "file:/run/secrets/ms-act"})
++		Instance{Name: "ms-act-none", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "file:/run/secrets/ms-act"},
++		// task 301b: RESTORE VERIFYONLY through the door (off unless named here)
++		Instance{Name: "ms-verify", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "verify_backup"},
++			Reads: &Reads{AutoCloseDatabases: true, BackupFiles: true}})
+ 	if err := ok.Validate(); err != nil {
+ 		t.Fatalf("a valid two-engine config was rejected: %v", err)
+ 	}
+diff --git c/internal/mssql/actions.go i/internal/mssql/actions.go
+index b2ff5a1..63590d0 100644
+--- c/internal/mssql/actions.go
++++ i/internal/mssql/actions.go
+@@ -46,7 +46,7 @@ const (
+ )
+ 
+ // ActionKinds lists every action, in the order the documentation gives them.
+-var ActionKinds = []ActionKind{ActionKill, ActionJobStart, ActionJobStop}
++var ActionKinds = []ActionKind{ActionKill, ActionJobStart, ActionJobStop, ActionVerifyBackup}
+ 
+ // ValidAction says whether s names an action (the config's validation of an actions: list).
+ func ValidAction(s string) bool {
+diff --git c/internal/mssql/backup_checks_wiring.go i/internal/mssql/backup_checks_wiring.go
+new file mode 100644
+index 0000000..fbba3f5
+--- /dev/null
++++ i/internal/mssql/backup_checks_wiring.go
+@@ -0,0 +1,15 @@
++package mssql
++
++import "database/sql"
++
++// The WIRING of task 301b (scripts/inv-301b-wiring.patch): mssql_backup_checks' two opt-ins and the file check's pool
++// come from the instance's configuration through Info (the runner sets them); without this file both stay off.
++func init() {
++	backupCheckOptions = func(i Info) (bool, bool) { return i.ReadAutoCloseDatabases, i.CheckBackupFiles }
++	backupFileDB = func(i Info) *sql.DB {
++		if !i.CheckBackupFiles {
++			return nil
++		}
++		return i.BackupFilePool
++	}
++}
+diff --git c/internal/mssql/detect.go i/internal/mssql/detect.go
+index 70bb240..f928f65 100644
+--- c/internal/mssql/detect.go
++++ i/internal/mssql/detect.go
+@@ -44,6 +44,12 @@ type Info struct {
+ 	// instance's tag pool:<name> gives it (the runner sets it; the view of the pool's figures names no pool)
+ 	ServiceObjective string
+ 	PoolTag          string
++	// task 301b (the runner sets them from the instance's configuration): the two opt-ins of mssql_backup_checks, and
++	// the file check's own pool (openBackupFilePool; never the collection's, which Connect caps at one connection),
++	// from which it takes its short-lived connections
++	ReadAutoCloseDatabases bool
++	CheckBackupFiles       bool
++	BackupFilePool         *sql.DB
+ }
+ 
+ // detectSQL: on Azure SQL Database (engine edition 5) the database is the instance and VIEW DATABASE STATE is the right
+diff --git c/internal/mssql/mssql.go i/internal/mssql/mssql.go
+index d9e4822..35da2c9 100644
+--- c/internal/mssql/mssql.go
++++ i/internal/mssql/mssql.go
+@@ -477,6 +477,16 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+ 			info.PoolTag = t.Value
+ 		}
+ 	}
++	info.ReadAutoCloseDatabases = in.Reads != nil && in.Reads.AutoCloseDatabases
++	info.CheckBackupFiles = in.Reads != nil && in.Reads.BackupFiles
++	if info.CheckBackupFiles && name == Prefix+"backup_checks" {
++		// the file check's own pool (run 301bp4: the collection's is capped at its one connection); a pool that does
++		// not open leaves it nil, and the read says 'not judged: no connection for the file check'
++		if fp, ferr := openBackupFilePool(in); ferr == nil {
++			info.BackupFilePool = fp
++			defer func() { _ = fp.Close() }()
++		}
++	}
+ 	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+ 	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
+ 	ecancel()
+diff --git c/internal/web/q_mssql_properties.go i/internal/web/q_mssql_properties.go
+index 30ae2a5..7d3715f 100644
+--- c/internal/web/q_mssql_properties.go
++++ i/internal/web/q_mssql_properties.go
+@@ -23,11 +23,26 @@ import (
+ //
+ // Both read only this slice's tables (0084), mssql_wait_sample, mssql_sched_sample and collection_dates.
+ 
++// sqlMSSQLProperties: the stored properties, and beside the default backup path (task 301b, Instance#14) whether the
++// SQL Server service account sees it - mssql_backup_checks' read (mssql_backup_path_cells, 0191), never a stored
++// property: its value yes / no, its words the note, its read time the row's. A check of another path than the one stored
++// (the path changed since mssql_backup_checks last read) says so and judges nothing.
+ const sqlMSSQLProperties = `
+ SELECT p.name, p.grp, p.label, p.value, p.note, p.ord, p.snapshot_at, p.since
+   FROM pgvigil.mssql_property p
+  WHERE p.instance_id = $1
+- ORDER BY p.ord, p.name`
++UNION ALL
++SELECT 'default_backup_path_reachable', p.grp, 'Default backup path reachable',
++       CASE WHEN c.default_backup_path IS NOT DISTINCT FROM p.value THEN c.reachable END,
++       CASE WHEN c.instance_id IS NULL THEN 'not read: mssql_backup_checks has not run on this server yet (hourly)'
++            WHEN c.default_backup_path IS DISTINCT FROM p.value
++              THEN 'not read yet: the path changed since mssql_backup_checks last read it (hourly)'
++            ELSE c.default_backup_path_state END,
++       p.ord + 1, coalesce(c.read_at, p.snapshot_at), NULL::timestamptz
++  FROM pgvigil.mssql_property p
++  LEFT JOIN pgvigil.mssql_backup_path_cells c ON c.instance_id = p.instance_id
++ WHERE p.instance_id = $1 AND p.name = 'default_backup_path'
++ ORDER BY 6, 1`
+ 
+ const sqlMSSQLPropertyChanges = `
+ SELECT c.changed_at, c.name, c.label, c.old_value, c.new_value
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 878c193..4696353 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -345,6 +345,9 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/actions/state", s.MSSQLActionState)
+ 	api.HandleFunc("POST /api/mssql/actions/preview", s.MSSQLActionPreview)
+ 	api.HandleFunc("POST /api/mssql/actions/run", s.MSSQLActionRun)
++	// task 301b: verify_backup has its own two routes (a detached run; actions_verify.go)
++	api.HandleFunc("POST /api/mssql/actions/verify/preview", s.MSSQLVerifyPreview)
++	api.HandleFunc("POST /api/mssql/actions/verify/run", s.MSSQLVerifyRun)
+ 	api.HandleFunc("GET /api/plans", s.Plans)
+ 	api.HandleFunc("GET /api/plan", s.Plan)
+ 	api.HandleFunc("GET /api/mssql/summary", s.MSSQLSummary)
+diff --git c/scripts/proof-mssql-reads.sh i/scripts/proof-mssql-reads.sh
+index 07f2456..581393d 100755
+--- c/scripts/proof-mssql-reads.sh
++++ i/scripts/proof-mssql-reads.sh
+@@ -30,8 +30,8 @@
+ # reached a SQL Server):
+ #  M. the whole migration chain applies on PostgreSQL 13 (a fresh database of a postgres:13 container): migrate exits
+ #     0, the newest schema version equals the one of the main repository, and 0084's five functions exist there.
+-#  A. mssql_properties as the monitoring login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE): 42
+-#     properties are stored (7 of them task 301c's network rows, proof-mssql-properties-network.sh), and each of 33 values equals sa's own read of its source, taken beside the collector's:
++#  A. mssql_properties as the monitoring login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE): 43
++#     properties are stored (7 of them task 301c's network rows, proof-mssql-properties-network.sh; 1 task 301b's default backup path), and each of 33 values equals sa's own read of its source, taken beside the collector's:
+ #     sys.dm_os_sys_info (logical CPUs, sockets, cores per socket, hyperthread ratio, NUMA nodes, soft NUMA,
+ #     affinity, max workers, virtual machine, physical MB, memory model), sys.dm_os_schedulers (VISIBLE ONLINE,
+ #     VISIBLE OFFLINE), SERVERPROPERTY (edition, version, level, collation, clustered, Always On, machine, server
+@@ -142,13 +142,13 @@
+ #     described types and 7 families with LCK_M_ first; after a wait sample of 6,000 ms (LCK_M_U) and 300 ms
+ #     (WRITELOG) over one 60 s read and a schedulers row of 4 are put in by hand: 100 and 25 ms/sec for the first,
+ #     5 and 1.25 for the second.
+-#  P. the API on the server's rows: /api/mssql/properties holds the 42 properties and the changes (none on a shared
++#  P. the API on the server's rows: /api/mssql/properties holds the 44 rows (the 43 properties and task 301b's reachable row) and the changes (none on a shared
+ #     sandbox, where no setting is changed); /api/mssql/procs lists the proof's procedure with executions 11 (7 + 4)
+ #     and executions per minute = 11 x 60 / the covered seconds; db=<its database's id> keeps only that database's
+ #     two procedures; db_id= and object= give the procedure's two reads. /api/mssql/indexlocks lists the clustered
+ #     index with the stored sums; db= keeps that database's rows.
+ #  S. (only with PGVIGIL_SHOTS) in a headless Chromium at 1600 wide, in the light and the dark theme, each page is
+-#     found by its grid's column names, never by position: Properties shows 42 rows with the logical CPUs a number
++#     found by its grid's column names, never by position: Properties shows 44 rows with the logical CPUs a number
+ #     and the power plan's cell 'not read' on a Linux host; Procedures shows the proof's procedure with 11
+ #     executions under dbo, and its name opens it read by read (2 reads); Index locks shows PK_pv_lock on pv_lock
+ #     with at least 1 row lock wait, 1 escalation attempt and 1 escalation; Waits shows the forced lock wait's type with both
+@@ -401,7 +401,7 @@ fi
+ NPROP=$(q "select count(*) from pgvigil.mssql_property where instance_id=$iid")
+ echo "  $checked values checked (33 against sa's reads, the per cent, the power plan); $NPROP properties stored; max server memory, % of the machine: $(pv max_memory_pct)"
+ [ "$checked" = 35 ] || [ "$HOSTP" != Linux ] || fail "A: $checked values checked, want 35 (33 against sa, the per cent, the power plan's note)"
+-[ "$NPROP" = 42 ] || fail "A: $NPROP properties stored, want 42 (35 + task 301c's seven network rows)"
++[ "$NPROP" = 43 ] || fail "A: $NPROP properties stored, want 43 (35 + task 301c's seven network rows + task 301b's default backup path)"
+ [ "$(q "select count(*) from pgvigil.mssql_property_change where instance_id=$iid")" = 0 ] || fail "A: the first read logged a change"
+ # the three values that are shown and never logged move by themselves (tempdb may grow between two reads): their
+ # 'since' is left out of the comparisons
+@@ -756,7 +756,7 @@ fi
+ echo "--- P. the API"
+ W=$(win)
+ curl -fs "$U/mssql/properties?instance=$iid" > "$WORK/props.json" || fail "P: /api/mssql/properties"
+-[ "$(objs "$WORK/props.json" properties | jq 'length')" = 42 ] || fail "P: the properties part has $(objs "$WORK/props.json" properties | jq 'length') rows"
++[ "$(objs "$WORK/props.json" properties | jq 'length')" = 44 ] || fail "P: the properties part has $(objs "$WORK/props.json" properties | jq 'length') rows"
+ [ "$(objs "$WORK/props.json" changes | jq 'length')" = "$(q "select count(*) from pgvigil.mssql_property_change where instance_id=$iid")" ] || fail "P: the changes part"
+ [ "$(objs "$WORK/props.json" state | jq -r '.[0].collection')" = mssql_properties ] || fail "P: the state part"
+ curl -fs "$U/mssql/procs?instance=$iid&$W" > "$WORK/procs.json" || fail "P: /api/mssql/procs"
+@@ -845,7 +845,7 @@ for (const theme of ['light', 'dark']) {
+   check(await go(`#/mssqlproperties?i=${a.iid}&w=6h`, 'property'), T + 'Properties rendered');
+   const p = await pv(`const t = gridOf('property'); return { n: rowsOf(t).length, cpu: text(t, rowWith(t, 'property', 'Logical CPUs'), 'value'), plan: text(t, rowWith(t, 'property', 'Power plan'), 'value') };`);
+   // on a Linux host the power plan is not read and the cell says so; elsewhere it names a plan
+-  check(p.n === 42 && /^[\d,.\s]+$/.test(p.cpu ?? '') && (a.linux ? p.plan === 'not read' : !!p.plan && p.plan !== 'not read'), T + `Properties: ${p.n} rows, logical CPUs '${p.cpu}', power plan '${p.plan}'`);
++  check(p.n === 44 && /^[\d,.\s]+$/.test(p.cpu ?? '') && (a.linux ? p.plan === 'not read' : !!p.plan && p.plan !== 'not read'), T + `Properties: ${p.n} rows, logical CPUs '${p.cpu}', power plan '${p.plan}'`);
+   await shot('properties', theme);
+ 
+   check(await go(`#/mssqlprocs?i=${a.iid}&w=6h`, 'total duration (sec)'), T + 'Procedures rendered');

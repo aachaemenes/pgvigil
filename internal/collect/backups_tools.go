@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -22,8 +23,9 @@ import (
 // backupToolsCollector reads the base backups of a self-managed server, every 15 minutes, from the tool that takes
 // them (task 162; the WAL archiver and the RDS / Aurora side are the backups collection's).
 //
-// Which tool: the server's own archive_command and restore_command (pg_monitor reads them; only the tool's name and the
-// stanza or server name are kept, never the command, which can carry a credential). pgbackrest ... --stanza=<s> names
+// Which tool: the server's own archive_command and restore_command (every role that logs in reads them with SHOW: they
+// carry no GUC_SUPERUSER_ONLY flag; only the tool's name and the stanza or server name are kept, never the command,
+// which can carry a credential). pgbackrest ... --stanza=<s> names
 // pgBackRest; barman-wal-archive / barman-wal-restore <host> <server>, an rsync into .../<server>/incoming, or
 // barman-cloud-wal-archive <url> <server> names barman.
 //
@@ -33,8 +35,12 @@ import (
 //	barman -f json list-backups <server>             the barman server's catalog (the collector runs on the barman host)
 //	barman-cloud-backup-list -f json <url> <server>  a cloud catalog (the host's own cloud credentials)
 //
-// A tool named by the server but missing on the collector's host is a 'no binary' state row, never an error: the
-// collector's host needs the tool and read access to the repository (docs/backups-postgres.md).
+// The read is OPT-IN per instance (task 302's fold F1): pgvigil.yaml `backups: read_tools: true`, off by default - it
+// runs programs as the collector's account and opens files that hold a repository's keys. Off, each tool named is a
+// 'not_read' state row. A tool named by the server but missing on the collector's host is a 'no binary' state row,
+// never an error: the collector's host needs the tool and read access to the repository (docs/backups-postgres.md).
+// A failure is said in a fixed vocabulary (exit code n, no answer in 60s, could not run, not the JSON expected, not
+// in the answer): the tool's stderr is never read into a row or a log (F3).
 //
 // On a standby: the replay state (pg_last_xact_replay_timestamp, the replay and receive positions, paused) and whether
 // a WAL receiver runs, so a standby fed by restore_command alone (file-based log shipping) has its replay delay.
@@ -64,7 +70,8 @@ func (b backupToolsCollector) Run(ctx context.Context, conn *pgx.Conn, info plat
 	return b.RunInstance(ctx, conn, info, config.Instance{}, nil)
 }
 
-// backupToolsSettingsSQL reads the commands (pg_read_all_settings: pg_monitor has it) and the standby's state.
+// backupToolsSettingsSQL reads the commands (any role that logs in may: they carry no GUC_SUPERUSER_ONLY flag) and the
+// standby's state.
 const backupToolsSettingsSQL = `
 SELECT pg_is_in_recovery() AS is_replica, current_setting('archive_mode') AS archive_mode,
        current_setting('archive_command') AS archive_command, coalesce(current_setting('restore_command', true), '') AS restore_command,
@@ -80,34 +87,36 @@ SELECT pg_last_xact_replay_timestamp() AS last_replay_at, now() AS server_now,
 // lookTool finds a tool's binary; a test or a proof sets it to a stand-in.
 var lookTool = exec.LookPath
 
-// runTool runs a tool and returns its standard output; stderr's first line rides on the error.
+// backupReadTools says whether an instance opted in to the tool reads (`backups: read_tools: true`). The field is the
+// lead's WIRING in config.go; until it lands, nothing is read (the gate is closed by default).
+var backupReadTools = func(config.Instance) bool { return false }
+
+// backupNotRead is the words of a tool the gate kept closed.
+const backupNotRead = "not read: the tool read is off for this instance (pgvigil.yaml backups: read_tools: true turns it on)"
+
+// runTool runs a tool and returns its standard output. Its stderr is discarded unread (a tool's message can quote its
+// configuration, a passphrase included: F3); a failure is one of the fixed words.
 var runTool = func(ctx context.Context, bin string, args ...string) ([]byte, error) {
 	cctx, cancel := context.WithTimeout(ctx, backupToolsTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, bin, args...)
 	cmd.WaitDelay = 5 * time.Second // a child that keeps the pipes open does not stretch the run past its timeout
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, io.Discard
 	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(errb.String())
-		if i := strings.IndexByte(msg, '\n'); i >= 0 {
-			msg = msg[:i]
-		}
-		if len(msg) > 300 {
-			msg = msg[:300]
-		}
 		if errors.Is(cctx.Err(), context.DeadlineExceeded) {
 			return nil, fmt.Errorf("no answer in %s", backupToolsTimeout)
 		}
-		if msg == "" {
-			return nil, err
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return nil, fmt.Errorf("exit code %d", ee.ExitCode())
 		}
-		return nil, fmt.Errorf("%v: %s", err, msg)
+		return nil, errors.New("could not run")
 	}
 	return out.Bytes(), nil
 }
 
-func (backupToolsCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, _ config.Instance, _ CursorFunc) ([]Row, error) {
+func (backupToolsCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, inst config.Instance, _ CursorFunc) ([]Row, error) {
 	rows, err := conn.Query(ctx, backupToolsSettingsSQL)
 	if err != nil {
 		return nil, fmt.Errorf("backup_tools: the settings: %w", err)
@@ -126,8 +135,9 @@ func (backupToolsCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ p
 		"archive_command_set": archiveCmd != "" && archiveCmd != "(disabled)", "restore_command_set": restoreCmd != "",
 		"wal_segment_bytes": seg, "tools": len(tools)}
 	out := []Row{det}
+	readOn := backupReadTools(inst)
 	for _, t := range tools {
-		out = append(out, readBackupTool(ctx, t, seg)...)
+		out = append(out, readBackupTool(ctx, t, seg, readOn)...)
 	}
 	if isReplica {
 		rr, err := conn.Query(ctx, backupToolsReplaySQL)
@@ -238,10 +248,15 @@ func detectBackupTools(archiveCmd, restoreCmd string) []backupTool {
 	return out
 }
 
-// readBackupTool runs one tool and turns its JSON into rows: a 'tool' row always, 'backup' rows when it answered.
-func readBackupTool(ctx context.Context, t backupTool, seg int64) []Row {
+// readBackupTool runs one tool and turns its JSON into rows: a 'tool' row always, 'backup' rows when it answered; with
+// the instance's read off (readOn false) the 'tool' row alone, state 'not_read', and nothing is run or looked up.
+func readBackupTool(ctx context.Context, t backupTool, seg int64, readOn bool) []Row {
 	bin := map[string]string{"pgbackrest": "pgbackrest", "barman": "barman", "barman-cloud": "barman-cloud-backup-list"}[t.tool]
 	st := Row{"kind": "tool", "tool": t.tool, "name": t.name, "named_by": t.from, "binary": bin}
+	if !readOn {
+		st["state"], st["message"] = "not_read", backupNotRead
+		return []Row{st}
+	}
 	path, err := lookTool(bin)
 	if err != nil {
 		st["state"], st["message"] = "no_binary", fmt.Sprintf("the server's %s names %s, but %s is not on the collector host's PATH", t.from, t.tool, bin)
@@ -378,7 +393,7 @@ type pgbrInfo struct {
 func parsePgBackRest(raw []byte, stanza string, seg int64, st Row) ([]Row, error) {
 	var all []pgbrInfo
 	if err := json.Unmarshal(raw, &all); err != nil {
-		return nil, fmt.Errorf("pgbackrest info: not the JSON expected: %v", err)
+		return nil, errors.New("pgbackrest info: not the JSON expected")
 	}
 	var s *pgbrInfo
 	for i := range all {
@@ -472,7 +487,7 @@ func parseBarman(raw []byte, server string) ([]Row, error) {
 		RetentionStatus string      `json:"retention_status"`
 	}
 	if err := json.Unmarshal(raw, &all); err != nil {
-		return nil, fmt.Errorf("barman list-backups: not the JSON expected: %v", err)
+		return nil, errors.New("barman list-backups: not the JSON expected")
 	}
 	list, ok := all[server]
 	if !ok {
@@ -517,7 +532,7 @@ func parseBarmanCloud(raw []byte, server string) ([]Row, error) {
 		} `json:"backups_list"`
 	}
 	if err := json.Unmarshal(raw, &all); err != nil {
-		return nil, fmt.Errorf("barman-cloud-backup-list: not the JSON expected: %v", err)
+		return nil, errors.New("barman-cloud-backup-list: not the JSON expected")
 	}
 	out := make([]Row, 0, len(all.List))
 	for _, b := range all.List {
