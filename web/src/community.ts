@@ -17,7 +17,7 @@ import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl }
 import { needControl } from './needs';
 import { InstanceRun, logOutcome, resultView, ResultSet, setGrid } from './customreports';
 import { folderWords, inTagScope, tagWords } from './fleet';
-import { asRun, cutWords, isQueued, Queued, waitRequest } from './request';
+import { cutWords, endView, isQueued, Queued, waitRequest } from './request';
 
 // a need: what the tool lacks here before it can run and the way to get it (hard = the tool is off without it);
 // state: needs | note | not_checked | demo; source: where the server read it (server, configuration, repository, live)
@@ -359,7 +359,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
       if (isQueued(r)) {
         res.replaceChildren();
         const e = await waitRequest(r, status);   // the collector runs it; status says each state
-        res.replaceChildren(...cutWords(e), resultView([asRun(e, d.instance, d.engine)], undefined, t.name));
+        res.replaceChildren(...cutWords(e), endView(e, d.instance, d.engine, t.name));
       } else {
         res.replaceChildren(resultView(r.runs, undefined, t.name));
         status.textContent = `Ran at ${fmtTime(r.ran_at)}.`;
@@ -377,7 +377,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
       try {
         const q = await post<Queued>('community/run?help=1', { instance_id: instance, tool: t.id, database: d.database ?? '' });
         const e = await waitRequest(q, hs);
-        if (e.state !== 'done') hb.replaceChildren(errorBox(e.refusal ?? e.outcome ?? e.state));
+        if (e.state !== 'done') hb.replaceChildren(errorBox(e.refusal || e.outcome || e.state));   // '' is stored for words a state lacks
         else {
           hb.replaceChildren(...(e.result?.sets ?? []).flatMap((s, i) => [el('h3', {}, `${t.name} help, part ${i + 1}`), setGrid(s, i)]));
           // the procedure's own words per parameter, into the form's 'what it does' column (direct mode fills it at once)
@@ -486,15 +486,16 @@ function glennPanel(t: Tool, instance: number, database: string): HTMLElement {
       offControl(b, 'running', busy);   // one run at a time from this button
       try {
         const r = await post<{ runs: InstanceRun[] } | Queued>('community/run', { instance_id: instance, tool: t.id, database: db.value, text: q.text, query_name: `${q.n} ${q.name}` });
-        let runs: InstanceRun[];
+        const title = `Query ${q.n} ${q.name}`;
+        let view: HTMLElement;
         let cut: HTMLElement[] = [];
         if (isQueued(r)) {
           const e = await waitRequest(r, busy);   // queue mode: the collector runs the query
-          runs = [asRun(e, e.instance ?? '', 'sqlserver')];
+          view = endView(e, e.instance ?? '', 'sqlserver', title);
           cut = cutWords(e);
-        } else runs = r.runs;
+        } else view = resultView(r.runs, undefined, title);
         res.replaceChildren(el('details', {}, el('summary', {}, `Query ${q.n}: the text sent`), el('pre', { class: 'sql', tabindex: '0' }, q.text)),
-          ...cut, resultView(runs, undefined, `Query ${q.n} ${q.name}`));
+          ...cut, view);
       } catch (e) { res.replaceChildren(errorBox(e)); } finally { offControl(b, null, busy); }
     });
     return b;
