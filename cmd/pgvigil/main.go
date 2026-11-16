@@ -111,6 +111,14 @@ func run(args []string) int {
 		err = runMSSQLAgentAlerts(args[1:])
 	case "import":
 		err = dbadash.ImportCommand(ctx, log, os.Stdout, args[1:])
+	case "bundle":
+		err = runBundle(ctx, log, args[1:])
+	case "remote":
+		if len(args) < 2 || args[1] != "init" {
+			fmt.Fprintln(os.Stderr, "usage: pgvigil remote init -config file   (the collector's signing key; docs/remote-collector.md)")
+			return 2
+		}
+		err = runRemoteInit(args[2:])
 	default:
 		usage()
 		return 2
@@ -178,7 +186,7 @@ func runMSSQLXE(args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|export|tag|report|install|uninstall|mcp|mssql-xe|mssql-agent-alerts|import|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|export|tag|report|install|uninstall|mcp|mssql-xe|mssql-agent-alerts|import|bundle|remote|version> [-config file] [-once collection] [-instance name]")
 	fmt.Fprintln(os.Stderr, "       "+dbadash.ImportUsage)
 }
 
@@ -361,6 +369,10 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 		log.Warn(w)
 	}
 	logSecretEndpoints(ctx, log, cfg)
+	// a remote: block is the collector-only mode (R1, docs/remote-collector.md): no repository, its bundles for a hub
+	if cfg.Remote != nil {
+		return runRemote(ctx, log, cfg)
+	}
 	// an empty repository dsn (a fresh install's env file not filled yet) is a config error: exit 3, which the unit's
 	// RestartPreventExitStatus=3 and the Windows service's recovery leave stopped - never a restart loop
 	if strings.TrimSpace(cfg.Repository.DSN()) == "" {
