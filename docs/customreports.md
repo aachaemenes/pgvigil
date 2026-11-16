@@ -66,6 +66,21 @@ A cell is cut at 256 KB and says so; a run keeps at most 24 MB of rows. A result
 there and the statement is cancelled (the server stops producing rows nobody reads): the set says where it was cut,
 and on SQL Server a later result set of the same batch is not read.
 
+### Insight cards
+
+A result set of exactly two columns, `InsightSeverity` and `Insight` (in either order, any case: PostgreSQL lowers an
+unquoted alias, so `AS InsightSeverity` reads as `insightseverity`), is drawn as cards above the report's grids, one per
+row in row order, and not as a grid (as DBA Dash draws its own reports' insights). The severity is `Info`, `Warning` or
+`Critical`, read in any case; anything else, NULL too, is `Info`. A row whose `Insight` is NULL or blank is left out;
+a set with no rows draws no card. The insight is text: only `[words](https://...)` (http or https) becomes a link,
+opened in a new tab; any other `[words](...)` - `javascript:`, `data:`, a relative address - stays as its own text.
+A grid after a card set is numbered without it. Each instance of a tag or fleet run shows its own cards in its own
+part of the page. The page's workbook and its mail carry the cards as text, one line `<severity>: <insight>` each,
+in a sheet (a table in the mail) of their own under the same heading. A PostgreSQL report returns one result set, so
+its card report has no grid; a SQL Server batch can return the cards and its grids together. The API marks a card set
+with `cards: [{severity, insight}]` beside its columns and rows (`[]` for a card set with no rows); any other set has
+no `cards` key.
+
 ## How a run stays read-only
 
 | Where | The login | What keeps it read-only |

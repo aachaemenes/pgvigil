@@ -53,7 +53,8 @@ async function metaOf(ctx: Ctx): Promise<Meta> {
 // numbers: per grid of root, in sections()' order, which of its shown columns are number columns (right-aligned in
 // the mail as on the screen); a property card has none
 function numbers(root: ParentNode): boolean[][] {
-  return [...root.querySelectorAll<HTMLTableElement>('h2, h3, h4, table.grid, table.props')].filter(e => e.tagName === 'TABLE').map(t => {
+  return [...root.querySelectorAll<HTMLElement>('h2, h3, h4, table.grid, table.props, .insight-cards')].filter(e => e.tagName === 'TABLE' || e.classList.contains('insight-cards')).map(t => {
+    if (t.classList.contains('insight-cards')) return [false];   // a report's insight cards (B20-3): export.ts's one text column
     if (!t.classList.contains('grid')) return [false, false];
     return [...t.querySelectorAll(':scope > thead > tr:first-child > th')].filter(h => !h.hasAttribute('data-gt-hidden')).map(h => h.classList.contains('num'));
   });
