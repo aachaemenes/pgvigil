@@ -29,6 +29,10 @@
 #     output holds no error 229 (the procedure was not called).
 #  N4 SQL Server 2019 on Linux, a VIEW SERVER STATE login: tcp_port 1433, force_encryption no, force_strict_encryption
 #     'not on this version: strict encryption came with SQL Server 2022', protocols_enabled 'TCP/IP'.
+#  N5 offline, before the containers (N5b): the Properties tab's rule for a row without a value - its cell says 'not set'
+#     and the 'N not read' count leaves it out where the note starts 'not set', else 'not read' -
+#     scripts/props-count-check.mjs on an esbuild bundle of web/src/props_count.ts, every check ok (NOT PROVEN without
+#     web/node_modules).
 #  NOT PROVEN HERE: Windows (sys.dm_server_registry's rows, the IPn entries with ListenOnAllIPs off, Shared Memory and
 #  Named Pipes, Win32PrioritySeparation, the power plan's gate on a refused login): the unit tests TestNetworkRows and
 #  TestPowerPlanGate hold the rules until the one queued read-only Windows turn; Amazon RDS, Managed Instance and
@@ -57,6 +61,16 @@ sqn() { docker exec -i -e SQLCMDPASSWORD "$1" /opt/mssql-tools18/bin/sqlcmd -S "
 up() { for _ in $(seq 1 90); do [ "$(echo "SET NOCOUNT ON; SELECT CASE WHEN DATABASEPROPERTYEX('msdb','Status')='ONLINE' THEN 1 ELSE 0 END" | sqn "$1" "${2:-1433}" 2>/dev/null | tr -d '\r ')" = 1 ] && return 0; sleep 2; done; return 1; }
 RDSN=$(printf '%s' "$PGVIGIL_REPO_DSN" | sed -E "s/dbname=[^ ]+/dbname=$REPO_DB/"); [[ "$RDSN" == *"dbname=$REPO_DB"* ]] || RDSN="$PGVIGIL_REPO_DSN dbname=$REPO_DB"
 q() { psql "$RDSN" -XAtqc "$1"; }
+
+echo "== N5 the Properties tab's 'not set' rule, offline"
+if [[ -x web/node_modules/.bin/esbuild ]] && command -v node >/dev/null; then
+  printf "export * from './web/src/props_count';" | web/node_modules/.bin/esbuild --bundle --format=esm --loader=ts --log-level=warning --outfile="$WORK/props_count.mjs" \
+    || fail "N5: esbuild did not bundle web/src/props_count.ts"
+  node scripts/props-count-check.mjs "$WORK/props_count.mjs" > "$WORK/props_count.out" || { cat "$WORK/props_count.out"; fail "N5: the 'not set' rule did not hold"; }
+  ok "N5: $(grep -c '^ok' "$WORK/props_count.out") checks of the cell and the count"
+else
+  notproven "N5: web/node_modules or node is missing (cd web && npm ci)"
+fi
 
 echo "== containers"
 printf 'ACCEPT_EULA=Y\nMSSQL_PID=Developer\nMSSQL_SA_PASSWORD=%s\n' "$SAPW" > "$WORK/sql.env"; chmod 600 "$WORK/sql.env"

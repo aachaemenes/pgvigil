@@ -220,12 +220,16 @@ func TestNetRowsOnWindowsFixtureOtherAnswers(t *testing.T) {
 	}
 	noRight := gate
 	noRight.instanceRegread = false
-	// the view holding the bare key's ForceEncryption without ForceStrict is the view's answer (N5b R2b): not set, no call
-	for _, g := range []propGate{noRight, gate} {
-		got, _, calls = fixtureNet(t, append(append([]collect.Row{}, view...), viewRow("", "ForceEncryption", "0")), 16, g, nil)
-		if got[keyForceEnc] != "no | " || got[keyForceStrictEnc] != " | not set (strict encryption off unless it is set)" || calls != 0 {
-			t.Errorf("ForceEncryption alone in the view (regread right %t): force %q, strict %q, %d call(s)", g.instanceRegread, got[keyForceEnc], got[keyForceStrictEnc], calls)
-		}
+	// the view holding ForceEncryption without ForceStrict is not taken as whole (N5b's review F1): xp_instance_regread
+	// is asked, and its NULL is 'not set'; without the right the row names it
+	withEnc := append(append([]collect.Row{}, view...), viewRow("", "ForceEncryption", "0"))
+	got, _, calls = fixtureNet(t, withEnc, 16, gate, func() ([]collect.Row, error) { return []collect.Row{reg}, nil })
+	if got[keyForceEnc] != "no | " || got[keyForceStrictEnc] != " | not set (strict encryption off unless it is set)" || calls != 1 {
+		t.Errorf("ForceEncryption alone in the view: force %q, strict %q, %d call(s)", got[keyForceEnc], got[keyForceStrictEnc], calls)
+	}
+	got, _, calls = fixtureNet(t, withEnc, 16, noRight, nil)
+	if got[keyForceEnc] != "no | " || !strings.HasPrefix(got[keyForceStrictEnc], " | not read: sys.dm_server_registry holds no ForceStrict value here; no right: EXECUTE on master.dbo.xp_instance_regread") || calls != 0 {
+		t.Errorf("ForceEncryption alone in the view, no right: force %q, strict %q, %d call(s)", got[keyForceEnc], got[keyForceStrictEnc], calls)
 	}
 	// xp_instance_regread answering ForceStrict 0 where the view holds no bare-key row: no
 	reg0 := collect.Row{}

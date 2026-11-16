@@ -9,4 +9,8 @@ check("a row 'not read'", m.unreadCount([{ value: null, note: 'not read: xp_inst
 check("a row 'not set' (an absent value the setting allows)", m.unreadCount([{ value: null, note: 'not set (strict encryption off unless it is set)' }]), 0);
 check('the three together', m.unreadCount([{ value: 'no' }, { value: null, note: 'not read: a' }, { value: null, note: 'not set (strict encryption off unless it is set)' }]), 1);
 check('a row with no note and no value', m.unreadCount([{ value: null }]), 1);
+// the value cell's word follows the same rule (N5b's review F2: the cell said 'not read' beside a 'not set' note)
+check("the cell of a 'not set' row", m.valueWord({ value: null, note: 'not set (strict encryption off unless it is set)' }), 'not set');
+check("the cell of a 'not read' row", m.valueWord({ value: null, note: 'not read: a' }), 'not read');
+check('the cell of a row with its value', m.valueWord({ value: 'no' }), '');
 process.exit(failed ? 1 : 0);

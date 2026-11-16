@@ -509,10 +509,10 @@ func pctText(part, whole int64) string {
 //
 //   - Windows: sys.dm_server_registry (VIEW SERVER STATE; VIEW SERVER PERFORMANCE STATE from SQL Server 2022), the
 //     SuperSocketNetLib rows with the IPn entries; where the view is refused or empty, xp_instance_regread for the
-//     instance's values - without the view the IPn entries cannot be listed; where the view holds no ForceEncryption
-//     (no row of the bare key: 301c N5, the lab's 2022 VM), xp_instance_regread for the two encryption values. The bare
-//     key answered (ForceEncryption read) without ForceStrict on 2022 and later = 'not set' (strict encryption off
-//     unless it is set; no Microsoft page gives its default). Win32PrioritySeparation, never in the view, through
+//     instance's values - without the view the IPn entries cannot be listed; where the view lacks ForceEncryption or
+//     (from 2022) ForceStrict (301c N5: the lab's 2022 VM holds no row of the bare key), xp_instance_regread for the
+//     two encryption values. Its answer with ForceEncryption and without ForceStrict on 2022 and later = 'not set'
+//     (strict encryption off unless it is set; no Microsoft page gives its default). Win32PrioritySeparation, never in the view, through
 //     xp_regread.
 //   - Linux: the view is empty there; xp_instance_regread answers from SQL Server on Linux's own registry, which
 //     follows mssql-conf (network.tcpport, network.forceencryption: read back on 2022 after a restart). The
@@ -932,8 +932,8 @@ func netRows(p *propList, in netRowsInput) {
 		switch {
 		case in.major > 0 && in.major < 16:
 			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, nil, "not on this version: strict encryption came with SQL Server 2022")
-		case f.forceStrict == nil && f.forceEnc != nil && f.encWhy == "":
-			// the bare key answered (ForceEncryption read) and holds no ForceStrict: the setting is not set
+		case f.forceStrict == nil && f.forceEnc != nil && f.encWhy == "" && (f.source == "xp_instance_regread" || f.encSource == "xp_instance_regread"):
+			// xp_instance_regread answered for the key (ForceEncryption read) and gave no ForceStrict: the setting is not set
 			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, nil, notSetStrict)
 		default:
 			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, onOff(f.forceStrict), f.encNote(f.forceStrict, "ForceStrict"))
@@ -1035,9 +1035,10 @@ func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string
 	}
 	// the view holds no row of the bare SuperSocketNetLib key on some servers (the lab's Windows VM, SQL Server 2022:
 	// 301c N5): the two encryption values are then read through xp_instance_regread, where the gate allows it. A view
-	// holding ForceEncryption answered for the key: its ForceStrict, absent there, is not set (N5b).
+	// lacking ForceStrict alone is asked the same way: its listing of this key is not taken as whole (N5b's review: the
+	// lab VM's view holds no row of the key at all), so 'not set' comes only from xp_instance_regread's own answer.
 	strictToo := info.Major <= 0 || info.Major >= 16 // ForceStrict came with SQL Server 2022 (0 = not known)
-	if f := in.facts; f != nil && f.source == "sys.dm_server_registry" && f.forceEnc == nil {
+	if f := in.facts; f != nil && f.source == "sys.dm_server_registry" && (f.forceEnc == nil || (strictToo && f.forceStrict == nil)) {
 		switch {
 		case !gate.instanceRegread:
 			var lacks []string

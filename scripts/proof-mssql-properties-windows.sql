@@ -5,7 +5,9 @@
 -- Win32PrioritySeparation (internal/mssql/properties.go: propsGateSQL, propsNetViewSQL, propsNetRegSQL and
 -- propsPrioritySQL - the text here is the code's, quotes doubled, held equal by TestWindowsRunnerSendsTheCodesStatements)
 -- and, beside them, the same facts read another way: each key's own value list (xp_instance_regenumvalues,
--- xp_regenumvalues), the two encryption values on their own with their return codes, the Tcp key's sub-keys, the
+-- xp_regenumvalues; the power plan's two keys too, PowerSchemes and the policy's PowerSettings, for ActivePowerScheme),
+-- three encryption values on their own with their return codes (ForceEncryption, ForceStrict - Microsoft's name - and
+-- ForceStrictEncryption, the name 301c read), the Tcp key's sub-keys, the
 -- listeners SQL Server reports, the transports of the sessions connected now, and the error log's lines about what it
 -- listens on.
 --
