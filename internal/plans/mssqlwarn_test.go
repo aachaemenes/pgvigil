@@ -211,7 +211,8 @@ func codesOf(warns []MSSQLWarning, plan string) []string {
 	return out
 }
 
-// part1 are the codes of D401 (rules part 1); PGVIGIL_WARN_PART=1 checks only these while part 2 is not built.
+// part1 are the codes of D401 (rules part 1); builtParts says which parts the tests hold the rules to (part 2's
+// codes are checked once D402 builds them).
 var part1 = []string{"implicit_conversions", "blitz_implicit_conversion", "is_key_lookup_expensive", "lookup",
 	"missing_index_count", "missing_index_hint", "function_count", "blitz_scalar_udf", "clr_function_count",
 	"is_computed_filter", "is_computed_scalar", "is_mstvf", "tvf_join", "is_table_variable", "is_cursor",
@@ -219,8 +220,10 @@ var part1 = []string{"implicit_conversions", "blitz_implicit_conversion", "is_ke
 	"is_spool_more_rows", "is_table_spool_expensive", "is_table_spool_more_rows", "is_sort_expensive",
 	"is_remote_query_expensive", "is_big_spills"}
 
+const builtParts = 1
+
 func checked(code string) bool {
-	return os.Getenv("PGVIGIL_WARN_PART") != "1" || slices.Contains(part1, code)
+	return builtParts >= 2 || slices.Contains(part1, code)
 }
 
 func TestMSSQLPlanWarnings(t *testing.T) {
