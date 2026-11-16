@@ -167,8 +167,8 @@ isid() { [[ $1 =~ ^[0-9]+$ ]] || fail "not a request id: '$1'"; }
 # the collector registers an instance at its first read, which the scheduler's first-start spread (sched.go
 # firstStart: a random offset up to a collection's interval, 5 min at most) can put seconds after its start - waited
 # for, never read once (r06: read about 4 s after the collector's start, cq-pg not registered yet)
-PGID=""; MSID=""
-for _ in $(seq 1 120); do
+PGID=""; MSID=""; regw=0
+for regw in $(seq 0 119); do
   PGID=$(rq "select instance_id from pgvigil.instances where name = 'cq-pg'")
   [[ -n "$MS" ]] && MSID=$(rq "select instance_id from pgvigil.instances where name = 'cq-ms'")
   [[ -n "$PGID" && ( -z "$MS" || -n "$MSID" ) ]] && break
@@ -176,6 +176,7 @@ for _ in $(seq 1 120); do
 done
 [[ -n "$PGID" ]] || fail "cq-pg is not registered within 120 s (the collector's first read): $(tail -5 "$WORK/run1.log")"
 [[ -z "$MS" || -n "$MSID" ]] || fail "cq-ms is not registered within 120 s (the collector's first read): $(tail -5 "$WORK/run1.log")"
+ok "the instances registered by the collector's first read, about $regw s after the doors and the serves were up"
 
 # ---- N: serve reaches the repository and not the targets ----------------------------------------------------------
 GW=$(docker network inspect -f '{{(index .IPAM.Config 0).Gateway}}' "$NET")
