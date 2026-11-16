@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Proof of B24 OWN, the server half (PerformanceMonitor Fixed 12: pgvigil's own sessions hidden on running queries and
-# waiting tasks by default, with a switch, both engines; the design notes/projects/pdfp-sqltoolsbuild-s3/
-# pdfp-sqltoolsbuild-s3-b24-own-design.md of the DBA repo, its FOLD; migration 0265). One SQL Server container
+# waiting tasks by default, with a switch, both engines; its design notes and their FOLD; migration 0265). One SQL Server container
 # (MSSQL_IMAGE, default 2022) and the box's PostgreSQL (PGVIGIL_ADMIN_DSN, keyword form, a superuser): a repository, a
 # PostgreSQL target database and its logins of the proof's own, removed on every exit path the shell can catch.
 # 'Own' is decided by the collector on the monitored server: SQL Server (program_name = PROGRAM_NAME() OR LIKE

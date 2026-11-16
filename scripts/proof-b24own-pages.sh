@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Proof of B24 OWN's pages (pgvigil's own sessions hidden by default, with a switch): Running queries on both engines,
 # Waiting tasks on both, the Queries page, the alert page's reads and the fleet Running page's longest-statement pick.
-# The design: notes/projects/pdfp-sqltoolsbuild-s3/pdfp-sqltoolsbuild-s3-views-b-design.md of the DBA repo (O1-O4, the
-# FOLD O5-O8 and P1). The server half's own proof is proof-b24own.sh (collection, the flags, the API).
+# The design: its design notes (O1-O4, the FOLD O5-O8 and P1). The server half's own proof is proof-b24own.sh (collection, the flags, the API).
 # Needs: go, psql, curl, python3, ss, node, npm, chromium, rsync, and
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a PostgreSQL 13+ cluster as a superuser: the proof seeds the demo fleet
 #                      (7 days) into a repository database of its own and drops it on every exit path the shell can catch

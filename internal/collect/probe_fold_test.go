@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// The B24h-1 review's collector rows (notes/teams/pdfp-visual-s1-reviewb24h1-a-fallback.md; the lead's 12:4x calls).
+// The B24h-1 review's collector rows.
 
 // #a1: an opened connection is a TCP answer - an address a connection opened to is 'answered' from then on, so when its
 // host goes down the default mode's first probe (answered 0) is no 'never answered' and the next failure probes it

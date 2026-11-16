@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Proof of VIEWS slice B: the View control on the Summary, the Performance Summary and Slow Queries (P10 D16 / D23, P09
-# D26), over slice A's store. The design: notes/projects/pdfp-sqltoolsbuild-s3/pdfp-sqltoolsbuild-s3-views-b-design.md
-# of the DBA repo (B1-B7, the FOLD V1-V7 and P1-P3).
+# D26), over slice A's store. The design: its design notes (B1-B7, the FOLD V1-V7 and P1-P3).
 # Needs: go, psql, curl, python3, ss, node, npm, chromium, rsync, and
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a PostgreSQL 13+ cluster as a superuser: the proof makes a repository
 #                      database, seeds the demo fleet into it (7 days) and drops it on every exit path the shell can catch

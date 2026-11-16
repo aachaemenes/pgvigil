@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// The review of the B24h-1 fold (notes/teams/pdfp-visual-s1-reviewb24h1-fold-fallback.md) #7 / #9 / #4 as store rows
+// The review of the B24h-1 fold: its #7 / #9 / #4 as store rows
 // (box rows: PGVIGIL_REPO_TEST_DSN), each in one transaction rolled back.
 
 // f9Store opens a transaction on the test store and a collector of its own; skips without a store.

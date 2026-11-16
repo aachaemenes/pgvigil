@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Proof of the views store (VIEWS slice A: saved page views and dashboards, one store; the design
-# notes/projects/pdfp-sqltoolsbuild-s3/pdfp-sqltoolsbuild-s3-views-design.md of the DBA repo, FOLD 1+2, 3, 7, 8, 13, 14).
+# Proof of the views store (VIEWS slice A: saved page views and dashboards, one store; the VIEWS design
+# notes, FOLD 1+2, 3, 7, 8, 13, 14).
 # Needs: go, psql, curl, python3, ss, and
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a PostgreSQL 13+ cluster as a superuser; the proof makes a repository
 #                      database and a reader login of its own and removes them on every exit path the shell can catch

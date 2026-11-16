@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proof of the 406 offControl row (the lead 11-15 16:3x; found by relw4-s1's B24f review): on the plan cache page's
+# Proof of the 406 offControl row (found by the B24f review): on the plan cache page's
 # Cached plans grid and in a statement's plan sources, a plan read or an Evict that is off is DRAWN disabled with its
 # reason in words beside it (the house rule B3), never replaced by the note. The demo (12 PostgreSQL and 3 SQL Server
 # instances, one day) in a scratch database, served on loopback (no actions door, no read login), with a headless

@@ -35,4 +35,4 @@
 --
 -- Nothing else joined changes: schema_findings, schema_changes_window, diff_schema / diff_schema_snapshots (0086),
 -- purge (0190) and apply_roles are untouched; no new object, no CHECK widened (the baseline is silent, the lead's G4).
--- Not read here: whether relw4-s1's B20 migrations 0273 / 0274 re-create import_schema too - the join's check.
+-- Not read here: whether B20's migrations 0273 / 0274 re-create import_schema too - the join's check.

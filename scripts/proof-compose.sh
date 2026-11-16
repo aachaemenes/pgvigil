@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Proof of the composed panel's compiler and POST /api/compose/run (VIEWS slice C's server half; internal/web/compose.go,
-# q_compose.go; the design notes/projects/pdfp-sqltoolsbuild-s3/pdfp-sqltoolsbuild-s3-views-design.md of the DBA repo,
-# FOLD 4-6). Needs go, psql, curl, python3, ss and PGVIGIL_ADMIN_DSN (a keyword-form superuser connection to a PostgreSQL
+# q_compose.go; the VIEWS design notes, FOLD 4-6). Needs go, psql, curl, python3, ss and PGVIGIL_ADMIN_DSN (a keyword-form superuser connection to a PostgreSQL
 # 13+ cluster; the proof makes its own repository database and drops it). PGVIGIL_WIRING=1 (default) applies
 # scripts/proof-views-wiring.patch to this copy when the tree has the handlers and web.go lacks the routes; the
 # repository then gets scripts/views-join-lines.sql (metric_catalog's grain).
