@@ -143,26 +143,30 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
   });
   if (!d.demo) box.append(el('div', { class: 'toolbar' }, el('label', {}, d.engine === 'sqlserver' ? 'Procedures installed in the database ' : 'Reads run in the database ', db), again, checked));
   // the runs grid (CQ-RUNSGRID: never a run that seems to do nothing) is drawn again whenever a run, a help ask or a
-  // form's read ends on this page: the page's own read once more, not fresh (the checks' answer is kept 60 s, after
-  // that the same read-only check the page's open makes; in queue mode the collector's published list), and only this
-  // grid is replaced - the open panel and its result stay. The latest end's read wins; a read that fails says so above
-  // the grid as last drawn, never silently
+  // direct form's read ends on this page - a queued run is followed to its end even when another tool's panel
+  // replaced its own (the waits' alive element is this grid) - from the page's own read once more, not fresh (the
+  // checks' answer is kept 60 s, after that the same read-only check the page's open makes; in queue mode the
+  // collector's published list), and only this grid is replaced: the open panel and its result stay. A newer answer
+  // is never replaced by an older one; a read that fails says so above the grid as last drawn, never silently; a page
+  // already left reads nothing. A 'lost' end can have its audit row written after it (a late finish keeps it): the
+  // grid shows that row at the next end or look.
   const logGrid = (t: Table | null) => grid(rowsOf(t), logCols, 'No community tool ran here yet.');
-  let shown = logGrid(d.log), relogs = 0;
+  let shown = logGrid(d.log), shownAt = new Date().toISOString(), shownSeq = 0, relogs = 0;
   const runs = el('div', { class: 'community-runs' }, shown);
   const relog = async (): Promise<void> => {
-    if (d.demo) return;   // nothing runs on a demo instance
+    if (d.demo || !runs.isConnected) return;   // nothing runs on a demo instance; a page left reads nothing
     const mine = ++relogs;
     try {
       const n = await get<Tools>('community', { instance, database });
-      if (mine !== relogs) return;
-      shown = logGrid(n.log);
+      if (!runs.isConnected || mine < shownSeq) return;
+      shown = logGrid(n.log); shownAt = new Date().toISOString(); shownSeq = mine;
       runs.replaceChildren(shown);
     } catch (e) {
-      if (mine !== relogs) return;
-      runs.replaceChildren(errorBox(new Error(`the runs below could not be read again (${e instanceof Error ? e.message : String(e)}); they are as last drawn, before the newest end`)), shown);
+      if (!runs.isConnected || mine !== relogs) return;
+      runs.replaceChildren(errorBox(new Error(`the runs could not be read again (${e instanceof Error ? e.message : String(e)}); the grid below is as drawn at ${fmtTime(shownAt)}`)), shown);
     }
   };
+  const page: PanelPage = { ended: relog, alive: runs };
   // a tool's panel opens directly under the tool's own table, in view (inView); a click on another tool moves it there
   const tables = new Map<string, HTMLElement>();
   let firstGroup: HTMLElement | undefined;
@@ -181,9 +185,10 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     }
     shownTool = `${navs}:${instance}:${t.id}`;
     let panel: HTMLElement;
-    try { panel = await panelOf(t, instance, d, relog); } catch (e) { panel = errorBox(e); }
-    // the form's read is audited on the direct path (its @help run, or the refusal): the grid shows it
-    void relog();
+    try { panel = await panelOf(t, instance, d, page); } catch (e) { panel = errorBox(e); }
+    // a procedure's form read on the direct path is audited (its @help run, or the refusal): the grid shows it; queue
+    // mode's form read and the other kinds' audit nothing, so nothing is read again
+    if (d.via !== 'queue' && t.kind === 'proc') void relog();
     if (mine !== seq) return;
     out.replaceChildren(panel);
     inView(out);
@@ -212,7 +217,7 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     const t = d.tools.find(x => x.id === open);
     if (t) {
       tables.get(t.id)?.after(out);
-      try { out.replaceChildren(await panelOf(t, instance, d, relog)); } catch (e) { out.replaceChildren(errorBox(e)); }
+      try { out.replaceChildren(await panelOf(t, instance, d, page)); } catch (e) { out.replaceChildren(errorBox(e)); }
       // in view once per navigation and tool: a redraw of the same page stays where the person is
       if (shownTool !== `${navs}:${instance}:${t.id}`) { shownTool = `${navs}:${instance}:${t.id}`; inView(out); }
     } else {
@@ -225,11 +230,15 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
   return box;
 }
 
-// panelOf: the tool's panel - on a demo instance its stored sample, else its form (Glenn's: the file step); ended is
-// called when each run or help ask of the panel ends, however it ended (the page's runs grid is drawn again)
-function panelOf(t: Tool, instance: number, d: Tools, ended: () => Promise<void>): Promise<HTMLElement> {
+// PanelPage: what a panel's runs tell the page - ended when each run or help ask of the panel ends, however it ended
+// (the runs grid is drawn again), and alive, the element whose leaving the page ends a queued run's wait (the grid:
+// a panel another tool replaced still follows its run to its end)
+interface PanelPage { ended: () => Promise<void>; alive: HTMLElement }
+
+// panelOf: the tool's panel - on a demo instance its stored sample, else its form (Glenn's: the file step)
+function panelOf(t: Tool, instance: number, d: Tools, page: PanelPage): Promise<HTMLElement> {
   if (d.demo) return demoPanel(t, instance, d);
-  return t.kind === 'script' ? Promise.resolve(glennPanel(t, instance, d.database ?? '', ended)) : toolPanel(t, instance, d, ended);
+  return t.kind === 'script' ? Promise.resolve(glennPanel(t, instance, d.database ?? '', page)) : toolPanel(t, instance, d, page);
 }
 
 function needLine(n: Need): (Node | string)[] {
@@ -280,7 +289,7 @@ function openButton(t: Tool, d: Tools, open: () => void, cell: HTMLElement | und
 }
 
 // toolPanel: one procedure's (or read's) form, Run and its result
-async function toolPanel(t: Tool, instance: number, d: Tools, ended: () => Promise<void>): Promise<HTMLElement> {
+async function toolPanel(t: Tool, instance: number, d: Tools, page: PanelPage): Promise<HTMLElement> {
   const p = await post<Params>('community/params', { instance_id: instance, tool: t.id, database: d.database ?? '' });
   const sec = el('section', {}, el('h3', {}, t.name), el('p', {}, t.description));
   if (t.url) sec.append(el('p', { class: 'meta' }, 'Its documentation: ', el('a', { href: t.url, rel: 'noopener noreferrer', target: '_blank' }, t.url)));
@@ -331,14 +340,14 @@ async function toolPanel(t: Tool, instance: number, d: Tools, ended: () => Promi
       const r = await post<{ runs: InstanceRun[]; ran_at: string } | Queued>('community/run', { instance_id: instance, tool: t.id, database: d.database ?? '', params, timeout_secs: Number(timeout.value || 60) });
       if (isQueued(r)) {
         res.replaceChildren();
-        const e = await waitRequest(r, status);   // the collector runs it; status says each state
+        const e = await waitRequest(r, status, page.alive);   // the collector runs it; status says each state
         res.replaceChildren(...cutWords(e), endView(e, d.instance, d.engine, t.name));
       } else {
         res.replaceChildren(resultView(r.runs, undefined, t.name));
         status.textContent = `Ran at ${fmtTime(r.ran_at)}.`;
       }
     } catch (e) { res.replaceChildren(errorBox(e)); status.textContent = ''; }
-    finally { offControl(run, null, status); void ended(); }
+    finally { offControl(run, null, status); void page.ended(); }
   });
   if (p.help_via === 'queue' && t.help) {
     // queue mode: the procedure's own help is a request of its own, run by the collector
@@ -349,7 +358,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools, ended: () => Promi
       offControl(ask, 'running', hs);
       try {
         const q = await post<Queued>('community/run?help=1', { instance_id: instance, tool: t.id, database: d.database ?? '' });
-        const e = await waitRequest(q, hs);
+        const e = await waitRequest(q, hs, page.alive);
         if (e.state !== 'done') hb.replaceChildren(errorBox(e.refusal || e.outcome || e.state));   // '' in a row written before CQ-LIVEMASK
         else {
           hb.replaceChildren(...(e.result?.sets ?? []).flatMap((s, i) => [el('h3', {}, `${t.name} help, part ${i + 1}`), setGrid(s, i)]));
@@ -359,7 +368,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools, ended: () => Promi
             if (c && v && !c[0].textContent) { c[0].textContent = v; c[1].title = v; }
           }
         }
-      } catch (e) { hb.replaceChildren(errorBox(e)); hs.textContent = ''; } finally { offControl(ask, null, hs); void ended(); }
+      } catch (e) { hb.replaceChildren(errorBox(e)); hs.textContent = ''; } finally { offControl(ask, null, hs); void page.ended(); }
     });
     det.append(ask, hs, hb);
     sec.append(det);
@@ -426,7 +435,7 @@ async function demoPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
 }
 
 // glennPanel: the DBA's own copy of Glenn Berry's script, cut into its queries; pick one, run it
-function glennPanel(t: Tool, instance: number, database: string, ended: () => Promise<void>): HTMLElement {
+function glennPanel(t: Tool, instance: number, database: string, page: PanelPage): HTMLElement {
   const sec = el('section', {}, el('h3', {}, t.name), el('p', {}, t.description));
   sec.append(el('p', { class: 'meta' }, 'pgvigil ships none of these queries: download the script for the server\'s version from ',
     el('a', { href: t.url ?? '#', rel: 'noopener noreferrer', target: '_blank' }, t.url ?? ''), ' and pick it here. The file is cut into its queries on the server and kept nowhere; '
@@ -461,13 +470,13 @@ function glennPanel(t: Tool, instance: number, database: string, ended: () => Pr
         let view: HTMLElement;
         let cut: HTMLElement[] = [];
         if (isQueued(r)) {
-          const e = await waitRequest(r, busy);   // queue mode: the collector runs the query
+          const e = await waitRequest(r, busy, page.alive);   // queue mode: the collector runs the query
           view = endView(e, e.instance ?? '', 'sqlserver', title);
           cut = cutWords(e);
         } else view = resultView(r.runs, undefined, title);
         res.replaceChildren(el('details', {}, el('summary', {}, `Query ${q.n}: the text sent`), el('pre', { class: 'sql', tabindex: '0' }, q.text)),
           ...cut, view);
-      } catch (e) { res.replaceChildren(errorBox(e)); } finally { offControl(b, null, busy); void ended(); }
+      } catch (e) { res.replaceChildren(errorBox(e)); } finally { offControl(b, null, busy); void page.ended(); }
     });
     return b;
   };
