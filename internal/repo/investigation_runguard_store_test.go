@@ -14,8 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// TestInvestigationRunNeedsTheAuditLoginOnAStore (J16-RUNGUARD, a box row: PGVIGIL_REPO_TEST_DSN, a login that may
-// create a database and roles; run on PostgreSQL 13 and 18): import_investigation_event's op 'run' writes the audit of
+// TestInvestigationRunNeedsTheAuditLoginOnAStore (J16-RUNGUARD, a box row: PGVIGIL_REPO_TEST_DSN, a superuser - its
+// SET SESSION AUTHORIZATION needs one; run on PostgreSQL 13 and 18): import_investigation_event's op 'run' writes the audit of
 // an ask's Run - serve writes it through the actions door's audit login, which holds pgvigil_collector (docs/alerts.md:
 // the collector role is the actions door's audit login; a queue-mode serve offers no investigations, q_investigate.go
 // investigationOff). 0300 also grants the function to pgvigil_requester (for a later release's queue path), and a
