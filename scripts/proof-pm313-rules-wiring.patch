@@ -1,16 +1,16 @@
-diff --git i/internal/mssql/checks.go w/internal/mssql/checks.go
-index 678f6c5..460157e 100644
---- i/internal/mssql/checks.go
-+++ w/internal/mssql/checks.go
+diff --git c/internal/mssql/checks.go i/internal/mssql/checks.go
+index 48e10f96..19f0f6de 100644
+--- c/internal/mssql/checks.go
++++ i/internal/mssql/checks.go
 @@ -4,6 +4,7 @@ import (
  	"context"
  	"database/sql"
  	"fmt"
 +	"math"
+ 	"regexp"
  	"sort"
  	"strconv"
- 	"strings"
-@@ -230,13 +231,13 @@ var serverOptionRules = map[string]func(v int64, m machineFacts) optionVerdict{
+@@ -231,13 +232,13 @@ var serverOptionRules = map[string]func(v int64, m machineFacts) optionVerdict{
  			return optionVerdict{Status: "none", Explain: "Azure SQL Managed Instance sets its own memory limit"}
  		case v == unlimitedMemoryMB:
  			return broken(sevWarning, "a limit under the machine's memory", "dbachecks MaxMemory",
@@ -26,7 +26,7 @@ index 678f6c5..460157e 100644
  		case m.PhysMB == 0:
  			return met("a limit is set; not weighed against the machine's memory, which was not read")
  		}
-@@ -372,6 +373,18 @@ func advisedMaxDOP(m machineFacts) int64 {
+@@ -373,6 +374,18 @@ func advisedMaxDOP(m machineFacts) int64 {
  	return min64(max64(m.CPUs/m.NUMANodes, 1), 16)
  }
  
@@ -45,10 +45,10 @@ index 678f6c5..460157e 100644
  func min64(a, b int64) int64 {
  	if a < b {
  		return a
-diff --git i/internal/mssql/memory.go w/internal/mssql/memory.go
-index d80b603..76819d7 100644
---- i/internal/mssql/memory.go
-+++ w/internal/mssql/memory.go
+diff --git c/internal/mssql/memory.go i/internal/mssql/memory.go
+index d80b6037..76819d78 100644
+--- c/internal/mssql/memory.go
++++ i/internal/mssql/memory.go
 @@ -113,7 +113,9 @@ const memoryNumaSQL = `SELECT 'numa' AS kind,
    (SELECT CAST(COUNT(*) AS int) FROM sys.dm_os_nodes WHERE node_id > 0 AND node_state_desc NOT LIKE N'%DAC') AS other_nodes`
  
@@ -69,10 +69,10 @@ index d80b603..76819d7 100644
    t.record.value('(/Record/MemoryRecord/AvailablePhysicalMemory)[1]', 'bigint') AS avail_phys_kb,
    t.record.value('(/Record/MemoryRecord/AvailableVirtualAddressSpace)[1]', 'bigint') AS avail_vas_kb
  FROM (SELECT dorb.timestamp, CONVERT(xml, dorb.record) AS record FROM sys.dm_os_ring_buffers AS dorb
-diff --git i/internal/repo/mi_backups_test.go w/internal/repo/mi_backups_test.go
-index 693bf78..bc8d23d 100644
---- i/internal/repo/mi_backups_test.go
-+++ w/internal/repo/mi_backups_test.go
+diff --git c/internal/repo/mi_backups_test.go i/internal/repo/mi_backups_test.go
+index 693bf786..bc8d23d2 100644
+--- c/internal/repo/mi_backups_test.go
++++ i/internal/repo/mi_backups_test.go
 @@ -55,6 +55,50 @@ func TestBackupJudged0129Is0066PlusManagedInstance(t *testing.T) {
  	}
  }
@@ -124,107 +124,11 @@ index 693bf78..bc8d23d 100644
  // On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it): a Managed Instance's master, model and msdb are
  // not judged, with Microsoft's reason, and its user database is judged as anywhere; on a server someone runs, model
  // with no backup is still 'never'.
-diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index 40526c2..d1e5b4d 100644
---- i/internal/repo/sql/0190_join_release2.sql
-+++ w/internal/repo/sql/0190_join_release2.sql
-@@ -698,3 +698,91 @@ SELECT j.instance_id, j.dbid, j.datname, j.is_template, j.snapshot_at, j.platfor
-             WHEN 'warn' IN (j.conn_status, j.allow_status, j.encoding_status, j.collation_status, j.checksums_status, j.xid_status) THEN 'warn'
-             ELSE 'ok' END AS worst
-   FROM j;
-+
-+-- task 405 (PerformanceMonitor 3.13's moved rules, WIRING of 0156): darling_alert_findings is 0118's view with its
-+-- runnable arm reading 0156's mssql_runnable_queue (the 5-minute window, else the newest 3 reads within the fallback
-+-- window: Changed 13) and one more arm, the PostgreSQL poison wait (Changed 19). Every other arm as 0118 has it.
-+CREATE OR REPLACE VIEW pgvigil.darling_alert_findings AS
-+SELECT t.instance_id, CASE WHEN t.n_dead_tup >= 10000000 THEN 'critical' ELSE 'warning' END AS severity,
-+       'dead tuples piling up'::text AS setting, t.datname || '.' || t.schema_name || '.' || t.table_name AS value, true AS is_set,
-+       'under 1000000 dead tuples'::text AS suggested, 'all'::text AS platforms,
-+       format('%s dead tuples beside %s live ones at the last read; the last autovacuum %s: autovacuum is behind on this table (a long transaction, an idle-in-transaction session or a slot can hold its cleanup back)',
-+              t.n_dead_tup, coalesce(t.n_live_tup, 0), coalesce(to_char(t.last_autovacuum, 'YYYY-MM-DD HH24:MI'), 'never')) AS detail,
-+       'pg-collector'::text AS source, t.snapshot_at AS at
-+  FROM pgvigil.tables t
-+ WHERE t.is_present AND t.n_dead_tup >= 1000000 AND t.snapshot_at > now() - interval '1 day'
-+UNION ALL
-+SELECT r.instance_id, CASE WHEN r.lag_secs >= 300 THEN 'critical' ELSE 'warning' END, 'replay lag', r.key, true,
-+       'under 30 s', 'all', format('the standby %s replays %s s behind the primary', r.key, round(r.lag_secs::numeric, 1)),
-+       'pg-collector', r.snapshot_at
-+  FROM pgvigil.replication_latest r
-+ WHERE r.kind = 'sender' AND r.lag_secs >= 30 AND r.snapshot_at > now() - interval '15 minutes'
-+UNION ALL
-+SELECT s.instance_id, CASE WHEN s.lag_bytes >= 50 * 1073741824::bigint THEN 'critical' ELSE 'warning' END, 'replication slot retaining WAL', s.key, true,
-+       'under 10 GB', 'all',
-+       format('the slot %s retains %s of WAL and %s: WAL a slot keeps is unbounded unless max_slot_wal_keep_size is set, so it fills the volume; a slot whose consumer is gone is dropped',
-+              s.key, pg_size_pretty(s.lag_bytes), CASE WHEN coalesce(s.active, false) THEN 'its consumer is connected' ELSE 'its consumer is not connected' END),
-+       'pg-collector', s.snapshot_at
-+  FROM pgvigil.replication_latest s
-+ WHERE s.kind = 'slot' AND s.lag_bytes >= 10 * 1073741824::bigint AND s.snapshot_at > now() - interval '15 minutes'
-+UNION ALL
-+SELECT v.instance_id, CASE WHEN v.free_bytes <= 2 * 1073741824::bigint THEN 'critical' ELSE 'warning' END, 'a volume under 5 GB free', v.drive, true,
-+       'over 5 GB free', 'all',
-+       format('%s free of %s (%s %%); %s database file(s) sit on it; its percent threshold (warning under %s %%, critical under %s %%) raises nothing, so the 5 GB floor judges it',
-+              pg_size_pretty(v.free_bytes), pg_size_pretty(v.total_bytes), v.free_pct, v.files, v.warn_pct, v.crit_pct),
-+       'mssql_storage', v.snapshot_at
-+  FROM pgvigil.drives_now v
-+ WHERE v.source = 'dm_os_volume_stats' AND v.status = 'ok' AND v.free_bytes < 5 * 1073741824::bigint
-+   AND v.snapshot_at > now() - interval '3 hours' AND v.total_bytes > 10 * 1073741824::bigint
-+UNION ALL
-+SELECT d.instance_id, 'warning', 'AG secondary behind', d.group_name || ': ' || d.database_name || ' on ' || d.replica_server, true,
-+       'under 300 s', 'all',
-+       format('Availability Group %s: database %s on replica %s is %s seconds behind the primary (threshold 300)', d.group_name, d.database_name, d.replica_server, d.secondary_lag_s),
-+       'mssql_hadr', d.snapshot_at
-+  FROM pgvigil.mssql_ag_database_state d
-+ WHERE d.secondary_lag_s >= 300 AND d.snapshot_at > now() - interval '30 minutes'
-+UNION ALL
-+SELECT i.instance_id, CASE WHEN q.per_sched >= 16 THEN 'critical' ELSE 'warning' END, 'runnable queue per scheduler', 'schedulers', true,
-+       'under 8 per scheduler', 'all',
-+       format('runnable tasks averaged %s per scheduler over %s (%s schedulers): work waits for a CPU',
-+              round(q.per_sched, 1), q.window_text, q.schedulers),
-+       'mssql_perf', q.at
-+  FROM pgvigil.instances i
-+  CROSS JOIN LATERAL pgvigil.mssql_runnable_queue(i.instance_id, now()) q
-+ WHERE i.engine = 'sqlserver' AND q.per_sched >= 8
-+UNION ALL
-+SELECT l.instance_id, 'warning', 'long-running requests', 'requests', true, 'under 30 minutes', 'all',
-+       format('%s request(s) running 30 minutes or more, the longest %s min: session %s (%s, login %s, program %s)', l.n, l.longest_min, l.session_id,
-+              coalesce(l.command, 'command unknown'), coalesce(l.login_name, '(unknown)'), coalesce(nullif(l.program_name, ''), '(none)')),
-+       'mssql_running', l.snapshot_at
-+  FROM (SELECT r.instance_id, r.snapshot_at, count(*) OVER (PARTITION BY r.instance_id) AS n, r.elapsed_ms / 60000 AS longest_min,
-+               r.session_id, r.command, r.login_name, r.program_name,
-+               row_number() OVER (PARTITION BY r.instance_id ORDER BY r.elapsed_ms DESC) AS k
-+          FROM pgvigil.mssql_requests r
-+          JOIN (SELECT instance_id, max(snapshot_at) AS at FROM pgvigil.mssql_requests_summary WHERE snapshot_at > now() - interval '10 minutes' GROUP BY instance_id) m
-+            ON m.instance_id = r.instance_id AND m.at = r.snapshot_at
-+         WHERE r.snapshot_at > now() - interval '10 minutes'      -- the day partitions pruned whatever the join's plan
-+           AND r.request_id IS NOT NULL AND r.session_id > 50 AND r.elapsed_ms >= 1800000
-+           AND coalesce(upper(r.command), '') NOT LIKE 'BACKUP%' AND coalesce(upper(r.command), '') NOT LIKE 'RESTORE%'
-+           AND coalesce(upper(r.wait_type), '') NOT IN ('BACKUPTHREAD', 'BACKUPIO', 'SP_SERVER_DIAGNOSTICS_SLEEP', 'WAITFOR', 'BROKER_RECEIVE_WAITFOR', 'XE_LIVE_TARGET_TVF')
-+           AND coalesce(upper(r.wait_type), '') NOT LIKE '%SP_SERVER_DIAGNOSTICS%'
-+           AND coalesce(r.program_name, '') NOT LIKE 'SQLAgent - TSQL JobStep%'
-+           AND coalesce(upper(r.login_name), '') NOT IN ('NT AUTHORITY\SYSTEM', 'NT AUTHORITY\NETWORK SERVICE')) l
-+ WHERE l.k = 1
-+UNION ALL
-+SELECT c.instance_id, 'critical', 'server unreachable', i.name, true, 'answering and accepting the collector''s login', 'all',
-+       format('the newest read of %s (%s, %s) could not connect: %s', i.name, c.collection, to_char(c.snapshot_at, 'YYYY-MM-DD HH24:MI:SS'), substr(c.note, 10)),
-+       'collector', c.snapshot_at
-+  FROM (SELECT DISTINCT ON (d.instance_id) d.* FROM pgvigil.collection_dates d ORDER BY d.instance_id, d.snapshot_at DESC) c
-+  JOIN pgvigil.instances i USING (instance_id)
-+ WHERE i.is_active AND c.status = 'error' AND c.snapshot_at > now() - interval '30 minutes'
-+   AND c.note LIKE 'connect: %'
-+UNION ALL
-+-- task 405 (Changed 19): the PostgreSQL poison wait (0156's pg_poison_wait_findings, wait_sample only), its info row
-+-- 'not judged: needs pg_wait_sampling' too: an info finding on the Findings page and for a channel set to info (405
-+-- review part A, finding 4); the top statements (its query column) have no reader yet
-+SELECT i.instance_id, p.severity, 'poison wait', p.object, true, 'under 1.0 waiting backends on average', 'all', p.detail, 'pg-collector', p.at
-+  FROM pgvigil.instances i
-+  CROSS JOIN LATERAL pgvigil.pg_poison_wait_findings(i.instance_id, now()) p
-+ WHERE i.engine = 'postgres' AND i.is_active AND p.severity IN ('info', 'warning', 'critical');
-+COMMENT ON VIEW pgvigil.darling_alert_findings IS 'PerformanceMonitor''s alert defaults as findings (task 177 D30, task 405): dead tuples, replay lag, slot WAL, a volume under 5 GB free, an AG secondary behind, the runnable queue per scheduler, long-running requests, a server unreachable, the PostgreSQL poison wait.';
-diff --git i/internal/web/q_mssql_perf.go w/internal/web/q_mssql_perf.go
-index 078fe43..6f7f6b3 100644
---- i/internal/web/q_mssql_perf.go
-+++ w/internal/web/q_mssql_perf.go
-@@ -325,7 +325,7 @@ const (
+diff --git c/internal/web/q_mssql_perf.go i/internal/web/q_mssql_perf.go
+index 679f3e13..5ead64cb 100644
+--- c/internal/web/q_mssql_perf.go
++++ i/internal/web/q_mssql_perf.go
+@@ -353,7 +353,7 @@ const (
  	sqlMSSQLPoolSeries       = `SELECT at AS snapshot_at, pool_id, coalesce(pool_name, 'pool ' || pool_id) AS pool, waiters,
         round(granted_kb / 1024.0, 1) AS granted_mb, round(available_kb / 1024.0, 1) AS available_mb, timeouts, forced_grants
    FROM pgvigil.mssql_grant_series_between($1, $2, $3, $4)`
@@ -233,7 +137,7 @@ index 078fe43..6f7f6b3 100644
    FROM pgvigil.mssql_memory_rmon WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
   ORDER BY snapshot_at DESC, record_id DESC LIMIT 1000`
  	sqlMSSQLRmonHourly = `SELECT * FROM pgvigil.mssql_memory_rmon_hourly($1, $2, $3)`
-@@ -390,6 +390,9 @@ func (s *Server) MSSQLMemory(w http.ResponseWriter, r *http.Request) {
+@@ -418,6 +418,9 @@ func (s *Server) MSSQLMemory(w http.ResponseWriter, r *http.Request) {
  		{"plancache_trend", sqlMSSQLPlanCacheTrend, base},
  		{"grants_now", sqlMSSQLGrantsNow, []any{id, from, to}},
  		{"rg", sqlMSSQLResourceGovernor, []any{id}},
@@ -243,11 +147,11 @@ index 078fe43..6f7f6b3 100644
  		{"skipped", sqlMSSQLMemorySkipped, []any{id}},
  	})
  }
-diff --git i/internal/web/q_mssql_protection.go w/internal/web/q_mssql_protection.go
+diff --git c/internal/web/q_mssql_protection.go i/internal/web/q_mssql_protection.go
 new file mode 100644
-index 0000000..5c1e24d
+index 00000000..5c1e24d6
 --- /dev/null
-+++ w/internal/web/q_mssql_protection.go
++++ i/internal/web/q_mssql_protection.go
 @@ -0,0 +1,208 @@
 +package web
 +
@@ -457,10 +361,10 @@ index 0000000..5c1e24d
 +	w.WriteHeader(code)
 +	_ = json.NewEncoder(w).Encode(map[string]any{"outcome": res.Outcome, "detail": res.Detail, "override_id": res.OverrideID})
 +}
-diff --git i/internal/web/q_waits.go w/internal/web/q_waits.go
-index 6e2c11b..327b5e8 100644
---- i/internal/web/q_waits.go
-+++ w/internal/web/q_waits.go
+diff --git c/internal/web/q_waits.go i/internal/web/q_waits.go
+index 6e2c11b6..327b5e81 100644
+--- c/internal/web/q_waits.go
++++ i/internal/web/q_waits.go
 @@ -97,6 +97,15 @@ SELECT q.queryid, q.samples, q.wait_secs, q.top_wait,
   ORDER BY q.samples DESC, q.queryid
   LIMIT 50`
@@ -485,23 +389,23 @@ index 6e2c11b..327b5e8 100644
  	})
  }
  
-diff --git i/internal/web/web.go w/internal/web/web.go
-index 5def140..19859da 100644
---- i/internal/web/web.go
-+++ w/internal/web/web.go
-@@ -235,6 +235,8 @@ func (s *Server) Handler() http.Handler {
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 1262da76..e4e1a8a9 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -262,6 +262,8 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/alerts", s.Alerts)
  	api.HandleFunc("GET /api/alertrules", s.AlertRules)
  	api.HandleFunc("POST /api/alertrules", s.AlertRuleWrite)
 +	api.HandleFunc("GET /api/mssql/protection", s.MSSQLProtection)
 +	api.HandleFunc("POST /api/mssql/protection", s.MSSQLProtectionWrite)
  	api.HandleFunc("POST /api/alertrules/end", s.AlertRuleEnd)
- 	api.HandleFunc("POST /api/alerts/test", s.AlertTest)
- 	api.HandleFunc("POST /api/alerts/dismiss", s.AlertDismiss)
-diff --git i/scripts/proof-darling-cpu.sh w/scripts/proof-darling-cpu.sh
-index e00d70e..4643458 100755
---- i/scripts/proof-darling-cpu.sh
-+++ w/scripts/proof-darling-cpu.sh
+ 	api.HandleFunc("GET /api/alertscope", s.AlertScope)          // task 403a: windows, held sends, flapping, overrides, history, digests
+ 	api.HandleFunc("POST /api/alertwindows", s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator, B24f)
+diff --git c/scripts/proof-darling-cpu.sh i/scripts/proof-darling-cpu.sh
+index e00d70ef..46434580 100755
+--- c/scripts/proof-darling-cpu.sh
++++ i/scripts/proof-darling-cpu.sh
 @@ -57,8 +57,8 @@
  #  G. the rules on stored rows: mssql_sched_levels on a table of cases (pgvigil's and PerformanceMonitor's levels and
  #     PerformanceMonitor's recommendation, each band's edge); 'other processes use the CPU' at 50.0 % over 10 records
@@ -535,11 +439,11 @@ index e00d70e..4643458 100755
  
  echo "== H. the API under pgvigil serve =="
  (cd web && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -20 "$TMPD/web.log" >&2; fail "H: the web build"; }
-diff --git i/web/src/admin_protection.ts w/web/src/admin_protection.ts
+diff --git c/web/src/admin_protection.ts i/web/src/admin_protection.ts
 new file mode 100644
-index 0000000..597b22f
+index 00000000..597b22f8
 --- /dev/null
-+++ w/web/src/admin_protection.ts
++++ i/web/src/admin_protection.ts
 @@ -0,0 +1,67 @@
 +// Admin > Backup ages (task 405, PerformanceMonitor 3.13.0's Changed 46): the full backup hours and log backup minutes a
 +// SQL Server database is judged by, set for a tag or for one database (an instance's own ages stay in pgvigil.yaml's
@@ -608,32 +512,32 @@ index 0000000..597b22f
 +  ], 'No attempt yet.'));
 +  return sec;
 +}
-diff --git i/web/src/main.ts w/web/src/main.ts
-index 7fe364d..3aaaafb 100644
---- i/web/src/main.ts
-+++ w/web/src/main.ts
-@@ -89,6 +89,7 @@ import { collectionDatesView } from './collectiondates';
- import { collectorView } from './collector';
- import { aboutLink, aboutView } from './about';
+diff --git c/web/src/main.ts i/web/src/main.ts
+index a3a91b2a..edad4bf4 100644
+--- c/web/src/main.ts
++++ i/web/src/main.ts
+@@ -96,6 +96,7 @@ import { aboutLink, aboutView } from './about';
  import { adminInstancesView } from './admin_instances';
+ import { adminApplicationsView } from './applications';
+ import { adminCountersView } from './metrics';
 +import { adminProtectionView } from './admin_protection';
  import { reportPages } from './reports';
  import { customReportsView } from './customreports';
  import { communityView } from './community';
-@@ -142,7 +143,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
+@@ -170,7 +171,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
  };
  const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
  const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
--const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, ...reportPages, admin: adminView };
-+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_backupages: adminProtectionView, ...reportPages, admin: adminView };
+-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, mssqlerrors: mssqlErrorFleetView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, admin_counters: adminCountersView, ...reportPages, admin: adminView };
++const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, mssqlerrors: mssqlErrorFleetView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, admin_counters: adminCountersView, admin_backupages: adminProtectionView, ...reportPages, admin: adminView };
  const instancePages: Record<string, Render> = {
    summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
    tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
-diff --git i/web/src/mssql_perf.ts w/web/src/mssql_perf.ts
-index 823b6dd..743fffb 100644
---- i/web/src/mssql_perf.ts
-+++ w/web/src/mssql_perf.ts
-@@ -136,7 +136,7 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
+diff --git c/web/src/mssql_perf.ts i/web/src/mssql_perf.ts
+index 04af0054..be4337e9 100644
+--- c/web/src/mssql_perf.ts
++++ i/web/src/mssql_perf.ts
+@@ -148,7 +148,7 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
  // (sp_PressureDetector's) and the plan cache by type with its bloat level.
  type MemoryParts = 'latest' | 'series' | 'clerks' | 'clerk_stats' | 'checks' | 'pools_window' | 'semaphores_window' | 'pools_newest'
    | 'semaphores_newest' | 'pool_series' | 'rmon' | 'rmon_hourly' | 'caches' | 'plancache' | 'plancache_types' | 'plancache_trend'
@@ -642,7 +546,7 @@ index 823b6dd..743fffb 100644
  const mbOf = (v: unknown) => v == null ? '-' : fmtNum(Math.round(Number(v) / 102.4) / 10) + ' MB';
  const grantWindowCols = (bySem: boolean): Col[] => [
    { key: 'pool_name', label: 'pool', fmt: (v, r) => String(v ?? 'pool ' + String(r.pool_id)) },
-@@ -192,6 +192,10 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
+@@ -204,6 +204,10 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
    sec.append(props([
      ['max server memory', l.max_server_memory_mb == null ? 'not read (mssql_instance)' : `${fmtNum(l.max_server_memory_mb)} MB`
        + (l.physical_kb ? ` (${fmtNum(Math.round(100 * Number(l.max_server_memory_mb) * 1024 / Number(l.physical_kb)))} % of physical)` : '')],
@@ -653,7 +557,7 @@ index 823b6dd..743fffb 100644
      ['SQL Server process working set', kb(l.process_kb) + (l.process_low ? ' - the process had a low-memory notification' : '')],
      ['committed / target', `${kb(l.committed_kb)} of ${kb(l.committed_target_kb)}`],
      ['memory grants', `${fmtNum(l.sem_granted ?? 0)} granted (${kb(l.sem_granted_kb)} of a ${kb(l.sem_target_kb)} target), ${fmtNum(l.sem_waiting ?? 0)} waiting; `
-@@ -426,6 +430,11 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
+@@ -439,6 +443,11 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
    grid(rmon, [
      { key: 'sample_at', label: 'time', fmt: fmtTime },
      { key: 'notification', label: 'notification' },
@@ -665,16 +569,16 @@ index 823b6dd..743fffb 100644
      { key: 'ind_process', label: 'process', num: true },
      { key: 'ind_system', label: 'system', num: true },
      { key: 'avail_phys_kb', label: 'available physical', num: true, fmt: mbOf },
-diff --git i/web/src/router.ts w/web/src/router.ts
-index 2e453d1..433d0d7 100644
---- i/web/src/router.ts
-+++ w/web/src/router.ts
+diff --git c/web/src/router.ts i/web/src/router.ts
+index 4fede04d..eda439a4 100644
+--- c/web/src/router.ts
++++ i/web/src/router.ts
 @@ -58,7 +58,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
    return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
  }
  
--export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin: 'Overview' };
-+export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_backupages: 'Backup ages (admin)', admin: 'Overview' };
+-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', azuresummary: 'Azure Summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', mssqlerrors: 'SQL Server errors', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin_counters: 'Counters (admin)', admin: 'Overview' };
++export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', azuresummary: 'Azure Summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', mssqlerrors: 'SQL Server errors', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin_counters: 'Counters (admin)', admin_backupages: 'Backup ages (admin)', admin: 'Overview' };
  export const instanceTabs: Record<string, string> = {
    summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Table Size', vacuum: 'Vacuum',
    io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
@@ -682,15 +586,15 @@ index 2e453d1..433d0d7 100644
    { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'tablesize', 'disks', 'storage', 'growth', 'dbchanges', 'indexes'] },
    { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
    { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
--  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin'] },
-+  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_backupages', 'admin'] },
+-  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_applications', 'admin_counters', 'admin'] },
++  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_applications', 'admin_counters', 'admin_backupages', 'admin'] },
    // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
    { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
  ];
-diff --git i/web/src/waits.ts w/web/src/waits.ts
-index cce445b..5dbf68e 100644
---- i/web/src/waits.ts
-+++ w/web/src/waits.ts
+diff --git c/web/src/waits.ts i/web/src/waits.ts
+index cce445ba..5dbf68ec 100644
+--- c/web/src/waits.ts
++++ i/web/src/waits.ts
 @@ -7,7 +7,7 @@ import { lineChart } from './chart';
  import { Ctx, rangeLabel, window_ } from './router';
  import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
