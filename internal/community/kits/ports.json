@@ -1774,5 +1774,72 @@
     "begin": "SET b.table_spool_rows = (sp.estimated_rows * sp.estimated_rebinds),",
     "end": "ELSE sp.estimated_rebinds END)",
     "sha256": "d6885be6602432f99d73ae56b11a5022cb660349ed8adcb5f27d958338b98389"
+  },
+  {
+    "name": "blitzCacheBusyLoops",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's busy loop test ((rewinds + rebinds + 1) / 100 \u003e rows)",
+    "begin": "SET    busy_loops = CASE WHEN",
+    "end": "AS estimated_executions",
+    "sha256": "973c272eeee8f298fa4be88b348b3fc9e1b0f4845923dbeb12d18397155d0e90",
+    "item_re": "(estimated_executions / [0-9.]+\\) \u003e x\\.estimated_rows)",
+    "items": [
+      "estimated_executions / 100.0) \u003e x.estimated_rows"
+    ]
+  },
+  {
+    "name": "blitzCacheSelectWithWrites",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's selects with writes (no spool, over 1024 pages)",
+    "begin": "WHERE b.index_spool_rows IS NULL",
+    "end": "AND   b.AverageWrites \u003e 1024.",
+    "sha256": "0e1c6d5bc16c6e642464cfb71c7cf856995b06cab6fb0accf2f21d566eac06d1",
+    "item_re": "AverageWrites \u003e ([0-9.]+)",
+    "items": [
+      "1024."
+    ]
+  },
+  {
+    "name": "blitzCacheStaleStats",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's stale statistics (a week, 100000 modifications on average)",
+    "begin": "WITH  stale_stats AS (",
+    "end": "AVG(sa.ModificationCount) \u003e= 100000",
+    "sha256": "039624bdfc065fafe3bcdba24b30991da3611ebcbf18e9bcd446f0cc485dafda",
+    "item_re": "(DAY, -[0-9]+|\u003e= [0-9]+)",
+    "items": [
+      "DAY, -7",
+      "\u003e= 100000"
+    ]
+  },
+  {
+    "name": "blitzCacheCompileTime",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's compile time read (the plan's CompileTime)",
+    "begin": "CompileTime = query_plan.value('sum(//p:QueryPlan/@CompileTime)', 'float')",
+    "end": "'float') ,",
+    "sha256": "138eaebacfc0a00290e17b40acaca537d8f19d89fbb042386437c46764c3ef4b"
+  },
+  {
+    "name": "blitzCacheLongCompile",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's long compile threshold (the first of its two warning lists)",
+    "begin": "CASE WHEN CompileTime \u003e 5000 THEN ', Long Compile Time' ELSE '' END",
+    "end": "END",
+    "sha256": "f92d729fac5659acaa7daf66e9a911d0c4a2421956addeb3595ca2fe83cea62f",
+    "item_re": "CompileTime \u003e ([0-9]+)",
+    "items": [
+      "5000"
+    ]
   }
 ]
