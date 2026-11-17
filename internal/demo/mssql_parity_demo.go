@@ -11,10 +11,13 @@ import (
 // The pages P25 added, with data on the demo (task 11b): a page that shows only its empty-state words on the demo
 // reads as not working. Every row goes in through its import function as the collector hands it:
 //
-//	-azure-sqldb01 / -sqldb02  two Azure SQL Databases on the logical server demo-sqlsrv01, each moved from Standard S0
-//	        into the Basic elastic pool pool-ledger during the week (sqldb02 five days before the anchor, sqldb01 30 hours:
-//	        the Service Objectives grid's tier change), the pool's limits raised from 50 to 100 eDTU and 5 to 10 GB
-//	        three days before the anchor (Pool history, from master's 14 days).
+//	-azure-sqldb01 / -sqldb02  two Azure SQL Databases (ledger01, ledger02) on the logical server demo-sqlsrv01, each
+//	        moved from Standard S0 into the Basic elastic pool pool-ledger during the week (sqldb02 five days before
+//	        the anchor, sqldb01 30 hours: the Service Objectives grid's tier change), the pool's limits raised from 50
+//	        to 100 eDTU and 5 to 10 GB three days before the anchor (Pool history, from master's 14 days); for the
+//	        nodes' tabs, what the collector reads on an Azure SQL Database: the requests (Running Queries), the
+//	        database's own files (DB Space) and a database-scoped session's slow completions (Slow Queries). No
+//	        procedure or function statistics: those collections are not yet on Azure SQL Database.
 //	-sql01  its Sales database's scoped configuration (MAXDOP set from 0 to 4 30 hours before the anchor), the schema
 //	        reads of Sales and Ledger with changes in the last day (the Snapshot Summary tab: DBA Dash's schema
 //	        snapshots), and function and trigger statistics (the Object Execution grid, the Execution Stats strip). The
@@ -30,7 +33,9 @@ const (
 )
 
 // azureDBCollections names what the collector runs on a pooled Azure SQL Database (for the collection log).
-var azureDBCollections = []string{"mssql_instance", "mssql_azuredb_resources", "mssql_azuredb_governance", "mssql_pool", "mssql_pool_limits"}
+// mssql_procstats and mssql_funcstats are not among them: 'not yet on Azure SQL Database' (internal/mssql).
+var azureDBCollections = []string{"mssql_instance", "mssql_azuredb_resources", "mssql_azuredb_governance", "mssql_pool", "mssql_pool_limits",
+	"mssql_requests", "mssql_storage", "mssql_xe"}
 
 // azureMovedAt is when the database moved into the pool.
 func (g *Gen) azureMovedAt() time.Time {
@@ -71,7 +76,88 @@ func (g *Gen) azureDBStep(t time.Time) []Batch {
 			add("mssql_pool_limits", g.azurePoolLimitRows(t))
 		}
 	}
+	// the node tabs' sources (Running Queries, DB Space, Slow Queries), as the collector reads them on an Azure SQL
+	// Database: its requests every snapshot, its own files hourly, the slow completions of a database-scoped session
+	add("mssql_requests", g.azureRequestsRows(t))
+	if first || t.Minute() == 0 || t.Equal(g.end) {
+		add("mssql_storage", g.azureStorageRows(t))
+	}
+	if t.Equal(g.end.Add(-time.Minute)) || !t.Before(g.end) {
+		add("mssql_xe", g.azureXERows(t))
+	}
 	g.prev = t
+	return out
+}
+
+// azureDBName is the Azure SQL Database's own name (DB_NAME() on its connection): ledger01, ledger02.
+func (g *Gen) azureDBName() string { return "ledger" + g.Spec.Name[len(g.Spec.Name)-2:] }
+
+// azureRequestsRows is the mssql_requests payload of an Azure SQL Database at t (requestsPreAzureDBSQL: sp_WhoIsActive
+// looked for in the database itself, not installed): the summary, and in about half the minutes the ledger's
+// month-end posting running.
+func (g *Gen) azureRequestsRows(t time.Time) []Row {
+	name, db := g.Spec.Name, g.azureDBName()
+	summary := Row{"kind": "summary", "server_utc": t, "source": "dmv",
+		"source_note": "sp_WhoIsActive is not installed in master or in the connection's database", "memory_grants_pending": 0,
+		"read_ms": 40 + int(30*noise(name+"read", t))}
+	if noise(name+"post", t) < 0.5 {
+		return []Row{summary}
+	}
+	el := int64(1500 + 6000*noise(name+"el", t))
+	req := Row{"kind": "request", "session_id": 71, "status": "running", "login_name": "ledger_app", "host_name": "app-2",
+		"program_name": "LedgerApi", "database_name": db, "is_user_process": 1, "blocking_session_id": 0, "isolation_level": "read committed",
+		"login_time": t.Add(-4 * time.Hour), "request_id": 0, "command": "UPDATE", "wait_type": "LOG_RATE_GOVERNOR", "wait_ms": 40,
+		"cpu_ms": el / 3, "reads": 18, "writes": 240, "logical_reads": 9200, "dop": 1, "task_count": 1, "granted_memory_kb": 1024,
+		"elapsed_ms": el, "start_time": t.Add(-time.Duration(el) * time.Millisecond), "open_tran": 1, "sql_handle": azHandlePost,
+		"stmt_start": 0, "stmt_end": -1, "plan_handle": "0x0600050088C2D41E" + mssqlPlanTail, "stmt_query_hash": "0x4E21B7C09A3F6D15",
+		"stmt_plan_hash": "0x6B90E3A2D1C47F08"}
+	return []Row{req, {"kind": "text", "sql_handle": azHandlePost, "stmt_start": 0, "stmt_end": -1, "statement": azPost, "full_chars": len(azPost)}, summary}
+}
+
+// the posting statement the Azure databases' requests run (demo data)
+const (
+	azHandlePost = "0x02000000C4E1A97B3D5F20E86A1C0B4D9F7E2A3B5C6D7E8F0000000000000000000000000000000000000000"
+	azPost       = "UPDATE dbo.LedgerBalance SET balance = balance + p.amount FROM dbo.LedgerBalance b JOIN dbo.Posting p ON p.account_id = b.account_id WHERE p.period = @period"
+)
+
+// azureStorageRows is the mssql_storage payload of an Azure SQL Database at t (azureDBFilesSQL: sys.database_files
+// of its one database, no volume): the data file, its used space the governance row's user data figure, its maximum
+// the database's (Standard S0 250 GB before the move into the pool, Basic pooled 2 GB after), and the log.
+func (g *Gen) azureStorageRows(t time.Time) []Row {
+	db := g.azureDBName()
+	maxData := int64(250) << 30
+	if !t.Before(g.azureMovedAt()) {
+		maxData = int64(2) << 30
+	}
+	usedMB := int64(180 + int(t.Sub(g.end.Add(-7*24*time.Hour)).Hours()/12))
+	file := func(id int, name, typ, path string, size, maxSize, used int64, fg any) Row {
+		r := Row{"kind": "file", "database_id": 5, "database_name": db, "database_state": "ONLINE", "file_id": id, "file_name": name,
+			"type_desc": typ, "physical_name": path, "state_desc": "ONLINE", "size_bytes": size, "max_size_bytes": maxSize,
+			"growth_bytes": int64(16) << 20, "growth_pct": 0, "used_read": 1, "used_bytes": used}
+		if fg != nil {
+			r["filegroup"] = fg
+		}
+		return r
+	}
+	return []Row{file(1, "data_0", "ROWS", db+"_data_0.mdf", int64(512)<<20, maxData, usedMB<<20, "PRIMARY"),
+		file(2, "log", "LOG", db+"_log.ldf", int64(64)<<20, int64(1)<<30, int64(6)<<20, nil)}
+}
+
+// azureXERows is the mssql_xe payload of an Azure SQL Database at t: the slow completions' capture (a
+// database-scoped session: xeScopeWords) and its events, every one in the database itself; no blocked-process
+// capture there (xe.go), and the demo keeps the deadlocks and attentions to the boxes.
+func (g *Gen) azureXERows(t time.Time) []Row {
+	db := g.azureDBName()
+	var out []Row
+	for _, r := range g.mssqlXEDemoRows(t) {
+		switch {
+		case r["kind"] == "state" && r["capture"] == "slow":
+			out = append(out, r)
+		case r["kind"] == "slow":
+			r["database_name"] = db
+			out = append(out, r)
+		}
+	}
 	return out
 }
 
