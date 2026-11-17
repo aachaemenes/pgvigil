@@ -1,0 +1,21 @@
+-- PARITY-S3-join-lines.sql - the parity rows' lines for the join (P25, the Azure 'new' rows, the Execution Stats
+-- strip, the object nodes): what the join does in files this branch does not own. Not a migration: nothing runs this
+-- file.
+
+-- 1. web/src/tree.ts (the lead's file): a SQL Server instance gains a Databases folder, each database a node that
+--    opens its own page on Performance (DBA Dash opens a database there) - web/src/mssql_db.ts' mssqlDbLink. At
+--    65083820 the instance returns its tab folders alone (tree.ts L324-325, 'its databases and jobs are pages, not
+--    tree nodes yet'). The folder's databases: /api/dbspace?instance=N&part=databases (each row's database), the
+--    node marked when ctx.tab === 'mssqldb' and the hash's db= is that database. The line, in the SQL Server branch
+--    before its return:
+--          import { mssqlDbLink, mssqlDbTab } from './mssql_db';
+--          const mssqlDatabases = folder(`i${id}/mdb`, 'Databases', depth, () => {
+--            const l = loaded(`i${id}/mdb`, async () => rowsOf((await get<Record<'databases', Table | null>>('dbspace',
+--              { instance: id, part: 'databases' })).databases));
+--            const s = state(l, depth + 1, 'No database read yet (hourly).');
+--            if (s) return [s];
+--            return l.rows!.map(r => el('div', { style: nodeStyle(depth + 1) }, leaf(String(r.database),
+--              mssqlDbLink(ctx, String(r.database), undefined, id), here && ctx.tab === mssqlDbTab && hashParam('db') === String(r.database))));
+--          }, undefined, false, false);
+--          return [mssqlDatabases, ...instanceGroups.filter(g => g.key !== 'main').map(...)];
+--    The object nodes (task 4) hang under each database node when they are built.
