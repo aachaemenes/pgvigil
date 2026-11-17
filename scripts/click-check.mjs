@@ -974,6 +974,41 @@ let ownTested = false;
   }
 }
 
+// DAILY-SQL: the Daily checks page's SQL Server rows are their Summary cells - each row's instance link opens its cell's
+// own page, judged as that cell (DBA Dash's map by the column the row names, its view, its status filter, its Server
+// card row) and never Daily checks; one click per column (CLICK_ALL: every row). No such row on the demo = a FAIL: the
+// demo's SQL Server instances hold cells at warning or critical (sql01's failed job and Memory Dump, sql02's DB Mail)
+{
+  const dhash = '#/checks?w=24h';
+  if (!(await go(dhash))) record({ scope: 'Daily checks', kind: 'daily', column: '-', engine: '', link: 'the page', landed: 'not drawn', verdict: 'FAIL the Daily checks page did not render' });
+  else {
+    const rows = await ev(`[...document.querySelectorAll('main table a[data-group][data-inst]')].map(a => { const tr = a.closest('tr'); const h = [...tr.closest('table').querySelectorAll('thead th')].map(x => x.textContent.trim().toLowerCase());
+      const td = [...tr.querySelectorAll('td')]; return { href: a.getAttribute('href'), inst: Number(a.dataset.inst), column: (td[h.indexOf('check')]?.textContent ?? '').trim(), text: a.textContent.trim() }; })`);
+    if (!rows.length) record({ scope: 'Daily checks', kind: 'daily', column: '-', engine: 'sqlserver', link: 'a SQL Server row', landed: 'none drawn', verdict: 'FAIL no SQL Server cell row on the Daily checks page (DAILY-SQL: its Summary cells at warning or critical)' });
+    const clickedD = new Set();
+    for (const l of rows) {
+      const tab = tabOf(l.href), engine = engineOf.get(l.inst) ?? '';
+      let verdict = engine !== 'sqlserver' ? `FAIL a Summary cell row on a ${engine || 'unknown'} instance` : verdictFor(l.column, engine, tab);
+      const cv = dbadash[l.column]?.cv?.[engine], stWant = statusWant[l.column], rwWant = dbadash[l.column]?.row?.[engine];
+      if (!verdict.startsWith('FAIL') && cv && paramsOf(l.href).get('cv') !== cv) verdict = `FAIL the ${l.column} row does not open its cell's view (cv=${cv}; its href: ${l.href})`;
+      if (!verdict.startsWith('FAIL') && stWant && paramsOf(l.href).get('status') !== stWant) verdict = `FAIL the ${l.column} row does not open its page on its status filter (status=${stWant}; its href: ${l.href})`;
+      if (!verdict.startsWith('FAIL') && rwWant && paramsOf(l.href).get('row') !== rwWant) verdict = `FAIL the ${l.column} row does not name its Server card row (row=${rwWant}; its href: ${l.href})`;
+      let landed = `${tab} (href)`;
+      if (!verdict.startsWith('FAIL') && (clickAll || !clickedD.has(l.column))) {
+        clickedD.add(l.column);
+        const got = await clickHref(dhash, l.href, null);
+        const gt = tabOf(got.hash);
+        landed = `${gt} (clicked: ${got.h2.slice(0, 50)})`;
+        if (gt !== tab) verdict = `FAIL clicked to ${gt}, its href says ${tab}`;
+        else if (got.err.length) verdict = `FAIL the landing shows an error: ${got.err[0]}`;
+        else if (!got.h2) verdict = 'FAIL the landing drew no page';
+      }
+      record({ scope: 'Daily checks', kind: 'daily', column: l.column, engine, link: l.text, inst: l.inst, landed, href: l.href, verdict });
+    }
+    console.log(`daily rows: ${rows.length} SQL Server cell row link(s) on the Daily checks page, ${clickedD.size} column(s) clicked`);
+  }
+}
+
 // an instance whose drives' Files pages listed no file at all has proven nothing
 for (const s of storageScopes.slice(2)) if (!filesSeen.get(s.name)) record({ scope: s.name, kind: 'drive-files', column: 'Files', engine: '', link: 'every drive', landed: 'no file listed on any drive', verdict: 'FAIL no drive of the instance lists a file' });
 
