@@ -1,6 +1,8 @@
 package demo
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"time"
@@ -13,10 +15,11 @@ import (
 //	        into the Basic elastic pool pool-ledger during the week (sqldb02 five days before the anchor, sqldb01 30 hours:
 //	        the Service Objectives grid's tier change), the pool's limits raised from 50 to 100 eDTU and 5 to 10 GB
 //	        three days before the anchor (Pool history, from master's 14 days).
-//	-sql01  its Sales database's scoped configuration (MAXDOP set from 0 to 4 30 hours before the anchor), a database
-//	        snapshot of Sales, and function and trigger statistics (the Object Execution grid, the Execution Stats
-//	        strip). The collector sends the scoped configuration and the snapshots inside mssql_confcheck (0391 / 0392,
-//	        their join lines): the demo hands them to their own import functions.
+//	-sql01  its Sales database's scoped configuration (MAXDOP set from 0 to 4 30 hours before the anchor), the schema
+//	        reads of Sales and Ledger with changes in the last day (the Snapshot Summary tab: DBA Dash's schema
+//	        snapshots), and function and trigger statistics (the Object Execution grid, the Execution Stats strip). The
+//	        collector sends the scoped configuration inside mssql_confcheck (0391, its join line): the demo hands it to
+//	        its own import function.
 //
 // Demo data, like every other demo row: the names, the figures and the governance view's values are made up.
 
@@ -187,7 +190,7 @@ func (g *Gen) azurePoolLimitRows(t time.Time) []Row {
 }
 
 // mssqlParityBatches are -sql01's rows for the database tabs P25 added: hourly the scoped configuration and the
-// snapshots (mssql_confcheck's hour), every five minutes the function and trigger statistics.
+// schema read, every five minutes the function and trigger statistics.
 func (g *Gen) mssqlParityBatches(t time.Time, first bool) []Batch {
 	if !g.is("-sql01") {
 		return nil
@@ -195,9 +198,7 @@ func (g *Gen) mssqlParityBatches(t time.Time, first bool) []Batch {
 	var out []Batch
 	if first || t.Minute() == 0 || t.Equal(g.end) {
 		out = append(out, Batch{Collection: "mssql_db_scoped_config", At: t, Rows: g.mssqlScopedRows(t)})
-		if rows := g.mssqlSnapshotRows(t); len(rows) > 0 {
-			out = append(out, Batch{Collection: "mssql_db_snapshots", At: t, Rows: rows})
-		}
+		out = append(out, Batch{Collection: "mssql_schema", At: t, Rows: g.mssqlSchemaRows(t)})
 	}
 	if first || t.Minute()%5 == 0 || t.Equal(g.end) {
 		out = append(out, Batch{Collection: "mssql_funcstats", At: t, Rows: g.mssqlFuncStatRows(t)})
@@ -236,15 +237,72 @@ func (g *Gen) mssqlScopedRows(t time.Time) []Row {
 	return rows
 }
 
-// mssqlSnapshotRows lists Sales' database snapshot from its creation 18 hours before the anchor (none before it).
-func (g *Gen) mssqlSnapshotRows(t time.Time) []Row {
-	made := g.end.Add(-18 * time.Hour)
-	if t.Before(made) {
-		return nil
+// mssqlSchemaRows is a whole mssql_schema read of Sales and Ledger at t (the Schema tab, and the database page's
+// Snapshot Summary: DBA Dash's schema snapshots): Sales' procedure dbo.usp_GetOrders altered 20 hours before the anchor,
+// its index IX_Orders_CustomerId made 6 hours before it and IX_Orders_Status dropped 26 hours before it. The rows are
+// the collector's (internal/mssql/schema.go): the database's 'mssql_db' row, its 'db' row, its objects, then 'end'.
+func (g *Gen) mssqlSchemaRows(t time.Time) []Row {
+	var out []Row
+	for _, d := range []struct {
+		id            int
+		name, created string
+	}{{5, "Sales", "2023-04-11T08:12:40.370"}, {6, "Ledger", "2023-04-11T08:13:02.117"}} {
+		var objs []Row
+		obj := func(kind, schema, name, table, def string) {
+			identity, parent := schema+"."+name, any(nil)
+			switch kind {
+			case "schema":
+				identity = schema
+			case "column":
+				identity, parent = schema+"."+table+"."+name, schema+"."+table
+			case "index", "constraint", "trigger":
+				identity, parent = name+" on "+schema+"."+table, schema+"."+table
+			}
+			objectName := name
+			if kind == "schema" {
+				objectName = schema
+			}
+			h, dh := sha256.Sum256([]byte(kind+"\x00"+def+"\x00dbo")), sha256.Sum256([]byte(def))
+			objs = append(objs, Row{"kind": "obj", "dbid": d.id, "datname": d.name, "object_kind": kind, "identity": identity,
+				"schema_name": schema, "object_name": objectName, "parent": parent, "definition": def, "owner": "dbo", "acl": nil,
+				"hash": hex.EncodeToString(h[:16]), "def_hash": hex.EncodeToString(dh[:16])})
+		}
+		obj("schema", "dbo", "dbo", "", "schema")
+		if d.name == "Sales" {
+			obj("table", "dbo", "Orders", "", "table")
+			obj("column", "dbo", "OrderId", "Orders", "int not null identity(1,1)")
+			obj("column", "dbo", "CustomerId", "Orders", "int not null")
+			obj("column", "dbo", "Status", "Orders", "varchar(10) not null")
+			obj("column", "dbo", "ShippedAt", "Orders", "datetime2(3) null")
+			obj("index", "dbo", "PK_Orders", "Orders", "CLUSTERED PRIMARY KEY (OrderId)")
+			if !t.Before(g.end.Add(-6 * time.Hour)) {
+				obj("index", "dbo", "IX_Orders_CustomerId", "Orders", "NONCLUSTERED (CustomerId) INCLUDE (Status)")
+			}
+			if t.Before(g.end.Add(-26 * time.Hour)) {
+				obj("index", "dbo", "IX_Orders_Status", "Orders", "NONCLUSTERED (Status)")
+			}
+			obj("trigger", "dbo", "tr_Orders_Audit", "Orders", "CREATE TRIGGER dbo.tr_Orders_Audit ON dbo.Orders AFTER UPDATE AS INSERT dbo.OrderAudit (OrderId, ChangedAt) SELECT OrderId, SYSUTCDATETIME() FROM inserted")
+			proc := "CREATE PROCEDURE dbo.usp_GetOrders @CustomerId int AS SELECT o.OrderId, o.Status FROM dbo.Orders o WHERE o.CustomerId = @CustomerId"
+			if !t.Before(g.end.Add(-20 * time.Hour)) {
+				proc += " ORDER BY o.OrderId DESC"
+			}
+			obj("procedure", "dbo", "usp_GetOrders", "", proc)
+			obj("function", "dbo", "fn_OrderTotal", "", "CREATE FUNCTION dbo.fn_OrderTotal (@OrderId int) RETURNS decimal(14,2) AS BEGIN RETURN (SELECT SUM(Amount) FROM dbo.OrderLines WHERE OrderId = @OrderId) END")
+			obj("function", "dbo", "fn_CustomerTier", "", "CREATE FUNCTION dbo.fn_CustomerTier (@CustomerId int) RETURNS tinyint AS BEGIN RETURN 1 END")
+		} else {
+			obj("table", "dbo", "LedgerEntry", "", "table")
+			obj("column", "dbo", "EntryId", "LedgerEntry", "bigint not null identity(1,1)")
+			obj("column", "dbo", "AccountId", "LedgerEntry", "int not null")
+			obj("column", "dbo", "PostedAt", "LedgerEntry", "datetime2(3) not null")
+			obj("column", "dbo", "Amount", "LedgerEntry", "decimal(14,2) not null")
+			obj("index", "dbo", "PK_LedgerEntry", "LedgerEntry", "CLUSTERED PRIMARY KEY (EntryId)")
+		}
+		out = append(out, Row{"kind": "mssql_db", "database_id": d.id, "name": d.name, "create_date": d.created, "create_local": nil,
+			"restored_at": nil, "state": "read", "note": nil, "read_at": t.UTC()},
+			Row{"kind": "db", "dbid": d.id, "datname": d.name, "read_at": t.UTC(), "objects": len(objs)})
+		out = append(out, objs...)
 	}
-	size := int64(8<<20) + int64(t.Sub(made).Hours()*float64(2<<20))
-	return []Row{{"kind": "db_snapshot", "snapshot_name": "Sales_snap_daily", "source_database": "Sales", "created_utc": made.UTC().Format(time.RFC3339),
-		"size_on_disk_bytes": size, "files": 1, "size_note": nil}}
+	return append(out, Row{"kind": "end"})
 }
 
 // mssqlFuncStatRows is the mssql_funcstats payload at t: the state row and, for two scalar functions and a trigger of
