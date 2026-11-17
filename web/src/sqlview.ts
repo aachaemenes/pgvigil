@@ -26,14 +26,16 @@ async function copyText(text: string, from: HTMLElement): Promise<boolean> {
   } catch { return false; }
 }
 
-// openViewer shows a whole text: monospace and wrapped for a statement (code), the page's own font for a note.
-export function openViewer(heading: string, text: string, code = true): void {
+// openViewer shows a whole text: monospace and wrapped for a statement (code), the page's own font for a note; lang
+// names the text's syntax (sql, json, markdown, xml: a custom report's text link, parity set 3 L127) on the pre as data-lang
+export function openViewer(heading: string, text: string, code = true, lang = ''): void {
   document.querySelector('dialog.sqlview')?.remove();   // one viewer at a time
   const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;   // the focus goes back there on close
   const id = 'sqlview-h' + (++seq);
   const pre = el('pre', { class: 'sql', tabindex: '0', role: 'region', 'aria-labelledby': id,
     style: 'white-space:pre-wrap;word-break:break-word;overflow:auto;max-height:65vh;margin:.6rem 0;padding:.6rem;'
       + (code ? '' : 'font-family:inherit;font-size:inherit;') }, text);
+  if (lang) pre.dataset.lang = lang;
   const copy = el('button', { type: 'button', class: 'sqlview-copy' }, 'Copy');
   const close = el('button', { type: 'button', class: 'sqlview-close' }, 'Close');
   const said = el('span', { class: 'meta', role: 'status', 'aria-live': 'polite' });

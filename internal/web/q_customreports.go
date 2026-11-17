@@ -1096,6 +1096,7 @@ type reportWriteBody struct {
 	URL                string            `json:"url"`
 	URLLabel           string            `json:"url_label"`
 	Layout             *reportLayout     `json:"layout"`
+	Links              []reportLink      `json:"links"`
 }
 
 // CustomReportWrite is POST /api/customreports: a save, a move, a delete or a folder change.
@@ -1128,7 +1129,7 @@ func (s *Server) CustomReportWrite(w http.ResponseWriter, r *http.Request) {
 			in.MaxRows = *in.Rows
 		}
 		in.View = reportView{Visibility: in.Visibility, Access: in.Access, StatusFromMessages: in.StatusFromMessages, Collections: in.Collections,
-			Sets: in.Sets, Pair: in.Pair, URL: in.URL, URLLabel: in.URLLabel, Layout: in.Layout}
+			Sets: in.Sets, Pair: in.Pair, URL: in.URL, URLLabel: in.URLLabel, Layout: in.Layout, Links: in.Links}
 		if err := validReport(&in.reportDef); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return

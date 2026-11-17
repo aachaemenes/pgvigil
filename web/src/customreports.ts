@@ -15,7 +15,8 @@ import { fleetWideNote, folderWords, inTagScope, tagWords, writtenTag } from './
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, gridModel, GridMenuAsk, MenuLine, offControl } from './ui';
 import { Can, markNeed, routeWhy } from './needs';
 import { gridFiltered, gridHidden, gridMenu, resetGrid, setGridDefault } from './gridtools';
-import { openViewer } from './sqlview';
+import { firstChars, openViewer } from './sqlview';
+import { instanceTabs, mssqlInstanceTabs } from './router';
 
 // picker: how the run's form offers the value (DBA Dash's Pickers, L95) - a list, a text box (Enter runs) or a query's
 // values (its first column the value, its second the words); menu = on the run's toolbar first
@@ -34,7 +35,15 @@ export interface ReportDef {
   pair?: { report_id: number; label: string };  // the switch button's report and words (L106)
   url?: string; url_label?: string;             // a link under the description (L107)
   layout?: SavedLayout;                         // Save Layout: every viewer's default (L109, L208)
+  links?: Link[];                               // a column's cells as links (Add Link, L120, L125-L128)
 }
+// a link on a result set's column: url / text use the target column's value (the column itself when none); drill opens
+// another report with its parameters from the row (map: its parameter -> this row's column); tree opens the row's
+// instance at a tab
+export interface Link { set?: number; column: string; kind: 'url' | 'text' | 'drill' | 'tree'; target_column?: string; syntax?: string;
+  report_id?: number; map?: Record<string, string>; open?: 'new' | 'same' | 'panel'; instance_column?: string; database_column?: string; tab?: string }
+// LinkCtx: what a report page gives setGrid for its links (the drill-down's address and its panel)
+export interface LinkCtx { links: Link[]; drillHref: (l: Link, from: Record<string, string>) => string; panel: (l: Link, from: Record<string, string>) => void; range: () => string }
 export interface SavedLayout { sets?: { set: number; hidden?: string[] }[]; grid_off?: boolean; heights?: Record<string, number> }
 export interface SetView { set: number; name?: string; in_all?: boolean }
 export interface Visibility { engines?: string[]; tags?: string[]; include?: string[]; exclude?: string[] }
@@ -171,10 +180,51 @@ function fmtCell(v: unknown, type: string, f?: ColFmt): string {
 }
 const numericFormat = new Set(['number', 'int', 'bytes', 'kb', 'mb', 'secs', 'ms', 'pct']);
 
-// setGrid draws one result set with the report's formats and colour rules
-export function setGrid(set: ResultSet, idx: number, cols: ColFmt[] = [], rules: Rule[] = []): HTMLElement {
+// linkCell: a cell with its column's link (L125-L128): a URL only when the value is an http(s) address (any other value
+// is no link), a text in the code viewer, a drill-down (a new tab, this one, or a panel under the report), the row's
+// instance at a tab of the tree
+const textLangs: Record<string, string> = { '': 'none', sql: 'SQL', json: 'JSON', markdown: 'Markdown', xml: 'XML' };
+function linkCell(l: Link, shown: string, at: (col: string) => unknown, ctx: LinkCtx): string | Node {
+  const val = (c?: string) => { const v = at(c || l.column); return v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v); };
+  switch (l.kind) {
+    case 'url': {
+      const u = val(l.target_column).trim();
+      let ok = false;
+      try { ok = /^https?:\/\//i.test(u) && !!new URL(u).host; } catch { ok = false; }
+      return ok ? el('a', { href: u, target: '_blank', rel: 'noopener noreferrer' }, shown || u) : shown;
+    }
+    case 'text': {
+      const t = val(l.target_column);
+      if (!t) return shown;
+      let pretty = t;
+      if (l.syntax === 'json') { try { pretty = JSON.stringify(JSON.parse(t), null, 2); } catch { pretty = t; } }
+      const b = el('button', { type: 'button', class: 'link sqlcell', 'data-full': t, title: `Show the whole ${textLangs[l.syntax ?? ''] === 'none' ? 'text' : textLangs[l.syntax ?? '']}` }, firstChars(shown || t, 80));
+      b.addEventListener('click', ev => { ev.stopPropagation(); openViewer(l.target_column || l.column, pretty, true, l.syntax ?? ''); });
+      return b;
+    }
+    case 'drill': {
+      const from = Object.fromEntries(Object.entries(l.map ?? {}).map(([p, c]) => [p, val(c)]));
+      const a = el('a', { href: ctx.drillHref(l, from) }, shown || '(open)');
+      if ((l.open ?? 'new') === 'new') { a.target = '_blank'; a.rel = 'noopener'; }
+      // a panel under the report; Ctrl+click (or the middle button) opens the address in a new tab as any link
+      if (l.open === 'panel') a.addEventListener('click', ev => { if (ev.ctrlKey || ev.metaKey || ev.shiftKey) return; ev.preventDefault(); ctx.panel(l, from); });
+      return a;
+    }
+    case 'tree': {
+      const iid = Number(val(l.instance_column));
+      if (!Number.isInteger(iid) || iid <= 0) return shown;
+      const db = l.database_column ? val(l.database_column) : '';
+      return el('a', { href: `#/${l.tab ?? 'summary'}?i=${iid}${db ? '&db=' + encodeURIComponent(db) : ''}${ctx.range()}` }, shown || String(iid));
+    }
+  }
+  return shown;
+}
+
+// setGrid draws one result set with the report's formats and colour rules (and, on the report's own page, its links)
+export function setGrid(set: ResultSet, idx: number, cols: ColFmt[] = [], rules: Rule[] = [], links?: LinkCtx): HTMLElement {
   const rows = set.rows.map(r => Object.fromEntries(r.map((v, i) => ['c' + i, v])));
   const gcols: Col[] = [];
+  const colOf = (n: string) => set.columns.findIndex(c => c.toLowerCase() === n.toLowerCase());
   set.columns.forEach((name, i) => {
     const f = cols.find(c => c.set === idx && c.column.toLowerCase() === name.toLowerCase());
     if (f?.hidden) return;
@@ -184,7 +234,10 @@ export function setGrid(set: ResultSet, idx: number, cols: ColFmt[] = [], rules:
       key: 'c' + i, label: f?.label || name || `(column ${i + 1})`, title: f?.tooltip || undefined,
       num: f?.format ? numericFormat.has(f.format) : type === 'number',
       wide: type === 'text' && !f?.format,
-      fmt: v => fmtCell(v, type, f),
+      fmt: (v, row) => {
+        const shown = fmtCell(v, type, f), l = links?.links.find(x => (x.set ?? 0) === idx && x.column.toLowerCase() === name.toLowerCase());
+        return l && links ? linkCell(l, shown, c => { const k = colOf(c); return k < 0 ? undefined : row['c' + k]; }, links) : shown;
+      },
       cls: hasRule ? (_v, row) => cellStatus(rules, idx, i, row, set.columns) : undefined,
     });
   });
@@ -218,7 +271,7 @@ export function resultView(runs: InstanceRun[], def?: Pick<ReportDef, 'columns' 
 // ---- reading the definitions ------------------------------------------------------------------------------------
 
 // viewOf: 0372's view column as the definition's own keys (an empty view, '{}': none of them - the report as before)
-type ViewKeys = Pick<ReportDef, 'visibility' | 'access' | 'status_from_messages' | 'collections' | 'sets' | 'pair' | 'url' | 'url_label' | 'layout'>;
+type ViewKeys = Pick<ReportDef, 'visibility' | 'access' | 'status_from_messages' | 'collections' | 'sets' | 'pair' | 'url' | 'url_label' | 'layout' | 'links'>;
 function viewOf(v: unknown): ViewKeys {
   const o = v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
   const out: ViewKeys = {};
@@ -231,6 +284,7 @@ function viewOf(v: unknown): ViewKeys {
   if (pr && typeof pr === 'object' && Number(pr.report_id) > 0) out.pair = { report_id: Number(pr.report_id), label: String(pr.label ?? '') };
   if (typeof o.url === 'string' && o.url) { out.url = o.url; if (typeof o.url_label === 'string' && o.url_label) out.url_label = o.url_label; }
   if (o.layout && typeof o.layout === 'object' && !Array.isArray(o.layout)) out.layout = o.layout as SavedLayout;
+  if (Array.isArray(o.links) && o.links.length) out.links = (o.links as Link[]).filter(x => x && typeof x.column === 'string');
   return out;
 }
 
@@ -280,6 +334,88 @@ function highlightDialog(column: string, value: string): Promise<{ cond: string;
     document.body.append(dlg);
     dlg.showModal();
     val.select();
+  });
+}
+
+// linkDialog: Add Link (DBA Dash L120) - None, URL (with its trust words), Text (its syntax), Drill Down (the report,
+// where it opens, each of its parameters from a column of this row), Navigate Tree (the instance and database columns,
+// the tab); the target column a URL or a text takes its value from. 'none' = the link removed, null = cancelled
+const linkKinds: Record<string, string> = { '': 'None', url: 'URL', text: 'Text', drill: 'Drill Down', tree: 'Navigate Tree' };
+const openKinds: Record<string, string> = { new: 'a new tab', same: 'this tab (Back returns)', panel: 'a panel under the report' };
+function linkDialog(columns: string[], column: string, set: number, cur?: Link): Promise<Link | 'none' | null> {
+  return new Promise(done => {
+    const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const colOpts = (none = false) => Object.fromEntries([...(none ? [['', '(none)']] : []), ...columns.map(c => [c, c])]);
+    const kind = sel('Link type', linkKinds, cur?.kind ?? '');
+    const tcol = sel('Target column', colOpts(), cur?.target_column || column);
+    const trust = el('p', { class: 'meta warn' }, 'Open only links you trust: the address comes from the report\'s data, and a click opens it in a new tab. A value that is no http or https address is no link.');
+    const syntax = sel('Syntax', textLangs, cur?.syntax ?? '');
+    const report = el('select', { 'aria-label': 'Report' }) as HTMLSelectElement;
+    const open = sel('Open in', openKinds, cur?.open ?? 'new');
+    const maps = el('div', { class: 'toolbar' });
+    const icol = sel('Instance column', colOpts(), cur?.instance_column ?? columns.find(c => /instance_?id/i.test(c)) ?? columns[0]);
+    const dcol = sel('Database column', colOpts(true), cur?.database_column ?? '');
+    const tabs = sel('Tab', Object.fromEntries([...Object.entries(instanceTabs), ...Object.entries(mssqlInstanceTabs)].map(([k, v]) => [k, `${v} (${k})`])), cur?.tab ?? 'activity');
+    const parts: Record<string, HTMLElement> = {
+      url: el('div', {}, el('div', { class: 'toolbar' }, el('label', {}, 'Target column ', tcol)), trust),
+      text: el('div', { class: 'toolbar' }, el('label', {}, 'Syntax ', syntax)),
+      drill: el('div', {}, el('div', { class: 'toolbar' }, el('label', {}, 'Report ', report), el('label', {}, 'Open in ', open)), maps),
+      tree: el('div', { class: 'toolbar' }, el('label', {}, 'Instance column ', icol), el('label', {}, 'Database column ', dcol), el('label', {}, 'Tab ', tabs)),
+    };
+    // the target column serves a URL and a text: one control, shown with either
+    const show = () => {
+      for (const [k, e] of Object.entries(parts)) e.hidden = k !== kind.value && !(k === 'url' && kind.value === 'text');
+      trust.hidden = kind.value !== 'url';
+    };
+    // the drill-down's parameters: the chosen report's, each from a column (the one of its name when there is one)
+    const mapSels = new Map<string, HTMLSelectElement>();
+    const loadParams = async () => {
+      maps.replaceChildren(); mapSels.clear();
+      if (!report.value) return;
+      try {
+        const got = rowsOf((await get<{ report: Table | null }>('customreports', { report: Number(report.value) })).report);
+        const ps = got.length ? defOf(got[0]).params : [];
+        if (!ps.length) { maps.append(el('p', { class: 'meta' }, 'The report takes no parameter.')); return; }
+        for (const p of ps) {
+          const now = cur?.report_id === Number(report.value) ? cur.map?.[p.name] : columns.find(c => c.toLowerCase() === p.name.toLowerCase());
+          const x = sel(`Parameter ${p.name} from`, colOpts(true), now ?? '');
+          mapSels.set(p.name, x);
+          maps.append(el('label', {}, `${p.label || p.name} from `, x));
+        }
+      } catch (e) { maps.append(errorBox(e)); }
+    };
+    void get<{ reports: Table | null }>('customreports').then(l => {
+      for (const r of rowsOf(l.reports)) report.append(el('option', { value: String(r.report_id) }, String(r.name)));
+      if (cur?.report_id) report.value = String(cur.report_id);
+      return loadParams();
+    }).catch(e => { maps.append(errorBox(e)); });
+    report.addEventListener('change', () => { void loadParams(); });
+    kind.addEventListener('change', show);
+    const form = el('form', { method: 'dialog' }, el('h3', {}, `Add Link: ${column}`),
+      el('div', { class: 'toolbar' }, el('label', {}, 'Link type ', kind)), ...Object.values(parts),
+      el('div', { class: 'toolbar' }, el('button', { type: 'submit' }, 'Save'), el('button', { type: 'button', class: 'cr-cancel' }, 'Cancel')));
+    show();
+    const dlg = el('dialog', { class: 'cr-ask', 'aria-label': `Add Link: ${column}` }, form) as HTMLDialogElement;
+    let out: Link | 'none' | null = null;
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const base = { set: set || undefined, column };
+      switch (kind.value) {
+        case 'url': out = { ...base, kind: 'url', target_column: tcol.value !== column ? tcol.value : undefined }; break;
+        case 'text': out = { ...base, kind: 'text', target_column: tcol.value !== column ? tcol.value : undefined, syntax: syntax.value || undefined }; break;
+        case 'drill': out = { ...base, kind: 'drill', report_id: Number(report.value), open: open.value as Link['open'],
+          map: Object.fromEntries([...mapSels].filter(([, x]) => x.value).map(([p, x]) => [p, x.value])) }; break;
+        case 'tree': out = { ...base, kind: 'tree', instance_column: icol.value, database_column: dcol.value || undefined, tab: tabs.value }; break;
+        default: out = 'none';
+      }
+      if (out !== 'none' && out.kind === 'drill' && !out.report_id) { out = null; return; }
+      dlg.close();
+    });
+    form.querySelector('.cr-cancel')!.addEventListener('click', () => dlg.close());
+    dlg.addEventListener('close', () => { dlg.remove(); if (back?.isConnected) back.focus(); done(out); });
+    document.body.append(dlg);
+    dlg.showModal();
+    kind.focus();
   });
 }
 
@@ -644,13 +780,46 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
     }
     gridBtn.setAttribute('aria-pressed', String(gridOff));
   };
+  // the links (L120, L125-L128): a drill-down's address carries the page's range, target and parameters (the user's
+  // filters, by name: the target fills only its own) and the row's values for the target's parameters; a panel draws
+  // the target's run under the report
+  const carried = () => { const q = new URLSearchParams(), h = hashParams(); for (const k of ['w', 'from', 'to']) { const v = h.get(k); if (v) q.set(k, v); } return q; };
+  const pageParams = (): Record<string, string> => Object.fromEntries(def.params.map((p, i) => [p.name, inputs[i].value] as [string, string]).filter(([, v]) => v !== ''));
+  const child = el('section', { class: 'cr-child', hidden: '' });
+  const openPanel = async (l: Link, from: Record<string, string>) => {
+    const close = el('button', { type: 'button' }, 'Close the panel');
+    close.addEventListener('click', () => { child.hidden = true; child.replaceChildren(); });
+    child.hidden = false;
+    child.replaceChildren(el('h3', {}, 'Drill-down'), close, el('p', { class: 'meta', role: 'status' }, 'Running the report...'));
+    try {
+      const got = rowsOf((await get<{ report: Table | null }>('customreports', { report: l.report_id })).report);
+      if (!got.length) throw new Error(`No report ${l.report_id}: the link names a report that is gone.`);
+      const tdef = defOf(got[0]), b = runBody();
+      const r = await post<{ runs: InstanceRun[] }>('customreports/run', { ...b, report_id: tdef.report_id, params: { ...pageParams(), ...from },
+        target: tdef.engine === 'store' || b.target !== 'fleet' ? b.target : 'instance' });
+      child.replaceChildren(el('h3', {}, `Drill-down: ${tdef.name}`), close, resultView(r.runs, tdef, tdef.name));
+    } catch (e) { child.replaceChildren(el('h3', {}, 'Drill-down'), close, errorBox(e)); }
+  };
+  const linkCtx: LinkCtx = {
+    get links() { return def.links ?? []; },
+    range: () => { const q = carried().toString(); return q ? '&' + q : ''; },
+    drillHref: (l, from) => {
+      const q = carried();
+      if (target.value === 'instance' && instSel.value) q.set('i', instSel.value);
+      else if (target.value === 'tag' && tagSel.value) q.set('tag', tagSel.value);
+      for (const [k, v] of Object.entries({ ...pageParams(), ...from })) q.set('p.' + k, v);
+      q.set('report', String(l.report_id)); q.set('run', '1');
+      return '#/customreports?' + q.toString();
+    },
+    panel: (l, from) => { void openPanel(l, from); },
+  };
   // a set's box: one set draws as before (its grid); several get the toolbar (Maximize, the name, Columns, Copy, Clear
   // Filter - marked while a filter is on -, Rename) and the separator under it
   const setBox = (run: InstanceRun, ri: number, s: ResultSet, i: number): HTMLElement => {
     const several = run.sets.length > 1;
     const b = el('div', { class: 'cr-set' });
     b.dataset.set = String(i); b.dataset.key = `${ri}:${i}`;
-    const g = el('div', { class: 'cr-set-grid' }, setGrid(s, i, def.columns, def.rules));
+    const g = el('div', { class: 'cr-set-grid' }, setGrid(s, i, def.columns, def.rules, linkCtx));
     const t = () => g.querySelector<HTMLTableElement>('table.grid');
     // the saved layout: this set's hidden columns, every viewer's default until the viewer's browser keeps its own
     const lay = def.layout?.sets?.find(x => x.set === i);
@@ -786,6 +955,15 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
         });
       } },
     ];
+    sub.push({ label: 'Add Link', off, act: () => {
+      const cur = def.links?.find(x => (x.set ?? 0) === si && x.column.toLowerCase() === name.toLowerCase());
+      void linkDialog(set.columns, name, si, cur).then(r => {
+        if (r == null) return;
+        const keep = (def.links ?? []).filter(x => x !== cur);
+        const links = r === 'none' ? keep : [...keep, r];
+        void saveWith({ links: links.length ? links : undefined }, r === 'none' ? `The link on ${name} is removed (saved with the report).` : `${name}'s cells are links now (saved with the report).`);
+      });
+    } });
     q0.more.push({ label: 'Edit Report', sub });
   });
   const renameSet = async (i: number) => {
@@ -808,7 +986,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   });
   const onResize = () => { if (!out.isConnected) { window.removeEventListener('resize', onResize); return; } if (fit) apply(); };
   window.addEventListener('resize', onResize);
-  sec.append(viewBar, status, out);
+  sec.append(viewBar, status, out, child);
 
   // a query picker's values: its query run on the report's target (POST .../run with 'picker'), audited as a run; the
   // first column the value, the second (when there is one) the words; a list that cannot be read says so in its options

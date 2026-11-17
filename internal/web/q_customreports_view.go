@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -58,6 +59,68 @@ type reportView struct {
 	// Layout: Save Layout's choices, every viewer's default where the viewer's browser keeps none of its own (DBA Dash's
 	// Save Layout, L109 / L208): per result set the hidden columns, the grids shown or not, each set's height
 	Layout *reportLayout `json:"layout,omitempty"`
+	// Links: a column's cells as links (DBA Dash's Add Link, L120, L125-L128)
+	Links []reportLink `json:"links,omitempty"`
+}
+
+// reportLink: on a result set's column, a URL (the target column's value, http or https only), a text opened in the
+// code viewer, a drill-down to another report (its parameters from the row's columns) or the instance's tab in the tree
+type reportLink struct {
+	Set            int               `json:"set,omitempty"`
+	Column         string            `json:"column"`
+	Kind           string            `json:"kind"`                    // url | text | drill | tree
+	TargetColumn   string            `json:"target_column,omitempty"` // url / text: the column whose value it uses ("" = the column)
+	Syntax         string            `json:"syntax,omitempty"`        // text: sql | json | markdown | xml | ""
+	ReportID       int64             `json:"report_id,omitempty"`     // drill: the report opened
+	Map            map[string]string `json:"map,omitempty"`           // drill: its parameter -> this row's column
+	Open           string            `json:"open,omitempty"`          // drill: new | same | panel ("" = new, DBA Dash's default)
+	InstanceColumn string            `json:"instance_column,omitempty"`
+	DatabaseColumn string            `json:"database_column,omitempty"`
+	Tab            string            `json:"tab,omitempty"` // tree: the instance's tab opened
+}
+
+var linkTab = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
+
+// validLinks checks a view's links: one per result set and column
+func validLinks(ls []reportLink) error {
+	if len(ls) > 200 {
+		return errors.New("links: at most 200")
+	}
+	seen := map[string]bool{}
+	col := func(s string) bool { return len(s) <= 128 && !strings.ContainsRune(s, 0) }
+	for _, l := range ls {
+		k := fmt.Sprint(l.Set, "|", strings.ToLower(l.Column))
+		switch {
+		case l.Set < 0 || l.Set > 49 || strings.TrimSpace(l.Column) == "" || !col(l.Column) || !col(l.TargetColumn):
+			return errors.New("links: a link names its result set (0 to 49) and its column (1 to 128 characters)")
+		case seen[k]:
+			return fmt.Errorf("links: the column %q of result set %d has two links", l.Column, l.Set+1)
+		}
+		seen[k] = true
+		switch l.Kind {
+		case "url":
+		case "text":
+			if l.Syntax != "" && l.Syntax != "sql" && l.Syntax != "json" && l.Syntax != "markdown" && l.Syntax != "xml" {
+				return fmt.Errorf("links: %q's syntax is sql, json, markdown or xml", l.Column)
+			}
+		case "drill":
+			if l.ReportID <= 0 || len(l.Map) > 30 || (l.Open != "" && l.Open != "new" && l.Open != "same" && l.Open != "panel") {
+				return fmt.Errorf("links: %q's drill-down names its report, at most 30 parameters, and opens new, same or panel", l.Column)
+			}
+			for p, c := range l.Map {
+				if !reportParamName.MatchString(p) || strings.TrimSpace(c) == "" || !col(c) {
+					return fmt.Errorf("links: %q's drill-down maps a parameter name to a column (%q)", l.Column, p)
+				}
+			}
+		case "tree":
+			if strings.TrimSpace(l.InstanceColumn) == "" || !col(l.InstanceColumn) || !col(l.DatabaseColumn) || !linkTab.MatchString(l.Tab) {
+				return fmt.Errorf("links: %q's tree link names its instance column and a tab", l.Column)
+			}
+		default:
+			return fmt.Errorf("links: %q's kind is url, text, drill or tree", l.Column)
+		}
+	}
+	return nil
 }
 
 type reportLayout struct {
@@ -292,6 +355,9 @@ func validView(v *reportView) error {
 		if len(x.Sets) == 0 && !x.GridOff && len(x.Heights) == 0 {
 			v.Layout = nil // nothing saved
 		}
+	}
+	if err := validLinks(v.Links); err != nil {
+		return err
 	}
 	switch {
 	case v.URLLabel != "" && v.URL == "":
