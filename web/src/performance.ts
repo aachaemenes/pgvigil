@@ -14,7 +14,7 @@ import { Ctx, href, rangeLabel, window_ } from './router';
 import { fmt } from './tz';
 import { el, fmtBytes, fmtNum } from './ui';
 
-type Parts = 'meta' | 'grid' | 'cpu' | 'sessions' | 'waits' | 'db' | 'io';
+type Parts = 'meta' | 'grid' | 'cpu' | 'sessions' | 'waits' | 'db' | 'io' | 'blocking' | 'filegroups';
 
 // align puts a part's rows onto the shared steps (a missing step = null values: a gap in the line)
 function align(gridRows: Row[], rows: Row[], keys: string[]): Row[] {
@@ -94,15 +94,20 @@ function titled(chart: HTMLElement, text: string, link: string): HTMLElement {
   return chart;
 }
 
-export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
-  const d = await get<Record<Parts, Table | null>>('performance', { instance: ctx.instance, ...window_(ctx) });
+// cut: a SQL Server database's page (mssql_db.ts, P25 F101) - its IO (with the file group picked) and the blocking
+// chains whose head ran in it; CPU, requests, waits, the buffer pool and transactions stay the instance's and say so.
+export interface PerfCut { db: string; filegroup?: string; pick: (filegroup: string | undefined) => void }
+
+export async function performanceView(ctx: Ctx, cut?: PerfCut): Promise<HTMLElement> {
+  const d = await get<Record<Parts, Table | null>>('performance', { instance: ctx.instance, ...window_(ctx), ...(cut ? { db: cut.db, filegroup: cut.filegroup } : {}) });
   const meta = rowsOf(d.meta)[0] ?? {};
-  const g = sharedSteps(rowsOf(d.grid), (['cpu', 'sessions', 'waits', 'db', 'io'] as Parts[]).flatMap(k => rowsOf(d[k])), Number(meta.step_secs ?? 60));
+  const g = sharedSteps(rowsOf(d.grid), (['cpu', 'sessions', 'waits', 'db', 'io', 'blocking'] as Parts[]).flatMap(k => rowsOf(d[k])), Number(meta.step_secs ?? 60));
   const ms = meta.engine === 'sqlserver';
+  const inst = cut ? ' - the instance\'s' : '';
   // the buffer pool read comes before any chart is made: the page is placed as soon as its last read ends
   const mem = ms ? await get<{ series: Table | null }>('mssql/memory', { instance: ctx.instance, ...window_(ctx), part: 'series' }).catch(() => null) : null;
   const to = (tab: string, extra: Record<string, string> = {}) => href(ctx, { tab, ...extra });
-  const sec = el('section', {}, el('h2', {}, `Performance (${rangeLabel(ctx)})`));
+  const sec = el('section', {}, el('h2', {}, cut ? `Performance of ${cut.db} (${rangeLabel(ctx)})` : `Performance (${rangeLabel(ctx)})`));
   sec.append(el('p', { class: 'meta' }, `one step = ${fmtNum(Number(meta.step_secs ?? 60) / 60)} min; every chart shares the time axis; a drag on a chart zooms them all`));
   const chip = zoomChip(ctx);
   if (chip) sec.append(chip);
@@ -113,14 +118,14 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
     box.append(cpu.length
       ? titled(lineChart('CPU', align(g, cpu, ['sql_avg', 'cpu_avg', 'cpu_max']),
           [{ key: 'sql_avg', label: 'SQL Server %' }, { key: 'cpu_avg', label: 'total %' }, { key: 'cpu_max', label: 'total max %' }], v => fmtNum(v) + ' %'),
-          cpu.some(r => r.azure) ? 'CPU (the database\'s share of its limit: sys.dm_db_resource_stats, Azure SQL Database)'
-            : cpu.some(r => r.machine_read) ? 'CPU (scheduler monitor: SQL Server and the machine)' : 'CPU (scheduler monitor: SQL Server only, a Linux host)', to(mssqlCpuTab))
+          (cpu.some(r => r.azure) ? 'CPU (the database\'s share of its limit: sys.dm_db_resource_stats, Azure SQL Database)'
+            : cpu.some(r => r.machine_read) ? 'CPU (scheduler monitor: SQL Server and the machine)' : 'CPU (scheduler monitor: SQL Server only, a Linux host)') + inst, to(mssqlCpuTab))
       : emptyChart('CPU', to(mssqlCpuTab), 'No CPU read in this window: the mssql_cpu collection runs every minute and needs VIEW SERVER STATE '
         + '(on Azure SQL Database mssql_azuredb_resources, with VIEW DATABASE STATE).'));
     box.append(titled(lineChart('Requests', align(g, rowsOf(d.sessions), ['requests', 'blocked', 'sessions']),
-      [{ key: 'requests', label: 'requests' }, { key: 'blocked', label: 'blocked' }, { key: 'sessions', label: 'sessions' }]), 'Requests and blocked sessions', to('mssql_running')));
+      [{ key: 'requests', label: 'requests' }, { key: 'blocked', label: 'blocked' }, { key: 'sessions', label: 'sessions' }]), 'Requests and blocked sessions' + inst, to('mssql_running')));
     const w = pivotWaits(g, rowsOf(d.waits));
-    box.append(titled(lineChart('Waits', w.rows, w.series, ms_s, { stacked: true }), 'Waits by category (ms of wait per second, stacked)', to('mssql_waits')));
+    box.append(titled(lineChart('Waits', w.rows, w.series, ms_s, { stacked: true }), 'Waits by category (ms of wait per second, stacked)' + inst, to('mssql_waits')));
     // the buffer pool (PerformanceMonitor's 'Buffer pool (MB)' strip: Database Cache Memory) with Total Server Memory,
     // read above
     const memRaw = rowsOf(mem?.series ?? null);
@@ -130,16 +135,33 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
     const memRows = memAligned.some(r => r.buffer_pool_mb != null) ? memAligned : memRaw;
     box.append(memRaw.length
       ? titled(lineChart('Buffer pool', memRows, [{ key: 'buffer_pool_mb', label: 'buffer pool' }, { key: 'total_mb', label: 'total server' }], v => fmtNum(v) + ' MB'),
-          'Buffer pool (MB)', to(mssqlMemoryTab))
+          'Buffer pool (MB)' + inst, to(mssqlMemoryTab))
       : emptyChart('Buffer pool (MB)', to(mssqlMemoryTab), 'No memory read in this window: the mssql_memory collection runs every minute.'));
     box.append(titled(lineChart('Transactions', align(g, rowsOf(d.db), ['batch_s', 'transactions_s', 'compiles_s']),
       [{ key: 'batch_s', label: 'batch requests/s' }, { key: 'transactions_s', label: 'transactions/s' }, { key: 'compiles_s', label: 'compilations/s' }]),
-      'Batch requests and transactions per second', to(mssqlCpuTab)));
+      'Batch requests and transactions per second' + inst, to(mssqlCpuTab)));
     const io = align(g, rowsOf(d.io), ['read_ms', 'write_ms', 'read_mb_s', 'write_mb_s']);
+    // the database's page: its files, a file group picked (DBA Dash's IO Performance: Database and its Filegroup filter)
+    const files = cut ? `${cut.db}'s ${cut.filegroup ? `data files in ${cut.filegroup}` : 'files'}` : 'all database files';
+    if (cut) {
+      const groups = rowsOf(d.filegroups).map(r => String(r.filegroup));
+      const pick = el('select', { id: 'perf-filegroup', 'aria-label': 'File group' }, el('option', { value: '' }, 'every file group'),
+        ...groups.map(f => el('option', { value: f }, f)));
+      pick.value = cut.filegroup && groups.includes(cut.filegroup) ? cut.filegroup : '';
+      pick.addEventListener('change', () => cut.pick(pick.value || undefined));
+      box.append(el('p', { class: 'meta' }, el('label', { for: 'perf-filegroup' }, 'IO of the file group '), pick));
+    }
     box.append(titled(lineChart('IO latency', io, [{ key: 'read_ms', label: 'read ms' }, { key: 'write_ms', label: 'write ms' }], v => fmtNum(v) + ' ms'),
-      'IO latency (all database files)', to(mssqlFileIOTab)));
+      `IO latency (${files})`, to(mssqlFileIOTab)));
     box.append(titled(lineChart('IO throughput', io, [{ key: 'read_mb_s', label: 'read MB/s' }, { key: 'write_mb_s', label: 'write MB/s' }], v => fmtNum(v) + ' MB/s'),
-      'IO throughput (all database files)', to(mssqlFileIOTab)));
+      `IO throughput (${files})`, to(mssqlFileIOTab)));
+    if (cut) {
+      const blk = rowsOf(d.blocking);
+      box.append(blk.length
+        ? titled(lineChart('Blocking', align(g, blk, ['victims', 'chains']), [{ key: 'victims', label: 'blocked sessions' }, { key: 'chains', label: 'chains' }]),
+            `Blocking (chains whose head ran in ${cut.db})`, to('mssql_running'))
+        : emptyChart(`Blocking (chains whose head ran in ${cut.db})`, to('mssql_running'), `No blocking chain with its head in ${cut.db} in this window.`));
+    }
   } else {
     const cpu = rowsOf(d.cpu);
     box.append(cpu.length

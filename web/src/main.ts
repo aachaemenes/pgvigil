@@ -60,6 +60,7 @@ import { mssqlJobs } from './mssql_jobs';
 import { jobsPgView } from './jobs_pg';
 import { pgDeadlocksView } from './pg_deadlocks';
 import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
+import { mssqlDbView } from './mssql_db';
 import { mssqlMaintenanceView } from './mssql_maintenance';
 import { mssqlRowVersionsView } from './mssql_rowversions';
 import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
@@ -118,7 +119,7 @@ const mssqlPages: Record<string, Render> = {
   jobstimeline: jobsTimelineView, custom: customView,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); s.append(await geoReplBlock(c).catch(() => document.createElement('span'))); s.append(await cloudReplicasBlock(c).catch(() => document.createElement('span'))); return s; },
   mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
-  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
+  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView, mssqldb: mssqlDbView,
   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, collectionhealth: collectionHealthView, collectionperf: collectionPerfView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlazure: mssqlAzureView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
