@@ -5,6 +5,7 @@
 // tier, hourly) and mssql_storage (the database's files). Every average over the window weighs each minute by its
 // samples (DBA Dash's average over the view's rows); a maximum is the largest 15-second figure.
 import { get, Row, rowsOf, Table } from './api';
+import { ChartChoice, chartChoice, chartToolbar, layout, pickRows } from './azure_charts';
 import { lineChart } from './chart';
 import { hrefWith } from './dbinfo';
 import { folderWords, tagWords } from './fleet';
@@ -31,7 +32,7 @@ const hist = (key: string, label: string): Col => ({ key, label, fmt: v => {
   ...b.map((c, i) => el('span', { style: `display:inline-block;width:4px;height:${Math.max(c ? 8 : 0, Math.round(100 * c / all))}%;background:${i >= 7 ? 'var(--crit, #c33)' : 'var(--accent, #36c)'}` })));
 } });
 
-type Parts = Record<'tier' | 'summary' | 'minutes' | 'hours' | 'gaps', Table | null>;
+type Parts = Record<'tier' | 'summary' | 'minutes' | 'hours' | 'days' | 'gaps', Table | null>;
 
 export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
   const [d, st] = await Promise.all([get<Parts>('mssql/azuredb', { instance: ctx.instance, ...window_(ctx) }),
@@ -91,26 +92,38 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
       grid(rows, [{ key: 'bucket', label: 'band' }, n('cpu', 'CPU'), n('data', 'data IO'), n('log', 'log write'), ...(dtu ? [n('dtu', 'DTU')] : [])]));
   }
   // DBA Dash's Azure DB tab draws the figures over time: the window's minutes (at most a day of them), or past a day
-  // its hours, oldest first
-  const asc = [...(byHour ? hours : minutes)].reverse();
-  sec.append(el('div', { class: 'charts' },
-    lineChart('Resource use (% of the limit)', asc, [{ key: 'avg_cpu_percent', label: 'CPU avg %' }, { key: 'avg_data_io_percent', label: 'data IO avg %' },
-      { key: 'avg_log_write_percent', label: 'log write avg %' }, ...(dtu ? [{ key: 'avg_dtu_percent', label: 'DTU avg %' }] : [])], v => fmtNum(v) + ' %'),
-    lineChart('Largest 15-second sample (% of the limit)', asc, [{ key: 'max_cpu_percent', label: 'CPU max %' }, { key: 'max_data_io_percent', label: 'data IO max %' },
-      { key: 'max_log_write_percent', label: 'log write max %' }, ...(dtu ? [{ key: 'max_dtu_percent', label: 'DTU max %' }] : [])], v => fmtNum(v) + ' %')));
-  if (byHour) sec.append(el('h3', {}, 'Hours'), el('p', { class: 'meta' }, 'Newest first (UTC hours); each the average of its 15-second rows, the maximum their largest; ' +
-      'an hour at an edge of the window counts only its minutes inside it (marked partial).'),
-    grid(hours, [
-      { key: 'hour', fmt: fmtTime }, n('minutes', 'minutes'), { key: 'partial', label: '', fmt: v => v === true ? 'partial' : '' }, n('samples', 'samples'),
+  // its hours, oldest first - or, by the toolbar's Date Grouping, its minutes, hours or days (P25 task 10), the charts
+  // laid one, two or three a row; the grid below follows the same grouping
+  const days = rowsOf(d.days);
+  // an hour's or a day's grid: its start, its minutes in the window (partial at an edge), its figures
+  const bucketCols = (key: 'hour' | 'day'): Col[] => [
+      { key, fmt: fmtTime }, n('minutes', 'minutes'), { key: 'partial', label: '', fmt: v => v === true ? 'partial' : '' }, n('samples', 'samples'),
       n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct),
       n('avg_data_io_percent', 'data IO avg', pct), n('max_data_io_percent', 'data IO max', pct),
       n('avg_log_write_percent', 'log write avg', pct), n('max_log_write_percent', 'log write max', pct),
       n('avg_memory_usage_percent', 'memory', pct),
       ...(dtu ? [n('avg_dtu_percent', 'DTU avg', pct), n('max_dtu_percent', 'DTU max', pct)] : []),
       n('max_worker_percent', 'workers', pct), n('max_session_percent', 'sessions', pct),
-    ], 'No hour in the window.'));
-  else sec.append(el('h3', {}, 'Minutes'), el('p', { class: 'meta' }, 'Newest first, at most a day; each the average of its 15-second rows, the maximum their largest.'),
-    grid(minutes, [
+    ];
+  const words: Record<string, [string, string, string]> = {
+    minute: ['Minutes', 'Newest first, at most a day; each the average of its 15-second rows, the maximum their largest.', 'No minute in the window.'],
+    hour: ['Hours', 'Newest first (UTC hours); each the average of its 15-second rows, the maximum their largest; ' +
+      'an hour at an edge of the window counts only its minutes inside it (marked partial).', 'No hour in the window.'],
+    day: ['Days', 'Newest first (UTC days); each the average of its 15-second rows, the maximum their largest; ' +
+      'a day at an edge of the window counts only its minutes inside it (marked partial).', 'No day in the window.'],
+  };
+  const body = el('div');
+  const draw = (c: ChartChoice) => {
+    const { rows, unit } = pickRows(c.grouping, { minutes, hours, days }, byHour);
+    const asc = [...rows].reverse();
+    const charts = layout(el('div', { class: 'charts' },
+      lineChart('Resource use (% of the limit)', asc, [{ key: 'avg_cpu_percent', label: 'CPU avg %' }, { key: 'avg_data_io_percent', label: 'data IO avg %' },
+      { key: 'avg_log_write_percent', label: 'log write avg %' }, ...(dtu ? [{ key: 'avg_dtu_percent', label: 'DTU avg %' }] : [])], v => fmtNum(v) + ' %'),
+    lineChart('Largest 15-second sample (% of the limit)', asc, [{ key: 'max_cpu_percent', label: 'CPU max %' }, { key: 'max_data_io_percent', label: 'data IO max %' },
+      { key: 'max_log_write_percent', label: 'log write max %' }, ...(dtu ? [{ key: 'max_dtu_percent', label: 'DTU max %' }] : [])], v => fmtNum(v) + ' %')), c.columns);
+    const [head, meta, none] = words[unit];
+    body.replaceChildren(charts, el('h3', {}, head), el('p', { class: 'meta' }, meta),
+      unit === 'minute' ? grid(minutes, [
       { key: 'minute', fmt: fmtTime }, n('samples', 'samples'),
       n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct),
       n('avg_data_io_percent', 'data IO avg', pct), n('max_data_io_percent', 'data IO max', pct),
@@ -118,7 +131,10 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
       n('avg_memory_usage_percent', 'memory', pct),
       ...(dtu ? [n('avg_dtu_percent', 'DTU avg', pct), n('max_dtu_percent', 'DTU max', pct)] : []),
       n('max_worker_percent', 'workers', pct), n('max_session_percent', 'sessions', pct),
-    ], 'No minute in the window.'));
+    ], none) : grid(unit === 'day' ? days : hours, bucketCols(unit), none));
+  };
+  sec.append(chartToolbar('mssqlazure', draw), body);
+  draw(chartChoice('mssqlazure'));
   return sec;
 }
 

@@ -54,6 +54,26 @@ SELECT pm.snapshot_at AS minute, pm.samples, pm.avg_cpu_percent, pm.max_cpu_perc
  ORDER BY pm.snapshot_at DESC
  LIMIT 1440`
 
+// sqlPoolBuckets: the pool's minutes in the window grouped by UTC hour or day ($4: 'hour' | 'day'; P25 task 10, DBA Dash's
+// Date Grouping), newest first: CPU, data IO, log write and eDTU averages weighed by the minutes' samples (0128's
+// rule), the CPU, worker and session maxima the largest, the storage shares the bucket's last minute's.
+const sqlPoolBuckets = `
+SELECT date_trunc($4, pm.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS snapshot_at, count(*) AS minutes, sum(pm.samples)::bigint AS samples,
+       round(sum(pm.avg_cpu_percent * pm.samples) / nullif(sum(pm.samples) FILTER (WHERE pm.avg_cpu_percent IS NOT NULL), 0), 2) AS avg_cpu_percent,
+       max(pm.max_cpu_percent) AS max_cpu_percent,
+       round(sum(pm.avg_data_io_percent * pm.samples) / nullif(sum(pm.samples) FILTER (WHERE pm.avg_data_io_percent IS NOT NULL), 0), 2) AS avg_data_io_percent,
+       round(sum(pm.avg_log_write_percent * pm.samples) / nullif(sum(pm.samples) FILTER (WHERE pm.avg_log_write_percent IS NOT NULL), 0), 2) AS avg_log_write_percent,
+       round(sum(pm.avg_edtu_percent * pm.samples) / nullif(sum(pm.samples) FILTER (WHERE pm.avg_edtu_percent IS NOT NULL), 0), 2) AS avg_edtu_percent,
+       max(pm.max_worker_percent) AS max_worker_percent, max(pm.max_session_percent) AS max_session_percent,
+       (array_agg(pm.allocated_storage_percent ORDER BY pm.snapshot_at DESC))[1] AS allocated_storage_percent,
+       (array_agg(pm.used_storage_percent ORDER BY pm.snapshot_at DESC))[1] AS used_storage_percent
+  FROM pgvigil.mssql_pool_member m
+  JOIN pgvigil.mssql_pool_minute pm ON pm.server = m.server AND pm.pool = m.pool
+ WHERE m.instance_id = $1 AND pm.snapshot_at >= $2 AND pm.snapshot_at < $3
+ GROUP BY 1
+ ORDER BY 1 DESC
+ LIMIT 8784`
+
 // MSSQLPool is GET /api/mssql/pool?instance=N&from=&to=.
 func (s *Server) MSSQLPool(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
@@ -66,5 +86,7 @@ func (s *Server) MSSQLPool(w http.ResponseWriter, r *http.Request) {
 		{"summary", sqlPoolSummary, []any{id, from, to}},
 		{"members", sqlPoolMembers, []any{id}},
 		{"minutes", sqlPoolMinutes, []any{id, from, to}},
+		{"hours", sqlPoolBuckets, []any{id, from, to, "hour"}}, // P25 task 10: Date Grouping
+		{"days", sqlPoolBuckets, []any{id, from, to, "day"}},
 	})
 }

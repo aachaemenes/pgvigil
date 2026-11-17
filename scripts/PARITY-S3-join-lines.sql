@@ -116,3 +116,11 @@
 --    instance (ON DELETE CASCADE); the history is kept as the other limit histories are (0145's governance history) -
 --    no time cut; (c) no grant line: apply_roles makes import_mssql_pool_limits the collector's door with every
 --    import_ function.
+
+-- 10. web/src/chart.ts (not this branch's file: visual-s1's WAITSPERF work owns it): DBA Dash's resource chart toolbar
+--    (sweep L135) has Chart Options - Smooth lines and Points. This branch's toolbar (web/src/azure_charts.ts
+--    chartToolbar, on the Azure tab and the Elastic pool page) carries Date Grouping and Columns per chart; the two
+--    chart options are lineChart's to give: ChartOpts gains smooth?: boolean (uPlot's paths: uPlot.paths.spline()) and
+--    points?: boolean (series points.show), and chartToolbar then gains the two checkboxes and passes them through its
+--    ChartChoice to the pages' lineChart calls (azuredb.ts mssqlAzureView, pools.ts mssqlPoolView). Until then the two
+--    are NOT in v0.4.0's toolbar - said in the parity DONE.

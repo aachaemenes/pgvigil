@@ -105,6 +105,12 @@ SELECT date_trunc('hour', a.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' A
  ORDER BY 1 DESC
  LIMIT 8784`
 
+// sqlAzureDBDays: the window's UTC days, newest first, from the same split as the hours (P25 task 10: DBA Dash's Date
+// Grouping 'day') - each average weighed by its samples, the maximum the largest, the minutes counted (partial: fewer
+// than a day's 1440 in the window)
+var sqlAzureDBDays = strings.NewReplacer("date_trunc('hour',", "date_trunc('day',", "AS hour,", "AS day,", "sum(a.minutes) < 60 AS partial", "sum(a.minutes) < 1440 AS partial",
+	"LIMIT 8784", "LIMIT 366").Replace(sqlAzureDBHours)
+
 // the gaps that touch the window: minutes the store does not have because the view no longer held them
 const sqlAzureDBGaps = `
 SELECT g.gap_from, g.gap_to, round(extract(epoch FROM g.gap_to - g.gap_from) / 60) AS minutes, g.oldest_end, g.noted_at
@@ -125,6 +131,7 @@ func (s *Server) MSSQLAzureDB(w http.ResponseWriter, r *http.Request) {
 		{"summary", sqlAzureDBSummary, []any{id, from, to}},
 		{"minutes", sqlAzureDBMinutes, []any{id, from, to}},
 		{"hours", sqlAzureDBHours, []any{id, from, to}},
+		{"days", sqlAzureDBDays, []any{id, from, to}}, // P25 task 10: Date Grouping
 		{"gaps", sqlAzureDBGaps, []any{id, from, to}},
 	})
 }

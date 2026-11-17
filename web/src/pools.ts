@@ -3,10 +3,12 @@
 // pool's databases pgvigil reads, and the pool's minutes (DBA Dash's Pool tab). Data from /api/mssql/pool (mssql_pool:
 // a minute a pool, from sys.dm_elastic_pool_resource_stats, which keeps about 40 minutes: a longer outage is a gap).
 import { get, rowsOf, Table } from './api';
+import { ChartChoice, chartChoice, chartToolbar, layout, pickRows } from './azure_charts';
+import { lineChart } from './chart';
 import { Ctx, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtTime, grid } from './ui';
 
-type Parts = Record<'status' | 'summary' | 'members' | 'minutes', Table | null>;
+type Parts = Record<'status' | 'summary' | 'members' | 'minutes' | 'hours' | 'days', Table | null>;
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const gb = (v: unknown) => v == null ? '' : fmtNum(v) + ' GB';
 const tone: Record<string, string> = { OK: 'ok', Warning: 'warn', Critical: 'crit', 'N/A': '' };
@@ -48,13 +50,36 @@ export async function mssqlPoolView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Its databases pgvigil reads'), grid(members, [
     { key: 'name', label: 'database (instance)' }, { key: 'seen_at', label: 'last read in this pool', fmt: fmtTime },
   ], 'None.'));
-  sec.append(el('h3', {}, 'Minutes'), el('p', { class: 'meta' }, 'Newest first; each the average of the view\'s few-second rows (maximum CPU: the largest of them), stored by the first database read.'),
-    grid(minutes, [
-      { key: 'minute', fmt: fmtTime }, { key: 'avg_cpu_percent', label: 'CPU avg', fmt: pct }, { key: 'max_cpu_percent', label: 'CPU max', fmt: pct },
+  // DBA Dash's Pool chart (P25 task 10): the pool's figures over the window under the Azure charts' toolbar - Date
+  // Grouping (auto: minutes up to a day, hours past it; or minute, hour, day: /api/mssql/pool's parts) and Columns per
+  // chart; the grid below follows the same grouping
+  const hours = rowsOf(d.hours), days = rowsOf(d.days);
+  const long = Number(summary?.minutes ?? 0) > 1440 || minutes.length >= 1440;
+  const words: Record<string, [string, string, string]> = {
+    minute: ['Minutes', 'Newest first, at most a day; each the average of the view\'s few-second rows (maximum CPU: the largest of them), stored by the first database read.', 'No minute in the window.'],
+    hour: ['Hours', 'Newest first (UTC hours); the averages weighed by each minute\'s samples, the maxima the largest, the storage shares the hour\'s last minute\'s.', 'No hour in the window.'],
+    day: ['Days', 'Newest first (UTC days); the averages weighed by each minute\'s samples, the maxima the largest, the storage shares the day\'s last minute\'s.', 'No day in the window.'],
+  };
+  const body = el('div');
+  const draw = (c: ChartChoice) => {
+    const { rows, unit } = pickRows(c.grouping, { minutes, hours, days }, long);
+    const asc = [...rows].reverse().map(r => ({ ...r, snapshot_at: r.snapshot_at ?? r.minute }));
+    const charts = layout(el('div', { class: 'charts' },
+      lineChart('The pool\'s resource use (% of its limits)', asc, [{ key: 'avg_cpu_percent', label: 'CPU avg %' }, { key: 'avg_data_io_percent', label: 'data IO avg %' },
+        { key: 'avg_log_write_percent', label: 'log write avg %' }, { key: 'avg_edtu_percent', label: 'eDTU avg %' }], v => fmtNum(v) + ' %'),
+      lineChart('Workers, sessions and storage (% of the limits)', asc, [{ key: 'max_worker_percent', label: 'workers max %' }, { key: 'max_session_percent', label: 'sessions max %' },
+        { key: 'allocated_storage_percent', label: 'storage allocated %' }], v => fmtNum(v) + ' %')), c.columns);
+    const [head, meta, none] = words[unit];
+    const cols: Col[] = [
+      { key: unit === 'minute' ? 'minute' : 'snapshot_at', label: unit, fmt: fmtTime }, { key: 'avg_cpu_percent', label: 'CPU avg', fmt: pct }, { key: 'max_cpu_percent', label: 'CPU max', fmt: pct },
       { key: 'avg_data_io_percent', label: 'data IO', fmt: pct }, { key: 'avg_log_write_percent', label: 'log write', fmt: pct },
       { key: 'avg_edtu_percent', label: 'eDTU', fmt: pct }, { key: 'max_worker_percent', label: 'workers', fmt: pct },
       { key: 'max_session_percent', label: 'sessions', fmt: pct }, { key: 'allocated_storage_percent', label: 'allocated', fmt: pct },
-      { key: 'read_through', label: 'read through' },
-    ], 'No minute in the window.'));
+      ...(unit === 'minute' ? [{ key: 'read_through', label: 'read through' }] : [{ key: 'minutes', label: 'minutes', fmt: (v: unknown) => fmtNum(v) }]),
+    ];
+    body.replaceChildren(charts, el('h3', {}, head), el('p', { class: 'meta' }, meta), grid(rows, cols, none));
+  };
+  sec.append(chartToolbar('mssqlpool', draw), body);
+  draw(chartChoice('mssqlpool'));
   return sec;
 }
