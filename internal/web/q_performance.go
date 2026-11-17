@@ -203,7 +203,51 @@ SELECT to_timestamp(floor(extract(epoch FROM p.snapshot_at) / $4) * $4) AS snaps
          GROUP BY r.snapshot_at) p
  GROUP BY 1 ORDER BY 1`
 
-// Performance is GET /api/performance?instance=N[&from=&to=][&part=...]: one instance's Performance page.
+// sqlPerfMSSQLIODB: sqlPerfMSSQLIO cut to one database's files ($5, its name; P25 F101, DBA Dash's IO Performance:
+// Database) and, with $6 not empty, to the data files of that file group (pgvigil.mssql_files' filegroup: a log file has
+// none). A read with no file of the database keeps its step with no latency.
+const sqlPerfMSSQLIODB = `
+SELECT to_timestamp(floor(extract(epoch FROM p.snapshot_at) / $4) * $4) AS snapshot_at,
+       round((sum(p.read_stall_ms)::numeric / nullif(sum(p.reads), 0)), 2) AS read_ms,
+       round((sum(p.write_stall_ms)::numeric / nullif(sum(p.writes), 0)), 2) AS write_ms,
+       round((sum(p.read_bytes) / nullif(sum(p.secs), 0) / 1048576.0)::numeric, 3) AS read_mb_s,
+       round((sum(p.write_bytes) / nullif(sum(p.secs), 0) / 1048576.0)::numeric, 3) AS write_mb_s,
+       round((sum(p.reads + p.writes) / nullif(sum(p.secs), 0))::numeric, 1) AS iops
+  FROM (SELECT r.snapshot_at, coalesce(sum(f.reads), 0) AS reads, coalesce(sum(f.read_stall_ms), 0) AS read_stall_ms,
+               coalesce(sum(f.writes), 0) AS writes, coalesce(sum(f.write_stall_ms), 0) AS write_stall_ms,
+               coalesce(sum(f.read_bytes), 0) AS read_bytes, coalesce(sum(f.write_bytes), 0) AS write_bytes, max(r.interval_secs) AS secs
+          FROM pgvigil.mssql_fileio_read r
+          LEFT JOIN pgvigil.mssql_fileio_sample f ON f.instance_id = r.instance_id AND f.snapshot_at = r.snapshot_at
+               AND f.database_name = $5::text
+               AND ($6::text = '' OR EXISTS (SELECT 1 FROM pgvigil.mssql_files mf
+                                             WHERE mf.instance_id = f.instance_id AND mf.database_id = f.database_id
+                                               AND mf.file_id = f.file_id AND mf.filegroup = $6::text))
+         WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
+         GROUP BY r.snapshot_at) p
+ GROUP BY 1 ORDER BY 1`
+
+// sqlPerfMSSQLBlockingDB: the blocking chains whose head ran in one database ($5), per step: the most chains and
+// blocked sessions any one read held (a read's chains summed) and the longest wait (DBA Dash's Blocking: Database).
+const sqlPerfMSSQLBlockingDB = `
+SELECT to_timestamp(floor(extract(epoch FROM b.snapshot_at) / $4) * $4) AS snapshot_at,
+       max(b.chains) AS chains, max(b.victims) AS victims, max(b.longest_wait_ms) AS longest_wait_ms
+  FROM (SELECT x.snapshot_at, count(*) AS chains, sum(x.victims) AS victims, max(x.longest_wait_ms) AS longest_wait_ms
+          FROM pgvigil.mssql_blocking x
+         WHERE x.instance_id = $1 AND x.snapshot_at > $2 AND x.snapshot_at <= $3 AND x.head_database = $5::text
+         GROUP BY x.snapshot_at) b
+ GROUP BY 1 ORDER BY 1`
+
+// sqlPerfMSSQLFilegroups: one database's file groups (its present data files'), for the IO chart's filter.
+const sqlPerfMSSQLFilegroups = `
+SELECT DISTINCT mf.filegroup
+  FROM pgvigil.mssql_files mf
+ WHERE mf.instance_id = $1 AND mf.database_name = $2::text AND mf.is_present AND mf.filegroup IS NOT NULL
+ ORDER BY 1`
+
+// Performance is GET /api/performance?instance=N[&from=&to=][&db=<database>[&filegroup=<name>]][&part=...]: one
+// instance's Performance page.
+// A SQL Server database (db=, P25 F101): its IO, its blocking and its file groups; CPU, sessions and waits stay the
+// instance's (the store keeps no per-database row of them).
 func (s *Server) Performance(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
 	if err != nil {
@@ -222,7 +266,14 @@ func (s *Server) Performance(w http.ResponseWriter, r *http.Request) {
 	parts := []part{{"meta", sqlPerfMeta, base}, {"grid", sqlPerfGrid, base}}
 	if engine == "sqlserver" {
 		parts = append(parts, part{"cpu", sqlPerfMSSQLCPU, base}, part{"sessions", sqlPerfMSSQLSessions, base},
-			part{"waits", sqlPerfMSSQLWaits, base}, part{"db", sqlMSSQLCounterSeries, base}, part{"io", sqlPerfMSSQLIO, base})
+			part{"waits", sqlPerfMSSQLWaits, base}, part{"db", sqlMSSQLCounterSeries, base})
+		if db := r.URL.Query().Get("db"); db != "" {
+			cut := []any{id, from, to, step, db, r.URL.Query().Get("filegroup")}
+			parts = append(parts, part{"io", sqlPerfMSSQLIODB, cut}, part{"blocking", sqlPerfMSSQLBlockingDB, cut[:5]},
+				part{"filegroups", sqlPerfMSSQLFilegroups, []any{id, db}})
+		} else {
+			parts = append(parts, part{"io", sqlPerfMSSQLIO, base})
+		}
 	} else {
 		parts = append(parts,
 			part{"cpu", sqlPerfCPU, base},
