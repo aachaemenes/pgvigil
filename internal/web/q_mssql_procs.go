@@ -28,6 +28,7 @@ import (
 //	  compare, compare_windows   with compare=prev|day|week: PerformanceMonitor's compare of the window against
 //	              the same span earlier, and the two windows' reads (sqlMSSQLProcCompare)
 //	  func_state  the mssql_funcstats collection's last run
+//	  func_reads  that collection's reads of the window, as reads (sqlMSSQLFuncReads)
 //	  functions   the scalar functions that ran without inlining, as procs, with the inlineability mark (sqlMSSQLFuncs)
 //	  triggers    the triggers, as procs, with the scope of a DDL or logon trigger (sqlMSSQLTriggers)
 //
@@ -56,17 +57,23 @@ const procDBNames = `
    WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
    ORDER BY s.database_id, (s.database_name IS NULL), s.snapshot_at DESC`
 
+// sqlMSSQLProcDatabases: the filter's databases - each where a procedure ran, and each where only functions or
+// triggers ran (procs 0: the one filter narrows the three grids).
 const sqlMSSQLProcDatabases = `
 WITH dbn AS (` + procDBNames + `), g AS (
   SELECT s.database_id, s.object_id, sum(s.executions) AS e
     FROM pgvigil.mssql_proc_sample s
    WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
    GROUP BY 1, 2
-)
-SELECT n.database_id, n.database, count(*) AS procs, sum(g.e)::bigint AS executions
-  FROM g JOIN dbn n ON n.database_id = g.database_id
- GROUP BY n.database_id, n.database
- ORDER BY n.database, n.database_id`
+), p AS (
+  SELECT n.database_id, n.database, count(*) AS procs, sum(g.e)::bigint AS executions
+    FROM g JOIN dbn n ON n.database_id = g.database_id
+   GROUP BY n.database_id, n.database
+), fdb AS (` + funcDBNames + `)
+SELECT p.database_id, p.database, p.procs, p.executions FROM p
+UNION ALL
+SELECT f.database_id, f.database, 0::bigint, 0::bigint FROM fdb f WHERE NOT EXISTS (SELECT 1 FROM p WHERE p.database_id = f.database_id)
+ ORDER BY 2, 1`
 
 // sqlMSSQLProcs: $4 the database's id, NULL = every database. A name read in one interval and not in another (the
 // read gave up on a lock) keeps the name: max() skips the NULL.
@@ -337,12 +344,18 @@ const funcCols = `p.database_id, p.object_id, n.database, p.schema_name, coalesc
        p.min_logical_reads, p.max_logical_reads, p.min_physical_reads, p.max_physical_reads,
        p.min_logical_writes, p.max_logical_writes`
 
-// sqlMSSQLFuncReads: the functions' and triggers' reads of the window (mssql_func_read), as the procedures' reads.
-const sqlMSSQLFuncReads = sqlMSSQLProcReads
+// sqlMSSQLFuncReads: the functions' and triggers' reads of the window (mssql_func_read), as the procedures' reads:
+// none = no read took a difference yet (the collection's first read only sets the starting counters).
+const sqlMSSQLFuncReads = `
+SELECT count(*) AS reads, coalesce(sum(r.interval_secs), 0)::float8 AS covered_secs, min(r.snapshot_at) AS first_read, max(r.snapshot_at) AS last_read
+  FROM pgvigil.mssql_func_read r
+ WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3`
 
 // sqlMSSQLFuncs: the scalar functions that ran without inlining (the server lists no table-valued function and no
 // scalar function it inlined), with the mark from sys.sql_modules as last read (mssql_func_inline): no row, or a
-// figure not read = 'not read' (an earlier version than 2019, a module the login cannot see, a failed read);
+// figure not read = 'not read' (an earlier version than 2019, a module the login cannot see or a database it cannot
+// enter, a failed read, a CLR scalar function - never inlined, its module is not in sys.sql_modules - or a function
+// first listed after its database's hourly read);
 // is_inlineable 0 = 'not inlineable' (the definition's constructs); is_inlineable 1 and inline_type 0 = 'inlining
 // off' (INLINE = OFF on an inlineable function); both 1 = no mark (it ran without inlining for the call's own
 // reason: a hint, the database's setting or compatibility level, the form of the call). inline_read_at: when that
@@ -397,6 +410,7 @@ func procsParts(id int, from, to time.Time, database any) []part {
 		{"procs", sqlMSSQLProcs, []any{id, from, to, database}},
 		{"series", sqlMSSQLProcSeries, []any{id, from, to, database, procStep(to.Sub(from).Seconds())}},
 		{"func_state", sqlMssqlRunningState, []any{id, []string{"mssql_funcstats"}}},
+		{"func_reads", sqlMSSQLFuncReads, []any{id, from, to}},
 		{"functions", sqlMSSQLFuncs, []any{id, from, to, database}},
 		{"triggers", sqlMSSQLTriggers, []any{id, from, to, database}},
 	}

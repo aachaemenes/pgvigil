@@ -14,7 +14,7 @@ import { Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlProcsTab = 'mssqlprocs';
 
-type Parts = Record<'state' | 'reads' | 'databases' | 'totals' | 'procs' | 'series' | 'func_state' | 'functions' | 'triggers', Table | null>;
+type Parts = Record<'state' | 'reads' | 'databases' | 'totals' | 'procs' | 'series' | 'func_state' | 'func_reads' | 'functions' | 'triggers', Table | null>;
 const LIMIT = 2000;   // the grid's rows, as the API cuts them
 // a figure the API rounds to three decimals is shown with all three (the grids' own two would turn 0.004 into 0)
 const num3 = (v: unknown) => v == null ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
@@ -118,7 +118,10 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
   // the scalar functions and the triggers (0343, the collection mssql_funcstats), under the procedures: the page's
   // range and database, the busiest CPU first; a name opens nothing (the read-by-read view is the procedures')
   function others(d: Parts): Node[] {
-    const fst = rowsOf(d.func_state)[0], fns = rowsOf(d.functions), trs = rowsOf(d.triggers);
+    const fst = rowsOf(d.func_state)[0], fns = rowsOf(d.functions), trs = rowsOf(d.triggers), frd = rowsOf(d.func_reads)[0];
+    // no read took a difference yet = the first read only set the counters, never 'nothing ran'
+    const between = Number(frd?.reads ?? 0) > 0 ? ` between the ${fmtNum(frd?.reads)} reads of this range.` : '';
+    const noRead = 'No read took a difference in this range: the mssql_funcstats collection runs every five minutes, and its first read only sets the starting counters.';
     const out: Node[] = [];
     const most = (n: number) => n >= LIMIT ? `the ${fmtNum(LIMIT)} with the most CPU` : `${fmtNum(n)}, the most CPU first`;
     if (!fst) out.push(el('p', { class: 'meta' }, 'The mssql_funcstats collection has not run on this instance: it reads every five minutes, needs VIEW SERVER STATE, and its first read only sets the starting counters.'));
@@ -127,20 +130,22 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
     fcols.splice(4, 0, { key: 'inline_mark', label: 'inlining', fmt: v => String(v ?? ''),
       title: '"not inlineable": the definition holds a construct SQL Server cannot inline. "inlining off": it could be inlined and its INLINE option is OFF. '
         + 'Blank: it could be inlined and inlining is on, so it ran without it for the call\'s own reason (a hint, the database\'s setting or compatibility level, the form of the call). '
-        + '"not read": the server is older than SQL Server 2019, the login cannot see the module, or the read failed.' });
+        + '"not read": the server is older than SQL Server 2019, the login cannot see the module or enter its database, the read failed, '
+        + 'it is a CLR function (never inlined), or it was first listed after its database\'s hourly read.' });
     out.push(el('h3', {}, 'Functions (scalar, run without inlining)'),
       el('p', { class: 'meta' }, `${most(fns.length)}. sys.dm_exec_function_stats lists no table-valued function and no scalar function the server inlined: `
         + 'a function inlined into its callers is counted in their plans (the Plan cache tab). '
         + 'Inlining is read from sys.sql_modules at most hourly (SQL Server 2019 on): "not inlineable" - a construct of the definition prevents it; '
         + '"inlining off" - its INLINE option is OFF; blank - it could be inlined, and the call ran it without (a hint, the database\'s setting or level, the form of the call); '
-        + '"not read" - an older server, a module the login cannot see, or a failed read. The function view has no spilled pages.'),
-      grid(fns, fcols, 'No scalar function ran without inlining between the reads of this range.'));
+        + '"not read" - an older server, a module the login cannot see or a database it cannot enter, a failed read, a CLR function, '
+        + 'or a function first listed after its database\'s hourly read. The function view has no spilled pages.'),
+      grid(fns, fcols, between ? 'No scalar function ran without inlining' + between : noRead));
     const tcols = statCols(undefined, true);
     tcols.splice(4, 0, { key: 'trigger_scope', label: 'scope', fmt: v => String(v ?? ''),
       title: 'A DDL or logon trigger: server or database, named from its catalog. Blank: a DML trigger, under its table\'s database.' });
     out.push(el('h3', {}, 'Triggers'),
       el('p', { class: 'meta' }, `${most(trs.length)}. sys.dm_exec_trigger_stats: a DML trigger under its database; a DDL or logon trigger with its scope (server or database), a server one under master.`),
-      grid(trs, tcols, 'No trigger ran between the reads of this range.'));
+      grid(trs, tcols, between ? 'No trigger ran' + between : noRead));
     return out;
   }
 

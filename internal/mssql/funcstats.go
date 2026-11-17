@@ -54,6 +54,9 @@ const funcStatsCap = 5000
 // funcTriggerNameDBs is the most databases one read asks for their DDL triggers' names.
 const funcTriggerNameDBs = 50
 
+// funcInlineDBs is the most databases one read asks for their scalar functions' inlineability.
+const funcInlineDBs = 50
+
 // funcStatsViews: the two views and the kind their rows carry.
 var funcStatsViews = []struct{ kind, view string }{
 	{"function", "sys.dm_exec_function_stats"},
@@ -61,7 +64,8 @@ var funcStatsViews = []struct{ kind, view string }{
 }
 
 // funcStatsFigures: the payload's key and the view's column of every figure a server may lack - the spilled pages
-// (total_spills: the triggers' view from SQL Server 2016 SP2 and 2017 CU3, the functions' view never) and the 12
+// (total_spills: the triggers' view from SQL Server 2017 CU3 on, Microsoft Learn, sys.dm_exec_trigger_stats; the
+// functions' view never) and the 12
 // extremes mssql_procstats reads. A column the view lacks is NULL, never 0.
 var funcStatsFigures = append([]struct{ key, col string }{{"spills", "total_spills"}}, procStatsSpread...)
 
@@ -161,7 +165,9 @@ func nameTriggers(rows []collect.Row, server map[int64]string, byDB map[int64]ma
 // definition's constructs and the INLINE clause, so it changes only with the definition.
 const funcInlineEvery = time.Hour
 
-// funcInlineSent remembers, per server and database, when this process last read sys.sql_modules there.
+// funcInlineSent remembers, per server and database, when this process last stored a read of sys.sql_modules there
+// (AfterStore). Keyed by the server's own name, as mssql_running_plans' plans: one server registered twice in pgvigil
+// reads its marks under whichever of the two runs first in the hour.
 var funcInlineSent = &sentMemo{at: map[string]time.Time{}, every: funcInlineEvery}
 
 // funcInlineSQL: one database's scalar functions as sys.sql_modules holds them (%s: the database's quoted name).
@@ -235,7 +241,7 @@ func funcInline(ctx context.Context, conn *sql.Conn, info Info, rows []collect.R
 	for _, id := range ids {
 		key := fmt.Sprintf("%s|%d", info.ServerName, id)
 		q, ok := quoted[id]
-		if !ok || !funcInlineSent.due(key, now) || asked >= funcTriggerNameDBs {
+		if !ok || !funcInlineSent.due(key, now) || asked >= funcInlineDBs {
 			continue
 		}
 		asked++
@@ -245,7 +251,6 @@ func funcInline(ctx context.Context, conn *sql.Conn, info Info, rows []collect.R
 				"message": "the inlineability of the scalar functions of database " + q + " was not read (" + err.Error() + "): the page says 'not read' for them"})
 			continue
 		}
-		funcInlineSent.mark(key, now)
 		out = append(out, inlineRows(id, read)...)
 	}
 	return out
@@ -290,8 +295,19 @@ func databaseLabel(rows []collect.Row, id int64) string {
 	return fmt.Sprintf("database id %d", id)
 }
 
-// AfterStore marks each database whose inlineability the stored run read.
-func (funcStatsCollector) AfterStore(info Info, rows []collect.Row) {}
+// AfterStore marks each database whose inlineability the stored run read, so a run whose rows were not stored (a
+// failed import) asks again at the next read. RunOnce calls it after the import.
+func (funcStatsCollector) AfterStore(info Info, rows []collect.Row) {
+	now := time.Now()
+	for _, r := range rows {
+		if r["kind"] != "inline_read" {
+			continue
+		}
+		if db, ok := r["database_id"].(int64); ok {
+			funcInlineSent.mark(fmt.Sprintf("%s|%d", info.ServerName, db), now)
+		}
+	}
+}
 
 // idNames reads an object id and name list into a map.
 func idNames(ctx context.Context, conn *sql.Conn, query string) (map[int64]string, error) {
