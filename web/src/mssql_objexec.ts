@@ -81,9 +81,13 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
         { key: 'avg_duration_ms', label: 'avg duration (ms)', num: true, fmt: num3 },
         { key: 'executions', num: true }, { key: 'executions_min', label: 'executions /min', num: true },
         { key: 'max_executions_min', label: 'max executions /min', num: true },
-        { key: 'cpu_ms', label: 'total CPU (sec)', num: true, fmt: secs }, { key: 'avg_cpu_ms', label: 'avg CPU (ms)', num: true, fmt: num3 },
-        { key: 'logical_reads', label: 'logical reads', num: true }, { key: 'physical_reads', label: 'physical reads', num: true },
-        { key: 'logical_writes', label: 'writes', num: true },
+        // control audit E8: DBA Dash's order (ObjectExecutionSummary.cs) - CPU (ms/sec) between the CPU totals, each
+        // read's and the writes' average beside its total (all returned by part=objects)
+        { key: 'cpu_ms', label: 'total CPU (sec)', num: true, fmt: secs }, { key: 'cpu_ms_sec', label: 'CPU (ms/sec)', num: true, fmt: num3 },
+        { key: 'avg_cpu_ms', label: 'avg CPU (ms)', num: true, fmt: num3 },
+        { key: 'physical_reads', label: 'physical reads', num: true }, { key: 'avg_physical_reads', label: 'avg physical reads', num: true, fmt: num3 },
+        { key: 'logical_reads', label: 'logical reads', num: true }, { key: 'avg_logical_reads', label: 'avg logical reads', num: true, fmt: num3 },
+        { key: 'logical_writes', label: 'writes', num: true }, { key: 'avg_logical_writes', label: 'avg writes', num: true, fmt: num3 },
         // DBA Dash's Query Stats link (F15 / E6): the object's own statements, on its page's Query Stats tab
         { key: 'qs_link', label: 'Query Stats', fmt: (_, r) => r.object_name == null ? '' : el('a', { href: mssqlObjectHref(ctx, String(r.database), objName(r), 'querystats', inst(r)), title: `the plan cache's statements of ${objName(r)}` }, 'Query Stats') },
         { key: 'qstore_link', label: 'Query Store', fmt: (_, r) => link(r, 'topqueries', 'Query Store', `the Query Store's top queries of ${String(r.database)}`) },
