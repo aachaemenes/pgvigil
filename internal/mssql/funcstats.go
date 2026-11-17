@@ -168,11 +168,41 @@ FROM %[1]s.sys.sql_modules m JOIN %[1]s.sys.objects o ON o.object_id = m.object_
 WHERE o.type = 'FN'`
 
 // inlineDatabases lists, in order, the databases that hold a listed scalar function.
-func inlineDatabases(rows []collect.Row) []int64 { return nil }
+func inlineDatabases(rows []collect.Row) []int64 {
+	seen := map[int64]bool{}
+	var ids []int64
+	for _, r := range rows {
+		if r["kind"] != "function" {
+			continue
+		}
+		if db, ok := r["database_id"].(int64); ok && !seen[db] {
+			seen[db] = true
+			ids = append(ids, db)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
 
 // inlineRows turns one database's sys.sql_modules answer into the payload's rows: an 'inline_read' row (the import
 // replaces that database's rows) and one 'inline' row per function, the two flags as booleans.
-func inlineRows(db int64, read []collect.Row) []collect.Row { return nil }
+func inlineRows(db int64, read []collect.Row) []collect.Row {
+	out := []collect.Row{{"kind": "inline_read", "database_id": db}}
+	for _, r := range read {
+		id, ok := r["object_id"].(int64)
+		if !ok {
+			continue
+		}
+		flag := func(k string) any {
+			if v, ok := r[k].(int64); ok {
+				return v == 1
+			}
+			return nil
+		}
+		out = append(out, collect.Row{"kind": "inline", "database_id": db, "object_id": id, "is_inlineable": flag("is_inlineable"), "inline_type": flag("inline_type")})
+	}
+	return out
+}
 
 // funcInline reads the inlineability of the scalar functions the read listed, at most hourly a database, on SQL
 // Server 2019 and later (and Managed Instance): a database that cannot be read costs a note and keeps what the
