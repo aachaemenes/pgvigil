@@ -219,6 +219,10 @@ func postFor(ctx context.Context, c conn, chs []namedMailer, o owed, now time.Ti
 		return nil
 	}
 	if err != nil {
+		// the mail is recorded sent and never owed again: its post is lost to this pass - said before the error
+		// (review-26 go1 S1; the notice needs no repository)
+		res.PostFailed++
+		notify(ctx, chs, postFailureAlert(o, "the post could not be taken: "+err.Error(), now), now, res)
 		return err
 	}
 	var p DailyPost
@@ -256,15 +260,16 @@ func postFor(ctx context.Context, c conn, chs []namedMailer, o owed, now time.Ti
 	}
 	msg := ""
 	if perr != nil {
+		// alerted before the answer is recorded: a record that fails (the repository gone) must not swallow the notice
+		// (review-26 go1 S1)
 		msg = perr.Error()
+		res.PostFailed++
+		notify(ctx, chs, postFailureAlert(o, msg, now), now, res)
 	}
 	if _, err := c.Exec(context.WithoutCancel(ctx), `SELECT pgvigil.report_mail_post_record($1, $2, $3)`, time.Now(), o.id, msg); err != nil {
 		return err // taken: never posted again
 	}
-	if perr != nil {
-		res.PostFailed++
-		notify(ctx, chs, postFailureAlert(o, msg, now), now, res)
-	} else {
+	if perr == nil {
 		res.Posted++
 	}
 	return nil
