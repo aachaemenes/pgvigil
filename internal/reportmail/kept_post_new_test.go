@@ -73,13 +73,18 @@ func TestDailyPostText(t *testing.T) {
 	if z := (DailyPost{Instances: 5}).Post("2026-11-16"); z.Title != "Daily checks 2026-11-16: all checks pass on 5 instances" || len(z.Lines) != 0 {
 		t.Errorf("a green day %+v", z)
 	}
+	// review-26 go1 N3: the day in Fields; a nil Worst is [] in the json, never null
+	z := (DailyPost{Instances: 5}).Post("2026-11-16")
+	if b, _ := json.Marshal(z.Fields); z.Fields["day"] != "2026-11-16" || !strings.Contains(string(b), `"worst":[]`) {
+		t.Errorf("fields %s", b)
+	}
 	if one := (DailyPost{Instances: 1, Critical: 1, Worst: []DailyWorst{{"a", 1, 0}}}).Post("2026-11-16"); one.Title != "Daily checks 2026-11-16: 1 critical, 0 warnings on 1 instance" {
 		t.Errorf("one instance %q", one.Title)
 	}
 }
 
 func TestCheckDailyPost(t *testing.T) {
-	ok := `{"instances": 12, "critical": 3, "warnings": 4, "worst": [{"name": "sql01", "critical": 2, "warnings": 0}]}`
+	ok := `{"instances": 12, "critical": 3, "warnings": 4, "worst": [{"name": "sql01", "critical": 2, "warnings": 0}, {"name": "` + strings.Repeat("é", 200) + `", "warnings": 1}]}`
 	var p DailyPost
 	if err := json.Unmarshal([]byte(ok), &p); err != nil || p.Check() != nil {
 		t.Fatalf("a good post: %v %v", err, p.Check())
@@ -89,6 +94,11 @@ func TestCheckDailyPost(t *testing.T) {
 		{`{"instances": 2, "critical": 1, "worst": [{"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}]}`, "the post names 4 instances: at most 3"},
 		{`{"instances": 2, "critical": 1, "worst": [{"name": "` + strings.Repeat("x", 201) + `"}]}`, "the post's instance 1 has a name over 200 characters"},
 		{`{"instances": 2, "critical": 1, "worst": [{"name": ""}]}`, "the post's instance 1 has no name"},
+		{`{"instances": 2, "critical": 1, "worst": [{"name": "   ", "critical": 1}]}`, "the post's instance 1 has no name"},
+		{`{"instances": 2, "critical": 1, "worst": [{"name": "a", "critical": -1}]}`, "the post's counts are not counts"},
+		// review-26 go1 N2: a worst instance with no failing check, a name over two lines
+		{`{"instances": 2, "critical": 1, "worst": [{"name": "a", "critical": 0, "warnings": 0}]}`, "the post's instance 1 has no failing check"},
+		{`{"instances": 2, "critical": 1, "worst": [{"name": "a\nb", "critical": 1}]}`, "the post's instance 1 has a name with a line break or a tab"},
 	} {
 		var p DailyPost
 		if err := json.Unmarshal([]byte(c.body), &p); err != nil {

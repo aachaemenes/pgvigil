@@ -659,7 +659,8 @@ kwaitsent "$SEND" || kfail "K19: mail $SEND not answered in 3 minutes"
 [[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND") == sent \
    && $(q "select (posted_at is null and post_error like '%127.0.0.1%')::text from pgvigil.report_mail_sends where send_id = $SEND") == true ]] \
   || kfail "K19: mail $SEND's post: $(q "select outcome, post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND")"
-[[ $(grep -rl 'daily checks post failed' "$WORK/drop" 2>/dev/null | wc -l) -gt $D0 && $(grep -rh 'daily checks post failed' "$WORK/drop" | tail -1) == *"$SEND"* ]] || kfail "K19: no 'daily checks post failed' notice naming mail $SEND in the file drop"
+# the file drop writes each alert as indented JSON (one key a line): the notice's file by its setting, the mail by its value
+grep -rl '"setting": "daily checks post failed"' "$WORK/drop" 2>/dev/null | xargs -r grep -l "mail $SEND," | grep -q . || kfail "K19: no 'daily checks post failed' notice naming mail $SEND in the file drop"
 kok "K19: a post to deadhook failed (mail $SEND sent; post_error names 127.0.0.1) and a 'daily checks post failed' notice reached the file drop"
 
 # ---- K19b: a sent mail whose page sent no counts is alerted (review-26 sql S3) ------------------------------------------------
@@ -669,8 +670,8 @@ SEND4=$(kturn "$KID" q '2 days') || kfail "K19b: no serve queued the turn in 3 m
 # the page that sent no counts, as the server stores it (the render's post refused, or none): no sender runs before kwaitsent
 q "update pgvigil.report_mail_sends set post = null, post_error = 'the drawn page sent no counts: nothing posted' where send_id = $SEND4" >/dev/null
 kwaitsent "$SEND4" || kfail "K19b: mail $SEND4 not answered in 3 minutes"
-[[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND4") == sent && $(grep -rl 'sent no counts' "$WORK/drop" 2>/dev/null | wc -l) -gt $D1 \
-   && $(grep -rh 'sent no counts' "$WORK/drop" | tail -1) == *"$SEND4"* ]] || kfail "K19b: no 'daily checks post failed' notice naming mail $SEND4 and 'sent no counts' in the file drop"
+[[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND4") == sent ]] || kfail "K19b: mail $SEND4: $(q "select outcome, coalesce(error, render_error) from pgvigil.report_mail_sends where send_id = $SEND4")"
+grep -rl '"setting": "daily checks post failed"' "$WORK/drop" 2>/dev/null | xargs -r grep -l "mail $SEND4, sent): the drawn page sent no counts" | grep -q . || kfail "K19b: no 'daily checks post failed' notice naming mail $SEND4 and 'sent no counts' in the file drop"
 kok "K19b: a sent mail whose page sent no counts (mail $SEND4) was alerted ('daily checks post failed')"
 
 # ---- K21: the role ------------------------------------------------------------------------------------------------------------
