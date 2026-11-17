@@ -139,13 +139,16 @@ Proven against a live Basic 50 eDTU pool of two databases: the read as a login h
 DBA Dash's Pool history: each change of an elastic pool's DTU or storage limit, with the old and the new limit and when it changed, on the Azure Summary under its Elastic pools grid and on the pool's own page.
 
 - **Where it comes from:** `mssql_pool_limits`, hourly, on each database in an elastic pool, reads master's `sys.elastic_pool_resource_stats` for the database's own pool. Microsoft: the view "exists in the master database of the logical server", has a row per pool every 15 seconds "retained for 14 days", and "Requires membership in the **dbmanager** role". The read opens a connection of its own to master with the instance's connection settings (its database master), within 15 seconds; a refused or slow master never touches the instance's own connection or its other collections.
-- **The right, read first:** in master, `IS_ROLEMEMBER('dbmanager') = 1`, or the server admin (`dbo` there; Microsoft: `IS_ROLEMEMBER` answers 0 for `dbo`). Without it the run is skipped with its words; a login with no way into master (a contained database user: only a login in master, with `##MS_DatabaseConnector##` or a user in master, signs in there) is skipped too. The page then says why for each pool, and never shows an empty grid.
+- **The right, read first:** in master, `IS_ROLEMEMBER('dbmanager') = 1`, or the server admin (`dbo` there; Microsoft: `IS_ROLEMEMBER` answers 0 for `dbo`). Without it the run is skipped with its words, and a pool whose databases were all skipped or failed since their last read shows 'read until <time>; since then: <why>'; a login with no way into master (a contained database user: only a login in master, with `##MS_DatabaseConnector##` or a user in master, signs in there) is skipped too. The page then says why for each pool, and never shows an empty grid.
 - **An opt-in:** `dbmanager` lets the login create and drop databases on the logical server, which can cost money. pgvigil's documented login does not hold it and pgvigil never asks for it; the instance's rights script (Admin > Instances) prints this block, every line a comment, to uncomment only where that is accepted:
 
 ```sql
 -- OPT-IN, not needed: every line below is a comment; uncomment it only where the login may create and drop databases.
 -- dbmanager lets the login create and drop databases on this logical server, which can cost money.
 -- Only Pool history needs it (the elastic pool's limits over time); pgvigil reads every other figure without it.
+-- It needs a LOGIN in master: a contained database user (CREATE USER ... WITH PASSWORD in the database) has none -
+-- make a login, a user for it in master and in the database, and point the instance's connection string at it.
+-- An Entra identity: CREATE USER [<the identity>] FROM EXTERNAL PROVIDER in master, then the role below.
 -- In the logical server's master database, as the server admin or the Entra admin:
 -- CREATE USER [<the login>] FROM LOGIN [<the login>];
 -- ALTER ROLE dbmanager ADD MEMBER [<the login>];
