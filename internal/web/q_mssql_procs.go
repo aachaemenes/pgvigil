@@ -419,7 +419,8 @@ const objCols = `o.database_id, o.object_id, o.database, o.schema_name, o.object
 
 // sqlMSSQLObjects: DBA Dash's Object Execution (P25 F102 / F505) - the procedures, the scalar functions and the
 // triggers in ONE list, each row its kind and its Period Time (the seconds its kind's reads cover: the procedures'
-// reads, the functions' and triggers' reads); $5 the kinds asked (NULL = every kind, DBA Dash's Type filter), $6 a
+// reads, the functions' and triggers' reads) and its DBA Dash type (type_code, objType); $5 the kinds or the types asked
+// (NULL = every kind, DBA Dash's Type filter: objectKinds), $6 a
 // text the schema or the name holds (case ignored; empty = any); the longest total duration first, 2,000 at most.
 // The kind and the text are applied INSIDE each kind's read, before its own 2,000-row cut (objKind), so a search
 // finds an object past the cut, and a kind not asked is not read at all.
@@ -429,13 +430,13 @@ WITH pc AS (SELECT coalesce(sum(r.interval_secs), 0)::float8 AS secs FROM pgvigi
 fc AS (SELECT coalesce(sum(r.interval_secs), 0)::float8 AS secs FROM pgvigil.mssql_func_read r
         WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3),
 o AS (
-  SELECT 'procedure'::text AS kind, ` + objCols + `, pc.secs AS period_secs FROM (` + objKind(sqlMSSQLProcs, "procedure") + `) o CROSS JOIN pc
+  SELECT 'procedure'::text AS kind, ` + objType("o", "procedure") + ` AS type_code, ` + objCols + `, pc.secs AS period_secs FROM (` + objKind(sqlMSSQLProcs, "procedure") + `) o CROSS JOIN pc
   UNION ALL
-  SELECT 'function', ` + objCols + `, fc.secs FROM (` + objKind(sqlMSSQLFuncs, "function") + `) o CROSS JOIN fc
+  SELECT 'function', ` + objType("o", "function") + `, ` + objCols + `, fc.secs FROM (` + objKind(sqlMSSQLFuncs, "function") + `) o CROSS JOIN fc
   UNION ALL
-  SELECT 'trigger', ` + objCols + `, fc.secs FROM (` + objKind(sqlMSSQLTriggers, "trigger") + `) o CROSS JOIN fc
+  SELECT 'trigger', ` + objType("o", "trigger") + `, ` + objCols + `, fc.secs FROM (` + objKind(sqlMSSQLTriggers, "trigger") + `) o CROSS JOIN fc
 )
-SELECT o.kind, ` + objCols + `, o.period_secs
+SELECT o.kind, o.type_code, ` + objCols + `, o.period_secs
   FROM o
  ORDER BY o.duration_ms DESC NULLS LAST, o.database, o.object_name, o.object_id
  LIMIT 2000`
@@ -449,10 +450,21 @@ func objKind(grid, kind string) string {
 		panic("objKind: the " + kind + " read does not end with LIMIT 2000")
 	}
 	return `SELECT * FROM (` + body + `) g
- WHERE ($5::text[] IS NULL OR '` + kind + `' = ANY ($5::text[]))
+ WHERE ($5::text[] IS NULL OR '` + kind + `' = ANY ($5::text[]) OR ` + objType("g", kind) + ` = ANY ($5::text[]))
    AND ($6::text = '' OR strpos(lower(coalesce(g.schema_name, '') || '.' || g.object_name), lower($6::text)) > 0)
  ORDER BY g.duration_ms DESC NULLS LAST, g.database, g.object_name, g.object_id
  LIMIT 2000`
+}
+
+// objType (control audit E1): a row's DBA Dash object type from its kind and its stored type_desc (Microsoft Learn:
+// CLR_STORED_PROCEDURE = PC, EXTENDED_STORED_PROCEDURE = X, CLR_TRIGGER = TA; any other procedure P, trigger TR,
+// scalar function FN - the function view lists CLR scalar functions under FN too)
+func objType(alias, kind string) string {
+	base := map[string]string{"procedure": "P", "function": "FN", "trigger": "TR"}[kind]
+	if base == "" {
+		panic("objType: no type for the kind " + kind)
+	}
+	return `(CASE ` + alias + `.type_desc WHEN 'CLR_STORED_PROCEDURE' THEN 'PC' WHEN 'EXTENDED_STORED_PROCEDURE' THEN 'X' WHEN 'CLR_TRIGGER' THEN 'TA' ELSE '` + base + `' END)`
 }
 
 // sqlMSSQLNodeObjects: Object Execution over a node's databases (P25 (i): DBA Dash's logical server and elastic pool
@@ -479,7 +491,9 @@ func init() {
 	}
 }
 
-// objectKinds reads types= (procedure, function, trigger; a comma list): nil = every kind.
+// objectKinds reads types= (a comma list): DBA Dash's six object types (control audit E1: P, PC, X, TR, TA, FN - the
+// type codes of Microsoft Learn's sys.dm_exec_procedure_stats, sys.dm_exec_trigger_stats and sys.dm_exec_function_stats)
+// or a kind word (procedure, function, trigger: every type of the kind); nil = every kind.
 func objectKinds(v string) ([]string, error) {
 	if v == "" {
 		return nil, nil
@@ -487,10 +501,10 @@ func objectKinds(v string) ([]string, error) {
 	var out []string
 	for _, k := range strings.Split(v, ",") {
 		switch k = strings.TrimSpace(k); k {
-		case "procedure", "function", "trigger":
+		case "procedure", "function", "trigger", "P", "PC", "X", "TR", "TA", "FN":
 			out = append(out, k)
 		default:
-			return nil, errors.New("types must list procedure, function or trigger")
+			return nil, errors.New("types must list P, PC, X, TR, TA, FN, procedure, function or trigger")
 		}
 	}
 	return out, nil

@@ -10,7 +10,10 @@ import { mssqlObjectCell, mssqlObjectHref, mssqlObjectName } from './mssql_objec
 import { hashParam } from './dbinfo';
 import { Col, el, errorBox, fmtNum, grid } from './ui';
 
-const kinds: [string, string][] = [['procedure', 'Procedures'], ['function', 'Functions'], ['trigger', 'Triggers']];
+// DBA Dash's Type menu (control audit E1): its six object types, in its order - the type codes of the three stats views
+// (Microsoft Learn); types= sends the codes picked
+const kinds: [string, string][] = [['P', 'Procedure'], ['TR', 'Trigger'], ['PC', 'CLR Procedure'], ['TA', 'CLR Trigger'], ['FN', 'Scalar Function'], ['X', 'Extended Stored Procedure']];
+const typeWords = new Map(kinds);
 const secs = (v: unknown) => v == null ? '' : fmtNum(Number(v) / 1000);
 const num3 = (v: unknown) => v == null ? '' : fmtNum(v);
 
@@ -70,7 +73,7 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
       const objName = (r: Row) => mssqlObjectName(r.schema_name, r.object_name);
       const cols: Col[] = [
         ...(ids ? [{ key: 'instance', label: 'database (instance)' }] : []),
-        { key: 'kind', label: 'type' }, { key: 'database' }, { key: 'schema_name', label: 'schema' },
+        { key: 'type_code', label: 'type', fmt: v => typeWords.get(String(v)) ?? String(v ?? '') }, { key: 'database' }, { key: 'schema_name', label: 'schema' },
         { key: 'object_name', label: 'name', fmt: (v, r) => mssqlObjectCell(ctx, String(r.database), r.schema_name, v, undefined, inst(r)) },
         { key: 'period_secs', label: 'Period Time (sec)', num: true, fmt: v => v == null ? '' : fmtNum(v) },
         { key: 'duration_ms', label: 'total duration (sec)', num: true, fmt: secs },
