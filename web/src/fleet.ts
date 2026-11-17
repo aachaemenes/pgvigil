@@ -85,7 +85,8 @@ export const groups: Group[] = [
   { key: 'filespace', label: 'File Space', checks: [], tab: 'summary', mssql: ['filespace', 'dbfiles', 'File space'], mssqlOnly: true, dd: true },
   { key: 'pctmax', label: '% Max Size', checks: [], tab: 'summary', mssql: ['pctmax', 'dbfiles', 'Files at their max size'], mssqlOnly: true, dd: true },
   // Azure SQL Database's elastic pools (CLOUDSQL C4: mssql_pool, the cell DBA Dash's AzureDBElasticPoolStorageStatus,
-  // n/a and so hidden outside a pool); Service Broker: pgvigil does not read it yet, so it stays N/A and hidden
+  // n/a and so hidden outside a pool); Service Broker: collected since P25 row 73 (mssql_service_broker, the database
+  // page's tab), but this cell has no read of it yet (a parity row, task 16), so it stays N/A and hidden
   { key: 'elasticpool', label: 'Elastic Pool Storage', checks: [], tab: 'summary', mssql: ['elasticpool', 'mssqlpool', 'Elastic pool'], mssqlOnly: true, dd: true },
   // QS is SQL Server's Query Store alone: PostgreSQL has none, its statement store is the column pg_stat_statements below
   { key: 'qs', label: 'QS', checks: [], tab: 'summary', mssql: ['qs', 'mssqlqs', 'Query Store'], mssqlOnly: true, dd: true },
