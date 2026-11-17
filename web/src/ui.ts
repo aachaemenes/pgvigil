@@ -415,7 +415,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       const extra = /^(ok|warn|crit)$/.test(own) ? 'status ' + own : own;
       const cl = [base, extra].filter(Boolean).join(' ');
       const td = el('td', cl ? { class: cl } : {});
-      if (c.wide && typeof out === 'string') td.title = out;
+      if (c.wide && typeof out === 'string') td.title = capTip(out);
       td.append(out);
       tr.append(td);
     }
@@ -579,6 +579,18 @@ export function offControl(c: HTMLElement, reason: string | null, reasonEl?: HTM
   }
   return note;
 }
+
+// capTip: a cell's title text at most tipCap() characters, then '...' (DBA Dash caps its grid tooltips at 1,000 and lets
+// the cap be changed: parity set 3, L206 / RELNOTES L129); the cap is this browser's setting pgvigil.tipCap (50 to
+// 100,000), 1,000 when unset or unreadable
+export function tipCap(): number {
+  try {
+    const n = Number(localStorage.getItem('pgvigil.tipCap'));
+    if (Number.isInteger(n) && n >= 50 && n <= 100000) return n;
+  } catch { /* private window */ }
+  return 1000;
+}
+export function capTip(s: string): string { const n = tipCap(); return s.length > n ? s.slice(0, n) + '...' : s; }
 
 export function errorBox(e: unknown): HTMLElement {
   return el('p', { class: 'error' }, 'Error: ' + (e instanceof Error ? e.message : String(e)));

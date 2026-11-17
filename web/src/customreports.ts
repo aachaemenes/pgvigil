@@ -137,6 +137,8 @@ function fmtCell(v: unknown, type: string, f?: ColFmt): string {
   if (type === 'time') return fmtTime(v);
   if (Array.isArray(v)) return v.map(x => x == null ? '' : typeof x === 'object' ? JSON.stringify(x) : String(x)).join(', ');
   if (typeof v === 'object') return JSON.stringify(v);
+  // SQL Server's binary (0x and its hex, internal/mssqlread Cell): past 32 bytes cut, its length said (parity set 3, L205)
+  if (typeof v === 'string' && v.length > 66 && /^0x[0-9A-F]+$/.test(v)) return `${v.slice(0, 66)}... (${fmtNum((v.length - 2) / 2)} bytes)`;
   return String(v);
 }
 const numericFormat = new Set(['number', 'int', 'bytes', 'kb', 'mb', 'secs', 'ms', 'pct']);
