@@ -18,7 +18,9 @@ import { needControl } from './needs';
 import { cutWords, endView, isQueued, Queued, waitRequest } from './request';
 import { fleet } from './fleet';
 import { lineChart } from './chart';
-import { badge, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
+import { badge, el, errorBox, fmtNum, fmtTime, grid, offControl, saveBlob } from './ui';
+import { zip } from './export';
+import { fileStamp } from './tz';
 
 export const mssqlDbTab = 'mssqldb';
 
@@ -125,6 +127,20 @@ async function ddlSnapshots(ctx: Ctx, dbid: number): Promise<HTMLElement> {
   const at = el('span', { class: 'meta' }), list = el('div'), objs = el('div');
   const cutCell = (v: unknown, r: Row) => r.cut ? `${String(v ?? '')} ...` : String(v ?? '');
   let page = 1, seq = 0;
+  // DBA Dash's Export (control audit D3 b): every object as it stood at the snapshot, one .sql file each, in a zip
+  const exportAt = async (r: Row, b: HTMLButtonElement) => {
+    b.disabled = true;
+    try {
+      const d = await get<{ ddl_at: Table | null }>('schema', { instance: ctx.instance, ...window_(ctx), part: 'ddl_at', db: String(dbid), snap_at: String(r.snapshot_at) });
+      const at = new Date(String(r.snapshot_at)), enc = new TextEncoder(), safe = (v: unknown) => String(v ?? '').replace(/[^A-Za-z0-9._-]+/g, '_');
+      const files = rowsOf(d.ddl_at).map(o => ({
+        name: `${safe(o.schema_name)}.${safe(o.object_name)}.${safe(o.kind)}.sql`,
+        data: enc.encode(`-- ${String(o.kind)} ${String(o.identity)} as pgvigil stored it at ${fmtTime(r.snapshot_at)} (a definition past 20,000 characters is stored cut;\n` +
+          `-- a body under a masking policy is stored as its hash)\n${String(o.definition ?? '')}\n`),
+      }));
+      saveBlob(await zip(files, at), `${safe(r.database)}-schema-${fileStamp(at)}.zip`);
+    } catch (e) { objs.replaceChildren(errorBox(e)); } finally { b.disabled = false; }
+  };
   const pick = async (r: Row) => {
     objs.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
     try {
@@ -154,6 +170,7 @@ async function ddlSnapshots(ctx: Ctx, dbid: number): Promise<HTMLElement> {
         { key: 'valid_for_days', label: 'Valid For (Days)', num: true }, { key: 'days_since_validation', label: 'Days Since Validation', num: true },
         { key: 'created', label: 'Created', num: true }, { key: 'modified', label: 'Modified', num: true }, { key: 'dropped', label: 'Dropped', num: true },
         { key: 'objects', label: 'objects', fmt: (_, r) => { const b = el('button', { type: 'button' }, 'Objects'); b.addEventListener('click', () => void pick(r)); return b; } },
+        { key: 'export', label: 'Export', fmt: (_, r) => { const b = el('button', { type: 'button' }, 'Export') as HTMLButtonElement; b.addEventListener('click', () => void exportAt(r, b)); return b; } },
       ], page > 1 ? 'No more snapshots: this page is past the last.' : 'No schema snapshot of this database yet: the first read is its baseline.'));
     } catch (e) { if (mine === seq) list.replaceChildren(errorBox(e)); }
   };

@@ -178,6 +178,29 @@ SELECT so.first_seen, so.dbid, so.kind, so.identity, so.schema_name, so.object_n
    AND NOT EXISTS (SELECT 1 FROM pgvigil.schema_changes e WHERE e.instance_id = $1 AND e.dbid = $2 AND e.snapshot_at = $3)
  ORDER BY 5, 4, 3`
 
+// sqlDDLAt: DBA Dash's Export (control audit D3 b; DBSchemaAtDate_Get): every standalone object of database $2 as it
+// stood at $3 - first seen by then, and its last add or drop by then not a drop - with its definition as of then (the
+// 'before' of its first later definition change or drop, else its definition now: a definition past 20,000
+// characters is stored cut, a body under a masking policy as its hash - the files say so).
+const sqlDDLAt = `
+WITH ev AS (
+  SELECT DISTINCT ON (c.kind, c.identity) c.kind, c.identity, c.change
+    FROM pgvigil.schema_changes c
+   WHERE c.instance_id = $1 AND c.dbid = $2 AND c.snapshot_at <= $3 AND c.change IN ('added', 'dropped')
+   ORDER BY c.kind, c.identity, c.snapshot_at DESC
+)
+SELECT so.kind, so.identity, so.schema_name, so.object_name, x.def AS definition
+  FROM pgvigil.schema_objects so
+  LEFT JOIN ev ON ev.kind = so.kind AND ev.identity = so.identity
+  CROSS JOIN LATERAL (SELECT coalesce((SELECT c.before FROM pgvigil.schema_changes c
+                                        WHERE c.instance_id = so.instance_id AND c.dbid = so.dbid AND c.kind = so.kind AND c.identity = so.identity
+                                          AND c.snapshot_at > $3 AND c.before IS NOT NULL
+                                          AND (c.change = 'dropped' OR (c.change = 'changed' AND c.attribute = 'definition'))
+                                        ORDER BY c.snapshot_at LIMIT 1), so.definition) AS def) x
+ WHERE so.instance_id = $1 AND so.dbid = $2 AND so.kind IN ` + objectKindsSQL + `
+   AND so.first_seen <= $3 AND coalesce(ev.change, 'added') <> 'dropped'
+ ORDER BY so.kind, so.schema_name, so.object_name`
+
 // ddlSnapshotSizes: DBA Dash's Snapshot Summary Page Size list (SchemaSnapshots.Designer.cs tsSummaryPageSize; 100 the default)
 var ddlSnapshotSizes = map[int]bool{100: true, 200: true, 500: true, 1000: true, 5000: true}
 
@@ -234,13 +257,17 @@ func (s *Server) Schema(w http.ResponseWriter, r *http.Request) {
 		}
 		s.multiPart(w, r, []part{{"ddl_snapshots", sqlDDLSnapshots, []any{id, db, size, page}}})
 		return
-	case "ddl_snapshot_objects":
+	case "ddl_snapshot_objects", "ddl_at":
 		at, err := time.Parse(time.RFC3339Nano, q.Get("snap_at"))
 		if err != nil || db == nil {
-			writeErr(w, http.StatusBadRequest, errors.New("part=ddl_snapshot_objects needs db= and snap_at= (the snapshot's time, RFC 3339)"))
+			writeErr(w, http.StatusBadRequest, errors.New("part="+q.Get("part")+" needs db= and snap_at= (the snapshot's time, RFC 3339)"))
 			return
 		}
-		s.multiPart(w, r, []part{{"ddl_snapshot_objects", sqlDDLSnapshotObjects, []any{id, *db, at}}})
+		stmt := sqlDDLSnapshotObjects
+		if q.Get("part") == "ddl_at" {
+			stmt = sqlDDLAt // control audit D3 b: the Export
+		}
+		s.multiPart(w, r, []part{{q.Get("part"), stmt, []any{id, *db, at}}})
 		return
 	}
 	var parts []part
