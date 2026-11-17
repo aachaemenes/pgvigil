@@ -595,20 +595,22 @@ function tuningView(d: QS): HTMLElement[] {
     { key: 'reason', label: 'why' }, { key: 'snapshot_at', label: 'read', fmt: fmtTime },
   ];
   const recCols: Col[] = [
-    { key: 'database_name', label: 'database' }, { key: 'rec_type', label: 'type' },
-    { key: 'rec_state', label: 'state', fmt: (v, r) => r.is_present ? text(v) : `${text(v) || '?'} (no longer listed)` },
-    { key: 'state_reason', label: 'state reason' },
-    { key: 'score', num: true },
-    { key: 'reason' },   // one line: a 'wide' cell among seventeen columns wrapped at every word (a row 135 px tall)
-    { key: 'query_id', label: 'query', num: true, fmt: v => text(v) },
-    { key: 'regressed_plan_id', label: 'regressed plan', num: true, fmt: v => text(v) },
-    { key: 'recommended_plan_id', label: 'recommended plan', num: true, fmt: v => text(v) },
-    { key: 'valid_since', label: 'valid since', fmt: fmtTime }, { key: 'last_refresh', label: 'last refresh', fmt: fmtTime },
-    { key: 'executed_at', label: 'applied', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${text(r.executed_by).toLowerCase() || '?'}` },
-    { key: 'reverted_at', label: 'reverted', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${text(r.reverted_by).toLowerCase() || '?'}` },
+    { key: 'database_name', label: 'database', title: 'The database the recommendation is for' },
+    { key: 'rec_type', label: 'type', title: 'What the server recommends: FORCE_LAST_GOOD_PLAN, its one kind' },
+    { key: 'rec_state', label: 'state', title: 'Where the recommendation stands (Active, Verifying, Success, Reverted, Expired, Error); "no longer listed" once a read no longer shows it', fmt: (v, r) => r.is_present ? text(v) : `${text(v) || '?'} (no longer listed)` },
+    { key: 'state_reason', label: 'state reason', title: 'Why it is in that state, in the server\'s words' },
+    { key: 'score', num: true, title: 'How much the server expects the change to gain, 0 to 100' },
+    { key: 'reason', title: 'Why the server recommends it: what got slower, and by how much' },   // one line: a 'wide' cell among seventeen columns wrapped at every word (a row 135 px tall)
+    { key: 'query_id', label: 'query', num: true, fmt: v => text(v), title: 'The Query Store id of the query whose plan regressed' },
+    { key: 'regressed_plan_id', label: 'regressed plan', num: true, fmt: v => text(v), title: 'The Query Store id of the plan that runs worse' },
+    { key: 'recommended_plan_id', label: 'recommended plan', num: true, fmt: v => text(v), title: 'The Query Store id of the plan the server would force back' },
+    { key: 'valid_since', label: 'valid since', fmt: fmtTime, title: 'When the server first made this recommendation' },
+    { key: 'last_refresh', label: 'last refresh', fmt: fmtTime, title: 'When the server last checked it again' },
+    { key: 'executed_at', label: 'applied', title: 'When forcing the plan was asked for, and by whom: the server\'s automatic tuning or a user', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${text(r.executed_by).toLowerCase() || '?'}` },
+    { key: 'reverted_at', label: 'reverted', title: 'When the forcing was undone, and by whom', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${text(r.reverted_by).toLowerCase() || '?'}` },
     { key: 'script', label: 'script', fmt: v => v == null || v === '' ? '' : sqlCell(v, { heading: 'The recommendation\'s script', title: 'Show the script' }) },
-    { key: 'object_name', label: 'object' },
-    { key: 'query', label: 'statement', fmt: v => v == null || v === '' ? '' : sqlCell(v) },
+    { key: 'object_name', label: 'object', title: 'The procedure or function the query is in, when it is in one' },
+    { key: 'query', label: 'statement', title: 'The query\'s text from Query Store: open it to read it whole', fmt: v => v == null || v === '' ? '' : sqlCell(v) },
     // PerformanceMonitor's First seen / Last seen (its plan corrections grid): the first read that listed the
     // recommendation and the last; its Captures is not kept (pgvigil stores the current state, not each read)
     { key: 'first_seen', label: 'first seen', fmt: fmtTime },
