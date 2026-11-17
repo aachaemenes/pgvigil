@@ -340,6 +340,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/xe/slow", s.MSSQLXESlow)
 	api.HandleFunc("GET /api/pgaudit", s.PgAudit)
 	api.HandleFunc("GET /api/pooler", s.Pooler)
+	api.HandleFunc("GET /api/pooler/trend", s.PoolerTrend) // parity set 2, L47: the pooler's rates over time
 	api.HandleFunc("GET /api/pooler/conns", s.PoolerConns)
 	api.HandleFunc("GET /api/schema", s.Schema)
 	api.HandleFunc("GET /api/host", s.Host)

@@ -253,6 +253,18 @@ export async function pooler(ctx: Ctx): Promise<HTMLElement> {
       { key: 'cl_active', label: 'clients active' }, { key: 'cl_waiting', label: 'clients waiting' },
       { key: 'sv_active', label: 'servers active' }, { key: 'sv_idle', label: 'servers idle' },
     ]));
+    // the rates over time (parity set 2, L47: pgwatch's PgBouncer charts) - GET /api/pooler/trend, its own error box
+    const tr = await get<{ series: Row[] }>('pooler/trend', { instance: ctx.instance, ...w }).catch((e: unknown) => e instanceof Error ? e : new Error(String(e)));
+    if (tr instanceof Error) sec.append(el('h3', {}, 'Rates over time'), errorBox(tr));
+    else {
+      const rows = tr.series.map(p => ({ ...p, snapshot_at: p.at }));
+      const ms = (v: number) => `${fmtNum(v)} ms`;
+      sec.append(el('div', { class: 'charts' },
+        lineChart('Transactions / s', rows, [{ key: 'tps', label: 'transactions / s' }], fmtNum),
+        lineChart('Queries / s', rows, [{ key: 'qps', label: 'queries / s' }], fmtNum),
+        lineChart('Average query time', rows, [{ key: 'avg_query_ms', label: 'average query time' }], ms),
+        lineChart('Pool wait', rows, [{ key: 'avg_wait_ms', label: 'average wait for a server' }], ms)));
+    }
     sec.append(el('h3', {}, 'Rates (SHOW STATS)'),
       el('p', { class: 'meta' }, 'PgBouncer\'s own averages over its stats_period at the last read.'),
       grid(rowsOf(d.stats), statsCols, 'No database statistics at the last read.'));
