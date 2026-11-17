@@ -176,6 +176,14 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
   return sec;
 }
 
+// defaultHidden (control audit A7): DBA Dash hides some grid columns by default (AzureSummary.Designer.cs L274-504,
+// IsVisible false); the grid's table names them in data-default-hidden (the grid tools' column names) and the grid tools'
+// load() shows them hidden until the viewer chooses (gridtools.ts is row group G's: join line 14)
+const defaultHidden = (box: HTMLElement, cols: string[]): HTMLElement => {
+  box.querySelector('table')?.setAttribute('data-default-hidden', JSON.stringify(cols));
+  return box;
+};
+
 // AzureNode: DBA Dash's logical server or elastic pool node (P25 task 7, azure_nodes.ts) - the summary cut to it
 export interface AzureNode { server: string; pool?: string }
 
@@ -219,7 +227,7 @@ export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTML
   const name = (v: unknown, r: Row) => el('a', { href: href(ctx, { instance: Number(r.instance_id), tag: undefined, tab: 'mssqlazure' }),
     ...(r.read_only ? { title: `Read through a read-only connection: ${roles[String(r.replica_role)] ?? 'a replica'} (replica role ${String(r.replica_role)})` } : {}) },
     String(v) + (r.read_only ? ' (read-only)' : ''));
-  sec.append(grid(rows, [
+  sec.append(defaultHidden(grid(rows, [
     { key: 'instance', label: 'database (instance)', fmt: name }, { key: 'service_objective', label: 'tier', fmt: (v, r) => v == null ? (r.tier_read ? '' : el('span', { class: 'meta' }, 'not read')) : sloJump(v) },
     n('dtu_limit', 'DTUs'), n('cpu_limit', 'vCores'),
     { key: 'pool', label: 'elastic pool', fmt: (v, r) => v == null ? '' : r.server == null ? String(v) : el('a', { href: poolHref(ctx, String(r.server), String(v)) }, String(v)) },
@@ -235,7 +243,7 @@ export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTML
     n('allocated_pct', '% max size (allocated)', pct), n('used_pct', '% max size (used)', pct),
     { key: 'pctmax_status', label: '% Max Size', fmt: v => v == null ? el('span', { class: 'meta' }, 'not read') : badge(String(v), tone[String(v)] ?? '') },
     { key: 'files_read_at', label: 'files read', fmt: fmtTime },
-  ], 'No Azure SQL Database is read in this scope.'));
+  ], 'No Azure SQL Database is read in this scope.'), ['CPU histogram', 'data IO histogram', 'log write histogram', 'DTU histogram', 'allocated', 'used', 'max size']));
   // DBA Dash's separate Elastic Pool grid (P25 task 8): each pool of the scope's databases once (/api/azuredb/summary
   // part=pools); a pool's name opens its pool's page, the server its server's (task 7's nodes)
   const pools = rowsOf(d.pools);

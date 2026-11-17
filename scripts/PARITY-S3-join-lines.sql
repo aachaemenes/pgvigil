@@ -182,3 +182,9 @@
 --    (i) web/src/statements.ts (the Statements tab's Functions grid, fnCols; its owners qsdd-pgtwin and others): the
 --        function's name becomes el('a', { href: pgFunctionHref(ctx, r.dbid, r.funcid) }, <schema.name(args)>) - the
 --        PostgreSQL twin of the object page (#/pgfunction, mssql_object.ts pgFunctionView).
+
+-- 14. web/src/gridtools.ts (row group G's, relw4-s1; the lead's 11-17 14:37: control audit A7): load() takes a table's
+--    data-default-hidden (a JSON list of its column names, as names() gives them) as the hidden list when nothing is
+--    saved for that grid - DBA Dash's columns hidden by default (IsVisible false); the viewer's own choice, once saved,
+--    wins. This branch marks the Azure Summary grid (web/src/azuredb.ts defaultHidden: the four histograms, allocated,
+--    used, max size); a named check at the join: the Azure Summary opens with those seven hidden, Columns... shows them.
