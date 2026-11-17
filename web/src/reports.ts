@@ -52,9 +52,17 @@ const inScope = (s: Scope) => (r: Row) => !s.ids || s.ids.has(Number(r.instance_
 const groupsOf = async (): Promise<Map<number, string>> => new Map((await fleet()).instances.map(r => [Number(r.instance_id), tagsOf(r).join(', ')]));
 
 // the instance column: a link to the instance's Summary (its own page set by engine)
-const instCol = (ctx: Ctx, label = 'Instance'): Col => ({ key: 'instance', label, fmt: (v, r) => r.instance_id == null ? text(v)
-  : el('a', { href: href(ctx, { tab: 'summary', instance: Number(r.instance_id), tag: undefined }) }, text(v)) });
+const instCol = (ctx: Ctx, label = 'Instance'): Col => ({ key: 'instance', label, title: 'The monitored instance the row belongs to; the link opens its Summary',
+  fmt: (v, r) => r.instance_id == null ? text(v) : el('a', { href: href(ctx, { tab: 'summary', instance: Number(r.instance_id), tag: undefined }) }, text(v)) });
 const engCol: Col = { key: 'engine', label: 'Engine', fmt: engName };
+
+// L20, a header's title in each engine's own words: one engine's sentence on a scope of that engine, both named on a
+// scope that holds both, so no SQL Server word reaches a PostgreSQL page (no pg: one sentence for both engines)
+const tip = (s: Scope, ms: string, pg?: string): string => pg === undefined ? ms
+  : s.engines.has('sqlserver') && s.engines.has('postgres') ? `SQL Server: ${ms} PostgreSQL: ${pg}` : s.engines.has('postgres') ? pg : ms;
+// a SQL Server-only report's titles: none on a PostgreSQL-only scope, where its grid is the empty header under the
+// page's 'SQL Server only' line
+const msTip = (s: Scope, ms: string): string | undefined => s.engines.has('sqlserver') ? ms : undefined;
 
 // ---- the page frame: a heading, the report's own toolbar (its pickers), a body drawn again on every change
 
@@ -116,8 +124,10 @@ const propsView: Render = ctx => page(ctx, 'rp_props', [], async (_v, s, out) =>
   out.append(
     el('p', { class: 'meta' }, 'SQL Server: each database\'s extended properties (sys.extended_properties, class 0). PostgreSQL: each database\'s comment (COMMENT ON DATABASE) as the property "comment". Valid From: the read that first saw the value.'),
     stateNote(rowsOf(d.state), 'Extended properties'), stateNote(rowsOf(d.pgstate), 'Database comments'),
-    ...section('Database Extended Properties', grid(rowsOf(d.props), [instCol(ctx), { key: 'database_name', label: 'Database' },
-      { key: 'property', label: 'Property' }, { key: 'value', label: 'Value', wide: true }, { key: 'valid_from', label: 'Valid From', fmt: fmtTime }],
+    ...section('Database Extended Properties', grid(rowsOf(d.props), [instCol(ctx), { key: 'database_name', label: 'Database', title: 'The database the property belongs to' },
+      { key: 'property', label: 'Property', title: tip(s, 'The extended property\'s name (one set on the database itself)', 'Always "comment": a database\'s one property in PostgreSQL, set by COMMENT ON DATABASE') },
+      { key: 'value', label: 'Value', wide: true, title: tip(s, 'What the property holds, as the server returns it', 'The database\'s comment') },
+      { key: 'valid_from', label: 'Valid From', fmt: fmtTime, title: 'The read that first saw this value: a change shows at the next read after it, not at the moment it was made' }],
     'No database property is stored for this scope.')));
 });
 
@@ -386,14 +396,17 @@ function dbChangesReport(key: 'rp_dbnew' | 'rp_dbdeleted'): Render {
     const d = await get<{ changes: Table }>('dbchanges', { instance: ctx.instance, days: v[key + '-days'] });
     const rows = rowsOf(d.changes).filter(inScope(s)).filter(r => r.change === (key === 'rp_dbnew' ? 'new' : 'dropped'));
     const mb = (x: unknown) => x == null ? '' : fmtNum(Math.round(Number(x) / 1048576));
-    const created: Col = { key: 'created', label: 'Created Date', fmt: (_x, r) => r.created_at != null ? fmtTime(r.created_at)
+    const created: Col = { key: 'created', label: 'Created Date', title: tip(s, 'When the server created the database (its own record of it)',
+      key === 'rp_dbnew' ? 'PostgreSQL keeps no creation time: the database was made between the two reads shown' : 'PostgreSQL keeps no creation time: the first read that listed the database'),
+      fmt: (_x, r) => r.created_at != null ? fmtTime(r.created_at)
       : key === 'rp_dbnew' ? el('span', { title: 'PostgreSQL keeps no creation time: created between these two reads' }, `${r.created_after ? fmtTime(r.created_after) : 'before'} to ${fmtTime(r.first_seen)}`)
         : r.first_seen ? 'first read ' + fmtTime(r.first_seen) : '' };
     const cols: Col[] = key === 'rp_dbnew'
-      ? [instCol(ctx), engCol, { key: 'datname', label: 'DB' }, created, { key: 'size_bytes', label: 'Size (MB)', num: true, fmt: mb }]
-      : [instCol(ctx), engCol, { key: 'datname', label: 'DB' }, created,
-        { key: 'at', label: '~Deleted Date', fmt: (x, r) => el('span', { title: 'between the last read that listed it and the next read' }, `${fmtTime(x)}${r.dropped_by ? ' to ' + fmtTime(r.dropped_by) : ''}`) },
-        { key: 'size_bytes', label: 'Size MB', num: true, fmt: mb }];
+      ? [instCol(ctx), engCol, { key: 'datname', label: 'DB' }, created, { key: 'size_bytes', label: 'Size (MB)', num: true, fmt: mb, title: 'Its size in megabytes at the newest read' }]
+      : [instCol(ctx), engCol, { key: 'datname', label: 'DB', title: 'The database that was dropped' }, created,
+        { key: 'at', label: '~Deleted Date', title: 'When it was dropped, as near as the reads tell: between the last read that listed it and the next one',
+          fmt: (x, r) => el('span', { title: 'between the last read that listed it and the next read' }, `${fmtTime(x)}${r.dropped_by ? ' to ' + fmtTime(r.dropped_by) : ''}`) },
+        { key: 'size_bytes', label: 'Size MB', num: true, fmt: mb, title: 'Its size in megabytes at the last read that listed it' }];
     out.append(el('p', { class: 'meta' }, `${fmtNum(rows.length)} database(s) ${key === 'rp_dbnew' ? 'created' : 'dropped'} in the last ${v[key + '-days']} day(s). `
       + (key === 'rp_dbnew' ? 'SQL Server: the server\'s own creation time; PostgreSQL keeps none: the two reads it was created between.' : 'The drop is seen between the last read that listed the database and the next (hence ~); the size is its last read.')),
     ...section(reportTabs[key], grid(rows, cols, `No database ${key === 'rp_dbnew' ? 'created' : 'dropped'} in this time.`)));
@@ -434,18 +447,21 @@ const flushedView: Render = ctx => page(ctx, 'rp_flushed', [daysPicker('flushed-
   out.append(s.engines.has('postgres') ? sqlServerOnly('PostgreSQL has no plan cache to flush (a plan lives in its session).') : '',
     el('p', { class: 'meta' }, 'Each plan cache flush the server recorded: DBCC FREEPROCCACHE, FREESYSTEMCACHE, FLUSHPROCINDB and FREESESSIONCACHE from the default trace (who ran it, from where), and the error log\'s "cachestore flush" lines (a flush by RECONFIGURE, ALTER DATABASE or memory pressure is logged there with no session).'),
     ...section('Flushed Plans', grid(rowsOf(d.flushed), [instCol(ctx), { key: 'at', label: 'Flushed At', fmt: fmtTime }, { key: 'login_name', label: 'Flushed By' },
-      { key: 'session_id', label: 'Session ID', num: true }, { key: 'host_name', label: 'Host' }, { key: 'program_name', label: 'Program' }, { key: 'database_name', label: 'Database' },
-      { key: 'command', label: 'Command' }, { key: 'text', label: 'Text', fmt: x => sqlCell(x, { heading: 'Flush' }) }, { key: 'source', label: 'Source' }], 'No plan cache flush in this time.')));
+      { key: 'session_id', label: 'Session ID', num: true, title: msTip(s, 'The session that ran the flush; empty for one the error log records with no session (RECONFIGURE, ALTER DATABASE, memory pressure)') },
+      { key: 'host_name', label: 'Host' }, { key: 'program_name', label: 'Program' }, { key: 'database_name', label: 'Database' },
+      { key: 'command', label: 'Command' }, { key: 'text', label: 'Text', fmt: x => sqlCell(x, { heading: 'Flush' }), title: msTip(s, 'The command that flushed the cache, as the default trace caught it: open it to read it whole') },
+      { key: 'source', label: 'Source' }], 'No plan cache flush in this time.')));
 });
 
 // ---- Killed Sessions, User Actions (pgvigil's actions log; PostgreSQL's pgaudit)
 
-const actionCols = (ctx: Ctx, killed: boolean): Col[] => killed
-  ? [instCol(ctx), engCol, { key: 'at', label: 'Killed At', fmt: fmtTime }, { key: 'ui_user', label: 'Killed By' }, { key: 'session_id', label: 'Session ID', num: true },
+const actionCols = (ctx: Ctx, s: Scope, killed: boolean): Col[] => killed
+  ? [instCol(ctx), engCol, { key: 'at', label: 'Killed At', fmt: fmtTime }, { key: 'ui_user', label: 'Killed By' },
+    { key: 'session_id', label: 'Session ID', num: true, title: tip(s, 'The session that was killed', 'The server process (backend) that was terminated, or whose query was cancelled') },
     { key: 'target_user', label: 'Login' }, { key: 'target_host', label: 'Host' }, { key: 'target_app', label: 'Program' }, { key: 'action', label: 'Action' },
     { key: 'outcome', label: 'Outcome', cls: x => x === 'done' ? 'ok' : x === 'failed' ? 'crit' : x === 'refused' ? 'warn' : '' },
     { key: 'reason', label: 'Reason', wide: true }, { key: 'detail', label: 'Server Message', wide: true }, { key: 'client', label: 'Client' }]
-  : [{ key: 'at', label: 'Date', fmt: fmtTime }, { key: 'ui_user', label: 'User' }, { key: 'client', label: 'Client' }, { key: 'action', label: 'Action' },
+  : [{ key: 'at', label: 'Date', fmt: fmtTime }, { key: 'ui_user', label: 'User', title: 'The pgvigil user who asked for it: the name signed in with' }, { key: 'client', label: 'Client' }, { key: 'action', label: 'Action' },
     instCol(ctx), engCol, { key: 'target', label: 'Target', fmt: (x, r) => text(x ?? (r.session_id != null ? 'session ' + text(r.session_id) : '')) },
     { key: 'reason', label: 'Reason', wide: true },
     { key: 'outcome', label: 'Outcome', cls: x => x === 'done' ? 'ok' : x === 'failed' ? 'crit' : x === 'refused' ? 'warn' : '' }, { key: 'detail', label: 'Server Message', wide: true }];
@@ -453,15 +469,15 @@ const actionCols = (ctx: Ctx, killed: boolean): Col[] => killed
 const killedView: Render = ctx => page(ctx, 'rp_killed', [daysPicker('killed-days')], async (v, s, out) => {
   const d = await get<{ killed: Table }>('reports', { r: 'killed', ...s.params, days: v['killed-days'] });
   out.append(el('p', { class: 'meta' }, 'Every kill (SQL Server), terminate and cancel (PostgreSQL) asked for through pgvigil\'s actions door, done, refused or failed, with who asked, why and what the server said.'),
-    ...section('Killed Sessions', grid(rowsOf(d.killed), actionCols(ctx, true), 'No session killed through pgvigil in this time.')));
+    ...section('Killed Sessions', grid(rowsOf(d.killed), actionCols(ctx, s, true), 'No session killed through pgvigil in this time.')));
 });
 
 const actionsView: Render = ctx => page(ctx, 'rp_actions', [daysPicker('actions-days')], async (v, s, out) => {
   const d = await get<{ actions: Table; audit: Table }>('reports', { r: 'actions', ...s.params, days: v['actions-days'] });
   out.append(el('p', { class: 'meta' }, 'Who did what through pgvigil (the actions log: kills, cancels, terminations, job starts and stops, EXPLAIN ANALYZE, hypothetical indexes), and on PostgreSQL what pgaudit logged of the role and DDL statements run on the server itself.'),
-    ...section('User Actions', grid(rowsOf(d.actions), actionCols(ctx, false), 'No action through pgvigil in this time.')),
+    ...section('User Actions', grid(rowsOf(d.actions), actionCols(ctx, s, false), 'No action through pgvigil in this time.')),
     ...(s.engines.has('postgres') ? section('Server Actions (pgaudit: ROLE and DDL)', grid(rowsOf(d.audit), [instCol(ctx), { key: 'at', label: 'Date', fmt: fmtTime },
-      { key: 'usename', label: 'User' }, { key: 'datname', label: 'Database' }, { key: 'client', label: 'Client' }, { key: 'class', label: 'Class' }, { key: 'command', label: 'Command' },
+      { key: 'usename', label: 'User', title: 'The database role the statement ran as, from pgaudit\'s line' }, { key: 'datname', label: 'Database' }, { key: 'client', label: 'Client' }, { key: 'class', label: 'Class' }, { key: 'command', label: 'Command' },
       { key: 'object_type', label: 'Object Type' }, { key: 'object_name', label: 'Object' }, { key: 'target_role', label: 'Role' },
       { key: 'statement', label: 'Statement', fmt: x => sqlCell(x, { heading: 'Statement' }) }], 'No ROLE or DDL entry: pgaudit is not loaded, or logged none in this time.')) : []));
 });
@@ -584,14 +600,22 @@ const servicesView: Render = ctx => page(ctx, 'rp_services', [{ key: 'svc-type',
   const fresh = (x: unknown) => x == null ? '' : Date.now() - Date.parse(text(x)) < 2 * 3600e3 ? 'ok' : Date.now() - Date.parse(text(x)) < 86400e3 ? 'warn' : 'crit';
   out.append(s.engines.has('postgres') ? sqlServerOnly('PostgreSQL runs as one service the operating system keeps; its Host page has what pgvigil reads of the host.') : '',
     stateNote(rowsOf(d.state), 'The service file names'),
-    ...section('Server Services', grid(rows, [instCol(ctx), { key: 'service_type', label: 'Service Type' }, { key: 'service_name', label: 'Service Name' },
-      { key: 'startup_type', label: 'Startup Type', cls: x => x === 'Automatic' ? 'ok' : x === 'Disabled' ? 'warn' : x == null || x === '' ? '' : 'status none' },
-      { key: 'status', label: 'Status', cls: x => x === 'Running' ? 'ok' : x === 'Stopped' ? 'crit' : x ? 'warn' : '' }, { key: 'process_id', label: 'Process ID', num: true },
-      { key: 'last_startup_at', label: 'Last Startup Time', fmt: fmtTime }, { key: 'service_account', label: 'Service Account' },
-      { key: 'is_managed_account', label: 'Managed Service Account?', fmt: yes }, { key: 'filename', label: 'FileName', wide: true },
-      { key: 'is_clustered', label: 'Is Clustered', fmt: yes }, { key: 'cluster_nodename', label: 'Cluster Node Name' },
-      { key: 'ifi_enabled', label: 'Instant File Initialization Enabled', fmt: yes, cls: (x, r) => x !== true && x !== false ? '' : r.service_type !== 'SQL Server' ? 'status none' : x === true ? 'ok' : 'warn' },
-      { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime, cls: fresh }], 'No service is stored for this scope.')));
+    ...section('Server Services', grid(rows, [instCol(ctx), { key: 'service_type', label: 'Service Type', title: msTip(s, 'Which part of SQL Server the service runs: the engine, Agent, Full-text, Launchpad or PolyBase') },
+      { key: 'service_name', label: 'Service Name', title: msTip(s, 'The service\'s name in Windows') },
+      { key: 'startup_type', label: 'Startup Type', title: msTip(s, 'How Windows starts it: Automatic, Manual or Disabled (Other for a start mode the server does not name)'),
+        cls: x => x === 'Automatic' ? 'ok' : x === 'Disabled' ? 'warn' : x == null || x === '' ? '' : 'status none' },
+      { key: 'status', label: 'Status', title: msTip(s, 'Its state at the read: Running, Stopped or Paused, or a start, stop, pause or continue still under way'),
+        cls: x => x === 'Running' ? 'ok' : x === 'Stopped' ? 'crit' : x ? 'warn' : '' },
+      { key: 'process_id', label: 'Process ID', num: true, title: msTip(s, 'Its Windows process id while it runs; empty when it is stopped') },
+      { key: 'last_startup_at', label: 'Last Startup Time', fmt: fmtTime, title: msTip(s, 'When the service last started') },
+      { key: 'service_account', label: 'Service Account', title: msTip(s, 'The Windows account the service runs as') },
+      { key: 'is_managed_account', label: 'Managed Service Account?', fmt: yes, title: msTip(s, 'Yes when that account is a managed service account, whose password Windows itself sets and changes') },
+      { key: 'filename', label: 'FileName', wide: true, title: msTip(s, 'The program the service runs: its path on the server, with any arguments') },
+      { key: 'is_clustered', label: 'Is Clustered', fmt: yes, title: msTip(s, 'Yes when the service is a resource of a Windows failover cluster') },
+      { key: 'cluster_nodename', label: 'Cluster Node Name', title: msTip(s, 'The cluster node the service is installed on') },
+      { key: 'ifi_enabled', label: 'Instant File Initialization Enabled', fmt: yes, title: msTip(s, 'Yes when the engine\'s account may hand out new data file space without first writing zeros over it, which makes file growth and restores faster - the engine service only; on is the recommended state'),
+        cls: (x, r) => x !== true && x !== false ? '' : r.service_type !== 'SQL Server' ? 'status none' : x === true ? 'ok' : 'warn' },
+      { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime, cls: fresh, title: msTip(s, 'When pgvigil read the services; green within 2 hours, amber within a day, red after') }], 'No service is stored for this scope.')));
 });
 
 // ---- Table Size (SQL Server: the mssql_reports read; PostgreSQL: the tables collection)
@@ -614,36 +638,47 @@ const tablesView: Render = ctx => page(ctx, 'rp_tables', [
       schema_name: r.schema_name, table_name: r.table_name, row_count: r.n_live_tup,
       reserved_kb: r.total_bytes == null ? null : Number(r.total_bytes) / 1024, used_kb: r.total_bytes == null ? null : Number(r.total_bytes) / 1024,
       data_kb: r.heap_bytes == null ? null : (Number(r.heap_bytes) + Number(r.toast_bytes ?? 0)) / 1024, index_kb: r.index_bytes == null ? null : Number(r.index_bytes) / 1024,
-      avg_rows_per_day: r.rows_per_day, avg_kb_per_day: r.bytes_per_day == null ? null : Number(r.bytes_per_day) / 1024 });
+      avg_rows_per_day: r.rows_per_day, avg_kb_per_day: r.bytes_per_day == null ? null : Number(r.bytes_per_day) / 1024,
+      calc_days: r.days == null ? null : Math.round(Number(r.days) * 10) / 10 });   // table_size_fleet's span between the two reads (0086), as SQL Server's calc_days
   }
   rows.sort((a, b) => Number(b.reserved_kb ?? 0) - Number(a.reserved_kb ?? 0));
   const shown = rows.slice(0, top);
   const status = (r: Row) => r.snapshot_at == null ? '' : Date.now() - Date.parse(text(r.snapshot_at)) < 2 * 86400e3 ? 'OK' : 'Stale';
   out.append(note, el('p', { class: 'meta' }, `The ${fmtNum(shown.length)} largest table(s) of ${s.count} instance(s) at each one's newest read; Avg per Day: the growth against the read nearest ${days} day(s) before. `
     + 'SQL Server: sys.dm_db_partition_stats (reserved and used pages; data = the heap or clustered index, index = the other indexes). PostgreSQL: the table with its TOAST (data) and its indexes; reserved = used = the total. Snapshot Status: OK within 2 days, else Stale.'),
-  ...section('Table Size', grid(shown.map(r => ({ ...r, status: status(r) })), [instCol(ctx), engCol, { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime },
-    { key: 'status', label: 'SnapshotStatus', cls: x => x === 'OK' ? 'ok' : x === 'Stale' ? 'warn' : '' }, { key: 'database_name', label: 'DB' }, { key: 'schema_name', label: 'Schema Name' },
-    { key: 'table_name', label: 'Object Name' }, { key: 'row_count', label: 'Rows', num: true }, { key: 'reserved_kb', label: 'Reserved KB', num: true, fmt: kb },
-    { key: 'used_kb', label: 'Used KB', num: true, fmt: kb }, { key: 'data_kb', label: 'Data KB', num: true, fmt: kb }, { key: 'index_kb', label: 'Index KB', num: true, fmt: kb },
-    { key: 'avg_rows_per_day', label: 'Avg Rows Per Day', num: true }, { key: 'avg_kb_per_day', label: 'Avg KB Per Day', num: true, fmt: kb },
-    { key: 'calc_days', label: 'Calc Days', num: true }], 'No table size is stored for this scope.')));
+  ...section('Table Size', grid(shown.map(r => ({ ...r, status: status(r) })), [instCol(ctx), engCol,
+    { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime, title: 'The read these figures come from: each instance\'s newest' },
+    { key: 'status', label: 'SnapshotStatus', cls: x => x === 'OK' ? 'ok' : x === 'Stale' ? 'warn' : '' }, { key: 'database_name', label: 'DB' },
+    { key: 'schema_name', label: 'Schema Name', title: 'The schema the table is in' },
+    { key: 'table_name', label: 'Object Name', title: 'The table' }, { key: 'row_count', label: 'Rows', num: true },
+    { key: 'reserved_kb', label: 'Reserved KB', num: true, fmt: kb, title: tip(s, 'Space set aside for the table and its indexes, filled or not',
+      'The table\'s whole size on disk: its rows, their TOAST and its indexes (PostgreSQL keeps no set-aside figure apart, so Reserved and Used are the same)') },
+    { key: 'used_kb', label: 'Used KB', num: true, fmt: kb, title: tip(s, 'Space the table and its indexes fill', 'The same total as Reserved KB') },
+    { key: 'data_kb', label: 'Data KB', num: true, fmt: kb, title: tip(s, 'Space the rows fill: the heap or the clustered index', 'Space the rows fill: the table and its TOAST') },
+    { key: 'index_kb', label: 'Index KB', num: true, fmt: kb, title: tip(s, 'Space every other index fills (all but the clustered one)', 'Space the table\'s indexes fill') },
+    { key: 'avg_rows_per_day', label: 'Avg Rows Per Day', num: true, title: 'Rows gained per day between the read nearest Growth Days back and the newest one; empty with one read only' },
+    { key: 'avg_kb_per_day', label: 'Avg KB Per Day', num: true, fmt: kb, title: 'Kilobytes gained per day between the same two reads as Avg Rows Per Day' },
+    { key: 'calc_days', label: 'Calc Days', num: true, title: 'The days between those two reads: the span the growth per day is taken over' }], 'No table size is stored for this scope.')));
 });
 
 // ---- Query Stats, Query Stats Charts (SQL Server's plan cache; PostgreSQL's pg_stat_statements)
 
-const qsCols = (ctx: Ctx, group: string): Col[] => [instCol(ctx), engCol,
+const qsCols = (ctx: Ctx, s: Scope, group: string): Col[] => [instCol(ctx), engCol,
   ...(group !== 'instance' ? [{ key: 'database_name', label: 'Database' }] : []),
   ...(group === 'query' || group === 'object' ? [{ key: 'object_name', label: 'Object' }] : []),
-  ...(group === 'query' ? [{ key: 'query_key', label: 'Query Hash', fmt: (x: unknown, r: Row) => r.engine === 'sqlserver'
+  ...(group === 'query' ? [{ key: 'query_key', label: 'Query Hash', title: tip(s, 'The statement\'s shape (its query hash): every run of it with other literal values shares it; the link opens the instance\'s plan cache',
+    'pg_stat_statements\' query id: every run of the statement with other constants shares it; the link opens the instance\'s Statements'), fmt: (x: unknown, r: Row) => r.engine === 'sqlserver'
     ? el('a', { href: href(ctx, { tab: 'mssqlplancache', instance: Number(r.instance_id), tag: undefined }) }, text(x))
     : el('a', { href: href(ctx, { tab: 'statements', instance: Number(r.instance_id), tag: undefined }) }, text(x)) },
-  { key: 'query_text', label: 'Text', fmt: (x: unknown) => sqlCell(x, { heading: 'Query' }) }] as Col[] : []),
+  { key: 'query_text', label: 'Text', title: tip(s, 'The statement in full, as the plan cache keeps it: open it to read it whole',
+    'The statement in full, its constants as pg_stat_statements keeps them ($1, $2 ...): open it to read it whole'), fmt: (x: unknown) => sqlCell(x, { heading: 'Query' }) }] as Col[] : []),
   { key: 'executions', label: 'Executions', num: true }, { key: 'executions_per_min', label: 'Executions/min', num: true },
   { key: 'cpu_ms', label: 'Total CPU (ms)', num: true }, { key: 'avg_cpu_ms', label: 'Avg CPU (ms)', num: true },
   { key: 'duration_ms', label: 'Total Duration (ms)', num: true }, { key: 'avg_duration_ms', label: 'Avg Duration (ms)', num: true },
   { key: 'logical_reads', label: 'Logical Reads', num: true }, { key: 'avg_logical_reads', label: 'Avg Logical Reads', num: true },
   { key: 'physical_reads', label: 'Physical Reads', num: true }, { key: 'writes', label: 'Writes', num: true }, { key: 'row_count', label: 'Rows', num: true },
-  { key: 'plans', label: 'Plans', num: true }, { key: 'max_grant_kb', label: 'Max Grant KB', num: true },
+  { key: 'plans', label: 'Plans', num: true, title: tip(s, 'The most plans the plan cache held for it at one read in the range', 'Empty: PostgreSQL keeps no plan beside a statement') },
+  { key: 'max_grant_kb', label: 'Max Grant KB', num: true },
   ...(group !== 'query' ? [{ key: 'queries', label: 'Queries', num: true }] : [])];
 const qsNote = 'SQL Server: what each cached statement did in the range (the plan cache read, mssql_plancache, every five minutes); PostgreSQL: pg_stat_statements\' deltas (the statements collection). PostgreSQL has no CPU time: its Total CPU is empty and the order by CPU takes its duration; its reads are shared blocks hit + read, its physical reads the blocks read, its writes the blocks written.';
 
@@ -654,7 +689,7 @@ const qsView: Render = ctx => page(ctx, 'rp_qs', [
   const d = await get<{ stats: Table }>('reports', { r: 'querystats', ...s.params, ...window_(ctx), top: v['qs-top'], group: v['qs-group'], order: v['qs-order'] });
   const rows = rowsOf(d.stats);
   out.append(el('p', { class: 'meta' }, `${fmtNum(rows.length)} row(s) in ${rangeLabel(ctx)}. ${qsNote}`),
-    ...section('Query Stats', grid(rows, qsCols(ctx, v['qs-group']), 'No statement ran in this range (or the plan cache and statements collections are off).')));
+    ...section('Query Stats', grid(rows, qsCols(ctx, s, v['qs-group']), 'No statement ran in this range (or the plan cache and statements collections are off).')));
 });
 
 const qsChartsView: Render = ctx => page(ctx, 'rp_qscharts', [], async (_v, s, out) => {
@@ -680,7 +715,7 @@ const qsChartsView: Render = ctx => page(ctx, 'rp_qscharts', [], async (_v, s, o
       lineChart('Duration (ms)', series, sr('duration_ms'), x => fmtNum(x), { marks: false }),
       lineChart('Logical Reads', series, sr('logical_reads'), x => fmtNum(x), { marks: false })),
     el('div', { class: 'charts donuts' }, ringChart('Top queries by CPU', slice('cpu_ms'), x => fmtNum(x) + ' ms', 10), ringChart('Top queries by duration', slice('duration_ms'), x => fmtNum(x) + ' ms', 10)),
-    ...section('Top queries', grid(top, qsCols(ctx, 'query'), 'No statement ran in this range.')));
+    ...section('Top queries', grid(top, qsCols(ctx, s, 'query'), 'No statement ran in this range.')));
 });
 
 // ---- Recycle Bin (the root only)

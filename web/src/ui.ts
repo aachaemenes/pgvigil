@@ -321,7 +321,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   // stay for a screen reader and the proofs
   const rw = readWindowOf(rows);
   if (rows.length === 0) return el('div', { class: 'empty-grid', tabindex: '0', role: 'group', 'aria-label': 'Empty grid: ' + empty }, ...(rw ? [readWindowNote(rw)] : []),
-    el('table', { class: 'grid-empty', 'aria-hidden': 'true' }, el('thead', {}, el('tr', {}, ...cols.map(c => el('th', {}, el('span', { class: 'th-label' }, c.label ?? c.key)))))),
+    el('table', { class: 'grid-empty', 'aria-hidden': 'true' }, el('thead', {}, el('tr', {}, ...cols.map(c => el('th', c.title ? { title: c.title } : {}, el('span', { class: 'th-label' }, c.label ?? c.key)))))),
     el('p', { class: 'empty visually-hidden', 'data-cols': JSON.stringify(cols.map(c => c.label ?? c.key)) }, empty));
   let sortKey = '', asc = true;
   let shown = rows;
