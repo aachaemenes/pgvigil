@@ -181,9 +181,16 @@ SELECT inst.instance_id, inst.instance, inst.az_server AS server, g.edition, g.s
             WHEN fs.max_size_mb IS NULL THEN 'no max size'
             WHEN fs.allocated_mb > 0.9 * fs.max_size_mb THEN 'critical'
             WHEN fs.allocated_mb > 0.8 * fs.max_size_mb THEN 'warning'
-            ELSE 'ok' END AS pctmax_status, fs.files_read_at
+            ELSE 'ok' END AS pctmax_status, fs.files_read_at,
+       rr.replica_role, coalesce(rr.replica_role, 0) > 0 AS read_only
   FROM inst
   LEFT JOIN pgvigil.mssql_azuredb_governance g ON g.instance_id = inst.instance_id
+  -- the replica role of the database's newest stored minute (0145: 0 primary, 1 high-availability secondary, 2
+  -- geo-replication forwarder, 3 named replica): a database read through a read-only connection reports its primary's
+  -- server and database names (DBA Dash's '(read-only)' node, issue #2047; P25 finding L109)
+  LEFT JOIN pgvigil.mssql_azuredb_read rd ON rd.instance_id = inst.instance_id
+  LEFT JOIN LATERAL (SELECT m.replica_role FROM pgvigil.mssql_azuredb_minute m
+                      WHERE m.instance_id = inst.instance_id AND m.snapshot_at = rd.newest_minute) rr ON true
   LEFT JOIN w ON w.instance_id = inst.instance_id
   LEFT JOIN LATERAL (
     SELECT count(*) AS gaps, coalesce(round(sum(extract(epoch FROM least(x.gap_to, $2) - greatest(x.gap_from, $1)) / 60)), 0) AS gap_minutes

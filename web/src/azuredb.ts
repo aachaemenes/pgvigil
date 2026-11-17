@@ -175,7 +175,12 @@ export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTML
       'against their max size (DBA Dash\'s % Max Size: warning over 80 %, critical over 90 %; stale when the files were read over 3 hours ago). ' +
       'Sorted as DBA Dash sorts it, the most unused DTUs first. The four histograms are DBA Dash\'s: the window\'s samples in ten 10 % buckets, ' +
       'beside the share at 70 % and over. Not as DBA Dash: a long window reads its built hours and its edge minutes (the minutes\' numbers exactly; DBA Dash rounds a window over a day to hours).'));
-  const name = (v: unknown, r: Row) => el('a', { href: href(ctx, { instance: Number(r.instance_id), tag: undefined, tab: 'mssqlazure' }) }, String(v));
+  // a read-only replica (its newest minute's replica_role over 0) reports its primary's names: DBA Dash's '(read-only)',
+  // the role in words on its title (P25 finding L109)
+  const roles: Record<string, string> = { '1': 'a high-availability replica', '2': 'a geo-replication forwarder', '3': 'a named replica' };
+  const name = (v: unknown, r: Row) => el('a', { href: href(ctx, { instance: Number(r.instance_id), tag: undefined, tab: 'mssqlazure' }),
+    ...(r.read_only ? { title: `Read through a read-only connection: ${roles[String(r.replica_role)] ?? 'a replica'} (replica role ${String(r.replica_role)})` } : {}) },
+    String(v) + (r.read_only ? ' (read-only)' : ''));
   sec.append(grid(rows, [
     { key: 'instance', label: 'database (instance)', fmt: name }, { key: 'service_objective', label: 'tier', fmt: (v, r) => v == null ? (r.tier_read ? '' : el('span', { class: 'meta' }, 'not read')) : el('a', { href: '#azure-slo', title: 'its changes: Service Objectives below' }, String(v)) },
     n('dtu_limit', 'DTUs'), n('cpu_limit', 'vCores'),

@@ -103,6 +103,9 @@
 --    called as azureFolder(ctx, 'r/azure', 0, rootScope) in draw()'s out list and azureFolder(ctx, `t:${fo.path.replace(/\/$/, '')}/azure`,
 --    1, fo.tag) after a top-level tag folder's scopeFolders. A database whose server is not read yet (no pool member row,
 --    no @@SERVERNAME read, no tier row) sits under the folder itself, never under a made-up server.
+--    AMENDED (the read-replica node, the lead 10:4x): part=databases gives read_only and replica_role; a read-only
+--    replica's leaf reads String(r.instance) + ' (read-only)' (DBA Dash's label, issue #2047) beside its primary in the
+--    same server and pool folder, its title the role in words as azuredb.ts's database cell writes it.
 --    The pages' routes are scripts/PARITY-S3-wiring.patch's (line 6, re-cut for task 7).
 
 -- 9. 0395 (P25 task 9b, Pool history; the number the lead's 09:09 / 09:18) creates only its own objects. At the join:
