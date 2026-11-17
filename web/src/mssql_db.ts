@@ -8,7 +8,8 @@ import { performanceView } from './performance';
 import { mssqlFilesView } from './mssql_storage';
 import { mssqlQueryStoreView } from './mssql_querystore';
 import { dbSpaceView } from './drives';
-import { el } from './ui';
+import { get, rowsOf, Table } from './api';
+import { badge, el, grid } from './ui';
 
 export const mssqlDbTab = 'mssqldb';
 
@@ -25,6 +26,21 @@ export const mssqlDbLink = (ctx: Ctx, db: string, tab?: string, instance = ctx.i
 
 // the Query Store page's view for each of DBA Dash's Query Store tabs (mssql_querystore.ts: qs=, qdb= on the hash)
 const qsViews: Record<string, string> = { qs: 'state', topqueries: 'top', forcedplans: 'forced', tuning: 'tuning' };
+
+// dbOptions: one database's options (DBA Dash's DB Options: the database's row of the instance's option grid,
+// /api/mssql/checks part=databases cut by db=), each option a row with the value read and a deviation's status
+async function dbOptions(ctx: Ctx, db: string): Promise<HTMLElement> {
+  const [d, c] = await Promise.all([
+    get<{ databases: Table | null }>('mssql/checks', { instance: ctx.instance, part: 'databases', db }),
+    get<{ columns: Table | null }>('mssql/checks', { instance: ctx.instance, part: 'columns' })]);
+  const row = rowsOf(d.databases)[0];
+  if (!row) return el('p', { class: 'empty' }, `No option read for ${db}: the mssql_checks collection reads sys.databases hourly.`);
+  const opts = (row.options ?? {}) as Record<string, unknown>, dev = (row.deviations ?? {}) as Record<string, { status?: string }>;
+  const rows = rowsOf(c.columns).map(k => ({ option: String(k.label), value: opts[String(k.key)] ?? '', best: String(k.best ?? ''), status: dev[String(k.key)]?.status ?? '' }));
+  return el('div', {}, el('p', { class: 'meta' }, `state ${String(row.state ?? '')}; read ${String(row.snapshot_at ?? '')}`),
+    grid(rows, [{ key: 'option' }, { key: 'value' }, { key: 'best', label: 'expected' },
+      { key: 'status', label: 'check', fmt: v => v ? badge(String(v), v === 'critical' ? 'crit' : 'warn') : '' }], 'No option column.'));
+}
 
 export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
   const db = hashParam('db');
@@ -43,6 +59,9 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
     case 'files':
       // the instance's Database files page reads db= by itself (mssql_storage.ts)
       body = await mssqlFilesView(ctx);
+      break;
+    case 'dboptions':
+      body = await dbOptions(ctx, db);
       break;
     case 'dbspace':
       // the instance's DB Space read with db= (/api/dbspace: this database's row and its own history)

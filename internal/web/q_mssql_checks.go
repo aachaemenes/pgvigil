@@ -59,7 +59,7 @@ SELECT b.*, i.server_version AS product_version
 const sqlMSSQLChecksDatabases = `
 SELECT d.database_name, d.database_id, d.state, d.is_system, d.is_snapshot, d.options, d.deviations, d.is_present, d.snapshot_at
   FROM pgvigil.mssql_database_option d
- WHERE d.instance_id = $1
+ WHERE d.instance_id = $1 AND ($2::text = '' OR d.database_name = $2::text)
  ORDER BY d.is_present DESC, d.is_system DESC, lower(d.database_name)`
 
 const sqlMSSQLChecksColumns = `
@@ -149,7 +149,7 @@ func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
 		{"flags", sqlMSSQLChecksFlags, []any{id}},
 		{"build", sqlMSSQLChecksBuild, []any{id}},
 		{"build_docs", sqlMSSQLChecksBuildDocs, []any{string(docs)}},
-		{"databases", sqlMSSQLChecksDatabases, []any{id}},
+		{"databases", sqlMSSQLChecksDatabases, []any{id, r.URL.Query().Get("db")}}, // db=: one database's row (P25 DB Options)
 		{"columns", sqlMSSQLChecksColumns, []any{cols}},
 		{"suspect", sqlMSSQLChecksSuspect, []any{id}},
 		{"alerts", sqlMSSQLChecksAlerts, []any{id}},
