@@ -30,11 +30,14 @@
 #     moment (try 1, 2026-11-17: 5000 MB for a Basic 50 eDTU pool, where Microsoft's limits page says 5 GB - never a
 #     constant here); az's own maxSizeBytes is printed beside it as a reading (Azure's resource and master may word the
 #     limit differently)
-#  L3 the pool rescaled to 100 eDTU AND 10 GB (Microsoft's DTU elastic pool limits: Basic 100 eDTU's max storage per
-#     pool is 10 GB; try 1's rescale with the pool's 5000 MB was refused, ElasticPoolCapacityStorageNotAllowedMB) - az
-#     read back: capacity 100; master's view shows elastic_pool_dtu_limit 100 within 20 minutes; the run then stores the
-#     change: the pool's DTU limits over its periods end 50 then 100 (a storage or CPU change on its own row splits a
-#     period too), the newest period's storage master's own figure then. An az refusal is a FAIL line and L4 / L5 run.
+#  L3 the pool rescaled to 100 eDTU AND its storage to 10000 MB, given in bytes (10000 x 1048576; az's --max-size counts
+#     bytes when no unit is given): Azure's own list (az sql elastic-pool list-editions --show-details max-size, read
+#     2026-11-17 from the lab's subscription, westus3) gives Basic 50 eDTU 5000 Megabytes and 100 eDTU 10000; try 1's
+#     rescale with the pool's 5000 MB was refused (ElasticPoolCapacityStorageNotAllowedMB) - az read back: sku.capacity
+#     100; master's view shows elastic_pool_dtu_limit 100 within 20 minutes; the run then stores the change: the pool's
+#     DTU limits over its periods end 50 then 100 (a storage or CPU change on its own row splits a period too), the
+#     newest period's storage master's own figure read just before or just after that run (a 15-second row may land
+#     between). An az refusal is a FAIL line and L4 / L5 run.
 #  L4 the second reading (the lead's Q1): dbmanager taken away, ##MS_DatabaseManager## given - three readings, none a
 #     FAIL: IS_ROLEMEMBER('dbmanager') as pgv_pool after up to 6 minutes (1 = the collector would read), the collector's
 #     own run, and pgv_pool's own SELECT on the view (its count beside the admin's: 0 while the admin sees rows =
@@ -42,7 +45,8 @@
 #  L5 the grant removed: no user for pgv_pool in master, in no master role, its server roles ##MS_ServerStateReader##
 #     alone (read back through sys.sql_logins, Microsoft's server-roles page example B: in try 1 a member join through
 #     sys.server_principals read 'none' in master); the store database dropped (read back in pg_database)
-# The pool stays at 100 eDTU until the lab's down: a second run on the same lab fails L2 (its newest period is 100).
+# After L3's rescale the pool stays at 100 eDTU until the lab's down: a second run on the same lab fails L2 (its newest
+# period is 100).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection in keyword form, no dbname}"
@@ -161,20 +165,25 @@ grep -qxF 'read back: 1' <<<"$B2" && [ "$RIGHT2" = 1 ] && [ "$S2" -gt 0 ] && [[ 
   && [ "$M2" -gt 0 ] && [ "$(echo "$P2" | tail -1 | cut -d'|' -f3-4)" = "50|$M2" ] && ok L2 \
   || bad "L2 (expected read back 1, the right 1, a 50-DTU row in master, ok, state read, the newest period 50 DTU with master's storage figure)"
 
-echo "== L3: the pool rescaled to 100 eDTU and 10 GB"
-# Basic 100 eDTU allows 10 GB only (Microsoft's DTU elastic pool limits); a refusal is this row's FAIL, never the run's end
+echo "== L3: the pool rescaled to 100 eDTU and 10000 MB"
+# Basic 100 eDTU's storage is 10000 MB (Azure's list-editions, read 2026-11-17), given in bytes so az converts nothing; a
+# refusal is this row's FAIL, never the run's end
+RESCALED=
 if "$AZ" sql elastic-pool update --subscription "$PGVIGIL_LAB_AZ_SUBSCRIPTION" -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_POOL" \
-     --capacity 100 --max-size 10GB -o none 2> "$WORK/l3.err"; then
-  CAP=$("$AZ" sql elastic-pool show --subscription "$PGVIGIL_LAB_AZ_SUBSCRIPTION" -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_POOL" --query capacity -o tsv 2>/dev/null) || CAP=
-  echo "   az read back: capacity ${CAP:-not read}; maxSizeBytes $(az_mb) MB"
+     --capacity 100 --max-size 10485760000 -o none 2> "$WORK/l3.err"; then
+  RESCALED=1
+  CAP=$("$AZ" sql elastic-pool show --subscription "$PGVIGIL_LAB_AZ_SUBSCRIPTION" -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_POOL" --query sku.capacity -o tsv 2>/dev/null) || CAP=
+  echo "   az read back: sku.capacity ${CAP:-not read}; maxSizeBytes $(az_mb) MB"
   S3=$(wait_rows 100); echo "   master's rows of the pool at 100 DTU: $S3"
+  M3A=$(master_mb)
   L3=$(run); echo "   $L3"; P3=$(periods); echo "$P3" | sed 's/^/   period /'
-  M3=$(master_mb); echo "   the storage limit: master's view $M3 MB"
+  M3B=$(master_mb); echo "   the storage limit: master's view $M3A MB before the run, $M3B MB after it"
   # the DTU limits over the periods, a run of one value once (a storage or CPU change on its own row splits a period too)
   DTUS=$(echo "$P3" | cut -d'|' -f3 | uniq | tail -2 | tr '\n' ' ')
   echo "   the DTU limits' last two values: $DTUS"
-  [ "$CAP" = 100 ] && [ "$S3" -gt 0 ] && [[ "$L3" == "ok|"* ]] && [ "$DTUS" = "50 100 " ] \
-    && [ "$M3" -gt 0 ] && [ "$(echo "$P3" | tail -1 | cut -d'|' -f3-4)" = "100|$M3" ] && ok L3 \
+  NEW3=$(echo "$P3" | tail -1 | cut -d'|' -f3-4)
+  [ "$CAP" = 100 ] && [ "$S3" -gt 0 ] && [[ "$L3" == "ok|"* ]] && [ "$DTUS" = "50 100 " ] && [ "$M3A" -gt 0 ] \
+    && { [ "$NEW3" = "100|$M3A" ] || [ "$NEW3" = "100|$M3B" ]; } && ok L3 \
     || bad "L3 (expected capacity 100, a 100-DTU row in master, ok, the DTU limits ending 50 then 100, the newest period with master's storage figure)"
 else
   bad "L3 (az refused the rescale: $(tr '\n' ' ' < "$WORK/l3.err" | cut -c1-300)) - L4 and L5 run on"
@@ -200,6 +209,7 @@ grep -qxF "$GRANT_GONE" "$WORK/l5.out" && ok L5 || bad "L5 (expected no user in 
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $STORE with (force)" >/dev/null && MADE_STORE=
 LEFT=$(psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "select count(*) from pg_database where datname = '$STORE'" || echo 'no answer')
 [ "$LEFT" = 0 ] && ok "L5 the store $STORE dropped (read back)" || bad "L5 (the store $STORE in pg_database: $LEFT)"
-echo "NOTE: the pool stays at 100 eDTU until the lab's down (a second run on this lab fails L2)"
+if [ -n "$RESCALED" ]; then echo "NOTE: the pool stays at 100 eDTU until the lab's down (a second run on this lab fails L2)"
+else echo "NOTE: the pool was not rescaled (L3 above): it stays at 50 eDTU until the lab's down"; fi
 echo "VERDICT: $VERDICT"
 [ "$VERDICT" = PASS ]
