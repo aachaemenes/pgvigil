@@ -2,6 +2,7 @@ package web
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -54,7 +55,8 @@ func TestExecPagesReview5Wired(t *testing.T) {
 		}
 	}
 	patch := read("../../scripts/PARITY-S3-wiring.patch")
-	if !strings.Contains(patch, "+export const pageKeys = ['db', 'rel', 'scheduler', 'job', 'idx', 'dbtab', 'fg', 'oesearch'];") {
+	// the line itself grows as pages add their keys (OBJ added obj, otab, fn): the row asks only that oesearch is one
+	if !regexp.MustCompile(`(?m)^\+export const pageKeys = \[[^\]\n]*'oesearch'[^\]\n]*\];$`).MatchString(patch) {
 		t.Error("PARITY-S3-wiring.patch's pageKeys has no 'oesearch' (a range change drops the tree's search)")
 	}
 }
