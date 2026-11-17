@@ -294,7 +294,8 @@
 //                     b24b74a1. Batch 6 (07:1x): demo-onprem-erp01's Jobs page, its Running now grid (5 labels) - red
 //                     on 66aa081f. Batch 8 (07:1x): the root's Deadlocks report (3 labels; Graph on both of its
 //                     grids) and DB Space at the root (name) and on erp01 / sql01 (database), allocated and used in any
-//                     unit ('allocated (*)') - red on 28eb10d3.
+//                     unit ('allocated (*)') - red on 28eb10d3. Batch 9 (07:1x): sql01's Checks page, its identity
+//                     view (#/mssqlchecks?cv=identity, 6 labels) - red on addc72fa.
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1849,13 +1850,17 @@ const L20 = [
   ['rp_deadlocks', ['root'], ['Graph', 'Victim Procedure', 'Procedure']],
   ['dbspace', ['root'], ['name', 'allocated (*)', 'used (*)']],
   ['dbspace', ['pg', 'ms'], ['database', 'allocated (*)', 'used (*)']],
+  // batch 9: Identity Columns (DBA Dash's IdentityColumnsView) on sql01's Checks page, its identity view (a route may
+  // carry its own query: 'page?x=y')
+  ['mssqlchecks?cv=identity', ['ms'], ['type', '% used', 'last value', 'limit', 'per day', 'days left']],
 ];
 const msWord = /SQL Server|\bsys\.|DBCC|T-SQL|default trace|msdb|query hash|plan cache/i;
 const sqlId20 = idOf('demo-onprem-sql01');
 for (const [route, scopes, labels, heading] of L20) for (const sc of scopes) {
   const name = `H-title ${route}${heading ? ` (${heading})` : ''} ${sc}`;
   await guard(name, async () => {
-    await go(`#/${route}${sc === 'pg' ? `?i=${erpId}` : sc === 'ms' ? `?i=${sqlId20}` : ''}`); await sleep(1500);
+    const [page, own] = route.split('?'), qs = [sc === 'pg' ? `i=${erpId}` : sc === 'ms' ? `i=${sqlId20}` : '', own ?? ''].filter(Boolean);
+    await go(`#/${page}${qs.length ? '?' + qs.join('&') : ''}`); await sleep(1500);
     // every header cell of the page's grids, drawn or empty: its label and its title
     // a heading: the first grid after that h3, before the next h2 / h3 (a line or a picker may stand between them)
     const tables = heading ? `(() => { let n = [...document.querySelectorAll('main h3')].find(h => h.textContent.trim().startsWith(${JSON.stringify(heading)}))?.nextElementSibling;
