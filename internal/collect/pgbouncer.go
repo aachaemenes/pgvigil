@@ -33,7 +33,8 @@ import (
 //	pool      database, user, cl_active, cl_waiting, sv_active, sv_idle, sv_used, sv_tested, sv_login, maxwait_ms,
 //	          pool_mode, pool_size, pool_size_from (the user's own size from SHOW USERS where set, else SHOW DATABASES')
 //	stats     database, xact_rate, query_rate (per second, PgBouncer's own averages over its stats_period),
-//	          avg_wait_us, avg_query_us, total_xact_count, total_query_count, total_wait_us
+//	          avg_wait_us, avg_query_us, total_xact_count, total_query_count, total_wait_us, avg_recv / avg_sent
+//	          (bytes per second, the same averages: the pooler page's traffic chart, set 2's task 4)
 //	database  name, host, port, database, pool_size, min_pool_size, reserve_pool, pool_mode, max_connections,
 //	          current_connections, paused, disabled
 //	config    key, value, changeable
@@ -367,7 +368,7 @@ func pgBouncerRows(version any, pools, stats, dbs, users, conf []map[string]any)
 		out = append(out, Row{"kind": "stats", "database": db, "xact_rate": bInt(s["avg_xact_count"]),
 			"query_rate": bInt(s["avg_query_count"]), "avg_wait_us": bInt(s["avg_wait_time"]), "avg_query_us": bInt(s["avg_query_time"]),
 			"total_xact_count": bInt(s["total_xact_count"]), "total_query_count": bInt(s["total_query_count"]),
-			"total_wait_us": bInt(s["total_wait_time"])})
+			"total_wait_us": bInt(s["total_wait_time"]), "avg_recv": bInt(s["avg_recv"]), "avg_sent": bInt(s["avg_sent"])})
 	}
 	for _, c := range conf {
 		key := bText(c["key"])

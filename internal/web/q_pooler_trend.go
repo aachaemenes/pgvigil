@@ -5,7 +5,7 @@ package web
 // (SHOW STATS per database, summed per read). scripts/proof-pmrows.sh pins the answer:
 //   tps = sum(xact_rate), qps = sum(query_rate), avg_query_ms = sum(avg_query_us x query_rate) / sum(query_rate) / 1000,
 //   avg_wait_ms the same weighted by xact_rate (null when the weight is 0), recv_bps / sent_bps = sum(avg_recv) /
-//   sum(avg_sent) - null until the traffic is stored (task 4's migration)
+//   sum(avg_sent) - SHOW STATS' bytes per second, stored from 0363 (task 4); null on a read before it
 
 import (
 	"context"
@@ -20,8 +20,8 @@ SELECT snapshot_at,
        sum(query_rate)::float8 AS qps,
        sum(avg_query_us::float8 * query_rate) / nullif(sum(query_rate), 0) / 1000 AS avg_query_ms,
        sum(avg_wait_us::float8 * xact_rate) / nullif(sum(xact_rate), 0) / 1000 AS avg_wait_ms,
-       NULL::float8 AS recv_bps,
-       NULL::float8 AS sent_bps
+       sum(avg_recv)::float8 AS recv_bps,
+       sum(avg_sent)::float8 AS sent_bps
   FROM pgvigil.pooler_sample
  WHERE instance_id = $1 AND kind = 'stats' AND snapshot_at >= $2 AND snapshot_at < $3
  GROUP BY snapshot_at

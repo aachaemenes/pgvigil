@@ -13,7 +13,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { findingCols } from './memory';
-import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 import { sqlCell } from './sqlview';
 
 type PoolerParts = 'state' | 'pools' | 'series' | 'stats' | 'findings';
@@ -263,7 +263,11 @@ export async function pooler(ctx: Ctx): Promise<HTMLElement> {
         lineChart('Transactions / s', rows, [{ key: 'tps', label: 'transactions / s' }], fmtNum),
         lineChart('Queries / s', rows, [{ key: 'qps', label: 'queries / s' }], fmtNum),
         lineChart('Average query time', rows, [{ key: 'avg_query_ms', label: 'average query time' }], ms),
-        lineChart('Pool wait', rows, [{ key: 'avg_wait_ms', label: 'average wait for a server' }], ms)));
+        lineChart('Pool wait', rows, [{ key: 'avg_wait_ms', label: 'average wait for a server' }], ms),
+        // the traffic (set 2's task 6): SHOW STATS' bytes per second, stored from 0363 - a read before it holds none
+        tr.series.some(p => p.recv_bps != null || p.sent_bps != null)
+          ? lineChart('Traffic', rows, [{ key: 'recv_bps', label: 'bytes received / s' }, { key: 'sent_bps', label: 'bytes sent / s' }], v => `${fmtBytes(v)}/s`)
+          : el('p', { class: 'meta' }, 'Traffic: no read in this window holds SHOW STATS\' bytes received and sent (reads before this version store none).')));
     }
     sec.append(el('h3', {}, 'Rates (SHOW STATS)'),
       el('p', { class: 'meta' }, 'PgBouncer\'s own averages over its stats_period at the last read.'),
