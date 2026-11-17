@@ -162,8 +162,8 @@ func TestPGFunctionPageIsWired(t *testing.T) {
 		"+  dbinfo: dbinfoView, db: dbPage, table: tablePage, job: jobPage, index: indexPage, pgfunction: pgFunctionView,",
 		"mssqlobject: 'Object', pgfunction: 'Function' };",
 		"mssqlobject: 'mssqlprocs', pgfunction: 'statements' };",
-		"'obj', 'otab', 'fn']",
-		"'oesearch', 'obj', 'otab', 'fn'];",
+		"'obj', 'otab', 'fn', 'ocmp']",
+		"'oesearch', 'obj', 'otab', 'fn', 'ocmp'];",
 		"+	api.HandleFunc(\"GET /api/pgfunction\", s.PGFunction)",
 	} {
 		if !strings.Contains(patch, want) {
