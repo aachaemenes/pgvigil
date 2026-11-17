@@ -20,7 +20,8 @@ import { badge, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 
 export const mssqlDbTab = 'mssqldb';
 
-// the 13 tabs in DBA Dash's order; built: the ones this page cuts to the database
+// DBA Dash's database tabs in its order (Main.cs GetAllowedTabs; Service Broker and sp_DBPermissions P25 rows 73 / 75; its
+// Schema Snapshot tab of one object is a parity row); built: the ones this page cuts to the database
 const tabs: [string, string][] = [
   ['performance', 'Performance'], ['objexec', 'Object Execution'], ['querystats', 'Query Stats'], ['slow', 'Slow Queries'],
   ['files', 'Files'], ['snapshots', 'Snapshot Summary'], ['dbspace', 'DB Space'], ['dbconfig', 'DB Configuration'],
