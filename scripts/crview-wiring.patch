@@ -1,0 +1,120 @@
+diff --git i/internal/web/roles.go w/internal/web/roles.go
+index b50f9058..f0e38538 100644
+--- i/internal/web/roles.go
++++ w/internal/web/roles.go
+@@ -91,6 +91,7 @@ var routeWhat = map[string]string{
+ 	"POST /api/plans/analyze":               "running EXPLAIN ANALYZE",
+ 	"POST /api/plans/hypo":                  "trying a hypothetical index",
+ 	"POST /api/community/run":               "running a community tool",
++	"POST /api/customtools/run":             "running a custom tool",
+ 	"POST /api/reportmail/send":             "sending a report by mail",
+ 	"POST /api/reportmail/test":             "sending a test report mail",
+ 	"POST /api/admin/instances":             "changing an instance",
+diff --git i/internal/web/roles_test.go w/internal/web/roles_test.go
+index 4ded7ce2..9e1da12d 100644
+--- i/internal/web/roles_test.go
++++ w/internal/web/roles_test.go
+@@ -283,6 +283,7 @@ var (
+ 		"migrate.ts":         {"admin/dbadash_moves"},
+ 		"request.ts":         {"requests/{id}/cancel"},
+ 		"community.ts":       {"community/run"},
++		"customtools.ts":     {"customtools/run"},
+ 		"applications.ts":    {"admin/applications", "admin/applications/contacts", "admin/applications/assign", "admin/applications/routes"},
+ 		"app_import.ts":      {"admin/applications/import"},
+ 		"uptimedialog.ts":    {"pg/thresholds"},
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 6add356e..29f2c123 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -379,6 +379,9 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/community", s.Community)
+ 	s.post(api, "POST /api/community/params", needViewer, s.CommunityParams)
+ 	s.post(api, "POST /api/community/run", needOperator, s.CommunityRun)
++	// parity set 3 task 8: an instance's own tools (q_customtools.go), run as a community tool is
++	api.HandleFunc("GET /api/customtools", s.CustomTools)
++	s.post(api, "POST /api/customtools/run", needOperator, s.CustomToolRun)
+ 	s.post(api, "POST /api/community/glenn/parse", needViewer, s.CommunityGlennParse)
+ 	api.HandleFunc("GET /api/community/sample", s.CommunitySample)
+ 	// task CQ (487): a request of the queue - its state and its asker's result (wait up to 25 s), its cancel
+diff --git i/web/src/main.ts w/web/src/main.ts
+index fdedfc14..1e1b0ce6 100644
+--- i/web/src/main.ts
++++ w/web/src/main.ts
+@@ -108,6 +108,7 @@ import { reportPages } from './reports';
+ import { customReportsView } from './customreports';
+ import { agentsOn, investigationsView } from './investigate';
+ import { communityView } from './community';
++import { customToolsView } from './customtools';
+ import { instanceFrame } from './instheader';
+ 
+ type Render = (c: Ctx) => Promise<HTMLElement>;
+@@ -127,7 +128,7 @@ const mssqlPages: Record<string, Render> = {
+   mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlsecurity: mssqlSecurityView, mssqlchecks: mssqlChecksView,
+   schema: c => schemaView(c.instance!, c),   // A26-PG's tab (review B #4): the same page, its SQL Server reply (q_schema.go)
+   mssqlerrorlog: mssqlErrorLogView, mssqlerrors: mssqlErrorFleetView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
+-  customreports: customReportsView, community: communityView,
++  customreports: customReportsView, community: communityView, customtools: customToolsView,
+   ...reportPages,
+ };
+ // the SQL Server tabs whose own read says nothing when their collection was skipped on the instance (a platform rule
+@@ -201,7 +202,7 @@ const instancePages: Record<string, Render> = {
+   compare: compareView,
+   memory, pooler, audit: pgauditView, custom: customView, jobstimeline: jobsTimelineView,
+   connections: connectionsView, dbchanges: c => dbChangesView(c),
+-  customreports: customReportsView, community: communityView,
++  customreports: customReportsView, community: communityView, customtools: customToolsView,
+   ...reportPages,
+   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, pgtemp: pgTempView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, collectionhealth: collectionHealthView, collectionperf: collectionPerfView,
+ };
+diff --git i/web/src/needs.ts w/web/src/needs.ts
+index 6fe343a5..dc1f8ef1 100644
+--- i/web/src/needs.ts
++++ w/web/src/needs.ts
+@@ -41,6 +41,7 @@ export const routeNeeds = {
+   'mssql/indexes/fragmentation/cost': ['operator', 'reading the heap size before a fragmentation read'],
+   'mssql/indexes/fragmentation/cancel': ['operator', 'cancelling a fragmentation read'],
+   'community/run': ['operator', 'running a community tool'],
++  'customtools/run': ['operator', 'running a custom tool'],
+   'requests/{id}/cancel': ['operator', 'cancelling a queued request'],
+   'reportmail/send': ['operator', 'sending a report by mail'],
+   'reportmail/test': ['operator', 'sending a test report mail'],
+diff --git i/web/src/router.ts w/web/src/router.ts
+index 83cfc80f..af9d1e2c 100644
+--- i/web/src/router.ts
++++ w/web/src/router.ts
+@@ -99,7 +99,7 @@ export const instanceTabs: Record<string, string> = {
+   host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', pgbackups: 'Base backups', pgstate: 'Server state', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', audit: 'Audit', waits: 'Waits', waiting: 'Waiting backends', pg_deadlocks: 'Deadlocks', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom', jobstimeline: 'Jobs timeline', connections: 'Connections', dbchanges: 'New and dropped databases',
+   // the instance's Reports folder (reports.ts)
+   rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
+-  customreports: 'Custom reports', community: 'Community tools',
++  customreports: 'Custom reports', community: 'Community tools', customtools: 'Custom tools',
+   drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', collectionhealth: 'Collection Health', collectionperf: 'Collection Performance', pgtemp: 'Temp',
+ };
+ const legacy: Record<string, string> = { overview: 'checks' };
+@@ -156,7 +156,7 @@ export const instanceGroups: TabGroup[] = [
+   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'pgtemp', 'tables', 'driveperf', 'storage', 'dbinfo', 'dbchanges'] },
+   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobsreport', 'jobstimeline'] },
+   { key: 'perf', name: 'Performance', tabs: ['counters', 'host', 'io', 'load', 'connections', 'pooler'] },
+-  { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_pwage', 'rp_tables', 'customreports', 'community'] },
++  { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_pwage', 'rp_tables', 'customreports', 'community', 'customtools'] },
+ ];
+ // A SQL Server instance has its own pages (the engine of the instance chooses the tab set; a PostgreSQL page is
+ // never offered for it, and the other way round). Summary and Findings are shared: both read by instance.
+@@ -171,7 +171,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
+   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health', mssqlerrors: 'SQL Server errors',
+   // the instance's Reports folder (reports.ts)
+   rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
+-  customreports: 'Custom reports', community: 'Community tools',
++  customreports: 'Custom reports', community: 'Community tools', customtools: 'Custom tools',
+   drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', collectionhealth: 'Collection Health', collectionperf: 'Collection Performance',
+ };
+ export const mssqlInstanceGroups: TabGroup[] = [
+@@ -183,7 +183,7 @@ export const mssqlInstanceGroups: TabGroup[] = [
+   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'mssqlmaintenance', 'jobstimeline'] },
+   { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool', 'mssqlazure'] },
+   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqlerrors', 'mssqltrace', 'mssqlhealth'] },
+-  { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'customreports', 'community'] },
++  { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'customreports', 'community', 'customtools'] },
+ ];
+ export const isMssql = (engine: unknown) => engine === 'sqlserver';
+ export const tabsFor = (engine: unknown) => isMssql(engine) ? mssqlInstanceTabs : instanceTabs;
