@@ -76,7 +76,7 @@ func TestMSSQLDatabasePageIsWired(t *testing.T) {
 	}
 	oe := read("mssql_objexec.ts")
 	// oesearch= on the address presets the Search (the tree's object nodes link a procedure there: join line 3)
-	for _, w := range []string{"part: 'objects'", "['procedure', 'Procedures'], ['function', 'Functions'], ['trigger', 'Triggers']", "label: 'Period Time (sec)'", "label: 'Query Stats'", "label: 'Query Store'", "hashParam('oesearch')"} {
+	for _, w := range []string{"part: 'objects'", "['P', 'Procedure'], ['TR', 'Trigger'], ['PC', 'CLR Procedure'], ['TA', 'CLR Trigger'], ['FN', 'Scalar Function'], ['X', 'Extended Stored Procedure']", "label: 'Period Time (sec)'", "label: 'Query Stats'", "label: 'Query Store'", "hashParam('oesearch')"} {
 		if !strings.Contains(oe, w) {
 			t.Errorf("mssql_objexec.ts has no %q", w)
 		}
