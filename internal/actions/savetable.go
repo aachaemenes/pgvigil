@@ -72,6 +72,12 @@ func (p pgSave) Write(ctx context.Context, t savetable.Target, cols []savetable.
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	return writeTx(ctx, tx, create, t, cols, rows)
+}
+
+// writeTx is the write inside its transaction, on a pgx.Tx so a unit row can record every statement it sends
+// (review-31 part B B1): SET LOCAL, the CREATE, the COPY of the one quoted target, the commit.
+func writeTx(ctx context.Context, tx pgx.Tx, create string, t savetable.Target, cols []savetable.Col, rows [][]any) (int64, error) {
 	// again inside the transaction: a pooler in front of actions_dsn may drop the connection's startup settings, and
 	// the CREATE TABLE's types must resolve in pg_catalog whatever the database's own search_path says (SF2)
 	if _, err := tx.Exec(ctx, `SET LOCAL search_path = pg_catalog`); err != nil {
