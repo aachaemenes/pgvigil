@@ -171,6 +171,36 @@ SELECT inst.instance_id, inst.instance, g.edition, g.service_objective, g.pool,
  WHERE inst.platform = 'azuresqldb'
  ORDER BY w.unused_dtu DESC NULLS LAST, inst.instance`
 
+// avgW: one figure's average over the minutes, each weighed by its 15-second samples (0128's rule)
+func avgW(col string) string {
+	return "round(sum(w." + col + " * w.samples) / nullif(sum(w.samples) FILTER (WHERE w." + col + " IS NOT NULL), 0), 2)"
+}
+
+// sqlAzurePools: the Azure Summary's Elastic Pool grid (P25 task 8, DBA Dash's): each elastic pool one of the scope's
+// Azure SQL Databases belongs to (mssql_pool_member), once - how many of its databases pgvigil reads in the scope,
+// and over the window its minutes' figures (0128: an average weighs each minute by its samples, a maximum is the
+// largest) and its storage as last read. $1 / $2 the window, $3 / $4 sqlPerfScope's engine and tag.
+var sqlAzurePools = sqlPerfScope + `, mp AS (
+  SELECT m.server, m.pool, count(*) AS databases
+    FROM pgvigil.mssql_pool_member m JOIN inst ON inst.instance_id = m.instance_id
+   GROUP BY 1, 2
+), w AS (
+  SELECT pm.* FROM pgvigil.mssql_pool_minute pm JOIN mp USING (server, pool)
+   WHERE pm.snapshot_at >= $1 AND pm.snapshot_at < $2
+)
+SELECT mp.server, mp.pool, mp.databases, count(w.snapshot_at) AS minutes,
+       ` + avgW("avg_cpu_percent") + ` AS avg_cpu_percent, max(w.max_cpu_percent) AS max_cpu_percent,
+       ` + avgW("avg_data_io_percent") + ` AS avg_data_io_percent, max(w.avg_data_io_percent) AS max_data_io_percent,
+       ` + avgW("avg_log_write_percent") + ` AS avg_log_write_percent, max(w.avg_log_write_percent) AS max_log_write_percent,
+       ` + avgW("avg_edtu_percent") + ` AS avg_edtu_percent, max(w.avg_edtu_percent) AS max_edtu_percent,
+       max(w.max_worker_percent) AS max_worker_percent, max(w.max_session_percent) AS max_session_percent,
+       (array_agg(w.used_storage_percent ORDER BY w.snapshot_at DESC) FILTER (WHERE w.snapshot_at IS NOT NULL))[1] AS used_storage_percent,
+       (array_agg(w.allocated_storage_percent ORDER BY w.snapshot_at DESC) FILTER (WHERE w.snapshot_at IS NOT NULL))[1] AS allocated_storage_percent,
+       max(w.snapshot_at) AS last_minute
+  FROM mp LEFT JOIN w USING (server, pool)
+ GROUP BY mp.server, mp.pool, mp.databases
+ ORDER BY max(w.avg_edtu_percent) DESC NULLS LAST, max(w.max_cpu_percent) DESC NULLS LAST, mp.server, mp.pool`
+
 // AzureDBSummary is GET /api/azuredb/summary?[from=&to=][&tag=]: the fleet's Azure SQL Databases (DBA Dash's Azure
 // Summary).
 func (s *Server) AzureDBSummary(w http.ResponseWriter, r *http.Request) {
@@ -183,5 +213,6 @@ func (s *Server) AzureDBSummary(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("tag"); v != "" {
 		tag = v
 	}
-	s.multiPart(w, r, []part{{"databases", sqlAzureDBFleet, []any{from, to, "sqlserver", tag}}})
+	s.multiPart(w, r, []part{{"databases", sqlAzureDBFleet, []any{from, to, "sqlserver", tag}},
+		{"pools", sqlAzurePools, []any{from, to, "sqlserver", tag}}}) // P25 task 8: the Elastic Pool grid
 }
