@@ -226,3 +226,30 @@ func TestPgBouncerConnCap(t *testing.T) {
 		t.Errorf("the waits kept: first %v, last %v; want 1200 .. 206", kept[5]["wait_us"], kept[999]["wait_us"])
 	}
 }
+
+// Set 2's task 4 (L47's traffic chart): the stats row carries SHOW STATS' avg_recv / avg_sent (bytes per second,
+// PgBouncer's own averages over its stats_period) as avg_recv / avg_sent; a console row without them leaves them nil.
+func TestPgBouncerTraffic(t *testing.T) {
+	num := func(n int64) pgtype.Numeric { return pgtype.Numeric{Int: big.NewInt(n), Valid: true} }
+	stats := []map[string]any{
+		{"database": "app", "avg_xact_count": num(12), "avg_recv": num(2048), "avg_sent": num(8192)},
+		{"database": "old", "avg_xact_count": num(1)},
+		{"database": "txt", "avg_recv": "300", "avg_sent": "700"}, // a console that answers in text
+	}
+	got := map[string]Row{}
+	for _, r := range pgBouncerRows("PgBouncer 1.24.1", nil, stats, nil, nil, nil) {
+		if r["kind"] == "stats" {
+			got[r["database"].(string)] = r
+		}
+	}
+	for db, want := range map[string][2]any{"app": {int64(2048), int64(8192)}, "old": {nil, nil}, "txt": {int64(300), int64(700)}} {
+		r := got[db]
+		if r == nil {
+			t.Errorf("%s: no stats row", db)
+			continue
+		}
+		if r["avg_recv"] != want[0] || r["avg_sent"] != want[1] {
+			t.Errorf("%s: avg_recv %#v avg_sent %#v, want %#v %#v", db, r["avg_recv"], r["avg_sent"], want[0], want[1])
+		}
+	}
+}
