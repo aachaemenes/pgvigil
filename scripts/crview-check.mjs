@@ -621,14 +621,14 @@ await guard('CR-pointdrill', async () => {
   const v = await ev(`(() => { const p = document.querySelector('main .cr-chart svg circle[data-row]'); if (!p) return null; p.dispatchEvent(new MouseEvent('click', { bubbles: true })); return p.dataset.row; })()`);
   await sleep(1200);
   const h = await ev('location.hash');
-  check('CR-pointdrill', v !== null && h.includes(`report=${tgt.id}`) && /[?&]v=\d/.test(h), `a point (row ${v}) clicked: ${h}`);
+  check('CR-pointdrill', v !== null && h.includes(`report=${tgt.id}`) && /[?&]p\.v=\d/.test(h), `a point (row ${v}) clicked: ${h}`);   // p.<name>: the page's address of a parameter
 });
 await guard('CR-chartopts', async () => {
   const s = await addReport({ name: `cr-co-${Date.now()}`, engine: 'store', body: chartSQL, params: [{ name: 'hide', type: 'text', label: 'hide', default: '' }],
     charts: [{ type: 'Line', set: 0, x: 't', metrics: ['v'], x_range: true, overlay: { set: 0, metric: 'v' }, hidden_when: 'hide' }] });
   await openReport(s.id); await sleep(1500);
   const c = await ev(`(() => { const c = document.querySelector('main .cr-chart'); return c ? { range: c.dataset.xRange ?? '', series: c.querySelectorAll('svg .series').length } : null; })()`);
-  await go(`#/customreports?report=${s.id}&hide=yes`); await sleep(1500);
+  await go(`#/customreports?report=${s.id}&p.hide=yes`); await sleep(1500);   // p.<name>: the page's address of a parameter
   const hidden = await ev(`!document.querySelector('main .cr-chart') || document.querySelector('main .cr-chart').hidden`);
   check('CR-chartopts', !!c && c.range === 'window' && c.series >= 2 && hidden, `the chart ${JSON.stringify(c)} (X bound to the window, the overlay a second series); hidden with hide set ${hidden}`);
 });
