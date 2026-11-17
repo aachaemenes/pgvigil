@@ -151,6 +151,10 @@ back to before them).
 3. Have the repository owner's connection string at hand (the login that ran the first `pgvigil migrate`). The
    service's own env file holds the collector's login, which cannot migrate.
 
+An upgrade starts from a tagged release. A repository first migrated by an untagged build (the main branch between two
+tags) is made fresh, not upgraded: a migration file added since the last tag may still change in place until the next
+tag, and a file the repository has already recorded is never run again.
+
 ## The steps (Linux, the systemd service)
 
 As root on the host that runs the collector. `OWNER_DSN` is the owner's connection string.
