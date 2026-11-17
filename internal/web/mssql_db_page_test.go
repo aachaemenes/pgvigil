@@ -75,7 +75,8 @@ func TestMSSQLDatabasePageIsWired(t *testing.T) {
 		t.Error("mssql_procs.ts: the instance's Procedures page has no Object Execution grid")
 	}
 	oe := read("mssql_objexec.ts")
-	for _, w := range []string{"part: 'objects'", "['procedure', 'Procedures'], ['function', 'Functions'], ['trigger', 'Triggers']", "label: 'Period Time (sec)'", "label: 'Query Stats'", "label: 'Query Store'"} {
+	// oesearch= on the address presets the Search (the tree's object nodes link a procedure there: join line 3)
+	for _, w := range []string{"part: 'objects'", "['procedure', 'Procedures'], ['function', 'Functions'], ['trigger', 'Triggers']", "label: 'Period Time (sec)'", "label: 'Query Stats'", "label: 'Query Store'", "hashParam('oesearch')"} {
 		if !strings.Contains(oe, w) {
 			t.Errorf("mssql_objexec.ts has no %q", w)
 		}
