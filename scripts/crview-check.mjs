@@ -525,9 +525,104 @@ await guard('G-tipcap', async () => {
   check('G-tipcap', t1.length === 1003 && t1.endsWith('...') && t2.length === 203, `the title ${t1.length} characters (want 1,000 + '...'); with the setting at 200: ${t2.length}`);
 });
 
-const notYet = [
-  'task 8 custom tools', 'task 9 the PM rows', 'task 10 the charts'];
-for (const g of notYet) check(g, false, 'its cases are not written yet (task 1)');
+// ---- task 8: custom tools - an instance's own functions / procedures in its schema pgvigil_tools (a DBA's opt-in:
+// proof-crview.sh makes pgvigil_tools.cr_echo(n int) on the PostgreSQL instance) listed and run as tools
+await guard('CR-tools', async () => {
+  const id = await idByName(crPg);
+  await go(`#/customtools?i=${id}`); await sleep(800);
+  const listed = await ev(`[...document.querySelectorAll('main table.grid tbody tr')].map(tr => tr.textContent).some(t => t.includes('cr_echo'))`);
+  const opened = await ev(`(() => { const a = [...document.querySelectorAll('main a')].find(x => x.textContent.trim() === 'cr_echo'); if (!a) return false; a.click(); return true; })()`);
+  await sleep(800);
+  await ev(`(() => { const i = document.querySelector('main [aria-label=n]'); if (i) { i.value = '5'; i.dispatchEvent(new Event('input', { bubbles: true })); } })()`);
+  await clickButton('Run'); await sleep(2000);
+  const got = await ev(`document.querySelector('main table.grid tbody td')?.textContent.trim() ?? ''`);
+  const role = await ev(`/waits on D1|role per tool/i.test(document.querySelector('main')?.textContent ?? '')`);
+  check('CR-tools', listed && opened && got === '5' && role, `cr_echo listed ${listed}, opened ${opened}, its run with n = 5 drew '${got}'; the role per tool said open (D1) ${role}`);
+});
+
+// ---- task 9: the PM rows (PostgreSQL, on the demo's first PostgreSQL instance)
+const pgDemo = async () => (await instances()).find(r => r.engine !== 'sqlserver' && /^demo-/.test(String(r.name)))?.instance_id;
+const section = async (h, cols) => ev(`(() => { const t = [...document.querySelectorAll('main h3, main h2')].find(x => x.textContent.trim().startsWith(${JSON.stringify(h)})); if (!t) return null;
+  let g = t.nextElementSibling; while (g && !g.matches('table.grid') && !g.querySelector('table.grid')) g = g.nextElementSibling; const tb = g?.matches('table.grid') ? g : g?.querySelector('table.grid');
+  return { heads: [...(tb?.querySelectorAll('thead th') ?? [])].map(x => x.textContent.trim()), rows: tb?.querySelectorAll('tbody tr').length ?? 0, want: ${JSON.stringify(cols)} }; })()`);
+const hasCols = s => !!s && s.want.every(c => s.heads.includes(c)) && s.rows > 0;
+await guard('PM-vacthr', async () => {
+  await go(`#/vacuum?i=${await pgDemo()}`); await sleep(1200);
+  const s = await section('Where the thresholds are', ['table', 'dead rows', 'vacuum at', 'changed rows', 'analyze at']);
+  check('PM-vacthr', hasCols(s), `the section ${JSON.stringify(s)}`);
+});
+await guard('PM-headroom', async () => {
+  await go(`#/vacuum?i=${await pgDemo()}`); await sleep(1200);
+  const s = await section('Per-database headroom', ['database', 'xid headroom', 'multixact headroom']);
+  check('PM-headroom', hasCols(s), `the section ${JSON.stringify(s)}`);
+});
+await guard('PM-iosummary', async () => {
+  await go(`#/iosummary?i=${await pgDemo()}`); await sleep(1200);
+  const s = await section('I/O Summary', ['backend type', 'object', 'context', 'reads', 'writes', 'read time', 'write time']);
+  check('PM-iosummary', hasCols(s), `the page ${JSON.stringify(s)}`);
+});
+
+// ---- task 10: the charts (a report's charts: [{ type, set, x, metrics, series, ... }])
+const chartMarks = () => ev(`[...document.querySelectorAll('main .cr-chart')].map(c => ({ type: c.dataset.type ?? '', marks: c.querySelectorAll('svg path, svg rect, svg circle').length }))`);
+const chartSQL = "SELECT now() - make_interval(mins => g) AS t, (g % 7)::int AS v, (g % 2)::text AS s FROM generate_series(1, 20) g";
+await guard('CR-addchart', async () => {
+  const types = ['StackedArea', 'StackedColumn', 'Column', 'Line', 'Pie', 'Scatter'];
+  const got = {};
+  for (const type of types) {
+    await runStore({ name: `cr-ch-${type}-${Date.now()}`, body: chartSQL, charts: [{ type, set: 0, x: type === 'Pie' ? 's' : 't', metrics: ['v'], series: type === 'Pie' ? '' : 's' }] });
+    got[type] = (await chartMarks())[0] ?? null;
+  }
+  await go(`#/customreports?new=1`); await sleep(600);
+  const offered = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === 'Add Chart'); if (!b) return null; b.click(); return [...(document.querySelector('dialog[open] [aria-label="Chart type"]')?.options ?? [])].map(o => o.value); })()`);
+  await closeDialogs();
+  check('CR-addchart', types.every(t => got[t]?.type === t && got[t].marks > 0) && JSON.stringify(offered) === JSON.stringify(types), `drawn ${JSON.stringify(got)}; Add Chart offers ${JSON.stringify(offered)}`);
+});
+await guard('CR-syschart', async () => {
+  const s = await addReport({ name: `cr-sys-${Date.now()}`, engine: 'postgres', body: 'SELECT 1 AS one' });
+  await openReport(s.id, await idByName(crPg));
+  const offered = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === 'Add System Chart'); if (!b) return null; b.click(); return [...document.querySelectorAll('.tm-menu button, .menu button')].map(x => x.textContent.trim()); })()`);
+  const added = await clickItem('CPU'); await sleep(1500);
+  const drawn = (await chartMarks()).some(c => c.type === 'system:cpu' && c.marks > 0);
+  const saved = await clickButton('Save System Chart State'); await sleep(600); await openReport(s.id, await idByName(crPg)); await sleep(1500);
+  const kept = (await chartMarks()).some(c => c.type === 'system:cpu');
+  check('CR-syschart', !!offered && ['CPU', 'Waits', 'IO', 'Blocking'].every(x => offered.includes(x)) && added && drawn && saved && kept, `offered ${JSON.stringify(offered)}; CPU added ${added}, drawn ${drawn}; saved ${saved}, kept after a reload ${kept}`);
+});
+await guard('CR-chartlayout', async () => {
+  const s = await runStore({ name: `cr-cl-${Date.now()}`, body: chartSQL, charts: [{ type: 'Line', set: 0, x: 't', metrics: ['v'] }, { type: 'Column', set: 0, x: 't', metrics: ['v'] }] });
+  const lay = await pick('Chart Layout', 'columns'), loc = await pick('Chart Location', 'left'); await sleep(400);
+  const shape = await ev(`(() => { const p = document.querySelector('main .cr-charts'); return p ? { layout: p.dataset.layout, location: p.dataset.location } : null; })()`);
+  const del = await clickButton('Delete All Charts'); await sleep(300);
+  const confirm = await ev(`(() => { const d = document.querySelector('dialog[open]'); const b = d && [...d.querySelectorAll('button')].find(x => /^Delete/.test(x.textContent.trim())); if (!b) return false; b.click(); return true; })()`);
+  await sleep(800); await openReport(s.id); await sleep(1500);
+  const left = (await chartMarks()).length;
+  check('CR-chartlayout', lay && loc && shape?.layout === 'columns' && shape?.location === 'left' && del && confirm && left === 0, `layout ${lay}, location ${loc}: ${JSON.stringify(shape)}; Delete All Charts ${del} + confirm ${confirm}; charts after a reload ${left}`);
+});
+await guard('CR-chartmenu', async () => {
+  await runStore({ name: `cr-cm-${Date.now()}`, body: chartSQL, charts: [{ type: 'Line', set: 0, x: 't', metrics: ['v'] }, { type: 'Column', set: 0, x: 't', metrics: ['v'] }] });
+  await rightClick(`document.querySelector('main .cr-chart')`); await sleep(200);
+  const items = await ev(`[...document.querySelectorAll('.tm-menu button, .menu button')].map(x => x.textContent.trim())`);
+  const down = await clickItem('Move Down'); await sleep(400);
+  const order = (await chartMarks()).map(c => c.type);
+  check('CR-chartmenu', ['Configure', 'Move Up', 'Move Down', 'Delete'].every(x => items.includes(x)) && down && JSON.stringify(order) === '["Column","Line"]', `the chart's menu ${JSON.stringify(items)}; Move Down ${down}: ${JSON.stringify(order)}`);
+});
+await guard('CR-pointdrill', async () => {
+  const tgt = await addReport({ name: `cr-pt-${Date.now()}`, engine: 'store', body: 'SELECT @v::int AS v', params: [{ name: 'v', type: 'int', label: 'v', default: '0' }] });
+  await runStore({ name: `cr-pd-${Date.now()}`, body: chartSQL, charts: [{ type: 'Scatter', set: 0, x: 't', metrics: ['v'] }], links: [{ column: 'v', kind: 'drill', report_id: tgt.id, map: { v: 'v' }, open: 'same' }] });
+  const v = await ev(`(() => { const p = document.querySelector('main .cr-chart svg circle[data-row]'); if (!p) return null; p.dispatchEvent(new MouseEvent('click', { bubbles: true })); return p.dataset.row; })()`);
+  await sleep(1200);
+  const h = await ev('location.hash');
+  check('CR-pointdrill', v !== null && h.includes(`report=${tgt.id}`) && /[?&]v=\d/.test(h), `a point (row ${v}) clicked: ${h}`);
+});
+await guard('CR-chartopts', async () => {
+  const s = await addReport({ name: `cr-co-${Date.now()}`, engine: 'store', body: chartSQL, params: [{ name: 'hide', type: 'text', label: 'hide', default: '' }],
+    charts: [{ type: 'Line', set: 0, x: 't', metrics: ['v'], x_range: true, overlay: { set: 0, metric: 'v' }, hidden_when: 'hide' }] });
+  await openReport(s.id); await sleep(1500);
+  const c = await ev(`(() => { const c = document.querySelector('main .cr-chart'); return c ? { range: c.dataset.xRange ?? '', series: c.querySelectorAll('svg .series').length } : null; })()`);
+  await go(`#/customreports?report=${s.id}&hide=yes`); await sleep(1500);
+  const hidden = await ev(`!document.querySelector('main .cr-chart') || document.querySelector('main .cr-chart').hidden`);
+  check('CR-chartopts', !!c && c.range === 'window' && c.series >= 2 && hidden, `the chart ${JSON.stringify(c)} (X bound to the window, the overlay a second series); hidden with hide set ${hidden}`);
+});
+
 
 console.log(`crview-check: ${failed} FAIL`);
 process.exit(failed ? 1 : 0);

@@ -26,7 +26,7 @@ cleanup() {
   [[ -n "${PGVIGIL_PROOF_OUT:-}" ]] && mkdir -p "$PGVIGIL_PROOF_OUT" && cp "$WORK"/*.log "$PGVIGIL_PROOF_OUT"/ 2>/dev/null
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null
   docker rm -fv "$CT" >/dev/null 2>&1
-  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" -c "drop role if exists $MON" -c "drop function if exists public.cr_notice()" >/dev/null 2>&1
+  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" -c "drop role if exists $MON" -c "drop function if exists public.cr_notice()" -c "drop schema if exists pgvigil_tools cascade" >/dev/null 2>&1
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -54,6 +54,8 @@ instances:
   - {name: cr-pg-$SUF, dsn: "env:CR_PG"}
   - {name: cr-ms-$SUF, engine: sqlserver, dsn: "env:CR_MS"}
 EOF
+# CR-tools' tool: pgvigil_tools.cr_echo(n) on the PostgreSQL instance (the schema is a DBA's opt-in; dropped at the end)
+psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create schema if not exists pgvigil_tools" -c "create or replace function pgvigil_tools.cr_echo(n int) returns table (echo int) language sql as \$f\$ select n \$f\$" -c "grant usage on schema pgvigil_tools to $MON" >/dev/null || die "cr_echo"
 # CR-timer's PostgreSQL report raises a NOTICE through a function of the run's own (dropped at the end)
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create or replace function public.cr_notice() returns int language plpgsql as \$f\$ begin raise notice 'step two of three'; return 1; end \$f\$" >/dev/null || die "cr_notice"
 "$BIN" migrate -config "$WORK/pgvigil.yaml" > "$WORK/migrate.log" 2>&1 || die "migrate: $(tail -3 "$WORK/migrate.log")"
