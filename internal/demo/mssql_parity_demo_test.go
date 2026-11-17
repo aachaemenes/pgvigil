@@ -59,7 +59,8 @@ func TestParityDemo(t *testing.T) {
 					otherDB["mssql_xe kind "+fmt.Sprint(r["kind"])] = true
 				case b.Collection == "mssql_funcstats" && r["kind"] != "state":
 					fkinds[fmt.Sprint(r["kind"])] = true
-				case b.Collection == "mssql_pool" && r["max_data_io_percent"] != nil && r["max_log_write_percent"] != nil && r["max_edtu_percent"] != nil:
+				case b.Collection == "mssql_pool" && r["max_data_io_percent"] != nil && r["max_log_write_percent"] != nil && r["max_edtu_percent"] != nil &&
+					r["cpu_buckets"] != nil && r["data_buckets"] != nil && r["log_buckets"] != nil && r["dtu_buckets"] != nil: // and A5's buckets
 					poolMax++
 				}
 				switch {
@@ -87,7 +88,7 @@ func TestParityDemo(t *testing.T) {
 			}
 		}
 		if poolMax == 0 {
-			t.Errorf("%s: no pool minute carries max_data_io_percent, max_log_write_percent and max_edtu_percent (control audit A3)", s.Name)
+			t.Errorf("%s: no pool minute carries max_data_io_percent, max_log_write_percent, max_edtu_percent (control audit A3) and the four buckets (A5)", s.Name)
 		}
 		for _, c := range []string{"mssql_ag", "mssql_jobs", "mssql_backups"} {
 			if seen[c] != 0 {
