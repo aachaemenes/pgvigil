@@ -59,4 +59,11 @@ func TestMSSQLDatabasePageIsWired(t *testing.T) {
 	if !strings.Contains(page, "mssqlQueryStoreView(ctx)") {
 		t.Error("mssql_db.ts draws no Query Store tab with mssqlQueryStoreView")
 	}
+	// Query Stats (sys.dm_exec_query_stats per database and query hash) is the Plan cache page fixed on this database
+	if !strings.Contains(page, "mssqlPlanCacheView(ctx, db)") {
+		t.Error("mssql_db.ts draws no Query Stats tab with mssqlPlanCacheView(ctx, db)")
+	}
+	if !regexp.MustCompile(`export async function mssqlPlanCacheView\(ctx: Ctx, onlyDb\?: string\)`).MatchString(read("mssql_plancache.ts")) {
+		t.Error("mssql_plancache.ts: mssqlPlanCacheView takes no database to fix the page on")
+	}
 }
