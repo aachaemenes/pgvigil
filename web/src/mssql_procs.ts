@@ -7,6 +7,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { procHistory } from './mssql_queries';
 import { compareSection } from './mssql_querystore';
+import { objectExecutionSection } from './mssql_objexec';
 import { rereadStrip, stripOverlay } from './timestrip';
 import { Ctx, rangeLabel, window_ } from './router';
 import { Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
@@ -29,6 +30,8 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
     + 'The view counts per cached plan: a procedure compiled, run and dropped from the plan cache between two reads is in no read, '
     + 'and the first read of an instance only sets the starting counters. The scalar functions and the triggers follow the procedures, '
     + 'from sys.dm_exec_function_stats and sys.dm_exec_trigger_stats read the same way.'));
+  // DBA Dash's Object Execution: the three kinds in one grid with its Type filter (P25 F505); the grids by kind follow
+  sec.append(objectExecutionSection(ctx));
   // the filter is a database of THIS instance: remembered per instance, by the database's id
   const store = `pgvigil.mssql.procs.db.${String(ctx.instance)}`;
   let database = (() => { try { return sessionStorage.getItem(store) ?? ''; } catch { return ''; } })();

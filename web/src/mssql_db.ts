@@ -10,6 +10,7 @@ import { mssqlQueryStoreView } from './mssql_querystore';
 import { dbSpaceView } from './drives';
 import { mssqlPlanCacheView } from './mssql_plancache';
 import { mssqlSlow } from './mssql_xe';
+import { objectExecutionSection } from './mssql_objexec';
 import { get, rowsOf, Table } from './api';
 import { badge, el, grid } from './ui';
 
@@ -61,6 +62,10 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
     case 'files':
       // the instance's Database files page reads db= by itself (mssql_storage.ts)
       body = await mssqlFilesView(ctx);
+      break;
+    case 'objexec':
+      // DBA Dash's Object Execution on the database (F102): its procedures, functions and triggers in one grid
+      body = el('section', {}, objectExecutionSection(ctx, db));
       break;
     case 'querystats':
       // DBA Dash's Query Stats (sys.dm_exec_query_stats per database and query hash) = the instance's Plan cache page
