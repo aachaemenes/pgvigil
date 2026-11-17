@@ -12,7 +12,7 @@ import { chartPlaceholder, zoomBack, zoomReset } from './chartkit';
 import { mssqlCpuTab, mssqlFileIOTab, mssqlMemoryTab, mssqlTempdbTab } from './mssql_perf';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { fmt } from './tz';
-import { el, fmtBytes, fmtNum } from './ui';
+import { el, errorBox, fmtBytes, fmtNum } from './ui';
 
 type Parts = 'meta' | 'grid' | 'cpu' | 'sessions' | 'waits' | 'db' | 'io' | 'blocking' | 'filegroups';
 
@@ -94,6 +94,51 @@ function titled(chart: HTMLElement, text: string, link: string): HTMLElement {
   return chart;
 }
 
+// the Execution Stats strip (DBA Dash's SQL Server Performance > Execution Stats: Duration ms/sec of the top 5
+// objects, its measure and Top N menus; P25 task 5): the procedures, functions and triggers, one line each, on the
+// page's shared steps, drawn by the shared lineChart (no axis or scale of its own); on a database's page that
+// database's objects. Read apart (part=execstats) so a menu change reads only the strip.
+const esMeasures: [string, string, string][] = [['duration', 'Duration', 'ms/sec'], ['cpu', 'CPU', 'ms/sec'], ['executions', 'Executions', '/sec'],
+  ['logical_reads', 'Logical reads', '/sec'], ['physical_reads', 'Physical reads', '/sec'], ['writes', 'Writes', '/sec']];
+function execStatsStrip(ctx: Ctx, g: Row[], link: string, db?: string): HTMLElement {
+  const mSel = el('select', { id: 'perf-es-measure', 'aria-label': 'Execution Stats measure' }, ...esMeasures.map(([k, l]) => el('option', { value: k }, l)));
+  const tSel = el('select', { id: 'perf-es-top', 'aria-label': 'Execution Stats objects shown' }, ...[5, 10, 20].map(n => el('option', { value: String(n) }, `Top ${n}`)));
+  const body = el('div');
+  const box = el('div', {}, el('p', { class: 'meta' }, 'Execution Stats: ', mSel, ' ', tSel), body);
+  let seq = 0;
+  async function draw() {
+    const mine = ++seq;
+    const [k, label, unit] = esMeasures.find(m => m[0] === mSel.value) ?? esMeasures[0];
+    try {
+      const d = await get<{ execstats: Table | null }>('performance', { instance: ctx.instance, ...window_(ctx), part: 'execstats', measure: k, top: tSel.value, db });
+      if (mine !== seq) return;
+      const rows = rowsOf(d.execstats), names = [...new Set(rows.map(r => String(r.object)))];
+      const by = new Map<number, Row>();
+      for (const r of rows) {
+        const t = new Date(String(r.snapshot_at)).getTime();
+        if (!by.has(t)) by.set(t, {});
+        by.get(t)![String(r.object)] = r.per_sec;
+      }
+      const pts = g.map(st => {
+        const r = by.get(new Date(String(st.snapshot_at)).getTime());
+        const o: Row = { snapshot_at: st.snapshot_at };
+        for (const n of names) o[n] = r ? r[n] ?? null : null;
+        return o;
+      });
+      const title = `Execution Stats: ${label} (${unit}), the top ${tSel.value} objects${db ? ` of ${db}` : ''}`;
+      body.replaceChildren(rows.length
+        ? titled(lineChart('Execution Stats', pts, names.map(n => ({ key: n, label: n })), v => `${fmtNum(v)} ${unit}`), title, link)
+        : emptyChart(title, link, 'No procedure, function or trigger ran in this window (the mssql_procstats and mssql_funcstats collections read every five minutes).'));
+    } catch (e) {
+      if (mine === seq) body.replaceChildren(errorBox(e));
+    }
+  }
+  mSel.addEventListener('change', () => void draw());
+  tSel.addEventListener('change', () => void draw());
+  void draw();
+  return box;
+}
+
 // cut: a SQL Server database's page (mssql_db.ts, P25 F101) - its IO (with the file group picked) and the blocking
 // chains whose head ran in it; CPU, requests, waits, the buffer pool and transactions stay the instance's and say so.
 export interface PerfCut { db: string; filegroup?: string; pick: (filegroup: string | undefined) => void }
@@ -155,6 +200,7 @@ export async function performanceView(ctx: Ctx, cut?: PerfCut): Promise<HTMLElem
       `IO latency (${files})`, to(mssqlFileIOTab)));
     box.append(titled(lineChart('IO throughput', io, [{ key: 'read_mb_s', label: 'read MB/s' }, { key: 'write_mb_s', label: 'write MB/s' }], v => fmtNum(v) + ' MB/s'),
       `IO throughput (${files})`, to(mssqlFileIOTab)));
+    box.append(execStatsStrip(ctx, g, to('mssqlprocs'), cut?.db));
     if (cut) {
       const blk = rowsOf(d.blocking);
       box.append(blk.length
