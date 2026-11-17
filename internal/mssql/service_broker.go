@@ -209,7 +209,11 @@ func (c serviceBrokerCollector) Run(ctx context.Context, conn *sql.Conn, info In
 		}
 		out = append(out, collect.Row{"kind": "database", "database_name": d.name})
 		// the oldest ready message: the smallest queues first, within the scan caps
-		sort.SliceStable(raw, func(i, j int) bool { a, _ := asInt(raw[i]["internal_rows"]); b, _ := asInt(raw[j]["internal_rows"]); return a < b })
+		sort.SliceStable(raw, func(i, j int) bool {
+			a, _ := asInt(raw[i]["internal_rows"])
+			b, _ := asInt(raw[j]["internal_rows"])
+			return a < b
+		})
 		ready := map[int64]brokerReady{}
 		for _, q := range raw {
 			n, _ := asInt(q["internal_rows"])
