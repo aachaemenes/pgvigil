@@ -470,11 +470,12 @@ END $$;
 --                        (a whole number, as the procedure divides) is over 1,000
 --   Wasteful grant       the largest grant over 1 MB, the largest use under 10 % of it
 -- The procedure compares milliseconds and megabytes kept to two decimals; these are the microseconds and kilobytes
--- the server counts in.
+-- the server counts in. PARALLEL SAFE: it reads no table, and a function not so marked keeps every statement that
+-- calls it (the extremes' read over a week of reads) to one process.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_pc_diagnostics(p_executions bigint, p_cpu_us bigint, p_min_cpu_us bigint, p_max_cpu_us bigint,
     p_physical_reads bigint, p_min_physical_reads bigint, p_max_physical_reads bigint, p_min_rows bigint, p_max_rows bigint,
     p_max_grant_kb bigint, p_max_used_grant_kb bigint)
-RETURNS text LANGUAGE sql IMMUTABLE AS $$
+RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT nullif(concat_ws('; ',
     CASE WHEN p_min_rows > 0 AND p_max_rows::numeric / p_min_rows >= 100
          THEN format('Row count variance (%s to %s)', p_min_rows, p_max_rows) END,
