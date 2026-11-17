@@ -124,3 +124,28 @@ func objectStatementsPart(q url.Values, id int, from, to time.Time) (part, error
 	}
 	return part{"object_statements", sqlMSSQLObjectStatements, []any{id, from, to, dbID, module}}, nil
 }
+
+// sqlMSSQLObjectSlow: the object page's Slow Queries (DBA Dash's Slow Queries fixed to the object, grouped by client app:
+// SlowQueries.cs FixedObjectName / groupBy client_app_name; SlowQueriesSummary_Get's SQ.object_name = @ObjectName): the
+// window's rpc_completed and sql_batch_completed rows of 0065's mssql_slow_events whose bare object name is $5
+// (case-insensitive) in database $4 ('' = every database), one row per client app, the longest total first.
+const sqlMSSQLObjectSlow = `
+SELECT coalesce(e.program_name, '') AS client_app, count(*) AS events, round(sum(e.duration_ms), 1) AS total_ms,
+       round(max(e.duration_ms), 1) AS worst_ms, round(avg(e.duration_ms), 1) AS mean_ms, round(sum(e.cpu_ms), 1) AS cpu_ms,
+       sum(e.logical_reads) AS logical_reads, sum(e.writes) AS writes,
+       count(*) FILTER (WHERE e.result IS DISTINCT FROM 'OK') AS not_ok, max(e.event_at) AS last_at
+  FROM pgvigil.mssql_slow_events e
+ WHERE e.instance_id = $1 AND e.event_at > $2 AND e.event_at <= $3 AND e.event_name IN ('rpc_completed', 'sql_batch_completed')
+   AND lower(e.object_name) = lower($5::text) AND ($4::text = '' OR lower(e.database_name) = lower($4::text))
+ GROUP BY 1
+ ORDER BY sum(e.duration_ms) DESC NULLS LAST
+ LIMIT 200`
+
+// objectSlowPart: part=object_slow from name= (the bare object name) and dbname= ('' = every database)
+func objectSlowPart(q url.Values, id int, from, to time.Time) (part, error) {
+	name := q.Get("name")
+	if name == "" || len([]rune(name)) > 128 {
+		return part{}, errors.New("part=object_slow needs name= (the object's bare name)")
+	}
+	return part{"object_slow", sqlMSSQLObjectSlow, []any{id, from, to, q.Get("dbname"), name}}, nil
+}

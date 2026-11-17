@@ -562,6 +562,15 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 		parts = append(parts, part{"intervals", intervals, []any{id, from, to, dbID, obj}},
 			part{"history", history, []any{planEach, id, from, to, dbID, obj, procStep(to.Sub(from).Seconds())}})
 	}
+	// the object page's Slow Queries (OBJ, q_mssql_object.go): its completions by client app, when asked
+	if q.Get("part") == "object_slow" {
+		p, err := objectSlowPart(q, id, from, to)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		parts = append(parts, p)
+	}
 	// the object page's Query Stats (OBJ, q_mssql_object.go): its module's statements in its database, when asked
 	if q.Get("part") == "object_statements" {
 		p, err := objectStatementsPart(q, id, from, to)
