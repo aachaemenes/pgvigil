@@ -12,8 +12,9 @@
 #   PGVIGIL_COMMUNITY_DIR   a folder with the community scripts to install on the SQL Server: frk-install-all.sql
 #                           (the First Responder Kit's Install-All-Scripts.sql), darlingdata.sql (DarlingData's
 #                           Install-All/DarlingData.sql) and sp_WhoIsActive.sql. This script fetches nothing. A file
-#                           missing: its tools' runs are NOT PROVEN, said so; part N's SQL Server rows and U2's live
-#                           page rows need all three (each tool not installed has a hard need there).
+#                           missing: its tools' runs are NOT PROVEN, said so; part N's SQL Server rows that read the
+#                           tools and U2 / U3's live SQL Server rows need all three (each tool not installed has a hard
+#                           need there), U's sp_WhoIsActive form needs sp_WhoIsActive.sql.
 #   PGVIGIL_BIN             a binary with the wiring (the routes /api/customreports and /api/community); default: built
 #                           here. The web bundle must carry the pages (internal/web/dist/app.js names 'Custom reports'):
 #                           the page part U fails without.
@@ -679,12 +680,12 @@ ok "Q: 10 reads; running, settings, table sizes (t); the superuser refused"
 
 # ---- N: before the click (task B3 DONE-1) ----------------------------------------------------------------------------------
 fresh() { getc "community?instance=$1&fresh=1${2:+&database=$2}"; }   # past the 60 s keep: the checks run again
-# N's SQL Server rows read every tool's state with all three kits in master (a tool not installed has a hard need, so a
-# kit missing turns them red by the kit, not by the code): a kit missing = NOT PROVEN, said with the kits it lacks
+# N's SQL Server rows that read the tools want all three kits in master (a tool not installed has a hard need, so a kit
+# missing turns them red by the kit, not by the code): a kit missing = NOT PROVEN, said with the kits it lacks
 N_MSSQL=""
 if [[ -z "$SKIP_MSSQL" && ${#INSTALLED[@]} != 3 ]]; then
   nmiss=""; for f in frk-install-all.sql darlingdata.sql sp_WhoIsActive.sql; do [[ " ${INSTALLED[*]} " == *" $f "* ]] || nmiss+="${nmiss:+, }$f"; done
-  NOTPROVEN+=("N (the three community kits not installed: $nmiss): its SQL Server rows")
+  NOTPROVEN+=("N (the three community kits not installed: $nmiss): its SQL Server rows that read the tools (needs, declines, sibling pairs, the grant, the narrow login)")
 elif [[ -z "$SKIP_MSSQL" ]]; then
   N_MSSQL=1
   [[ $(fresh "$MRID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "d['enabled']") == True && $(tl "d['checked_at'] is not None") == True ]] || fail "N: $MSR's instance needs: $(head -c 600 "$WORK/body")"
@@ -801,7 +802,10 @@ elif [[ -z "$SKIP_MSSQL" ]]; then
      && $(tl "t['sp_Blitz']['needs'][0]['how']") == "USE [master]; GRANT EXECUTE ON dbo.[sp_Blitz] TO [pgcr_narrow];" \
      && $(tl "any('a user database the read login can reach' in n['what'] for n in t['sp_IndexCleanup']['needs'])") == True ]] || fail "N: the narrow login: $(tl "[(x['id'], x['state'], [n['what'][:60] for n in x['needs']]) for x in d['tools']]")"
   ok "N: $MSN (narrow login): 13 procedures off, each with its GRANT line; sp_IndexCleanup without a reachable database; Glenn's on"
-  [[ $(fresh "$MAID") == 200 && $(tl "d['enabled']") == False && $(tl "[n['hard'] for n in d['needs']]") == "[True]" && $(tl "d['needs'][0]['what']") == *sysadmin* \
+fi
+# the rows below need no kit (the instance's own reason, the -no-login serve, the pause): they run on every SQL Server run
+if [[ -z "$SKIP_MSSQL" ]]; then
+  [[ $(fresh "$MAID") == 200&& $(tl "d['enabled']") == False && $(tl "[n['hard'] for n in d['needs']]") == "[True]" && $(tl "d['needs'][0]['what']") == *sysadmin* \
      && $(tl "d['needs'][0]['how']") == *"not a sysadmin"* && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 ]] || fail "N: the sa instance: $(tl "d['needs']")"
   [[ $(code "$U2/api/community?instance=$MRID") == 200 && $(tl "d['needs'][0]['what']") == "Running a tool needs a signed-in user: this server runs without the UI login (pgvigil serve -no-login, or pgvigil demo -serve)." \
      && $(tl "d['needs'][0]['how']") == *"pgvigil user add"* && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 ]] || fail "N: the -no-login serve: $(head -c 600 "$WORK/body")"
@@ -820,9 +824,11 @@ elif [[ -z "$SKIP_MSSQL" ]]; then
   [[ $c == 200 && $ms -le 6000 && $(tl "sorted(set(x['state'] for x in d['tools']))") == "['not_checked']" && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 \
      && $(tl "len(d['tools'])") == 14 && $(tl "d['needs'][0]['what']") == "not checked: the checks of $MSR took over 5 s"* ]] || fail "N: the paused instance ($ms ms): $(tl "[(x['id'], x['state']) for x in d['tools']][:4]"), $(tl "d['needs']")"
   ok "N: $MSR paused: answered in $ms ms, 14 of 14 tools 'not checked' ($(tl "d['needs'][0]['what'][:90]")), none on"
-  for _ in $(seq 1 25); do [[ $(fresh "$MRID") == 200 && $(tl "t['sp_WhoIsActive']['state']") == ready ]] && break; sleep 2; done
-  [[ $(tl "t['sp_WhoIsActive']['state']") == ready ]] || fail "N: $MSR unpaused is not ready again: $(tl "t['sp_WhoIsActive']")"
-  ok "N: unpaused: sp_WhoIsActive ready again"
+  # checked again after the pause: ready with sp_WhoIsActive.sql installed, its 'not installed' need (needs) without it
+  wst=ready; [[ " ${INSTALLED[*]} " == *" sp_WhoIsActive.sql "* ]] || wst=needs
+  for _ in $(seq 1 25); do [[ $(fresh "$MRID") == 200 && $(tl "t['sp_WhoIsActive']['state']") == "$wst" ]] && break; sleep 2; done
+  [[ $(tl "t['sp_WhoIsActive']['state']") == "$wst" ]] || fail "N: $MSR unpaused is not $wst again: $(tl "t['sp_WhoIsActive']")"
+  ok "N: unpaused: sp_WhoIsActive $wst again"
 fi
 t0=$(date +%s%N); c=$(fresh "$DID") || c="curl: $?"; ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 [[ $c == 200 && $ms -le 6000 && $(tl "sorted(set(x['state'] for x in d['tools']))") == "['not_checked']" && $(tl "len(d['tools'])") == 10 \
@@ -901,7 +907,7 @@ JS
   sleep 2; [[ $(logn) == "$L4" ]] || fail "H4: the no-key serve's page ran the store report on open (a log row)"
   ok "H4: the no-key serve's page of a store report: Run off (aria-disabled) with the words in its p.said paragraph (the one report mail carries), and no run on open (no log row)"
   cat > "$WORK/pages.mjs" <<'JS'
-const [port, U, axePath, dl, cookie, srep, msr, pga, msa] = process.argv.slice(2);
+const [port, U, axePath, dl, cookie, srep, msr, pga, msa, wia] = process.argv.slice(2);   // wia '1': sp_WhoIsActive installed
 const fs = await import('node:fs');
 const axeSrc = fs.readFileSync(axePath, 'utf8');
 const ver = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
@@ -954,9 +960,11 @@ for (const theme of ['light', 'dark']) {
   await axe(`${theme} editor`);
   if (msr) {
     await open(`#/community?i=${msr}`, `!!document.querySelector('main h3') && [...document.querySelectorAll('main button.link')].some(b => b.textContent === 'sp_WhoIsActive')`);
-    await ev(`[...document.querySelectorAll('main button.link')].find(b => b.textContent === 'sp_WhoIsActive').click(); 1`);
-    if (!await until(`[...document.querySelectorAll('main button')].some(b => b.textContent === 'Run sp_WhoIsActive')`)) throw new Error('the sp_WhoIsActive form did not open');
-    await axe(`${theme} community sqlserver`);
+    if (wia === '1') {   // not installed, the tool is off (a hard need) and its click opens nothing
+      await ev(`[...document.querySelectorAll('main button.link')].find(b => b.textContent === 'sp_WhoIsActive').click(); 1`);
+      if (!await until(`[...document.querySelectorAll('main button')].some(b => b.textContent === 'Run sp_WhoIsActive')`)) throw new Error('the sp_WhoIsActive form did not open');
+    }
+    await axe(`${theme} community sqlserver${wia === '1' ? '' : ' (sp_WhoIsActive not installed: no form)'}`);
   }
   if (msa && theme === 'light') {
     // B3: before the click - the reader's page has the 'before it runs' column; the sa page says why every tool is off
@@ -975,10 +983,12 @@ console.log(JSON.stringify(out));
 // the two CDP sockets keep node alive after the last line (Node 26's WebSocket): close them and exit, or the proof waits forever
 ws.close(); bws.close(); process.exit(0);
 JS
-  timeout 900 node "$WORK/pages.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$WORK/dl" "$COOKIE" "$SREP" "${MRID:-}" "$AID" "${MAID:-}" > "$WORK/pages.json" 2>"$WORK/pages.err" || fail "U: the page driver: $(tail -5 "$WORK/pages.err")"
-  python3 - "$WORK/pages.json" "$WORK/dl" "$INSTL" "${PGVIGIL_PYLIB:-}" <<'PY' || fail "U: see above"
+  WIA=""; if [[ -z "$SKIP_MSSQL" && " ${INSTALLED[*]} " == *" sp_WhoIsActive.sql "* ]]; then WIA=1; fi
+  if [[ -z "$SKIP_MSSQL" && -z "$WIA" ]]; then NOTPROVEN+=("U: sp_WhoIsActive.sql not installed: its form on pgcr-msr's community page (axe with the form open) and its 'ready' cell"); fi
+  timeout 900 node "$WORK/pages.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$WORK/dl" "$COOKIE" "$SREP" "${MRID:-}" "$AID" "${MAID:-}" "$WIA" > "$WORK/pages.json" 2>"$WORK/pages.err" || fail "U: the page driver: $(tail -5 "$WORK/pages.err")"
+  python3 - "$WORK/pages.json" "$WORK/dl" "$INSTL" "${PGVIGIL_PYLIB:-}" "$WIA" <<'PY' || fail "U: see above"
 import json, sys, zipfile, re, os
-d = json.load(open(sys.argv[1])); dl = sys.argv[2]; long_name = sys.argv[3]; pylib = sys.argv[4]
+d = json.load(open(sys.argv[1])); dl = sys.argv[2]; long_name = sys.argv[3]; pylib = sys.argv[4]; wia = sys.argv[5] == '1'
 bad = [p for p in d['pages'] if p['violations']]
 for p in d['pages']:
     print(('viol ' if p['violations'] else 'ok   ') + 'U: axe ' + p['label'] + ': ' + (json.dumps(p['violations']) if p['violations'] else '0 violations'))
@@ -986,8 +996,9 @@ m = d.get('msa')
 if m is not None:
     assert m['n'] == 14 and m['off'] == 14 and 'sysadmin' in m['box'] and m['box'].startswith('Before a tool can run on'), f"U: the sa page: {m['off']} of {m['n']} tool buttons off with 'sysadmin' on hover; its box: {m['box'][:200]!r}"
     assert m['deco'] == 'none' and m['color'] != m['accent'], f"U: a disabled tool button is drawn like a link: text-decoration {m['deco']!r}, colour {m['color']} (accent {m['accent']}) - the wiring's app.css line"
-    assert (d.get('msrReady') or '').startswith('ready'), f"U: sp_WhoIsActive's 'before it runs' cell on pgcr-msr: {d.get('msrReady')!r}"
-    print(f"ok   U: [B3] pgcr-msa: 'Before a tool can run' names sysadmin, {m['off']} of {m['n']} tool buttons off with it on hover, drawn off ({m['color']}, no underline); pgcr-msr: sp_WhoIsActive 'ready'")
+    if wia:
+        assert (d.get('msrReady') or '').startswith('ready'), f"U: sp_WhoIsActive's 'before it runs' cell on pgcr-msr: {d.get('msrReady')!r}"
+    print(f"ok   U: [B3] pgcr-msa: 'Before a tool can run' names sysadmin, {m['off']} of {m['n']} tool buttons off with it on hover, drawn off ({m['color']}, no underline); pgcr-msr: sp_WhoIsActive " + ("'ready'" if wia else f"{(d.get('msrReady') or '')[:60]!r} (not installed: not graded)"))
 cells = d['cells'] or []
 assert cells, 'U: no rows read from the report grid'
 for c in cells:
@@ -1813,7 +1824,7 @@ assert not T(u)['sp_WhoIsActive']['off'] and u['looks'] < 6, f"U3: unpaused: {u[
 print(f"ok   U3: unpaused: sp_WhoIsActive on again after {u['looks']} Look again click(s)")
 PY
     sq "EXEC sys.sp_configure 'blocked process threshold (s)', 5; RECONFIGURE;" >/dev/null || true
-  elif [[ -z "$SKIP_MSSQL" ]]; then NOTPROVEN+=("U2: the live page rows need part N's SQL Server rows (the three community kits)")
+  elif [[ -z "$SKIP_MSSQL" ]]; then NOTPROVEN+=("U2, U3: the live page rows and the SQL Server states need part N's SQL Server rows (the three community kits)")
   else NOTPROVEN+=("U2: the live page rows need the SQL Server part"); fi
   # U3 on PostgreSQL: the stopped instance on its page and on the picker; 55000 beside 42P01 on the cluster that does not
   # load pg_stat_statements
