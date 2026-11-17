@@ -290,6 +290,9 @@ func databaseLabel(rows []collect.Row, id int64) string {
 	return fmt.Sprintf("database id %d", id)
 }
 
+// AfterStore marks each database whose inlineability the stored run read.
+func (funcStatsCollector) AfterStore(info Info, rows []collect.Row) {}
+
 // idNames reads an object id and name list into a map.
 func idNames(ctx context.Context, conn *sql.Conn, query string) (map[int64]string, error) {
 	rows, err := QueryRows(ctx, conn, query)

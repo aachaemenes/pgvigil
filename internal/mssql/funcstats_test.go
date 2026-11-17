@@ -172,3 +172,20 @@ func TestFuncInlineNamesTheUnaskedDatabases(t *testing.T) {
 		t.Errorf("fifteen databases: %q, want ten named and 'and 5 more'", m)
 	}
 }
+
+// The hourly mark of a database's inlineability read is set once the run's rows are stored (AfterStore), so a run
+// whose import failed asks again at the next read; a database without an inline_read row stays due.
+func TestFuncInlineMarkedAfterTheStore(t *testing.T) {
+	now := time.Now()
+	if !funcInlineSent.due("srv-as|5", now) {
+		t.Fatal("a database never asked is due")
+	}
+	funcStatsCollector{}.AfterStore(Info{ServerName: "srv-as"}, []collect.Row{{"kind": "inline_read", "database_id": int64(5)},
+		{"kind": "function", "database_id": int64(6)}})
+	if funcInlineSent.due("srv-as|5", now) {
+		t.Error("database 5's stored inline read: asked again within the hour")
+	}
+	if !funcInlineSent.due("srv-as|6", now) {
+		t.Error("database 6 had no inline read: it must stay due")
+	}
+}

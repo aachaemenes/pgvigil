@@ -23,7 +23,7 @@ func TestProcsParts(t *testing.T) {
 			state[p.name] = p.args[1]
 		}
 	}
-	if got, want := strings.Join(names, " "), "state reads databases totals procs series func_state functions triggers"; got != want {
+	if got, want := strings.Join(names, " "), "state reads databases totals procs series func_state func_reads functions triggers"; got != want {
 		t.Errorf("parts %q, want %q", got, want)
 	}
 	if !reflect.DeepEqual(state["state"], []string{"mssql_procstats"}) || !reflect.DeepEqual(state["func_state"], []string{"mssql_funcstats"}) {
@@ -145,5 +145,18 @@ func TestFuncPartsOnAStore(t *testing.T) {
 		"schema_name": "NULL", "executions": "2", "spills": "NULL", "spill_reads": "0", "max_spills": "NULL", "min_cpu_ms": "NULL"})
 	if got := s.rows(sqlMSSQLTriggers, id, from, to, 5); len(got) != 1 || got[0]["object_name"] != "tr_orders_ins" {
 		t.Errorf("the triggers of database 5: %v, want tr_orders_ins alone", got)
+	}
+
+	// the filter's databases: one with functions or triggers alone is listed too (no procedure ran on this instance)
+	var dbs []string
+	for _, r := range s.rows(sqlMSSQLProcDatabases, id, from, to) {
+		dbs = append(dbs, r["database"]+"|"+r["procs"])
+	}
+	if got, want := strings.Join(dbs, " "), "db5|0 db6|0 master|0"; got != want {
+		t.Errorf("the databases part: %q, want %q", got, want)
+	}
+	// the functions' reads: the first read only sets the counters, so the range holds one read of 300 s
+	if r := s.rows(sqlMSSQLFuncReads, id, from, to); len(r) != 1 || r[0]["reads"] != "1" || r[0]["covered_secs"] != "300" {
+		t.Errorf("the func_reads part: %v, want 1 read covering 300 s", r)
 	}
 }

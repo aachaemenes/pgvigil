@@ -337,6 +337,9 @@ const funcCols = `p.database_id, p.object_id, n.database, p.schema_name, coalesc
        p.min_logical_reads, p.max_logical_reads, p.min_physical_reads, p.max_physical_reads,
        p.min_logical_writes, p.max_logical_writes`
 
+// sqlMSSQLFuncReads: the functions' and triggers' reads of the window (mssql_func_read), as the procedures' reads.
+const sqlMSSQLFuncReads = sqlMSSQLProcReads
+
 // sqlMSSQLFuncs: the scalar functions that ran without inlining (the server lists no table-valued function and no
 // scalar function it inlined), with the mark from sys.sql_modules as last read (mssql_func_inline): no row, or a
 // figure not read = 'not read' (an earlier version than 2019, a module the login cannot see, a failed read);
