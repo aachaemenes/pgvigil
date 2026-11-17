@@ -23,13 +23,13 @@ func TestMSSQLDatabasePageIsWired(t *testing.T) {
 	}
 	page := read("mssql_db.ts")
 	want := []string{"Performance", "Object Execution", "Query Stats", "Slow Queries", "Files", "Snapshot Summary", "DB Space",
-		"DB Configuration", "DB Options", "QS", "Top Queries", "Forced Plans", "Tuning Recommendations"}
+		"DB Configuration", "DB Options", "QS", "Top Queries", "Forced Plans", "Tuning Recommendations", "Service Broker", "sp_DBPermissions"}
 	var got []string
-	for _, m := range regexp.MustCompile(`\['[a-z]+', '([A-Za-z ]+)'\]`).FindAllStringSubmatch(page, -1) {
+	for _, m := range regexp.MustCompile(`\['[a-z]+', '([A-Za-z_ ]+)'\]`).FindAllStringSubmatch(page, -1) {
 		got = append(got, m[1])
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("mssql_db.ts tabs %q, want DBA Dash's 13 in its order %q", got, want)
+		t.Errorf("mssql_db.ts tabs %q, want DBA Dash's 15 in its order (P25 rows 73 and 75 the last two) %q", got, want)
 	}
 	router := read("router.ts")
 	if !regexp.MustCompile(`drillTabs: Record<string, string> = \{[^}]*\bmssqldb: 'Database'`).MatchString(router) {
