@@ -38,8 +38,10 @@ func TestAzureNodeTabsAreWired(t *testing.T) {
 		`['perfsummary', 'Performance Summary'], ['azuresummary', 'Azure Summary'], ['alerts', 'Alerts'], ['slowqueries', 'Slow Queries'], ['objexec', 'Object Execution'], ['running', 'Running Queries']`,
 		`['pool', 'Pool'], ['perfsummary', 'Performance Summary'], ['azuresummary', 'Azure Summary'], ['slowqueries', 'Slow Queries'], ['objexec', 'Object Execution'], ['running', 'Running Queries'], ['dbspace', 'DB Space']`,
 		"hashParam('ntab')", "aria-current",
-		"slowFleetView(ctx, keep", "runningFleet(ctx, keep)", "alertsView(ctx, keep)", "dbSpaceView(ctx, ids)", "perfSummaryView(ctx, ids)",
-		"objectExecutionSection(ctx, undefined, ids)",
+		// each tab's call carries the cut, on the context without the tag (the ids already hold the tag folder's cut)
+		"const nctx: Ctx = { ...ctx, tag: undefined }",
+		"slowFleetView(nctx, keep)", "runningFleet(nctx, keep)", "alertsView(nctx, keep)", "dbSpaceView(nctx, ids)", "perfSummaryView(nctx, ids)",
+		"objectExecutionSection(nctx, undefined, ids)",
 	} {
 		if !strings.Contains(nodes, w) {
 			t.Errorf("web/src/azure_nodes.ts has no %s", w)
