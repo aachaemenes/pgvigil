@@ -9,8 +9,8 @@ import (
 // sp_DBPermissions' pin (P25 row 75; the lead's 10:4x GO (a)): sqlstudent144/SQL-Server-Scripts at this commit, its
 // file's sha256 as read 2026-11-17 (= DBA Dash 4.24.1's manifest pin)
 const (
-	dbPermsCommit = "970f29200339d3c05364016f202d813617675737"
-	dbPermsSHA256 = "d57e18ab7d8e43d82444e2954beca9a6b9b80e79e9dd3ba65d7754d5c04fd7c7"
+	wantDBPermsCommit = "970f29200339d3c05364016f202d813617675737"
+	wantDBPermsSHA256 = "d57e18ab7d8e43d82444e2954beca9a6b9b80e79e9dd3ba65d7754d5c04fd7c7"
 )
 
 // TestCommunityDBPermissions (P25 row 75: DBA Dash's database sp_DBPermissions tab): the catalogue lists
@@ -38,8 +38,8 @@ func TestCommunityDBPermissions(t *testing.T) {
 	}
 	no := false
 	script, _ := installScript("db1", "srv1", "master", []toolState{{communityTool: *tool, Installed: &no, VersionWord: "not installed"}})
-	for _, w := range []string{"https://raw.githubusercontent.com/sqlstudent144/SQL-Server-Scripts/" + dbPermsCommit + "/sp_DBPermissions.sql",
-		"Get-FileHash", dbPermsSHA256, "Invoke-DbaQuery", "sp_DBPermissions V7.0"} {
+	for _, w := range []string{"https://raw.githubusercontent.com/sqlstudent144/SQL-Server-Scripts/" + wantDBPermsCommit + "/sp_DBPermissions.sql",
+		"Get-FileHash", wantDBPermsSHA256, "Invoke-DbaQuery", "sp_DBPermissions V7.0"} {
 		if !strings.Contains(script, w) {
 			t.Errorf("the install script has no %s:\n%s", w, script)
 		}
@@ -48,7 +48,7 @@ func TestCommunityDBPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, w := range []string{"sp_DBPermissions", "Copyright (c) 2019 sqlstudent144", dbPermsCommit} {
+	for _, w := range []string{"sp_DBPermissions", "Copyright (c) 2019 sqlstudent144", wantDBPermsCommit} {
 		if !strings.Contains(string(b), w) {
 			t.Errorf("THIRD-PARTY-NOTICES.md has no %s", w)
 		}
