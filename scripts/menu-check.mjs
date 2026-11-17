@@ -273,7 +273,8 @@
 //   H-logsfilter      (L57, COVERED: expected ok on the base) the Logs page's message column: the cell menu has
 //                     'Exclude value: ...' and All filters has 'Not like'
 //   E-details         (L146) an error box (the Statements page with its read answered 500 'E-details marker ...' by a
-//                     stub of fetch): the message as today, and two buttons - Show details (aria-expanded false;
+//                     stub of fetch): the message the p.error it is today (every other proof reads it), inside a box
+//                     (.error-box) with two buttons - Show details (aria-expanded false;
 //                     pressed: true, its region holds 'GET /api/statements', 'HTTP 500' and the server's words) and
 //                     Copy details (the clipboard holds exactly the region's text). Red: the box has no button.
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
@@ -1770,8 +1771,10 @@ await guard('E-details', async () => {
     window.fetch = (u, o) => /\\/api\\/statements(\\?|$)/.test(String(u)) ? Promise.resolve(new Response(JSON.stringify({ error: 'E-details marker: relation "x" does not exist' }), { status: 500, statusText: 'Internal Server Error', headers: { 'Content-Type': 'application/json' } })) : f(u, o);
     return true; })()`);
   await ev(`location.hash = '#/statements?i=${erpId}'`); await sleep(2500);
-  const box = `[...document.querySelectorAll('main .error')].find(e => /E-details marker/.test(e.textContent))`;
-  const said = await ev(`${box}?.textContent.trim().slice(0, 80) ?? ''`);
+  // the message stays the p.error every other proof reads; the box around it holds the two buttons and the details
+  const msg = `[...document.querySelectorAll('main p.error')].find(e => /E-details marker/.test(e.textContent))`;
+  const box = `(${msg}?.closest('.error-box') ?? ${msg})`;
+  const said = await ev(`${msg}?.textContent.trim().slice(0, 80) ?? ''`);
   const btn = label => `[...(${box}?.querySelectorAll('button') ?? [])].find(b => b.textContent.trim() === ${JSON.stringify(label)})`;
   const before = await ev(`${btn('Show details')}?.getAttribute('aria-expanded') ?? 'no button'`);
   await gmClip();
