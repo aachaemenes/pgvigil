@@ -21,6 +21,7 @@ import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, readW
 import { cutReads } from './api';
 import { readRows } from './export_colours';
 import { ownName, sheetNames, sheetTitle } from './export_names';
+import { labelText } from './export_text';
 import { drawingRels, drawingXml, pictureOf } from './export_chart';
 import type { ChartNumbers, PictureBox } from './export_chart';
 import { cellLook, gridHeadLook, headLook, withDot } from './export_page';
@@ -67,7 +68,9 @@ function numeric(raw: unknown): number | undefined {
 // space), so each rendering is collapsed the same way before the comparison.
 const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
 
-export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'stamp' | 'per'> {
+// num: whether the page draws the column as numbers (its header's 'num' class); a caller that does not know says nothing
+// and gets the reading of a number column.
+export function typed(raw: unknown, text: string, num = true): Pick<Cell, 'v' | 'kind' | 'stamp' | 'per'> {
   if (text === '') return { v: '', kind: 'text' };
   // (P3, the lead 22:34) a boolean the page writes as its yes / no or true / false: an Excel boolean on a grid sheet
   // (DBA Dash's file: TRUE / FALSE cells); the page sheet keeps the page's words (export_page.ts gridBlock)
@@ -84,6 +87,9 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
   if (typeof raw === 'string' && raw.slice(0, 10) === text) { const day = dayCell(text); if (day) return day; }
   // a text that only looks like a number (a role or database named '0042', a '+5') is kept as the text it is
   if (typeof raw === 'string' && /^[+0]\d/.test(raw)) return { v: text, kind: 'text' };
+  // a label the server sends as text in a column the page draws as text, shown as it is, whose number would write back
+  // another text ('17.10', a version: 17.1 is another one) is kept as the text it is (export_text.ts; P-opengrid)
+  if (!num && typeof raw === 'string' && raw === text && numText.test(raw) && labelText(raw)) return { v: text, kind: 'text' };
   const n = numeric(raw);
   if (n !== undefined) {
     if (norm(fmtBytes(raw)) === text) return { v: n, kind: 'bytes' };
@@ -316,7 +322,7 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
     const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
     // a text whose words the screen collapsed ('line1\nline2' shows 'line1 line2'): its own value kept beside them (review-15 gm3 B4)
     const own = typeof raw === 'string' && t !== '' && raw !== t && norm(raw) === t ? { raw } : {};
-    const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), ...own, status: statusOf(td), link: linkOf(td), text: t };
+    const c: Cell = { ...(raw !== undefined ? typed(raw, t, numCol[j]) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), ...own, status: statusOf(td), link: linkOf(td), text: t };
     // (X15) a status cell that writes its status word after its figure ('463.71 warning', '92 % critical'; the screen keeps
     // the word for a reader who cannot tell the colours apart): the grid sheet writes the figure, its status the fill (an
     // activity mark ' *' goes with the word, or alone on a cell with no word: '0 *'); the CSV, which has no fill, keeps

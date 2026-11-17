@@ -285,7 +285,8 @@ function numberAt(t: HTMLTableElement, td: Element | undefined, raw: unknown): N
   const text = cellText(td);
   if (text === '') return undefined;
   const j = [...td.parentElement!.children].indexOf(td);
-  return numOf(raw !== undefined ? typed(raw, text) : heads(t)[j]?.classList.contains('num') ? fromText(text) : undefined);
+  const num = !!heads(t)[j]?.classList.contains('num');   // a text column's label that reads as a number ('17.10') is no number here either
+  return numOf(raw !== undefined ? typed(raw, text, num) : num ? fromText(text) : undefined);
 }
 // numOf: an exported cell's number in its unit's base (a duration is stored in days, a share as a fraction)
 function numOf(c: Pick<Cell, 'v' | 'kind'> | undefined): Num | undefined {
