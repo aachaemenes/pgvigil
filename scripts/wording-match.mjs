@@ -271,6 +271,18 @@ export function selfTest() {
     ['sqlserver', { tag: 'sales' }, 'disks?tag=sales&w=1h', 'cell', 'aurora', ['Aurora']],
     ['sqlserver', { tag: 'sales' }, 'admin?tag=sales&w=1h', 'cell', 'aurora serverless v2', ['Aurora', 'Serverless v2']],
     ['sqlserver', { tag: 'sales' }, 'admin_instances?tag=sales&w=1h', 'cell', 'aurora', ['Aurora']],
+    // the Retention page lists pgvigil's own repository tables in any folder (the 200 largest of about 500 drawn): a
+    // table named in a Retention or Same as cell is pgvigil's own whether or not its own row is drawn - THE STUB: a
+    // PostgreSQL tag folder's page with mssql_wait_state's own row cut (its name not among the page's names); the row
+    // is those cells' shapes alone (q_retention.go retentionWords): another page's cell, a prose line, and a cell
+    // that holds another SQL Server word stay red
+    ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'cell', 'rows mssql_wait_state no longer names', []],
+    ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'cell', 'rows older than the age that mssql_wait_state no longer names', []],
+    ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'cell', '2 rules: rows older than the age; rows mssql_wait_state no longer names', []],
+    ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'cell', 'mssql_wait_state', []],
+    ['postgres', { tag: 'aurora' }, 'storage?tag=aurora&w=1h', 'cell', 'mssql_wait_state', ['mssql_']],
+    ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'prose', 'rows mssql_wait_state no longer names', ['mssql_']],
+    ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'cell', 'mssql_plancache: the Query Store of each database', ['mssql_', 'Query Store']],
   ];
   for (const [engine, scope, page, kind, text, want] of scoped) {
     const got = check({ text, kind, page }, { engine, words, allow, names: scopeNames(fleet, scope) }).map(r => r.word);
