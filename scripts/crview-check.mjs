@@ -85,49 +85,29 @@ const os = await import('node:os');
 const path = await import('node:path');
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-const dsn = process.env.PGVIGIL_ADMIN_DSN;
-if (!dsn) { console.error('FAIL: PGVIGIL_ADMIN_DSN is not set'); process.exit(2); }
+// the serve under test is proof-crview.sh's: a demo seed served by `pgvigil serve` WITH the login (a demo serve has
+// none, and saving a report, its role rules and a refused run need one), its address and two users from the environment
+// (passwords through the environment, never a command line): PGVIGIL_CRVIEW_URL, PGVIGIL_CRVIEW_ADMIN and
+// PGVIGIL_CRVIEW_OPERATOR as user:password; PGVIGIL_ADMIN_DSN and PGVIGIL_CRVIEW_DB for the store's own reads
+const dsn = process.env.PGVIGIL_ADMIN_DSN, db = process.env.PGVIGIL_CRVIEW_DB ?? '';
+const base0 = process.env.PGVIGIL_CRVIEW_URL ?? '';
+const [adminUser, adminPw] = (process.env.PGVIGIL_CRVIEW_ADMIN ?? ':').split(/:(.*)/s);
+const [opUser, opPw] = (process.env.PGVIGIL_CRVIEW_OPERATOR ?? ':').split(/:(.*)/s);
+if (!dsn || !db || !base0 || !adminUser || !opUser) { console.error('FAIL: PGVIGIL_ADMIN_DSN, PGVIGIL_CRVIEW_DB, PGVIGIL_CRVIEW_URL, PGVIGIL_CRVIEW_ADMIN and PGVIGIL_CRVIEW_OPERATOR are needed (scripts/proof-crview.sh sets them)'); process.exit(2); }
 const shots = process.env.PGVIGIL_CRVIEW_SHOTS ?? '';
-const waitS = Number(process.env.PGVIGIL_DEMO_WAIT_S ?? 240);
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pgvigil-crview-'));
-const db = `pgvigil_crview_${process.pid}`;
-const port = 21000 + Math.floor(Math.random() * 9000);
-let srv = null, chr = null, done = false;
+let chr = null, done = false;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const started = Date.now();
-const psql = (sql, dbname = db) => execFileSync('psql', [`${dsn} dbname=${dbname}`, '-XAtq', '-c', sql], { encoding: 'utf8' }).trim();
-// cleanup: on every way out (the end, a crash, Ctrl+C, a kill, a dropped ssh session): the server and Chromium stopped,
-// the database dropped by name (a drop that fails fails the run), the work folder removed (Chromium's profile retried
-// while its processes finish)
+const psql = sql => execFileSync('psql', [`${dsn} dbname=${db}`, '-XAtq', '-c', sql], { encoding: 'utf8' }).trim();
+// cleanup: Chromium stopped and the work folder removed on every way out; the serve and the database are proof-crview.sh's
 function cleanup() {
   if (done) return; done = true;
-  try { srv?.kill('SIGTERM'); } catch { /* gone */ }
   try { chr?.kill('SIGTERM'); } catch { /* gone */ }
-  // the drop retried while the demo's sessions close: SIGTERM does not wait, and a demo still seeding has a pool that
-  // opens a session again after FORCE ends it ('is being accessed by other users', gridmenu-b2 under a load of 66): after
-  // a refusal the serve is killed outright, up to 10 tries 0.5 s apart (a sync pause: no timer runs in an exit handler)
-  for (let k = 1; ; k++) {
-    try { psql(`drop database if exists ${db} with (force)`, 'postgres'); break; }
-    catch (e) {
-      if (k >= 10) { console.error(`FAIL cleanup: the database ${db} was not dropped: ${e.message}`); process.exitCode = 1; break; }
-      try { srv?.kill('SIGKILL'); } catch { /* gone */ }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
-    }
-  }
   try { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }); } catch (e) { console.error(`cleanup: ${work} was not removed: ${e.message}`); }
 }
 process.on('exit', cleanup);
 for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) process.on(sig, () => { cleanup(); process.exit(code); });
-
-if (!fs.existsSync(path.join(root, 'internal/web/dist/app.js'))) { console.error('FAIL: internal/web/dist/app.js is missing: build the web bundle first'); process.exit(2); }
-console.log(`== build, seed the demo into ${db}, serve on 127.0.0.1:${port}`);
-execFileSync('go', ['build', '-o', path.join(work, 'pgvigil'), './cmd/pgvigil'], { cwd: root, env: { ...process.env, CGO_ENABLED: '0' }, stdio: 'inherit' });
-psql(`create database ${db}`, 'postgres');
-const log = fs.openSync(path.join(work, 'demo.log'), 'w');
-srv = spawn(path.join(work, 'pgvigil'), ['demo', '-dsn', `${dsn} dbname=${db}`, '-serve', '-listen', `127.0.0.1:${port}`, '-days', '3'], { stdio: ['ignore', log, log] });
-let up = false;
-for (let i = 0; i < waitS && !up; i++) { await sleep(1000); up = fs.readFileSync(path.join(work, 'demo.log'), 'utf8').includes('pgvigil demo serving'); if (srv.exitCode !== null) break; }
-if (!up) { console.error(fs.readFileSync(path.join(work, 'demo.log'), 'utf8').split('\n').slice(-8).join('\n')); console.error(`FAIL: the demo did not come up in ${waitS} s`); process.exit(1); }
 const dl = path.join(work, 'dl'); fs.mkdirSync(dl);
 // port 0: Chromium takes a free port and writes it into its profile (DevToolsActivePort), so the check talks to its own
 chr = spawn('chromium', ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${path.join(work, 'chrome')}`, '--no-first-run', '--disable-gpu', 'about:blank'], { stdio: 'ignore' });
@@ -138,7 +118,7 @@ for (let i = 0; i < 60 && !tabs; i++) {
   tabs = await fetch(`http://127.0.0.1:${cdp}/json`).then(r => r.json()).catch(() => null);
 }
 if (!tabs) { console.error("FAIL: chromium's CDP port never answered"); process.exit(1); }
-const base = `http://127.0.0.1:${port}/`, origin = base.replace(/\/$/, '');
+const base = base0.replace(/\/?$/, '/'), origin = base.replace(/\/$/, '');
 
 // ---- CDP ----
 const ws = new WebSocket(tabs.find(t => t.type === 'page').webSocketDebuggerUrl); await new Promise(r => { ws.onopen = r; });
@@ -180,6 +160,16 @@ const go = async h => {
   for (let i = 0; i < 60; i++) { await sleep(250); if (await ev(`!!document.querySelector('main section, main .grid-box') && !document.querySelector('main > p.empty[role=status]') && !!document.querySelector('#tree .tree-root')`)) break; }
   await sleep(500);
 };
+
+// login: the browser signed in as one user (the session cookie in Chromium's own jar; the password goes over CDP to
+// the page, never a command line); the page at the serve first, any earlier session ended
+const login = async (u, p) => {
+  await send('Page.navigate', { url: base }); await sleep(500);
+  await ev(`fetch('/api/logout', { method: 'POST', headers: { 'X-Pgvigil': '1' } }).catch(() => null)`);
+  return ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(${JSON.stringify({ username: u, password: p })}) }).then(r => r.status)`);
+};
+const st = await login(adminUser, adminPw);
+if (st !== 200) { console.error(`FAIL: the admin's sign-in answered ${st}`); process.exit(1); }
 
 // ---- the cases (task 1 writes them group by group; a group not written yet is one FAIL saying so) ----
 const notYet = ['task 2 who sees a report', 'task 3 the run', 'task 4 the result sets', 'task 5 the columns', 'task 6 the links',
