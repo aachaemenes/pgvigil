@@ -255,6 +255,14 @@ SELECT mp.server, mp.pool, mp.databases, count(w.snapshot_at) AS minutes,
  GROUP BY mp.server, mp.pool, mp.databases
  ORDER BY max(w.avg_edtu_percent) DESC NULLS LAST, max(w.max_cpu_percent) DESC NULLS LAST, mp.server, mp.pool`
 
+// azurePoolCurrent: the scope's databases still in the pool the scope names for them - one whose governance row is newer
+// than its pool member row and in no pool (it left the pool for a single tier; the member row stays) is left out.
+const azurePoolCurrent = `
+  SELECT inst.* FROM inst
+    LEFT JOIN pgvigil.mssql_pool_member pm ON pm.instance_id = inst.instance_id
+    LEFT JOIN pgvigil.mssql_azuredb_governance g ON g.instance_id = inst.instance_id
+   WHERE NOT coalesce(g.snapshot_at > pm.seen_at AND g.pool IS NULL AND g.service_objective IS DISTINCT FROM 'ElasticPool', false)`
+
 // sqlAzurePoolHistory: DBA Dash's Pool history (P25 task 9b): each change of an elastic pool's DTU or storage limit -
 // a period of 0395's that follows another of the same pool with another limit - once, however many of the pool's
 // databases keep a copy (DISTINCT: the copies differ only in their first period's start, which no change has), with
@@ -262,19 +270,32 @@ SELECT mp.server, mp.pool, mp.databases, count(w.snapshot_at) AS minutes,
 // (the scope's az_server / az_pool); a change of the CPU limit alone is not one (Microsoft: elastic_pool_cpu_limit
 // 'informational purposes only. Not supported.' - never shown). $1 <= $2 only types the window's parameters (the
 // history is not cut by the window, as the Service Objectives changes are not).
-var sqlAzurePoolHistory = sqlAzureScope + `, p AS (
-  SELECT h.server, h.pool, h.valid_from, h.dtu_limit, h.storage_limit_mb,
-         lag(h.valid_from) OVER w AS prev_from, lag(h.dtu_limit) OVER w AS old_dtu, lag(h.storage_limit_mb) OVER w AS old_storage
+// A copy whose reads had a gap (a database not read for over master's 14 days) holds a change at the first period it
+// read after the gap: its period before ends earlier, so the change is known only between the two - changed_after,
+// left out where another copy holds the same change inside the gap (review t11-1 SHOULD 3). A database's copy counts
+// only while it is in that pool (azurePoolCurrent, NIT 5).
+var sqlAzurePoolHistory = sqlAzureScope + `, cur AS (` + azurePoolCurrent + `), p AS (
+  SELECT h.server, h.pool, h.valid_from, h.dtu_limit, h.storage_limit_mb, lag(h.valid_from) OVER w AS prev_from,
+         lag(h.valid_to) OVER w AS prev_to, lag(h.dtu_limit) OVER w AS old_dtu, lag(h.storage_limit_mb) OVER w AS old_storage
     FROM pgvigil.mssql_pool_limit_history h
-    JOIN inst ON inst.instance_id = h.instance_id AND upper(h.server) = upper(inst.az_server) AND upper(h.pool) = upper(inst.az_pool)
+    JOIN cur inst ON inst.instance_id = h.instance_id AND upper(h.server) = upper(inst.az_server) AND upper(h.pool) = upper(inst.az_pool)
   WINDOW w AS (PARTITION BY h.instance_id, h.server, h.pool ORDER BY h.valid_from)
+), c AS (
+  SELECT DISTINCT p.server, p.pool, p.valid_from AS changed_at, CASE WHEN p.prev_to < p.valid_from THEN p.prev_to END AS changed_after,
+         p.old_dtu AS old_dtu_limit, p.dtu_limit AS new_dtu_limit, p.old_storage AS old_storage_limit_mb, p.storage_limit_mb AS new_storage_limit_mb
+    FROM p
+   WHERE p.prev_from IS NOT NULL AND (p.old_dtu IS DISTINCT FROM p.dtu_limit OR p.old_storage IS DISTINCT FROM p.storage_limit_mb)
 )
-SELECT DISTINCT p.server, p.pool, p.valid_from AS changed_at, p.old_dtu AS old_dtu_limit, p.dtu_limit AS new_dtu_limit,
-       p.old_storage AS old_storage_limit_mb, p.storage_limit_mb AS new_storage_limit_mb
-  FROM p
- WHERE p.prev_from IS NOT NULL AND (p.old_dtu IS DISTINCT FROM p.dtu_limit OR p.old_storage IS DISTINCT FROM p.storage_limit_mb)
+SELECT c.server, c.pool, c.changed_at, c.changed_after, c.old_dtu_limit, c.new_dtu_limit, c.old_storage_limit_mb, c.new_storage_limit_mb
+  FROM c
+ WHERE (c.changed_after IS NULL OR NOT EXISTS (
+          SELECT 1 FROM c k
+           WHERE k.changed_after IS NULL AND upper(k.server) = upper(c.server) AND upper(k.pool) = upper(c.pool)
+             AND (k.old_dtu_limit, k.new_dtu_limit, k.old_storage_limit_mb, k.new_storage_limit_mb)
+                 IS NOT DISTINCT FROM (c.old_dtu_limit, c.new_dtu_limit, c.old_storage_limit_mb, c.new_storage_limit_mb)
+             AND k.changed_at > c.changed_after AND k.changed_at <= c.changed_at))
    AND $1::timestamptz <= $2::timestamptz
- ORDER BY changed_at DESC, p.server, p.pool
+ ORDER BY c.changed_at DESC, c.server, c.pool
  LIMIT 2000`
 
 // sqlAzurePoolHistoryState: per elastic pool of the scope's databases, when one of them last read master's view
@@ -282,13 +303,13 @@ SELECT DISTINCT p.server, p.pool, p.valid_from AS changed_at, p.old_dtu AS old_d
 // ok or partial, or none logged yet), so a pool whose readers were skipped since (no dbmanager, no way into master) or
 // failed has no current read (review t11-1 SHOULD 1) - its last read before that (read_until) and, where a run was
 // skipped, the newest skip's words: the page's words for such a pool.
-var sqlAzurePoolHistoryState = sqlAzureScope + `
+var sqlAzurePoolHistoryState = sqlAzureScope + `, cur AS (` + azurePoolCurrent + `)
 SELECT inst.az_server AS server, inst.az_pool AS pool,
        max(rd.read_at) FILTER (WHERE rd.state = 'read' AND (cd.status IS NULL OR cd.status IN ('ok', 'partial'))) AS last_read,
        max(rd.read_at) FILTER (WHERE rd.state = 'read') AS read_until,
        (array_agg(cd.note ORDER BY cd.snapshot_at DESC) FILTER (WHERE cd.status = 'skipped'))[1] AS skip_note,
        max(cd.snapshot_at) FILTER (WHERE cd.status = 'skipped') AS skipped_at
-  FROM inst
+  FROM cur inst
   LEFT JOIN pgvigil.mssql_pool_limit_read rd ON rd.instance_id = inst.instance_id
   LEFT JOIN pgvigil.collection_dates cd ON cd.instance_id = inst.instance_id AND cd.collection = 'mssql_pool_limits'
  WHERE inst.platform = 'azuresqldb' AND inst.az_server IS NOT NULL AND inst.az_pool IS NOT NULL AND $1::timestamptz <= $2::timestamptz

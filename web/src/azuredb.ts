@@ -221,7 +221,9 @@ export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTML
     if (states.length > unread.length) {
       sec.append(grid(rowsOf(d.pool_history), [
         { key: 'pool', label: 'elastic pool', fmt: (v, r) => el('a', { href: poolHref(ctx, String(r.server), String(v)) }, String(v)) },
-        { key: 'server', label: 'logical server' }, { key: 'changed_at', label: 'changed', fmt: fmtTime },
+        { key: 'server', label: 'logical server' },
+        // a change read after a gap in the reads is known only between two times (review t11-1 SHOULD 3)
+        { key: 'changed_at', label: 'changed', fmt: (v, r) => r.changed_after != null ? `between ${fmtTime(r.changed_after)} and ${fmtTime(v)}` : fmtTime(v) },
         n('old_dtu_limit', 'DTU limit from'), n('new_dtu_limit', 'DTU limit to'),
         n('old_storage_limit_mb', 'storage limit from', mb), n('new_storage_limit_mb', 'storage limit to', mb),
       ], 'No change of a read pool\'s DTU or storage limit in what pgvigil has read (master keeps 14 days; pgvigil keeps what it read).'));

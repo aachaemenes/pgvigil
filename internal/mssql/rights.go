@@ -425,7 +425,17 @@ func ReadRights(ctx context.Context, conn *sql.Conn, platform string) (RightsRea
 			answers[r.Key] = vals[i]
 		}
 	}
-	for _, r := range Rights {
+	out.addStates(Rights, states, answers, id, func() []string { return rightsNoAccess(ctx, conn) })
+	out.guard(id, info)
+	return out, nil
+}
+
+// addStates lists each right's state from the read (review t11-1 SHOULD 4: apart from ReadRights so a test feeds it the
+// answers): 'not on this server' with its reason (states), hidden when it was not asked, an opt-in with its Null words
+// and its block (counted in OptIns, never missing), else held, its Null words, or missing with its grant (counted;
+// database_access names the databases noAccess lists).
+func (out *RightsRead) addStates(rights []Right, states map[string]string, answers map[string]sql.NullInt64, id rightsIdentity, noAccess func() []string) {
+	for _, r := range rights {
 		st := RightState{Key: r.Key, Name: r.Name, For: r.For, Core: r.Core}
 		if why, off := states[r.Key]; off {
 			st.State = why
@@ -454,13 +464,11 @@ func ReadRights(ctx context.Context, conn *sql.Conn, platform string) (RightsRea
 				out.MissingCore++
 			}
 			if r.Key == "database_access" {
-				st.Databases = rightsNoAccess(ctx, conn)
+				st.Databases = noAccess()
 			}
 		}
 		out.Rights = append(out.Rights, st)
 	}
-	out.guard(id, info)
-	return out, nil
 }
 
 // guard decides whether a script may be printed at all, and takes every statement out when it may not: a name the
