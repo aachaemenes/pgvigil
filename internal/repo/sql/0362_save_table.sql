@@ -24,6 +24,11 @@
 --   and this file's save_table. 0353_job_start_step.sql:16-18 (rel-p21-a20 0b896f86) touches only action_kinds: no
 --   CHECK. KILLGUARD (rel-killguard ef0327d4) has no migration. The join keeps ONE of each constraint, this list, in the
 --   file applied last.
+--   'Applied last' is by NAME ORDER only on a store that has neither: the migrator applies every file not yet in
+--   schema_version in name order (repo.go:126-133), so a store that ran 0362 and later gets 0347 runs 0347 AFTER it -
+--   with a save_table row present 0347's ADD CONSTRAINT fails validation and the store stops migrating; with none,
+--   save_table silently leaves the CHECK and every later save's audit insert fails (review-31 S5). So the join line
+--   is: 0347's fixed text carries THIS union too (save_table included), or 0347 never reaches a store after 0362.
 --
 -- Locks: CREATE OR REPLACE FUNCTION locks the function only. Each CHECK is dropped and added again: ACCESS EXCLUSIVE
 -- on pgvigil.actions_log for its validation scan (one row per attempt, a small table), last in the file, so the lock

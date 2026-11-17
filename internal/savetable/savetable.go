@@ -40,9 +40,10 @@ type Target struct {
 func (t Target) Display() string { return t.Database + "." + t.Schema + "." + t.Table }
 
 // CheckName refuses an identifier with words naming the field and the reason; nil = it is quoted, never refused for
-// its characters. A control character, an invisible format character (zero-width spaces, direction overrides, the
-// byte-order mark) and the line and paragraph separators are refused: they would make the audit's name read as
-// another (review-29 N2). PostgreSQL counts 63 bytes in UTF-8, SQL Server 128 UTF-16 code units (review-29 N1).
+// its characters. A control character, an invisible character (invisibleRune) and the line and paragraph separators
+// are refused: they would make the audit's name read as another (review-29 N2). PostgreSQL counts 63 bytes in UTF-8,
+// SQL Server 128 UTF-16 code units (review-29 N1); a SQL Server name ending in a space is refused (SQL Server drops a
+// delimited name's trailing spaces, so the bulk copy's column match would fail: review-31 NIT 8).
 func CheckName(engine, field, name string) error {
 	if name == "" {
 		return fmt.Errorf("%s: the name is empty", field)
@@ -51,9 +52,12 @@ func CheckName(engine, field, name string) error {
 		switch {
 		case unicode.Is(unicode.Cc, r):
 			return fmt.Errorf("%s: the name holds a control character (U+%04X)", field, r)
-		case unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029':
+		case invisibleRune(r):
 			return fmt.Errorf("%s: the name holds an invisible character (U+%04X): it would read as another name", field, r)
 		}
+	}
+	if engine == SQLServer && strings.HasSuffix(name, " ") {
+		return fmt.Errorf("%s: the name ends with a space: SQL Server drops a name's trailing spaces", field)
 	}
 	switch engine {
 	case Postgres:
@@ -73,8 +77,29 @@ func CheckName(engine, field, name string) error {
 	return nil
 }
 
-// CheckColumns refuses an empty column list, a repeated name (case-insensitively on SQL Server) and any name
-// CheckName refuses.
+// invisibleRune says whether r draws nothing or reads as a space it is not: a format character (zero-width spaces,
+// direction overrides, the byte-order mark), the line and paragraph separators, a space other than U+0020, private
+// use, the combining grapheme joiner, the variation selectors, the Hangul fillers and the braille blank (review-31
+// NIT 9).
+func invisibleRune(r rune) bool {
+	switch {
+	case unicode.Is(unicode.Cf, r), unicode.Is(unicode.Co, r), r == ' ', r == ' ':
+		return true
+	case unicode.Is(unicode.Zs, r) && r != ' ':
+		return true
+	case r == '͏', r >= '︀' && r <= '️', r >= '\U000e0100' && r <= '\U000e01ef':
+		return true
+	case r == 'ᅟ', r == 'ᅠ', r == 'ㅤ', r == 'ﾠ', r == '⠀':
+		return true
+	}
+	return false
+}
+
+// pgSystemColumns are PostgreSQL's system column names: a table's own column cannot take one (42701).
+var pgSystemColumns = map[string]bool{"xmin": true, "xmax": true, "cmin": true, "cmax": true, "ctid": true, "tableoid": true}
+
+// CheckColumns refuses an empty column list, a repeated name (case-insensitively on SQL Server), a PostgreSQL system
+// column's name (review-31 NIT 10) and any name CheckName refuses.
 func CheckColumns(engine string, names []string) error {
 	if len(names) == 0 {
 		return errors.New("the grid has no column to write")
@@ -84,6 +109,9 @@ func CheckColumns(engine string, names []string) error {
 		field := fmt.Sprintf("column %d", i+1)
 		if err := CheckName(engine, field, n); err != nil {
 			return err
+		}
+		if engine == Postgres && pgSystemColumns[n] {
+			return fmt.Errorf("%s: %q is a PostgreSQL system column name: a table's own column cannot take it", field, n)
 		}
 		k := n
 		if engine == SQLServer {
@@ -178,6 +206,12 @@ func ColumnType(engine, kind string) (string, error) {
 	return t[0], nil
 }
 
+// A dec cell's bounds before any arithmetic: its text's length and its exponent (review-31 S2).
+const (
+	maxDecText = 64
+	maxDecExp  = 1000
+)
+
 // decimalText is a JSON number's exact decimal text (an exponent written out) and its count of decimal places.
 func decimalText(s string) (string, int, bool) {
 	r, ok := new(big.Rat).SetString(s)
@@ -219,6 +253,16 @@ func Convert(engine, kind string, row int, column string, v any) (any, error) {
 		if !ok {
 			return nil, bad("the value is not a number")
 		}
+		// bounded before any arithmetic (review-31 S2: big.Rat takes an exponent up to 1e6 and writes every digit):
+		// a browser's number is at most 24 characters
+		if len(n) > maxDecText {
+			return nil, bad(fmt.Sprintf("the number is over %d characters", maxDecText))
+		}
+		if e := strings.IndexAny(string(n), "eE"); e >= 0 {
+			if x, err := strconv.Atoi(string(n[e+1:])); err != nil || x > maxDecExp || x < -maxDecExp {
+				return nil, bad(fmt.Sprintf("the number's exponent is beyond %d", maxDecExp))
+			}
+		}
 		text, places, ok := decimalText(string(n))
 		if !ok {
 			return nil, bad("the value is not a number")
@@ -247,7 +291,13 @@ func Convert(engine, kind string, row int, column string, v any) (any, error) {
 		if err != nil {
 			return nil, bad("the value is not a time with its offset (RFC 3339)")
 		}
-		return t, nil
+		// DATETIMEOFFSET starts at 0001-01-01 UTC; go-mssqldb would wrap an earlier day count (review-31 S7)
+		if engine == SQLServer && t.UTC().Year() < 1 {
+			return nil, bad("the time is before 0001-01-01 UTC, SQL Server's first day")
+		}
+		// microseconds on both engines: PostgreSQL's timestamptz holds no more, so one grid's two tables hold one value
+		// (review-31 NIT 11)
+		return t.Truncate(time.Microsecond), nil
 	case "day":
 		s, ok := v.(string)
 		if !ok {
@@ -256,6 +306,9 @@ func Convert(engine, kind string, row int, column string, v any) (any, error) {
 		t, err := time.Parse("2006-01-02", s)
 		if err != nil {
 			return nil, bad("the value is not a date (YYYY-MM-DD)")
+		}
+		if engine == SQLServer && t.Year() < 1 {
+			return nil, bad("the date is before 0001-01-01, SQL Server's first day")
 		}
 		return t, nil
 	case "text":
@@ -355,22 +408,29 @@ func MaxCols(engine string) int {
 
 // Decode reads a body with UseNumber, refusing - before the rest is read - more rows or cells than lim allows, more
 // columns than the engine allows (SQL Server 1,024, PostgreSQL 1,600) or a row whose length is not the columns'. The
-// columns come before the rows (the page sends them so); an unknown field is refused.
+// columns come before the rows (the page sends them so); an unknown field, a field given twice, a column with a
+// field of its own and a cell that is a list or an object are refused. The columns are read one at a time and each
+// row value by value, counted as it streams, so a refused body is never held whole (review-31 S1, S3).
 func Decode(r io.Reader, engine string, lim Limits) (Body, error) {
 	var b Body
 	bad := func(err error) (Body, error) { return Body{}, fmt.Errorf("body: %w", err) }
 	dec := json.NewDecoder(r)
 	dec.UseNumber()
+	dec.DisallowUnknownFields()
 	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
 		return bad(errors.New("not a JSON object"))
 	}
-	cells, haveCols := 0, false
+	cells, haveCols, seen := 0, false, map[string]bool{}
 	for dec.More() {
 		t, err := dec.Token()
 		if err != nil {
 			return bad(err)
 		}
 		key, _ := t.(string)
+		if seen[key] {
+			return bad(fmt.Errorf("the field %q is given twice", key))
+		}
+		seen[key] = true
 		switch key {
 		case "instance_id":
 			err = dec.Decode(&b.InstanceID)
@@ -383,13 +443,25 @@ func Decode(r io.Reader, engine string, lim Limits) (Body, error) {
 		case "confirm":
 			err = dec.Decode(&b.Confirm)
 		case "cols":
-			if err = dec.Decode(&b.Cols); err == nil && len(b.Cols) > MaxCols(engine) {
-				name := "PostgreSQL"
-				if engine == SQLServer {
-					name = "SQL Server"
-				}
-				return bad(fmt.Errorf("%d columns: %s allows %d", len(b.Cols), name, MaxCols(engine)))
+			if t, err := dec.Token(); err != nil || t != json.Delim('[') {
+				return bad(errors.New("cols is not a list"))
 			}
+			b.Cols = []Col{}
+			for dec.More() {
+				if len(b.Cols) >= MaxCols(engine) {
+					name := "PostgreSQL"
+					if engine == SQLServer {
+						name = "SQL Server"
+					}
+					return bad(fmt.Errorf("over %d columns: %s allows %d", MaxCols(engine), name, MaxCols(engine)))
+				}
+				var c Col
+				if err := dec.Decode(&c); err != nil {
+					return bad(fmt.Errorf("column %d: %w", len(b.Cols)+1, err))
+				}
+				b.Cols = append(b.Cols, c)
+			}
+			_, err = dec.Token() // the columns' closing bracket
 			haveCols = true
 		case "rows":
 			if !haveCols {
@@ -403,15 +475,9 @@ func Decode(r io.Reader, engine string, lim Limits) (Body, error) {
 				if len(b.Rows) >= lim.Rows {
 					return bad(fmt.Errorf("the grid is over %d rows: Script Data Table writes it as a file", lim.Rows))
 				}
-				var row []any
-				if err := dec.Decode(&row); err != nil {
-					return bad(fmt.Errorf("row %d: %w", len(b.Rows)+1, err))
-				}
-				if len(row) != len(b.Cols) {
-					return bad(fmt.Errorf("row %d holds %d values for %d columns", len(b.Rows)+1, len(row), len(b.Cols)))
-				}
-				if cells += len(row); cells > lim.Cells {
-					return bad(fmt.Errorf("the grid is over %d cells: Script Data Table writes it as a file", lim.Cells))
+				row, err := decodeRow(dec, len(b.Rows)+1, len(b.Cols), &cells, lim.Cells)
+				if err != nil {
+					return bad(err)
 				}
 				b.Rows = append(b.Rows, row)
 			}
@@ -427,6 +493,38 @@ func Decode(r io.Reader, engine string, lim Limits) (Body, error) {
 		return bad(err)
 	}
 	return b, nil
+}
+
+// decodeRow reads row n value by value: a value past ncols, a cell past the cells limit, or a cell that is a list or
+// an object is refused at once (review-31 S3); a row shorter than the columns is refused at its end.
+func decodeRow(dec *json.Decoder, n, ncols int, cells *int, maxCells int) ([]any, error) {
+	if t, err := dec.Token(); err != nil || t != json.Delim('[') {
+		return nil, fmt.Errorf("row %d is not a list", n)
+	}
+	row := make([]any, 0, ncols)
+	for dec.More() {
+		if len(row) >= ncols {
+			return nil, fmt.Errorf("row %d holds more values than its %d columns", n, ncols)
+		}
+		if *cells++; *cells > maxCells {
+			return nil, fmt.Errorf("the grid is over %d cells: Script Data Table writes it as a file", maxCells)
+		}
+		t, err := dec.Token()
+		if err != nil {
+			return nil, fmt.Errorf("row %d: %w", n, err)
+		}
+		if _, isDelim := t.(json.Delim); isDelim {
+			return nil, fmt.Errorf("row %d, column %d: the value is a list or an object", n, len(row)+1)
+		}
+		row = append(row, t)
+	}
+	if _, err := dec.Token(); err != nil { // the row's closing bracket
+		return nil, fmt.Errorf("row %d: %w", n, err)
+	}
+	if len(row) != ncols {
+		return nil, fmt.Errorf("row %d holds %d values for %d columns", n, len(row), ncols)
+	}
+	return row, nil
 }
 
 // Conn is one login's connection on the chosen database: the monitoring login's, or the writing (actions) login's
@@ -476,10 +574,14 @@ func CreateSQL(engine string, t Target, cols []Col) (string, error) {
 }
 
 // ConvertRows converts every cell (Convert) and counts the NUL characters dropped from text cells; the first cell
-// that does not convert refuses the whole grid, naming its row and column.
+// that does not convert, or a row whose length is not the columns' (review-31 S1), refuses the whole grid, naming its
+// row.
 func ConvertRows(engine string, cols []Col, rows [][]any) ([][]any, int, error) {
 	out, nuls := make([][]any, len(rows)), 0
 	for i, r := range rows {
+		if len(r) != len(cols) {
+			return nil, 0, fmt.Errorf("row %d holds %d values for %d columns; nothing was written", i+1, len(r), len(cols))
+		}
 		o := make([]any, len(r))
 		for j, v := range r {
 			if cols[j].Type == "text" {
@@ -522,7 +624,13 @@ func Check(ctx context.Context, in Instance, dbs []Database, b Body, open func(c
 	if want := Confirm(in.Name, b.Database); strings.TrimSpace(b.Confirm) != want {
 		return refuse(fmt.Sprintf("the typed confirmation is not %s: nothing was written", want))
 	}
-	// 7. the database, the identifiers and the kinds
+	// 7. the identifiers first (a refused name never reaches the words raw: review-31 S6), the database, the kinds
+	if err := CheckName(in.Engine, "database", b.Database); err != nil {
+		return refuse(err.Error())
+	}
+	if err := CheckName(in.Engine, "table", b.Table); err != nil {
+		return refuse(err.Error())
+	}
 	var db *Database
 	for i := range dbs {
 		if dbs[i].Name == b.Database {
@@ -535,12 +643,6 @@ func Check(ctx context.Context, in Instance, dbs []Database, b Body, open func(c
 	}
 	if w := RefuseDatabase(in.Engine, *db); w != "" {
 		return refuse(w)
-	}
-	if err := CheckName(in.Engine, "database", b.Database); err != nil {
-		return refuse(err.Error())
-	}
-	if err := CheckName(in.Engine, "table", b.Table); err != nil {
-		return refuse(err.Error())
 	}
 	names := make([]string, len(b.Cols))
 	for i, c := range b.Cols {
