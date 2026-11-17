@@ -206,6 +206,9 @@ async function ddlSnapshots(ctx: Ctx, dbid: number | null, instance = ctx.instan
     el('div', { class: 'toolbar', role: 'group', 'aria-label': 'Snapshot pages' }, prev, at, next, el('label', {}, ' Page Size ', size)), list, objs);
 }
 
+// brokerStatus (control audit D4 a): DBA Dash's status numbers in its words and colours - 1 Critical, 2 Warning, 3 N/A, 4 OK
+const brokerStatus = (v: unknown) => v == null ? '' : ({ 1: badge('Critical', 'crit'), 2: badge('Warning', 'warn'), 3: badge('N/A', 'none'), 4: badge('OK', 'ok') } as Record<number, HTMLElement>)[Number(v)] ?? String(v);
+
 // serviceBroker: DBA Dash's database Service Broker tab (P25 row 73; 0392, the mssql_service_broker collection every 5
 // minutes): the user queues as last read (receive disabled = DBA Dash's poison mark; a missing activation procedure),
 // each queue's depth over the window, the transmission queue's groups, the conversations by state, the instance's
@@ -250,7 +253,10 @@ async function serviceBroker(ctx: Ctx, db: string): Promise<HTMLElement> {
     note ? el('p', { class: 'meta' }, `The last read did not read ${db}: ${String(note.note)} - these are the values read before.`) : readLine,
     el('h3', {}, 'Queues'),
     grid(queues, [
-      { key: 'schema_name', label: 'schema' }, { key: 'queue_name', label: 'queue' },
+      // control audit D4 a: DBA Dash's queue status first and its issues (the checks at DBA Dash's root-default thresholds)
+      { key: 'queue_status', label: 'status', fmt: brokerStatus },
+      { key: 'schema_name', label: 'schema' }, { key: 'queue_name', label: 'queue' }, { key: 'issues', wide: true },
+      { key: 'readers_status', label: 'readers', fmt: v => Number(v) === 2 ? badge('all busy', 'warn') : '' },
       { key: 'is_receive_enabled', label: 'receive', fmt: v => v === false ? badge('disabled (a poison message?)', 'crit') : yes(v) },
       { key: 'is_enqueue_enabled', label: 'enqueue', fmt: v => v === false ? badge('disabled', 'warn') : yes(v) },
       { key: 'message_count', label: 'messages', num: true, fmt: (v, r) => v == null ? (r.is_retention_enabled ? el('span', { class: 'meta', title: 'a RETENTION queue also holds received messages: its count is read from the queue, and was not this time' }, 'not read') : '') : fmtNum(v) },

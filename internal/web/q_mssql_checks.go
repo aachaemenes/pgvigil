@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/aachaemenes/pgvigil/internal/mssql"
@@ -72,14 +73,56 @@ SELECT c.name, c.value, c.value_for_secondary, c.is_default, c.is_present, c.not
 
 // the database's Service Broker (0392, P25 row 73: DBA Dash's database Service Broker tab). $2 the database's name;
 // the depth and the counters over the window ($3 / $4).
-const sqlMSSQLChecksBrokerQueues = `
+var sqlMSSQLChecksBrokerQueues = `
 SELECT q.schema_name, q.queue_name, q.is_receive_enabled, q.is_enqueue_enabled, q.is_retention_enabled, q.is_activation_enabled,
        q.is_poison_handling, q.activation_procedure, q.activation_procedure_exists, q.max_readers, q.message_count, q.activated_tasks,
        q.monitor_state, q.monitor_tasks_waiting, q.monitor_last_activated, q.monitor_last_empty, q.oldest_message_at, q.oldest_note,
-       q.note, q.is_present, q.first_seen, q.snapshot_at
+       q.note, q.is_present, q.first_seen, q.snapshot_at,
+       ` + brokerQueueStatusCols + `
   FROM pgvigil.mssql_broker_queue q
+  ` + brokerQueueStatusJoins + `
  WHERE q.instance_id = $1 AND q.database_name = $2::text
  ORDER BY q.is_present DESC, q.schema_name, q.queue_name`
+
+// DBA Dash's Service Broker thresholds at its ROOT DEFAULTS (Script.PostDeployment1.sql L2188-2210; control audit D4 a):
+// a queue 10,000 messages deep is a warning (no critical), its oldest message waiting 15 minutes a warning and 60
+// critical. D4 b's thresholds table (Root / Instance / Database / Queue) replaces them.
+const brokerDepthWarning, brokerAgeWarningMins, brokerAgeCriticalMins = 10000, 15, 60
+
+// brokerQueueStatusJoins / brokerQueueStatusCols (control audit D4 a; DBA Dash's ServiceBrokerQueueInfo L71-145): a
+// queue's minutes (DATEDIFF(mi) as DBA Dash counts them: minute boundaries crossed) and its checks - disabled (receive
+// or enqueue off: a poison message, or ALTER QUEUE), the activation procedure missing, activation off with messages,
+// activation notified 10 minutes or more with messages and nothing received, the depth and the oldest message's age
+// against the thresholds (an unread RETENTION depth or an unread age is N/A, 3) - and queue_status: 1 Critical, 2
+// Warning, 4 OK (DBA Dash's numbers); readers_status 2 when every activated reader is busy with messages waiting (not in
+// the status, as DBA Dash); issues the checks' words, NULL when none.
+var brokerQueueStatusJoins = fmt.Sprintf(`CROSS JOIN LATERAL (SELECT
+         CASE WHEN q.message_count > 0 THEN (extract(epoch FROM date_trunc('minute', q.snapshot_at) - date_trunc('minute', q.oldest_message_at)) / 60)::int END AS age_mins,
+         CASE WHEN q.monitor_state = 'NOTIFIED' THEN (extract(epoch FROM date_trunc('minute', q.snapshot_at) - date_trunc('minute', q.monitor_last_activated)) / 60)::int END AS notified_mins) bm
+  CROSS JOIN LATERAL (SELECT
+         coalesce(NOT q.is_receive_enabled OR NOT q.is_enqueue_enabled, false) AS disabled,
+         coalesce(q.is_activation_enabled AND q.activation_procedure_exists = false, false) AS proc_missing,
+         coalesce(NOT q.is_activation_enabled AND q.activation_procedure IS NOT NULL AND q.message_count > 0, false) AS act_off_msgs,
+         coalesce(bm.notified_mins >= 10 AND q.message_count > 0 AND q.is_receive_enabled, false) AS not_receiving,
+         CASE WHEN q.message_count IS NULL THEN 3 WHEN q.message_count >= %[1]d THEN 2 ELSE 4 END AS depth_status,
+         CASE WHEN bm.age_mins >= %[3]d THEN 1 WHEN bm.age_mins >= %[2]d THEN 2 WHEN bm.age_mins IS NULL AND q.message_count > 0 THEN 3 ELSE 4 END AS age_status) bk
+  CROSS JOIN LATERAL (SELECT CASE WHEN bk.proc_missing AND q.message_count > 0 THEN 1
+                                  WHEN bk.proc_missing OR bk.act_off_msgs OR bk.not_receiving THEN 2 ELSE 4 END AS activation_status) ba`,
+	brokerDepthWarning, brokerAgeWarningMins, brokerAgeCriticalMins)
+
+const brokerQueueStatusCols = `bm.age_mins AS oldest_age_mins, bm.notified_mins, bk.depth_status, bk.age_status, ba.activation_status,
+       CASE WHEN bk.disabled OR ba.activation_status = 1 OR bk.depth_status = 1 OR bk.age_status = 1 THEN 1
+            WHEN ba.activation_status = 2 OR bk.depth_status = 2 OR bk.age_status = 2 THEN 2 ELSE 4 END AS queue_status,
+       CASE WHEN q.is_activation_enabled AND q.max_readers > 0 AND q.activated_tasks >= q.max_readers AND q.message_count > 0 THEN 2 ELSE 4 END AS readers_status,
+       nullif(concat_ws('; ',
+         CASE WHEN bk.disabled THEN CASE WHEN coalesce(q.is_poison_handling, true)
+           THEN 'The queue is disabled - messages can be neither added nor received; usually a poison message (a RECEIVE rolled back 5 times in a row): deal with the message, then ALTER QUEUE ' || q.schema_name || '.' || q.queue_name || ' WITH STATUS = ON'
+           ELSE 'The queue is disabled (STATUS = OFF) and poison message handling is off, so ALTER QUEUE disabled it: ALTER QUEUE ' || q.schema_name || '.' || q.queue_name || ' WITH STATUS = ON' END END,
+         CASE WHEN bk.proc_missing THEN 'the activation procedure does not exist' END,
+         CASE WHEN bk.act_off_msgs THEN 'activation is disabled with messages waiting' END,
+         CASE WHEN bk.not_receiving THEN 'activation was notified ' || bm.notified_mins || ' minutes ago but nothing has received from the queue: check that the activation procedure RECEIVEs from it' END,
+         CASE WHEN bk.age_status IN (1, 2) THEN 'the oldest message has waited ' || bm.age_mins || ' minutes' END,
+         CASE WHEN bk.depth_status IN (1, 2) THEN 'the queue depth ' || q.message_count || ' is over the warning threshold' END), '') AS issues`
 
 // the depth samples of the window, oldest first - the NEWEST 20,000 when the window holds more (review t11-8 item 6:
 // the page says so when the reply is that long)
