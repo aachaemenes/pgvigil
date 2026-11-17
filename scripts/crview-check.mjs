@@ -13,6 +13,9 @@
 //                  match no instance' for rules that match none; Clear Rules lists it everywhere again (DBA Dash L84)
 //   CR-role        a report whose access is the list ['admin'] (a list of role names: Allen's Q160 is open): an operator's page says 'You do not have access to this report'
 //                  and its run POST answers 403 with the role's words; an admin runs it (L85)
+//   CR-upgrade     0372's named check: a report saved by the build before 0372 (proof-crview.sh's PGVIGIL_OLD_SRC) draws
+//                  as before - its view {}, listed on the fleet and on an instance, opened by an operator, its run's
+//                  grid 'The answer' / 42; without an older build the case says NOT PROVEN (no FAIL)
 //  task 3 - the run
 //   CR-cancel      a report that sleeps 45 s (a report's timeout is 60 s at most): Cancel ends it within 5 s, the status 'Cancelled', the statement gone
 //                  from the server (pg_stat_activity / sys.dm_exec_requests read by the proof) (L89)
@@ -225,6 +228,21 @@ await guard('CR-role', async () => {
   const adminRun = await pageJSON('POST', 'customreports/run', { report_id: saved.id, target: 'fleet', params: {} });
   check('CR-role', saved.status === 200 && said && run.status === 403 && /admin role/.test(run.body) && adminRun.status === 200,
     `saved ${saved.status}; the operator's page says no access ${said}; the operator's run ${run.status} ${run.body.slice(0, 120)}; the admin's run ${adminRun.status}`);
+});
+
+await guard('CR-upgrade', async () => {
+  const id = Number(process.env.CR_UPGRADE_ID || 0);
+  if (!id) { console.log('NOT PROVEN CR-upgrade: no build from before 0372 given (PGVIGIL_OLD_SRC)'); return; }
+  const row = rowsOf(parse((await pageJSON('GET', `customreports?report=${id}`)).body)?.report)[0];
+  const name = String(row?.name ?? ''), crPgId = (await instances()).find(r => r.name === (process.env.CR_PG_NAME ?? ''))?.instance_id;
+  const listed = { fleet: await listedOn('', name), instance: await listedOn(`?i=${crPgId}`, name) };
+  await login(opUser, opPw);
+  await go(`#/customreports?report=${id}`); await sleep(1500);
+  const page = await ev(`({ h2: document.querySelector('main h2')?.textContent ?? '', refused: (document.querySelector('main')?.textContent ?? '').includes('You do not have access'),
+    head: [...document.querySelectorAll('main .cr-set table.grid thead th')].map(h => h.textContent.trim()), cell: document.querySelector('main .cr-set table.grid tbody td')?.textContent.trim() ?? '' })`);
+  await login(adminUser, adminPw);
+  check('CR-upgrade', JSON.stringify(row?.view) === '{}' && listed.fleet && listed.instance && page.h2 === name && !page.refused && JSON.stringify(page.head) === '["The answer"]' && page.cell === '42',
+    `report ${id} (saved before 0372): view ${JSON.stringify(row?.view)}, listed ${JSON.stringify(listed)}; the operator's page ${JSON.stringify(page)}`);
 });
 
 // ---- task 3: the run

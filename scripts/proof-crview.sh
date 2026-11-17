@@ -8,6 +8,7 @@
 #                        and two logins with a random suffix and drops them at the end)
 #   PGVIGIL_BIN          the build to prove (its web bundle built in); default bin/pgvigil
 #   PGVIGIL_CRVIEW_ONLY  the cases to run, by name prefix (crview-check.mjs)
+#   PGVIGIL_OLD_SRC      a source tree from before 0372: its build migrates the store first and saves a report (CR-upgrade)
 #   PGVIGIL_PROOF_OUT    a folder for the logs (default: removed with the work folder)
 # Needs docker, psql, curl, node 22+ and chromium. The sa password (an env file) and the UI users' passwords (the
 # environment) never reach a command line; the run's own throwaway logins (the container's crmon, the store's pg_monitor
@@ -58,6 +59,19 @@ EOF
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create schema if not exists pgvigil_tools" -c "create or replace function pgvigil_tools.cr_echo(n int) returns table (echo int) language sql as \$f\$ select n \$f\$" -c "grant usage on schema pgvigil_tools to $MON" >/dev/null || die "cr_echo"
 # CR-timer's PostgreSQL report raises a NOTICE through a function of the run's own (dropped at the end)
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create or replace function public.cr_notice() returns int language plpgsql as \$f\$ begin raise notice 'step two of three'; return 1; end \$f\$" >/dev/null || die "cr_notice"
+# CR-upgrade (0372's named check, the lead 11-17 03:15): with PGVIGIL_OLD_SRC (a source tree from before 0372) the store is
+# first migrated by that build and a report saved through its own import_custom_report (no view column then); this
+# build's migrate below runs 0372 over it, and the report must draw as it did (crview-check's CR-upgrade). Without it
+# the case says NOT PROVEN.
+UPG=""
+if [ -n "${PGVIGIL_OLD_SRC:-}" ]; then
+  [ -e "$PGVIGIL_OLD_SRC/internal/repo/sql/0372_custom_report_view.sql" ] && die "PGVIGIL_OLD_SRC already holds 0372: give a tree from before it"
+  ( cd "$PGVIGIL_OLD_SRC" && CGO_ENABLED=0 go build -o "$WORK/pgvigil-old" ./cmd/pgvigil ) > "$WORK/old-build.log" 2>&1 || die "the older build: $(tail -3 "$WORK/old-build.log")"
+  "$WORK/pgvigil-old" migrate -config "$WORK/pgvigil.yaml" > "$WORK/migrate-old.log" 2>&1 || die "the older build's migrate: $(tail -3 "$WORK/migrate-old.log")"
+  UPG=$(psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -c "select pgvigil.import_custom_report(now(), '{\"op\":\"add\",\"ui_user\":\"cradmin\",\"client\":\"proof\",\"folder\":\"\",\"name\":\"cr-upgrade-$SUF\",\"description\":\"saved before 0372\",\"engine\":\"store\",\"kind\":\"sql\",\"body\":\"SELECT 41 + 1 AS answer\",\"params\":[],\"columns\":[{\"set\":0,\"column\":\"answer\",\"label\":\"The answer\"}],\"rules\":[],\"timeout_secs\":30,\"max_rows\":5000}'::jsonb)::jsonb->>'report_id'") || die "a report saved by the older build"
+  [ -n "$UPG" ] || die "the older build's import_custom_report gave no report_id"
+  echo "the older build ($PGVIGIL_OLD_SRC) migrated the store and saved report $UPG"
+fi
 "$BIN" migrate -config "$WORK/pgvigil.yaml" > "$WORK/migrate.log" 2>&1 || die "migrate: $(tail -3 "$WORK/migrate.log")"
 "$BIN" demo -config "$WORK/pgvigil.yaml" -days 1 > "$WORK/seed.log" 2>&1 || die "the demo seed: $(tail -3 "$WORK/seed.log")"
 for n in "cr-pg-$SUF postgres" "cr-ms-$SUF sqlserver"; do set -- $n
@@ -71,5 +85,5 @@ for _ in $(seq 1 60); do curl -sf -o /dev/null "$U" && break; kill -0 $SRV 2>/de
 
 # ---- the check
 PGVIGIL_CRVIEW_URL=$U PGVIGIL_CRVIEW_DB=$DB PGVIGIL_CRVIEW_ADMIN="cradmin:$UPW" PGVIGIL_CRVIEW_OPERATOR="crop:$OPW" \
-  CR_PG_NAME="cr-pg-$SUF" CR_MS_NAME="cr-ms-$SUF" CR_MS_CT="$CT" CR_MS_ENV="$WORK/sa.env" node scripts/crview-check.mjs 2>&1 | tee "$WORK/check.log"
+  CR_PG_NAME="cr-pg-$SUF" CR_MS_NAME="cr-ms-$SUF" CR_MS_CT="$CT" CR_MS_ENV="$WORK/sa.env" CR_UPGRADE_ID="$UPG" node scripts/crview-check.mjs 2>&1 | tee "$WORK/check.log"
 exit "${PIPESTATUS[0]}"
