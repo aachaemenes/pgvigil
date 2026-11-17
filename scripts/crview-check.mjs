@@ -394,7 +394,65 @@ await guard('CR-resize', async () => {
   check('CR-resize', !!sep && sep.min === '100' && h1 > h0, `the separator ${JSON.stringify(sep)}; the first set ${h0} px, after three ArrowDown ${h1} px`);
 });
 
-const notYet = ['task 5 the columns', 'task 6 the links',
+// ---- task 5: the columns (the grid menu's Edit Report items; menu-check.mjs's menu helpers)
+const rightClick = sel => ev(`(() => { const e = ${sel}; if (!e) return false; const r = e.getBoundingClientRect(); e.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + 5 })); return true; })()`);
+const clickItem = label => ev(`(() => { const b = [...document.querySelectorAll('.tm-menu button, .menu button')].find(x => x.textContent.replace(/▸$/, '').startsWith(${JSON.stringify(label)})); if (!b) return false; b.click(); return true; })()`);
+const closeDialogs = () => ev(`document.querySelectorAll('dialog[open]').forEach(d => d.close())`);
+const TH = n => `[...document.querySelectorAll('main .cr-set table.grid thead th')].find(h => h.textContent.trim() === ${JSON.stringify(n)})`;
+const TD = (n, row = 0) => `(() => { const t = document.querySelector('main .cr-set table.grid'); const j = [...t.querySelectorAll('thead th')].findIndex(h => h.textContent.trim() === ${JSON.stringify(n)}); return t.querySelectorAll('tbody tr')[${row}]?.children[j]; })()`;
+const fill = async (value) => { await sleep(300); return ev(`(() => { const d = document.querySelector('dialog[open]'); const i = d?.querySelector('input[type=text], input:not([type])'); if (!i) return false; i.value = ${JSON.stringify(value)}; i.dispatchEvent(new Event('input', { bubbles: true })); d.querySelector('button[type=submit]')?.click(); return true; })()`); };
+const forget = () => ev(`(() => { try { localStorage.clear(); } catch {} return true; })()`);   // another viewer: no browser-kept choice
+const runStore = async (def) => {
+  const saved = await addReport({ engine: 'store', ...def });
+  await openReport(saved.id); for (let k = 0; k < 20 && !await ev(`!!document.querySelector('main .cr-set table.grid tbody tr')`); k++) await sleep(250);
+  return saved;
+};
+await guard('CR-layout', async () => {
+  const saved = await runStore({ name: `cr-lay-${Date.now()}`, body: "SELECT 1 AS a, 'x' AS b, 3 AS c" });
+  await rightClick(TH('b')); const hid = await clickItem('Hide column'); await sleep(300);
+  const savedLayout = await clickButton('Save Layout'); await sleep(800);
+  await forget(); await login(opUser, opPw); await forget();
+  await runStore({ name: `cr-lay-other-${Date.now()}`, body: 'SELECT 1 AS z' }); await openReport(saved.id); await sleep(1500);
+  const opHeads = await ev(`[...document.querySelectorAll('main .cr-set table.grid thead th')].filter(h => !h.hasAttribute('data-gt-hidden')).map(h => h.textContent.trim())`);
+  await login(adminUser, adminPw); await openReport(saved.id); await sleep(1500);
+  const reset = await clickButton('Reset Layout'); await sleep(800); await forget(); await openReport(saved.id); await sleep(1500);
+  const after = await ev(`[...document.querySelectorAll('main .cr-set table.grid thead th')].filter(h => !h.hasAttribute('data-gt-hidden')).map(h => h.textContent.trim())`);
+  check('CR-layout', hid && savedLayout && JSON.stringify(opHeads) === '["a","c"]' && reset && JSON.stringify(after) === '["a","b","c"]',
+    `Hide column ${hid}, Save Layout ${savedLayout}: another viewer sees ${JSON.stringify(opHeads)}; Reset Layout ${reset}: ${JSON.stringify(after)}`);
+});
+await guard('CR-renamecol', async () => {
+  const saved = await runStore({ name: `cr-rcol-${Date.now()}`, body: 'SELECT 1 AS a, 2 AS b' });
+  await rightClick(TH('b')); await clickItem('Edit Report'); const ok = await clickItem('Rename Column'); const put = await fill('Bee');
+  await sleep(800); await forget(); await openReport(saved.id); await sleep(1500);
+  const heads = await ev(`[...document.querySelectorAll('main .cr-set table.grid thead th')].map(h => h.textContent.trim())`);
+  check('CR-renamecol', ok && put && JSON.stringify(heads) === '["a","Bee"]', `Rename Column ${ok}/${put}; after a reload ${JSON.stringify(heads)}`);
+});
+await guard('CR-coltip', async () => {
+  const saved = await runStore({ name: `cr-ctip-${Date.now()}`, body: 'SELECT 1 AS a, 2 AS b' });
+  await rightClick(TH('a')); await clickItem('Edit Report'); const ok = await clickItem('Set Column Tooltip'); const put = await fill('the first column');
+  await sleep(800); await forget(); await openReport(saved.id); await sleep(1500);
+  const tip = await ev(`${TH('a')}?.title ?? ''`);
+  check('CR-coltip', ok && put && tip === 'the first column', `Set Column Tooltip ${ok}/${put}; the header's title after a reload '${tip}'`);
+});
+await guard('CR-localtz', async () => {
+  await send('Emulation.setTimezoneOverride', { timezoneId: 'America/New_York' });
+  const saved = await runStore({ name: `cr-tz-${Date.now()}`, body: "SELECT timestamptz '2026-01-01 12:00:00+00' AS t" });
+  const local = await ev(`${TD('t')}?.textContent.trim() ?? ''`);
+  await rightClick(TH('t')); await clickItem('Edit Report'); const ok = await clickItem('Convert to local time zone');
+  await sleep(800); await forget(); await openReport(saved.id); await sleep(1500);
+  const utc = await ev(`${TD('t')}?.textContent.trim() ?? ''`);
+  await send('Emulation.clearTimezoneOverride').catch(() => null);
+  check('CR-localtz', /07:00/.test(local) && ok && /12:00/.test(utc), `in the browser's zone '${local}'; Convert to local time zone unticked ${ok}; then '${utc}'`);
+});
+await guard('CR-highlight', async () => {
+  await runStore({ name: `cr-hl-${Date.now()}`, body: "SELECT 'warn me' AS state, 1 AS n" });
+  await rightClick(TD('state')); await clickItem('Edit Report'); const ok = await clickItem('Highlight Cell Value'); await sleep(400);
+  const d = await ev(`(() => { const d = document.querySelector('dialog[open]'); if (!d) return null; const v = n => d.querySelector('[aria-label=' + JSON.stringify(n) + ']')?.value ?? ''; return { column: v('Column'), value: v('Value'), cond: v('Condition') }; })()`);
+  await closeDialogs();
+  check('CR-highlight', ok && !!d && d.column === 'state' && d.value === 'warn me' && d.cond === 'eq', `Highlight Cell Value ${ok}; the rules dialog ${JSON.stringify(d)}`);
+});
+
+const notYet = ['task 6 the links',
   'task 7 every grid', 'task 8 custom tools', 'task 9 the PM rows', 'task 10 the charts'];
 for (const g of notYet) check(g, false, 'its cases are not written yet (task 1)');
 
