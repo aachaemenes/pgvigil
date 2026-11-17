@@ -2,7 +2,7 @@
 // strip - Performance first, as DBA Dash opens a database on it - each tab the instance's page cut to this database.
 // #/mssqldb?i=<instance>&db=<database name>[&dbtab=<tab>][&fg=<file group>]. The tree's database node links here
 // (tree.ts, a wiring line of the join).
-import { Ctx } from './router';
+import { Ctx, window_ } from './router';
 import { hashParam, hrefWith } from './dbinfo';
 import { performanceView } from './performance';
 import { mssqlFilesView } from './mssql_storage';
@@ -11,6 +11,7 @@ import { dbSpaceView } from './drives';
 import { mssqlPlanCacheView } from './mssql_plancache';
 import { mssqlSlow } from './mssql_xe';
 import { objectExecutionSection } from './mssql_objexec';
+import { schemaDbSection } from './schema';
 import { get, rowsOf, Table } from './api';
 import { badge, el, fmtTime, grid } from './ui';
 
@@ -68,6 +69,17 @@ async function dbConfiguration(ctx: Ctx, db: string): Promise<HTMLElement> {
       { key: 'new_value', label: 'to', fmt: v => v == null ? 'left the view' : String(v) }], 'No change seen since the first read.'));
 }
 
+// snapshotSummary: DBA Dash's database Snapshot Summary, which is its SCHEMA snapshots (Changes.SchemaSnapshots: the
+// snapshot and validated dates, the created / modified / dropped objects, each with its diff) - the Schema tab's section
+// for this database (schema.ts schemaDbSection: the read, the range's changes with their diffs, the objects), the
+// database found by its name in the instance's schema read
+async function snapshotSummary(ctx: Ctx, db: string): Promise<HTMLElement> {
+  const d = await get<{ databases: Table | null }>('schema', { instance: ctx.instance, ...window_(ctx) });
+  const row = rowsOf(d.databases).find(r => String(r.datname) === db);
+  if (!row) return el('p', { class: 'empty' }, `No schema read of ${db} yet: the mssql_schema collection reads each database's objects and their changes (Schema tab).`);
+  return schemaDbSection(ctx, row.dbid as number);
+}
+
 export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
   const db = hashParam('db');
   if (!db) return el('section', {}, el('h2', {}, 'Database'), el('p', { class: 'empty' }, 'No database named (db=).'));
@@ -98,6 +110,9 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
     case 'slow':
       // the instance's Slow queries read with db= (/api/mssql/xe: the events that ran in this database)
       body = await mssqlSlow(ctx);
+      break;
+    case 'snapshots':
+      body = await snapshotSummary(ctx, db);
       break;
     case 'dbconfig':
       body = await dbConfiguration(ctx, db);
