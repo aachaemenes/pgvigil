@@ -16,6 +16,7 @@ import { Cell, Kind, Meta, Section, Status, csv, exportGrid, fillOf, fontOf, fro
 import { GridMenuAsk, cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, isCondList, offControl, quoteFilter } from './ui';
 import { MenuItem, gridLines, showTreeMenu } from './treemenu';
 import { Grid, htmlDoc, json, markdown, sqlScript, tsv } from './gridwriters';
+import { filterText, readFilterText } from './gridfilter';
 
 // bars: a column's data bar by its name - behind the value (the default, the only style before task GM: a stored list of
 // names loads as it), under the value, or a traffic light with the high values the worse or the better; the row
@@ -689,6 +690,28 @@ function filterPrompt(t: HTMLTableElement, j: number, op: string, value: string,
   cancel.addEventListener('click', () => d.close());
   inp.focus(); inp.select();
 }
+// editFilter: DBA Dash's Edit Filter (task PGRID B11) - the filter row's fields as one text, a line per column
+// (gridfilter.ts); Apply writes each line into its column's field and empties the others (a field left as it was is
+// not touched: the text applied unchanged changes nothing); a text it cannot read is refused in words naming the line,
+// the dialog open and the filter row as it was
+function editFilter(t: HTMLTableElement, back: HTMLElement | null) {
+  const ns = names(t), ins = filterInputs(t);
+  const area = el('textarea', { rows: '6', cols: '64', spellcheck: 'false', 'aria-label': "The grid's filter: one line per column, its name in brackets then its conditions" }) as HTMLTextAreaElement;
+  area.value = filterText(ns.map((name, j) => ({ name, filter: ins[j]?.value ?? '' })));
+  const err = el('p', { class: 'error', role: 'alert' });
+  const apply = el('button', { type: 'button' }, 'Apply'), cancel = el('button', { type: 'button' }, 'Cancel');
+  const d = toolDialog(t, 'Edit Filter', back,
+    el('p', { class: 'meta' }, 'One line per column: [name] then its conditions as the filter row takes them (="x", <>"x", >5, like "a%", in:"a","b"; several joined by \' & \'). Every line is met; an empty text clears every filter.'),
+    el('p', {}, area), err, el('p', {}, apply, ' ', cancel));
+  apply.addEventListener('click', () => {
+    const r = readFilterText(area.value, ns);
+    if (!r.ok) { err.textContent = r.why; area.focus(); return; }
+    r.filters.forEach((f, j) => { if ((ins[j]?.value.trim() ?? '') !== f) setFilter(t, j, f); });
+    d.close();
+  });
+  cancel.addEventListener('click', () => d.close());
+  area.focus();
+}
 // transpose: rows as columns (a column's name, then its value in each row), in a dialog with Copy; the grid form shows
 // 50 rows and says so, its Copy takes every row
 const CAP = 50;
@@ -814,6 +837,7 @@ export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | 
     const num = hs[j].classList.contains('num');
     out.push({ label: 'All filters', sub: [...(num ? [] : ['Like', 'Not like']), '=', '<>', '>', '<', '>=', '<='].map(op => ({ label: op, act: () => filterPrompt(t, j, op, v, back) })) });
   }
+  if (filterable(t)) out.push({ label: 'Edit Filter', act: () => editFilter(t, back) });
   out.push({ label: 'Clear filters', off: filtered(t) ? undefined : 'no filter is set', act: () => filterInputs(t).forEach((i, k) => { if (i.value) setFilter(t, k, ''); }) });
   // 8. the counts and the statistics
   out.push({ sep: true, label: '' }, ...lines.info);

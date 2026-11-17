@@ -199,7 +199,8 @@ function condTest(c: string, num: boolean): ((w: string) => boolean) | undefined
   m = new RegExp('^(<>|>=|<=|=|>|<)\\s*' + QV + '$').exec(c);
   if (m) {
     const op = m[1], v = unq(m[2]), n = num && reading(typedNumber(v), true);
-    if (n) return op === '<>' ? w => !!reading(w) && !passes('=' + v, w, true) : w => passes(op + v, w, true);
+    // <> keeps an empty cell (DBA Dash keeps a NULL row; task PGRID B11); words that are no number stay out
+    if (n) return op === '<>' ? w => w === '' || (!!reading(w) && !passes('=' + v, w, true)) : w => passes(op + v, w, true);
     const lv = v.toLowerCase();
     return w => { const x = w.toLowerCase(), k = x.localeCompare(lv); return op === '=' ? x === lv : op === '<>' ? x !== lv : op === '>' ? k > 0 : op === '<' ? k < 0 : op === '>=' ? k >= 0 : k <= 0; };
   }

@@ -11,6 +11,8 @@
 #                         P = the parity rows of P01 / P02 / P04 alone (P-chooser .. P-opengrid); G,P = both
 #   PGVIGIL_GRIDMENU_NO_MSSQL=1  no container (G-sql then fails, saying so); a run whose cases name neither G nor G-sql
 #                         starts none by itself (the container serves G-sql alone)
+# Part U (task PGRID B11), after the web build: web/src/gridfilter.test.mjs on the compiled gridfilter.ts, its FAIL lines
+# and its count line printed; a failed or missing module makes the run's rc 1 whatever menu-check says.
 # Needs node 22+, npm, go, psql, chromium and docker. Exit: menu-check's (0 = every case ok), 1 = the build or the
 # container failed, 2 = no DSN.
 #
@@ -56,8 +58,16 @@ if [[ "${PGVIGIL_GRIDMENU_NO_MSSQL:-}" != 1 ]]; then
 fi
 ( cd web && npm ci --no-audit --no-fund ) > "$OUT/npm.log" 2>&1 || { tail -20 "$OUT/npm.log"; echo "FAIL: npm ci (the log: $OUT/npm.log)"; exit 1; }
 ( cd web && npm run build ) > "$OUT/build.log" 2>&1 || { tail -30 "$OUT/build.log"; echo "FAIL: the web build (the log: $OUT/build.log)"; exit 1; }
+# part U (task PGRID B11): the Edit Filter text form's unit rows in Node, before the browser (a tree without
+# web/src/gridfilter.ts: 'FAIL U: gridfilter.ts did not compile', the run goes on and ends rc 1)
+U=0
+if web/node_modules/.bin/esbuild web/src/gridfilter.ts --format=esm --outfile="$OUT/gridfilter.mjs" --log-level=warning > "$OUT/u.log" 2>&1; then
+  node web/src/gridfilter.test.mjs "$OUT/gridfilter.mjs" >> "$OUT/u.log" 2>&1 || U=1
+  grep -E '^(FAIL|gridfilter:)' "$OUT/u.log"
+else U=1; echo "FAIL U: gridfilter.ts did not compile"; fi
 PGVIGIL_MENU_ONLY="${PGVIGIL_MENU_ONLY:-G}" PGVIGIL_MENU_SHOTS="${PGVIGIL_MENU_SHOTS:-$OUT/shots}" \
   node scripts/menu-check.mjs 2>&1 | tee "$OUT/menu-check.log"
 R=${PIPESTATUS[0]}
-echo "== proof-gridmenu rc $R (the log: $OUT/menu-check.log)"
+[[ $U -ne 0 && $R -eq 0 ]] && R=1
+echo "== proof-gridmenu rc $R (part U $U; the log: $OUT/menu-check.log)"
 exit "$R"
