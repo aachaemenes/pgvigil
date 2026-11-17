@@ -4,9 +4,11 @@
 -- view keeps 15-second rows for 14 days, and the read sends them collapsed into periods of equal limits - one
 -- 'limit_period' row each (its first row's start, its last row's end, elastic_pool_dtu_limit,
 -- elastic_pool_storage_limit_mb, and elastic_pool_cpu_limit, which Microsoft calls 'informational purposes only. Not
--- supported.': stored, never shown as a supported figure) - and one 'limit_read' row: the state ('read'; 'no_right':
--- the login is not in dbmanager; 'no_master': it could not sign in to master) with its words, and for a read the
--- window the view held (its oldest row's start, its newest row's end).
+-- supported.': stored, never shown as a supported figure) - and one 'limit_read' row: the state 'read' with its words
+-- and the window the view held (its oldest row's start, its newest row's end). The import also takes the states
+-- 'no_right' (the login is not in dbmanager) and 'no_master' (it could not sign in to master), but the collector never
+-- sends them: without the right or master its run is SKIPPED with those words, kept in collection_dates (where the page
+-- reads them), and sends no row.
 --   mssql_pool_limit_history   per pooled database (the reading instance: the instance scope's policy follows it),
 --                              its pool's periods; each member database keeps its own copy of the same history
 --   mssql_pool_limit_read      per instance: the last read's state and words (the page's and the rights row's)
