@@ -172,7 +172,57 @@ const st = await login(adminUser, adminPw);
 if (st !== 200) { console.error(`FAIL: the admin's sign-in answered ${st}`); process.exit(1); }
 
 // ---- the cases (task 1 writes them group by group; a group not written yet is one FAIL saying so) ----
-const notYet = ['task 2 who sees a report', 'task 3 the run', 'task 4 the result sets', 'task 5 the columns', 'task 6 the links',
+// ---- helpers of the cases
+const pageJSON = (method, route, body) => ev(`fetch(${JSON.stringify('/api/' + route)}, { method: ${JSON.stringify(method)}, headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }${body === undefined ? '' : ', body: ' + JSON.stringify(JSON.stringify(body))} }).then(async r => ({ status: r.status, body: await r.text() }))`);
+const parse = t => { try { return JSON.parse(t); } catch { return null; } };
+const rowsOf = t => t ? t.rows.map(r => Object.fromEntries(t.columns.map((c, i) => [c, r[i]]))) : [];
+const instances = async () => rowsOf(parse((await pageJSON('GET', 'instances')).body));
+const tagsOf = r => (Array.isArray(r.tags) ? r.tags : String(r.tags ?? '').split(/[\s,{}]+/)).filter(Boolean);
+// addReport: a report saved through the page's own route; its id read back by its name
+const addReport = async def => {
+  const r = await pageJSON('POST', 'customreports', { op: 'add', folder: '', kind: 'sql', params: [], columns: [], rules: [], ...def });
+  const list = rowsOf(parse((await pageJSON('GET', 'customreports')).body)?.reports);
+  return { status: r.status, said: r.body.slice(0, 200), id: list.find(x => x.name === def.name)?.report_id };
+};
+const listedOn = async (q, name) => { await go('#/customreports' + q); return ev(`[...document.querySelectorAll('main table.grid a')].some(a => a.textContent.trim() === ${JSON.stringify(name)})`); };
+
+// ---- task 2: who sees a report
+await guard('CR-visibility', async () => {
+  const all = await instances(), pgs = all.filter(r => r.engine !== 'sqlserver'), ms = all.find(r => r.engine === 'sqlserver');
+  const tagCount = new Map();
+  for (const r of pgs) for (const t of tagsOf(r)) tagCount.set(t, (tagCount.get(t) ?? 0) + 1);
+  const tag = [...tagCount.entries()].filter(([, n]) => n >= 2 && n < pgs.length).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const withTag = pgs.filter(r => tagsOf(r).includes(tag)), without = pgs.filter(r => !tagsOf(r).includes(tag));
+  if (!tag || withTag.length < 2 || !without.length || !ms) { check('CR-visibility', false, `the demo has no tag fit for the case (tag ${tag}, ${withTag.length} with, ${without.length} without, SQL Server ${!!ms})`); return; }
+  const inc = without[0], exc = withTag[0], kept = withTag[1], name = `cr-vis-${Date.now()}`;
+  const saved = await addReport({ name, engine: 'store', body: 'SELECT 1 AS one', visibility: { engines: ['postgres'], tags: [tag], include: [inc.name], exclude: [exc.name] } });
+  const at = { fleet: await listedOn('', name), tag: await listedOn(`?tag=${encodeURIComponent(tag)}`, name), kept: await listedOn(`?i=${kept.instance_id}`, name),
+    included: await listedOn(`?i=${inc.instance_id}`, name), excluded: await listedOn(`?i=${exc.instance_id}`, name), sqlserver: await listedOn(`?i=${ms.instance_id}`, name) };
+  // the editor: its rules, the no-match warning for rules no instance meets, Clear Rules
+  await go(`#/customreports?edit=${saved.id}`);
+  const ed = await ev(`(() => { const f = [...document.querySelectorAll('main fieldset')].find(x => /^Visibility/.test(x.querySelector('legend')?.textContent ?? ''));
+    return { section: !!f, clear: !!f && [...f.querySelectorAll('button')].some(b => b.textContent.trim() === 'Clear Rules') }; })()`);
+  const none = await addReport({ name: name + '-none', engine: 'store', body: 'SELECT 1 AS one', visibility: { engines: ['sqlserver'], tags: [tag], include: [], exclude: [] } });
+  await go(`#/customreports?edit=${none.id}`);
+  const warn = await ev(`/these rules match no instance/i.test(document.querySelector('main')?.textContent ?? '')`);
+  const okAt = at.fleet && at.tag && at.kept && at.included && !at.excluded && !at.sqlserver;
+  check('CR-visibility', saved.status === 200 && okAt && ed.section && ed.clear && warn,
+    `saved ${saved.status}; listed ${JSON.stringify(at)} (want every place but excluded and sqlserver); the editor's Visibility section ${ed.section}, Clear Rules ${ed.clear}; the no-match warning ${warn}`);
+});
+await guard('CR-role', async () => {
+  const name = `cr-role-${Date.now()}`;
+  const saved = await addReport({ name, engine: 'store', body: 'SELECT 1 AS one', access: 'admin' });
+  await login(opUser, opPw);
+  await go(`#/customreports?report=${saved.id}`);
+  const said = await ev(`(document.querySelector('main')?.textContent ?? '').includes('You do not have access to this report')`);
+  const run = await pageJSON('POST', 'customreports/run', { report_id: saved.id, target: 'fleet', params: {} });
+  await login(adminUser, adminPw);
+  const adminRun = await pageJSON('POST', 'customreports/run', { report_id: saved.id, target: 'fleet', params: {} });
+  check('CR-role', saved.status === 200 && said && run.status === 403 && /admin role/.test(run.body) && adminRun.status === 200,
+    `saved ${saved.status}; the operator's page says no access ${said}; the operator's run ${run.status} ${run.body.slice(0, 120)}; the admin's run ${adminRun.status}`);
+});
+
+const notYet = [ 'task 4 the result sets', 'task 5 the columns', 'task 6 the links',
   'task 7 every grid', 'task 8 custom tools', 'task 9 the PM rows', 'task 10 the charts'];
 for (const g of notYet) check(g, false, 'its cases are not written yet (task 1)');
 
