@@ -27,6 +27,11 @@ import (
 //	  compare, compare_windows   with compare=prev|day|week: PerformanceMonitor's compare of the window against
 //	              the same span earlier, and the two windows' reads (sqlMSSQLProcCompare)
 //
+// The extremes (0342): min_ / max_cpu_ms, _duration_ms, _logical_reads, _physical_reads, _logical_writes and _spills -
+// the smallest and the largest single execution the server kept for the plans that ran in the window, each since
+// the plan was cached (not the window's own smallest and largest); NULL: not read (the server has no such column, or
+// the reads came before 0342).
+//
 // spills (0126): total_spills' pages over the window's reads that had the figure (spill_reads of intervals; none
 // at all = NULL: the server has no total_spills, SQL Server 2016 SP2 / 2017 CU3 on, or the reads came before
 // 0126); avg_spills over those reads' executions (PerformanceMonitor's Avg Spilled Pages, DarlingMcpDataTools.cs:1103).
@@ -73,7 +78,13 @@ WITH dbn AS (` + procDBNames + `), cover AS (
          sum(s.logical_writes)::bigint AS logical_writes, count(*) AS intervals, max(s.snapshot_at) AS last_seen,
          sum(s.spills)::bigint AS spills, count(s.spills) AS spill_reads,
          sum(s.executions) FILTER (WHERE s.spills IS NOT NULL) AS spill_executions,
-         max(s.executions * 60.0 / nullif(s.interval_secs, 0)) AS max_executions_min   -- the busiest single read
+         max(s.executions * 60.0 / nullif(s.interval_secs, 0)) AS max_executions_min,  -- the busiest single read
+         min(s.min_cpu_us) AS min_cpu_us, max(s.max_cpu_us) AS max_cpu_us,
+         min(s.min_duration_us) AS min_duration_us, max(s.max_duration_us) AS max_duration_us,
+         min(s.min_logical_reads) AS min_logical_reads, max(s.max_logical_reads) AS max_logical_reads,
+         min(s.min_physical_reads) AS min_physical_reads, max(s.max_physical_reads) AS max_physical_reads,
+         min(s.min_logical_writes) AS min_logical_writes, max(s.max_logical_writes) AS max_logical_writes,
+         min(s.min_spills) AS min_spills, max(s.max_spills) AS max_spills
     FROM pgvigil.mssql_proc_sample s
    WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ($4::int IS NULL OR s.database_id = $4)
    GROUP BY s.database_id, s.object_id
@@ -92,7 +103,11 @@ SELECT p.database_id, p.object_id, n.database, p.schema_name, coalesce(p.object_
        p.physical_reads, round(p.physical_reads::numeric / nullif(p.executions, 0), 1) AS avg_physical_reads,
        p.logical_writes, round(p.logical_writes::numeric / nullif(p.executions, 0), 1) AS avg_logical_writes,
        p.intervals, p.last_seen,
-       p.spills, round(p.spills::numeric / nullif(p.spill_executions, 0), 1) AS avg_spills, p.spill_reads
+       p.spills, round(p.spills::numeric / nullif(p.spill_executions, 0), 1) AS avg_spills, p.spill_reads,
+       round(p.min_cpu_us / 1000.0, 3) AS min_cpu_ms, round(p.max_cpu_us / 1000.0, 3) AS max_cpu_ms,
+       round(p.min_duration_us / 1000.0, 3) AS min_duration_ms, round(p.max_duration_us / 1000.0, 3) AS max_duration_ms,
+       p.min_logical_reads, p.max_logical_reads, p.min_physical_reads, p.max_physical_reads,
+       p.min_logical_writes, p.max_logical_writes, p.min_spills, p.max_spills
   FROM p JOIN dbn n ON n.database_id = p.database_id CROSS JOIN cover
  ORDER BY p.duration_us DESC, n.database, p.object_name NULLS LAST, p.object_id
  LIMIT 2000`
