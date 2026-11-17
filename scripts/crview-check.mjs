@@ -588,12 +588,15 @@ await guard('CR-addchart', async () => {
   check('CR-addchart', types.every(t => got[t]?.type === t && got[t].marks > 0) && JSON.stringify(offered) === JSON.stringify(types), `drawn ${JSON.stringify(got)}; Add Chart offers ${JSON.stringify(offered)}`);
 });
 await guard('CR-syschart', async () => {
+  // a demo PostgreSQL instance: its host samples are seeded (the proof's own instance has no host read, so its CPU
+  // chart is empty in words, rightly)
   const s = await addReport({ name: `cr-sys-${Date.now()}`, engine: 'postgres', body: 'SELECT 1 AS one' });
-  await openReport(s.id, await idByName(crPg));
+  const demoPg = (await instances()).find(r => r.engine !== 'sqlserver' && /^demo-/.test(String(r.name)))?.instance_id;
+  await openReport(s.id, demoPg);
   const offered = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === 'Add System Chart'); if (!b) return null; b.click(); return [...document.querySelectorAll('.tm-menu button, .menu button')].map(x => x.textContent.trim()); })()`);
   const added = await clickItem('CPU'); await sleep(1500);
   const drawn = (await chartMarks()).some(c => c.type === 'system:cpu' && c.marks > 0);
-  const saved = await clickButton('Save System Chart State'); await sleep(600); await openReport(s.id, await idByName(crPg)); await sleep(1500);
+  const saved = await clickButton('Save System Chart State'); await sleep(600); await openReport(s.id, demoPg); await sleep(1500);
   const kept = (await chartMarks()).some(c => c.type === 'system:cpu');
   check('CR-syschart', !!offered && ['CPU', 'Waits', 'IO', 'Blocking'].every(x => offered.includes(x)) && added && drawn && saved && kept, `offered ${JSON.stringify(offered)}; CPU added ${added}, drawn ${drawn}; saved ${saved}, kept after a reload ${kept}`);
 });
