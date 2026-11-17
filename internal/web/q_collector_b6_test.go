@@ -114,20 +114,29 @@ func ownArms(srcs []string, query string) (own, missing, fns, inline []string) {
 	return own, missing, fns, inline
 }
 
+// sqlCode is a statement with its -- line comments taken out (the statements these tests read hold no '--' inside a
+// string literal)
+var sqlLineComment = regexp.MustCompile(`--[^\n]*`)
+
+func sqlCode(q string) string { return sqlLineComment.ReplaceAllString(q, "") }
+
 // TestCollectorFindingsReadsItsArms (B6.2 part c #5; B6f4 #2): the Collector page's findings read every arm of
 // pgvigil.findings and pgvigil.alert_findings whose rows are pgvigil's own (source 'pgvigil collector' or 'pgvigil
 // repository') straight from that arm's view, never pgvigil.findings itself - a filter on source cannot pass its
 // DISTINCT ON, so a fleet-wide load built every arm. An arm joined later turns this red until the page reads it too:
-// 403b's K3 by its arms (TestCollectorFindingsK3AtTheJoin) and by name below.
+// 403b's K3 by its arms (TestCollectorFindingsK3AtTheJoin) and by name below. Every check reads the statement without
+// its -- comments (sqlCode): a comment that names a view - the K3 arm's note on what alert_channel_failing reads - is
+// no read of it, neither a forbidden one nor a required one.
 func TestCollectorFindingsReadsItsArms(t *testing.T) {
-	if regexp.MustCompile(`pgvigil\.findings\b`).MatchString(sqlCollectorFindings) {
+	code := sqlCode(sqlCollectorFindings)
+	if regexp.MustCompile(`pgvigil\.findings\b`).MatchString(code) {
 		t.Errorf("sqlCollectorFindings reads pgvigil.findings: a fleet-wide load builds every arm of it")
 	}
 	srcs := migrationTexts(t)
 	if viewBody(srcs, "findings") == "" || viewBody(srcs, "alert_findings") == "" {
 		t.Fatal("no migration defines pgvigil.findings or pgvigil.alert_findings")
 	}
-	own, missing, fns, inline := ownArms(srcs, sqlCollectorFindings)
+	own, missing, fns, inline := ownArms(srcs, code)
 	for _, top := range inline {
 		t.Errorf("pgvigil.%s writes an own source ('pgvigil collector' / 'pgvigil repository') in an inline arm: give it its own view and read that view in sqlCollectorFindings", top)
 	}
@@ -141,7 +150,7 @@ func TestCollectorFindingsReadsItsArms(t *testing.T) {
 		t.Errorf("%d arms give pgvigil's own findings (%v), want at least 4 (0121's and 0166's three): the arm reading broke", len(own), own)
 	}
 	// K3 by name: once a migration defines 403b's view, the page reads it (B6 design: B6.4 shows it)
-	if viewBody(srcs, "alert_channel_failing") != "" && !regexp.MustCompile(`FROM\s+pgvigil\.alert_channel_failing\b`).MatchString(sqlCollectorFindings) {
+	if viewBody(srcs, "alert_channel_failing") != "" && !regexp.MustCompile(`FROM\s+pgvigil\.alert_channel_failing\b`).MatchString(code) {
 		t.Errorf("a migration defines pgvigil.alert_channel_failing (403b's K3) and sqlCollectorFindings does not read it")
 	}
 }
@@ -193,7 +202,7 @@ func TestCollectorFindingsK3AtTheJoin(t *testing.T) {
 			t.Errorf("at the join the walk does not find %s as an own arm (own %v, unread by an empty query %v)", want, own, missing)
 		}
 	}
-	read := sqlCollectorFindings + `
+	read := sqlCode(sqlCollectorFindings) + `
 UNION ALL SELECT instance_id FROM pgvigil.alert_channel_failing
 UNION ALL SELECT instance_id FROM pgvigil.alert_channel_quota_low`
 	if _, m, _, _ := ownArms(srcs, read); len(m) != 0 {

@@ -62,12 +62,14 @@ SELECT h.hold_kind, h.hold_id, h.hold_source, h.channel, h.finding_key, h.instan
  ORDER BY h.last_at DESC
  LIMIT 1000`
 
+// sqlAlertFlapping's joins name their columns: alert_rules and alert_rule_state both carry instance_id, so a USING
+// (instance_id) after the rules join is ambiguous (42702); the instance is the series' own
 const sqlAlertFlapping = `
 SELECT s.rule_id, r.name AS rule_name, i.name AS instance, s.metric, nullif(s.database, '') AS database, s.op_family,
        s.state, s.flapping_since, s.results
   FROM pgvigil.alert_rule_state s
-  JOIN pgvigil.alert_rules r USING (rule_id)
-  JOIN pgvigil.instances i USING (instance_id)
+  JOIN pgvigil.alert_rules r ON r.rule_id = s.rule_id
+  JOIN pgvigil.instances i ON i.instance_id = s.instance_id
  WHERE s.flapping_since IS NOT NULL
  ORDER BY s.flapping_since`
 
