@@ -218,13 +218,13 @@ func (s *Server) Trend(w http.ResponseWriter, r *http.Request) {
 	}
 	// the file-IO windows (the lead 17:0x / 18:1x): raw file IO is a row per file per minute
 	if a.Metric == "latency" {
-		cap, words := instanceFileIOWindow, "file I/O on one instance reads the newest 7 days until hourly history lands"
+		reach, words := instanceFileIOWindow, "file I/O on one instance reads the newest 7 days until hourly history lands"
 		if inst == 0 {
-			cap = fleetFileIOWindow
+			reach = fleetFileIOWindow
 			words = "file I/O trends across the fleet read the newest " + windowWords(fleetFileIOWindow) + " until hourly history lands"
 		}
-		if to.Sub(from) > cap {
-			from = to.Add(-cap)
+		if to.Sub(from) > reach {
+			from = to.Add(-reach)
 			a.From = from
 			a.Words = append(a.Words, words)
 		}

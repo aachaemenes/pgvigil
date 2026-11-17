@@ -182,10 +182,10 @@ func (d *DailyChecks) checkPost(raw []byte) error {
 	for i, name := range d.Post {
 		n := strings.TrimSpace(name)
 		if !postNameRE.MatchString(n) {
-			return fmt.Errorf("%s: post: entry %d of the list is not a webhook channel of alerts:", DailyChecksKey, i+1)
+			return fmt.Errorf("%s: post: entry %d of the list is not a webhook channel of the alerts: block", DailyChecksKey, i+1)
 		}
 		if kinds[n] != "webhook" {
-			return fmt.Errorf("%s: post: %s is not a webhook channel of alerts:", DailyChecksKey, n)
+			return fmt.Errorf("%s: post: %s is not a webhook channel of the alerts: block", DailyChecksKey, n)
 		}
 	}
 	return nil

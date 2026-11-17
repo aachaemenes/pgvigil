@@ -15,7 +15,7 @@ import (
 // Google Chat's mention guard is applied before it is measured; the link's slashes; the reserved keys of the json body.
 func TestChannelPostCut(t *testing.T) {
 	var got []map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		var v map[string]any
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &v)

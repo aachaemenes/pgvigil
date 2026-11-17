@@ -392,11 +392,11 @@ func blitzDBNote(all, sel int, login, db string) string {
 		"on the Checks tab, and the backups and the recovery model on the Backups tab."
 }
 
-// joined is the text of the messages at severity min or more, in their order.
-func (rd blitzRead) joined(min uint8) string {
+// joined is the text of the messages at severity least or more, in their order.
+func (rd blitzRead) joined(least uint8) string {
 	var out []string
 	for _, m := range rd.msgs {
-		if m.class >= min && m.proc != "pgvigil" {
+		if m.class >= least && m.proc != "pgvigil" {
 			s := m.text
 			if m.class >= 11 {
 				s = fmt.Sprintf("Msg %d, severity %d: %s", m.number, m.class, m.text)

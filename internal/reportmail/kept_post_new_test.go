@@ -41,15 +41,15 @@ func TestDailyChecksPostList(t *testing.T) {
 		t.Errorf("no post: %v %v", d, err)
 	}
 	for _, c := range []struct{ post, want string }{
-		{"    post: [mail]\n", "reports.daily_checks: post: mail is not a webhook channel of alerts:"},
-		{"    post: [hook, nope]\n", "reports.daily_checks: post: nope is not a webhook channel of alerts:"},
+		{"    post: [mail]\n", "reports.daily_checks: post: mail is not a webhook channel of the alerts: block"},
+		{"    post: [hook, nope]\n", "reports.daily_checks: post: nope is not a webhook channel of the alerts: block"},
 		{"    post: hook\n", "reports.daily_checks: post is a list of webhook channel names of the alerts: block, as [team-chat] (line 13 of the file)"},
 		// review-26 go2 S2: an entry that is no channel name (a webhook's URL pasted for its channel) is named by its
 		// place, never printed - serve's log and the support report carry the refusal; N1: an empty name the same
-		{"    post: ['https://hooks.example/T0/secret']\n", "reports.daily_checks: post: entry 1 of the list is not a webhook channel of alerts:"},
-		{"    post: [hook, https://hooks.example/T0/secret]\n", "reports.daily_checks: post: entry 2 of the list is not a webhook channel of alerts:"},
-		{"    post: [hook, \"\"]\n", "reports.daily_checks: post: entry 2 of the list is not a webhook channel of alerts:"},
-		{"    post: [Team Chat]\n", "reports.daily_checks: post: entry 1 of the list is not a webhook channel of alerts:"},
+		{"    post: ['https://hooks.example/T0/secret']\n", "reports.daily_checks: post: entry 1 of the list is not a webhook channel of the alerts: block"},
+		{"    post: [hook, https://hooks.example/T0/secret]\n", "reports.daily_checks: post: entry 2 of the list is not a webhook channel of the alerts: block"},
+		{"    post: [hook, \"\"]\n", "reports.daily_checks: post: entry 2 of the list is not a webhook channel of the alerts: block"},
+		{"    post: [Team Chat]\n", "reports.daily_checks: post: entry 1 of the list is not a webhook channel of the alerts: block"},
 	} {
 		if _, err := ParseDailyChecks(postBlock(c.post)); err == nil || err.Error() != c.want {
 			t.Errorf("post %q: %v, want %q", strings.TrimSpace(c.post), err, c.want)

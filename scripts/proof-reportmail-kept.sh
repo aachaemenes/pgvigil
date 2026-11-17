@@ -91,8 +91,8 @@
 #       it', offers hook alone and its Save keeps {hook}; post [] clears the list.
 #   K20 the block's post: list: a serve whose block says post: [hook] keeps post_channels {hook} (kept_by file); a block
 #       with post: [mail] (an smtp channel) stops serve at start with 'reports.daily_checks: post: mail is not a webhook
-#       channel of alerts:'; a block with a webhook's URL for a name stops it with 'reports.daily_checks: post: entry 1
-#       of the list is not a webhook channel of alerts:' and the URL nowhere in serve's words (review-26 go2 S2).
+#       channel of the alerts: block'; a block with a webhook's URL for a name stops it with 'reports.daily_checks: post: entry 1
+#       of the list is not a webhook channel of the alerts: block' and the URL nowhere in serve's words (review-26 go2 S2).
 #   K20b a block whose post: names a webhook channel the sender has not recorded yet keeps nothing at first (serve's log
 #       says 'post: newhook is not a webhook channel the sender ...'; nothing written to report_mail_log while it
 #       waits - review-26 go2 S1) and keeps {newhook} within 75 s of a sender pass
@@ -800,10 +800,10 @@ kwait 30 filekept || kfail "K20: the serve did not keep the row in 30 s: $(klive
 [[ $(klive "post_channels") == "{hook}" ]] || kfail "K20: the block's post: $(klive "post_channels")"
 kstop "$SK"
 rc=0; out=$(timeout 20 "$BIN" serve -config "$WORK/cfg-kpbad.yaml" -listen "127.0.0.1:$(freeport)" 2>&1) || rc=$?
-[[ $rc != 0 && $rc != 124 && $out == *"reports.daily_checks: post: mail is not a webhook channel of alerts:"* ]] || kfail "K20: post: [mail] (exit $rc): $(tail -2 <<<"$out")"
+[[ $rc != 0 && $rc != 124 && $out == *"reports.daily_checks: post: mail is not a webhook channel of the alerts: block"* ]] || kfail "K20: post: [mail] (exit $rc): $(tail -2 <<<"$out")"
 kpcfg "$WORK/cfg-kpurl.yaml" "    enabled: true\n    at: 06:30\n    tz: UTC\n    to: [post@pgvigil.test]\n    as: $UIUSER\n    channel: mail\n    post: [https://hooks.example/T0/kproofsecret]\n"
 rc=0; out=$(timeout 20 "$BIN" serve -config "$WORK/cfg-kpurl.yaml" -listen "127.0.0.1:$(freeport)" 2>&1) || rc=$?
-[[ $rc != 0 && $rc != 124 && $out == *"reports.daily_checks: post: entry 1 of the list is not a webhook channel of alerts:"* && $out != *kproofsecret* ]] \
+[[ $rc != 0 && $rc != 124 && $out == *"reports.daily_checks: post: entry 1 of the list is not a webhook channel of the alerts: block"* && $out != *kproofsecret* ]] \
   || kfail "K20: post: [a webhook's URL] (exit $rc; the URL in serve's words: $([[ $out == *kproofsecret* ]] && echo yes || echo no)): $(tail -2 <<<"$out" | sed 's#https://[^ ]*#<the URL>#g')"
 kok "K20: the block's post: [hook] kept post_channels {hook} (kept_by file); post: [mail] stopped serve at start in words; a webhook's URL for a name stopped it by its place, the URL never printed"
 
