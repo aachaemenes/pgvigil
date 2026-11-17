@@ -77,14 +77,6 @@ SELECT x.name, x.changed_at, x.old_value, x.new_value
  ORDER BY x.changed_at DESC, x.name
  LIMIT 500`
 
-// sqlMSSQLChecksSnapshots: one database's present snapshots (0392, P25 row 2b: DBA Dash's database Snapshot Summary),
-// the newest first. $2 the source database's name.
-const sqlMSSQLChecksSnapshots = `
-SELECT s.snapshot_name, s.created_at, s.size_on_disk_bytes, s.files, s.size_note, s.first_seen, s.snapshot_at
-  FROM pgvigil.mssql_db_snapshot s
- WHERE s.instance_id = $1 AND s.source_database = $2::text AND s.is_present
- ORDER BY s.created_at DESC NULLS LAST, s.snapshot_name`
-
 const sqlMSSQLChecksColumns = `
 SELECT c.ord, c.value->>'key' AS key, c.value->>'label' AS label, c.value->>'best' AS best
   FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY c(value, ord)
@@ -183,7 +175,6 @@ func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
 		// db=: one database's scoped configuration and its changes (P25 row 2a; none without db=)
 		{"scoped_config", sqlMSSQLChecksScopedConfig, []any{id, r.URL.Query().Get("db")}},
 		{"scoped_changes", sqlMSSQLChecksScopedChanges, []any{id, r.URL.Query().Get("db")}},
-		{"snapshots", sqlMSSQLChecksSnapshots, []any{id, r.URL.Query().Get("db")}}, // P25 row 2b
 	})
 }
 

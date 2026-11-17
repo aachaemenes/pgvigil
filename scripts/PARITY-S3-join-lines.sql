@@ -52,12 +52,8 @@
 --    No grant line: apply_roles (0300 L2560-2570) makes every import_ function the collector's door (SECURITY DEFINER,
 --    EXECUTE to pgvigil_collector) on every migrate, import_mssql_db_scoped_config with them.
 
--- 5. 0392 (P25 row 2b, Snapshot Summary) creates only its own objects. At the join: (a) import_mssql_confcheck calls,
---    after its own rows and line 4's call,
---          PERFORM pgvigil.import_mssql_db_snapshots(p_instance_id, p_snapshot_at, p_payload);
---    the payload carries the 'db_snapshot' rows or one 'snapshots_unread' row (dboptions.go confSnapshotRows); (b)
---    mssql_db_snapshot under pgvigil_scope (the join's scope tests name it); (c) purge: the rows go with the instance
---    (ON DELETE CASCADE); a dropped snapshot's row stays not present, as mssql_files' do. No grant line (line 4).
+-- 5. DROPPED 11-17 (the lead 11:00): row 2b's database snapshots and 0392 are out of the slice (0392 freed) - DBA Dash's
+--    Snapshot Summary is its SCHEMA snapshots (map-dbadash.tsv L65), the database page's tab is the schema history.
 
 -- 6. scripts/PARITY-S3-wiring.patch (the lead's 09:0x (a)): the wiring files' hunks, applied by the lead at the join -
 --    web/src/router.ts (drillTabs / drillHome mssqldb; the drill pages' range-change keep list takes dbtab and fg; the

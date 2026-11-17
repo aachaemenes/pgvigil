@@ -12,7 +12,7 @@ import { mssqlPlanCacheView } from './mssql_plancache';
 import { mssqlSlow } from './mssql_xe';
 import { objectExecutionSection } from './mssql_objexec';
 import { get, rowsOf, Table } from './api';
-import { badge, el, fmtBytes, fmtTime, grid } from './ui';
+import { badge, el, fmtTime, grid } from './ui';
 
 export const mssqlDbTab = 'mssqldb';
 
@@ -68,17 +68,6 @@ async function dbConfiguration(ctx: Ctx, db: string): Promise<HTMLElement> {
       { key: 'new_value', label: 'to', fmt: v => v == null ? 'left the view' : String(v) }], 'No change seen since the first read.'));
 }
 
-// dbSnapshots: one database's snapshots (DBA Dash's Snapshot Summary; 0392, /api/mssql/checks part=snapshots by db=)
-async function dbSnapshots(ctx: Ctx, db: string): Promise<HTMLElement> {
-  const d = await get<{ snapshots: Table | null }>('mssql/checks', { instance: ctx.instance, part: 'snapshots', db });
-  const rows = rowsOf(d.snapshots), note = rows.find(r => r.size_note);
-  return el('div', {}, note ? el('p', { class: 'meta' }, `Size on disk ${String(note.size_note)}.`) : '',
-    grid(rows, [{ key: 'snapshot_name', label: 'snapshot' }, { key: 'created_at', label: 'created', fmt: fmtTime },
-      { key: 'size_on_disk_bytes', label: 'size on disk', num: true, fmt: v => v == null ? 'not read' : fmtBytes(v) },
-      { key: 'files', num: true }, { key: 'first_seen', label: 'first seen', fmt: fmtTime }],
-      `No snapshot of ${db}: the mssql_confcheck collection lists the database snapshots hourly (none on Azure SQL Database).`));
-}
-
 export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
   const db = hashParam('db');
   if (!db) return el('section', {}, el('h2', {}, 'Database'), el('p', { class: 'empty' }, 'No database named (db=).'));
@@ -109,9 +98,6 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
     case 'slow':
       // the instance's Slow queries read with db= (/api/mssql/xe: the events that ran in this database)
       body = await mssqlSlow(ctx);
-      break;
-    case 'snapshots':
-      body = await dbSnapshots(ctx, db);
       break;
     case 'dbconfig':
       body = await dbConfiguration(ctx, db);
