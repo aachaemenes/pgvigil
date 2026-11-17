@@ -233,7 +233,7 @@ var sqlAzureSLOHistory = sqlAzureScope + `, h AS (
     FROM pgvigil.mssql_azuredb_governance_history g JOIN inst ON inst.instance_id = g.instance_id
   WINDOW w AS (PARTITION BY g.instance_id ORDER BY g.valid_from)
 )
-SELECT h.instance_id, inst.instance, h.valid_from AS changed_at, h.old_edition, h.edition AS new_edition,
+SELECT h.instance_id, inst.instance, h.valid_from AS changed_at, h.prev_from AS old_valid_from, h.old_edition, h.edition AS new_edition,
        h.old_service_objective, h.service_objective AS new_service_objective, h.old_pool, h.pool AS new_pool,
        h.old_dtu_limit, h.dtu_limit AS new_dtu_limit, h.old_cpu_limit, h.cpu_limit AS new_cpu_limit
   FROM h JOIN inst USING (instance_id)

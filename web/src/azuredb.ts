@@ -86,6 +86,18 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'max_sessions', label: 'max sessions', fmt: num }, { key: 'max_workers', label: 'max worker threads', fmt: num },
       { key: 'max_log_rate_mb_s', label: 'max log rate (MB/s)', fmt: num },
     ], tierSkipped ? 'The tier is not read: mssql_azuredb_governance is skipped (above).' : 'The tier is not read yet.'));
+  // control audit A6: DBA Dash's "Azure Service Objectives" tab of this database - the Azure Summary's tier changes cut
+  // to it (ids=), with the old configuration's start (DBA Dash's Old Config Valid From)
+  const slo = await get<{ slo_history: Table | null }>('azuredb/summary', { ...window_(ctx), part: 'slo_history', ids: String(ctx.instance) })
+    .then(d => rowsOf(d.slo_history)).catch(() => null);
+  sec.append(el('h3', {}, 'Service Objectives (changes)'), slo == null ? el('p', { class: 'meta' }, 'This database\'s tier changes were not read.') : grid(slo, [
+    { key: 'changed_at', label: 'changed', fmt: fmtTime }, { key: 'old_valid_from', label: 'old config valid from', fmt: fmtTime },
+    { key: 'old_edition', label: 'old edition' }, { key: 'new_edition', label: 'new edition' },
+    { key: 'old_service_objective', label: 'old objective' }, { key: 'new_service_objective', label: 'new objective' },
+    { key: 'old_pool', label: 'old pool' }, { key: 'new_pool', label: 'new pool' },
+    { key: 'old_dtu_limit', label: 'old DTU', num: true }, { key: 'new_dtu_limit', label: 'new DTU', num: true },
+    { key: 'old_cpu_limit', label: 'old vCores', num: true }, { key: 'new_cpu_limit', label: 'new vCores', num: true },
+  ], 'No tier change of this database is stored (every change is kept, not cut by the range).'));
   const sumCols: Col[] = [
     n('samples', '15-second samples'), n('minutes', 'minutes'),
     n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct),
