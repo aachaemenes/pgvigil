@@ -18,7 +18,8 @@
 -- UNION of their newest texts, so no action kind is lost at the join:
 --   0300_join_release3.sql:2690-2697 (on rel-j16-last 65083820: verify_backup, job_enable, job_disable on both engines;
 --     the outcomes started / cut by shutdown / ended unknown),
---   0347_qsdd_s3_actions.sql:19-29 (rel-qsdd-force 8532f272, the same at 18794012: qs_force_plan / qs_unforce_plan with
+--   0347_qsdd_s3_actions.sql:19-29 (rel-qsdd-force 8532f272 and 18794012; cbff8726 since carries 0300's union but NO
+--     save_table [per review-31 part B S11, not read here]: qs_force_plan / qs_unforce_plan with
 --     no pid, the outcome 'requested' for those two alone; its own text DROPS verify_backup, job_enable, job_disable and
 --     the three outcomes above - that loss is named here and fixed at its source),
 --   and this file's save_table. 0353_job_start_step.sql:16-18 (rel-p21-a20 0b896f86) touches only action_kinds: no

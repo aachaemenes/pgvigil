@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -69,5 +71,27 @@ func TestSaveTablePGActionsLoginIsNotTheReadLogin(t *testing.T) {
 	}}
 	if err := today.Validate(); err != nil {
 		t.Errorf("a PostgreSQL instance without save_table, actions_dsn = dsn: %v (want accepted, as today)", err)
+	}
+}
+
+// review-31 part B N18: through the real loader - a file with no doors: save_table key loads it OFF (another door named
+// or none), one that says on loads it on; the Marshal check above cannot fail if the loader ever applied a default
+func TestSaveTableDoorSwitchThroughLoad(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "pgvigil.yaml")
+	for _, c := range []struct {
+		body string
+		want bool
+	}{
+		{"repository:\n  dsn: env:REPO\n", false},
+		{"repository:\n  dsn: env:REPO\ndoors:\n  page_instance_reads: off\n", false},
+		{"repository:\n  dsn: env:REPO\ndoors:\n  save_table: on\n", true},
+	} {
+		if err := os.WriteFile(p, []byte(c.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(p)
+		if err != nil || cfg.Doors.SaveTable != c.want {
+			t.Errorf("%q: loaded %+v, %v - want doors.save_table %v", c.body, cfg, err, c.want)
+		}
 	}
 }

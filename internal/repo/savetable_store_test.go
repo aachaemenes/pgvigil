@@ -14,8 +14,13 @@ import (
 //     newest texts - 0300_join_release3.sql:2690-2697 and 0347_qsdd_s3_actions.sql:19-29 (rel-qsdd-force 8532f272) -
 //     plus save_table: every action of each engine is taken, save_table and the two Query Store actions with no pid,
 //     every outcome of 0300's list for every action, and 'requested' for qs_force_plan / qs_unforce_plan only. A row
-//     per action, so the join can never lose one (0347 alone drops verify_backup, job_enable, job_disable and the
-//     outcomes started / cut by shutdown / ended unknown).
+//     per action, so a store migrated FROM NOTHING in name order loses none. NOT a store that ran 0362 and later gets
+//     0347: rel-qsdd-force's 0347 (8532f272 / 18794012 dropped verify_backup, job_enable, job_disable and the outcomes
+//     started / cut by shutdown / ended unknown; cbff8726 carries 0300's union and the Query Store actions) has NO
+//     save_table [per review-31 part B S11, not read here] - the lead's join line (FINDING 0347 LACKS SAVE_TABLE).
+//  3. review-31 part B S9: the audit login, IN ROLE pgvigil_collector, may call import_save_table_log (the route
+//     answers 503 otherwise) and it runs as its owner with a pinned search_path; N19: PostgreSQL's cancel and
+//     terminate with no pid are refused, as SQL Server's kill.
 //  2. 0362's pgvigil.import_save_table_log (review-29 S3): the engine from pgvigil.instances, never the column's
 //     'postgres' default; the target and the database kept; pid NULL; another action refused with an error.
 func TestSaveTableAuditOnAStore(t *testing.T) {
@@ -85,11 +90,23 @@ func TestSaveTableAuditOnAStore(t *testing.T) {
 	if err := row(ms, "st-ms", "sqlserver", "kill", "done", nil); err == nil {
 		t.Errorf("sqlserver kill with no pid: taken - want refused (a kill names its session)")
 	}
+	for _, a := range []string{"cancel", "terminate"} { // N19
+		if err := row(pg, "st-pg", "postgres", a, "done", nil); err == nil {
+			t.Errorf("postgres %s with no pid: taken - want refused (it names its session)", a)
+		}
+	}
 
 	// 2. import_save_table_log
 	var have bool
 	if err := pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.import_save_table_log(int, timestamptz, jsonb)') IS NOT NULL`).Scan(&have); err != nil || !have {
 		t.Fatalf("pgvigil.import_save_table_log(int, timestamptz, jsonb): present=%v %v - want 0362's function", have, err)
+	}
+	// 3. S9: the collector's door - EXECUTE for pgvigil_collector, SECURITY DEFINER, a pinned search_path
+	var exec, secdef bool
+	var conf string
+	if err := pool.QueryRow(ctx, `SELECT has_function_privilege('pgvigil_collector', p.oid, 'EXECUTE'), p.prosecdef, coalesce(array_to_string(p.proconfig, ','), '')
+	                                FROM pg_proc p WHERE p.oid = 'pgvigil.import_save_table_log(int, timestamptz, jsonb)'::regprocedure`).Scan(&exec, &secdef, &conf); err != nil || !exec || !secdef || !strings.Contains(conf, "search_path=") {
+		t.Errorf("import_save_table_log: pgvigil_collector EXECUTE %v, SECURITY DEFINER %v, settings %q, %v - want true, true, a search_path", exec, secdef, conf, err)
 	}
 	imp := func(id int, payload string) error {
 		_, err := pool.Exec(ctx, `SELECT pgvigil.import_save_table_log($1, now(), $2::jsonb)`, id, payload)
