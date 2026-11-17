@@ -12,6 +12,8 @@
 #                            the proof starts its own (MSSQL_IMAGE, default mcr.microsoft.com/mssql/server:2022-latest)
 #                            with a throwaway sa password made here, and removes it at the end.
 #   PGVIGIL_SKIP_TIMINGS=1   leaves C10 and C11 out (they store about 10 million rows) and says so.
+#   PGVIGIL_PAGE_CHECK=1     runs C9 (needs chromium, node 22+ and npm; the web bundle internal/web/dist/app.js built
+#                            from this tree first - npm run build in web/ - so the binary built here carries it).
 # It makes, and drops on every exit path the shell can catch: its repository database (pgvigil_cs_<n>), on the SQL
 # Server one database and one login (random suffix and password), its own container. No server setting is changed;
 # C6 empties the server's buffer pool six times (DBCC DROPCLEANBUFFERS): on a shared sandbox every database reads
@@ -54,6 +56,12 @@
 #      database's 100 highest averages - and matched 300; per_db=400 gives the 1,000 cap and matched 1200; no filter
 #      gives 1,000 rows without a matched column; extremes names top's keys in top's order each time; a value out
 #      of range is refused with 400.
+#  C9. The pages (scripts/cache-spread-page.mjs, a headless Chromium on the proof's own instance, in the light and
+#      the dark theme): the Plan cache statements show a diagnostics column and no group column at first, the four
+#      group boxes, 'Slow and frequent' and 'with a diagnostic' unticked; each group ticked shows its columns, with
+#      values; 'with a diagnostic' keeps only rows that carry one, 'Row count variance' among them before it; the
+#      Procedures grid's Extremes box the same; axe-core (WCAG 2.1 A and AA) finds 0 violation nodes on both pages
+#      with everything on: 'cache-spread page: OK'.
 #  P.  The API: /api/mssql/plancache answers with exactly its ten parts as before (no extremes); part=extremes with
 #      exactly that one.
 #  C10. The finding's cost: five instances with 35 reads of 3,000 statements in the last three hours (525,000 rows,
@@ -66,8 +74,8 @@
 #      measurement: the base has no figure for it). mssql_pc_sample has its 18 columns of 0092: the heatmap's and
 #      the compare's measured readers read what they read before.
 #  NOT PROVEN HERE: SQL Server 2016-2019 (the NULL forms of a column an older server lacks are Go rows), a statement
-#  with several cached plans on a real server (C2's stored rows), RDS, Managed Instance, the pages in a browser
-#  (their own check), the finding's arm of pgvigil.findings and the purge of mssql_pc_extreme's months (join lines).
+#  with several cached plans on a real server (C2's stored rows), RDS, Managed Instance, keyboard order and a
+#  screen reader on the two pages (axe judges what a rule can), the finding's arm of pgvigil.findings and the purge of mssql_pc_extreme's months (join lines).
 set -euo pipefail
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection in keyword form, no dbname}"
 for t in psql curl jq ss docker go; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
@@ -84,13 +92,14 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # the listening sockets are read once into a variable: 'ss | grep -q' under pipefail would call a taken port free
 # whenever grep left before ss had finished writing
 freeport() { local l p; l=$(ss -ltn); for p in $(seq "$1" "$2"); do grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " <<<"$l" || { echo "$p"; return; }; done; return 1; }
-MADE_REPO=; MADE_DB=; MADE_L=; MADE_CT=; SRV_PID=
+MADE_REPO=; MADE_DB=; MADE_L=; MADE_CT=; SRV_PID=; CHR_PID=
 CT=${PGVIGIL_MSSQL_CONTAINER:-}
 sq() { docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -W -h -1 -s '|' -t 600 -U sa -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
 sqs() { docker exec -i -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -U sa -i /dev/stdin; }
 cleanup() {
   rc=$?
   [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null || true
+  [ -n "$CHR_PID" ] && kill "$CHR_PID" 2>/dev/null || true
   if [ -n "$MADE_CT" ]; then
     docker rm -f -v "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2
   elif [ -n "$CT" ]; then
@@ -263,6 +272,24 @@ echo "  min_executions=4 keeps $(tr ',' '\n' <<<"$HAND" | grep -c .) of $(objs "
 for bad in "min_avg_cpu_ms=-1" "min_executions=0" "per_db=1001" "per_db=x"; do
   [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/plancache?instance=$iid&$bad")" = 400 ] || fail "C8: $bad was not refused with 400"
 done
+
+if [ -n "${PGVIGIL_PAGE_CHECK:-}" ]; then
+  echo "--- C9. the pages in a browser"
+  for t in chromium node npm; do command -v $t >/dev/null || fail "C9: $t is not on this machine"; done
+  grep -q 'with a diagnostic' "$ROOT/internal/web/dist/app.js" || fail "C9: internal/web/dist/app.js is not built from this tree (npm run build in web/, before this proof builds its binary)"
+  (cd "$WORK" && npm install --silent --no-audit --no-fund --no-package-lock axe-core@4.14.0 >/dev/null 2>&1) || fail "C9: npm install axe-core"
+  CDP=$(freeport 19340 19380) || fail "C9: no free port for the browser"
+  chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 & CHR_PID=$!
+  for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
+  curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "C9: chromium's CDP port never answered"
+  node "$ROOT/scripts/cache-spread-page.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$WORK/node_modules/axe-core/axe.min.js" "$iid" > "$WORK/page.txt" 2>&1 || { sed 's/^/  /' "$WORK/page.txt" | cut -c1-600; fail "C9: the page check"; }
+  sed 's/^/  /' "$WORK/page.txt" | cut -c1-300
+  kill "$CHR_PID" 2>/dev/null || true; CHR_PID=
+  [ "$(tail -1 "$WORK/page.txt")" = "cache-spread page: OK" ] || fail "C9: the page check's last line is '$(tail -1 "$WORK/page.txt")'"
+  echo "C9: OK"
+else
+  echo "C9: NOT RUN (PGVIGIL_PAGE_CHECK is not set: the pages were not opened in a browser)"
+fi
 
 echo "--- C7 again: the proof's rows moved four hours back"
 q "select pgvigil.ensure_month_partition('mssql_pc_extreme', now() - interval '4 hours')" >/dev/null
