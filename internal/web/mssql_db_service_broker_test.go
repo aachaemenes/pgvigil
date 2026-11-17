@@ -132,8 +132,8 @@ func TestServiceBrokerTabIsWired(t *testing.T) {
 	}
 	src := string(b)
 	for _, w := range []string{"['tuning', 'Tuning Recommendations'], ['servicebroker', 'Service Broker']", "case 'servicebroker':",
-		"part: 'broker_queues'", "part: 'broker_depth'", "part: 'broker_transmission'", "part: 'broker_conversations'", "part: 'broker_endpoint'",
-		"part: 'broker_counters'", "lineChart(", "mssql_service_broker"} {
+		"part('broker_queues')", "part('broker_depth', true)", "part('broker_transmission')", "part('broker_conversations')", "part('broker_endpoint')",
+		"part('broker_counters', true)", "lineChart(", "mssql_service_broker"} {
 		if !strings.Contains(src, w) {
 			t.Errorf("mssql_db.ts has no %s", w)
 		}
