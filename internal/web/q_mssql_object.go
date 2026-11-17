@@ -149,3 +149,26 @@ func objectSlowPart(q url.Values, id int, from, to time.Time) (part, error) {
 	}
 	return part{"object_slow", sqlMSSQLObjectSlow, []any{id, from, to, q.Get("dbname"), name}}, nil
 }
+
+// sqlMSSQLObjectSchema: the object page's Schema History (DBA Dash's ObjectSchemaHistory: the object's changes over its
+// stored snapshots, 200 at most, the newest first): 0058's schema_changes of the procedure, function or trigger $3.$4
+// (case-insensitive) in database $2, every stored change (the window does not cut it), each before / after cut as the
+// Schema tab's (schemaChangeCut, over the alias w) so the page's compare reads the whole text by part=change.
+const sqlMSSQLObjectSchema = `
+SELECT w.snapshot_at, w.prev_at, w.dbid, w.datname, w.kind, w.identity, w.schema_name, w.object_name, w.parent, w.change, w.attribute,
+       ` + schemaChangeCut + `
+  FROM pgvigil.schema_changes w
+ WHERE w.instance_id = $1 AND w.dbid = $2 AND w.kind IN ('procedure', 'function', 'trigger')
+   AND lower(w.schema_name) = lower($3::text) AND lower(w.object_name) = lower($4::text)
+ ORDER BY w.snapshot_at DESC
+ LIMIT 200`
+
+// objectSchemaPart: part=object_schema from db_id= (the database id), schema= and name=
+func objectSchemaPart(q url.Values, id int) (part, error) {
+	dbID, err := strconv.ParseInt(q.Get("db_id"), 10, 64)
+	schema, name := q.Get("schema"), q.Get("name")
+	if err != nil || name == "" || len([]rune(name)) > 128 || len([]rune(schema)) > 128 {
+		return part{}, errors.New("part=object_schema needs db_id= (the database id), schema= and name=")
+	}
+	return part{"object_schema", sqlMSSQLObjectSchema, []any{id, dbID, schema, name}}, nil
+}

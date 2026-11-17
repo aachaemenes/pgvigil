@@ -542,7 +542,7 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 		}
 		parts = append(parts, part{"objects", sqlMSSQLObjects, []any{id, from, to, database, kinds, search}})
 	}
-	if (q.Get("db_id") != "" || q.Get("object") != "") && q.Get("part") != "object_statements" {
+	if (q.Get("db_id") != "" || q.Get("object") != "") && q.Get("part") != "object_statements" && q.Get("part") != "object_schema" {
 		dbID, err1 := strconv.Atoi(q.Get("db_id"))
 		obj, err2 := strconv.ParseInt(q.Get("object"), 10, 64)
 		if err1 != nil || err2 != nil {
@@ -561,6 +561,15 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 		}
 		parts = append(parts, part{"intervals", intervals, []any{id, from, to, dbID, obj}},
 			part{"history", history, []any{planEach, id, from, to, dbID, obj, procStep(to.Sub(from).Seconds())}})
+	}
+	// the object page's Schema History (OBJ, q_mssql_object.go): its stored changes, when asked
+	if q.Get("part") == "object_schema" {
+		p, err := objectSchemaPart(q, id)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		parts = append(parts, p)
 	}
 	// the object page's Slow Queries (OBJ, q_mssql_object.go): its completions by client app, when asked
 	if q.Get("part") == "object_slow" {
