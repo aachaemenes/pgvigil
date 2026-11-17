@@ -351,8 +351,26 @@ type mailRequest struct {
 	Grids      int      `json:"grids"`
 	Rows       int      `json:"rows"`
 	Error      string   `json:"error"` // a render's page that could not build its mail says why
-	// Post: the Daily checks page's numbers (B20-4), carried onto a kept schedule's turn for its post
-	Post *reportmail.DailyPost `json:"post"`
+	// Post: the Daily checks page's numbers (B20-4), carried onto a kept schedule's turn for its post. Taken as it
+	// came: a value of the wrong shape must not fail the body it rides in (dailyPostOf reads it; review-26 go2 N2)
+	Post json.RawMessage       `json:"post"`
+	post *reportmail.DailyPost // Post read and checked; nil when the page sent none or it was refused
+}
+
+// dailyPostOf reads a render's post numbers: nil when the page sent none, nil with the reason when they are not an
+// object of counts or fail their checks - the mail goes either way, its post does not.
+func dailyPostOf(raw json.RawMessage) (*reportmail.DailyPost, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var p reportmail.DailyPost
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, errors.New("the post is not an object of counts")
+	}
+	if err := p.Check(); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 // check is a mail's own checks before it is queued (the repository checks them again)
@@ -627,12 +645,10 @@ func (s *Server) ReportMailRendered(w http.ResponseWriter, r *http.Request) {
 	} else if _, err := in.check(); err != nil {
 		got.err = err
 	} else {
-		if in.Post != nil {
-			if perr := in.Post.Check(); perr != nil {
-				// the mail goes; its post does not (the send row says the page sent no counts)
-				s.log.Warn("report mail: the page's post numbers were refused", "err", perr)
-				in.Post = nil
-			}
+		var perr error
+		if in.post, perr = dailyPostOf(in.Post); perr != nil {
+			// the mail goes; its post does not (the send row says the page sent no counts)
+			s.log.Warn("report mail: the page's post numbers were refused", "err", perr)
 		}
 		got.mail = in
 	}
@@ -680,8 +696,8 @@ func (s *Server) renderAndQueue(ctx context.Context, sc dueSchedule, kind, user,
 			subj = subj[:200]
 		}
 		pay["subject"], pay["html"], pay["grids"], pay["rows"], pay["xlsx_name"] = subj, m.HTML, m.Grids, m.Rows, m.XLSXName
-		if m.Post != nil {
-			pay["post"] = m.Post // stored only on a kept schedule's turn that has post channels (0273)
+		if m.post != nil {
+			pay["post"] = m.post // stored only on a kept schedule's turn that has post channels (0273)
 		}
 		if sc.xlsx && m.XLSX != "" {
 			pay["xlsx"] = m.XLSX

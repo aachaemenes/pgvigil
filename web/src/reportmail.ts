@@ -524,10 +524,13 @@ async function dailyMailDialog(d: DailyState) {
     box.checked = (d.post ?? []).includes(name);
     return box;
   });
+  // a kept post channel the sender no longer records has no box: the dialog says that its Save drops it (review-26 go2 N3)
+  const gone = (d.post ?? []).filter(name => !(d.post_choices ?? []).includes(name));
   const fields = [el('label', {}, 'At ', at), el('label', {}, 'Time zone ', tz),
     el('label', {}, `To (one or more addresses, at most ${md.door.max_recipients}) `, to), el('label', {}, 'Channel (the alerts: smtp relay) ', chan),
     el('label', {}, attach, ' attach the workbook (.xlsx)'),
-    ...posts.map(b => el('label', {}, b, ` post the counts to ${b.value} (a webhook channel of alerts:)`))];
+    ...posts.map(b => el('label', {}, b, ` post the counts to ${b.value} (a webhook channel of alerts:)`)),
+    ...(gone.length ? [el('p', { class: 'meta post-gone' }, gone.map(name => `${name} is no longer a recorded webhook channel: Save drops it.`).join(' '))] : [])];
   const invalid = () => !/^\d\d:\d\d$/.test(at.value) ? 'the hour' : !addrList(to.value).length ? 'an address' : !chan.value ? 'an smtp channel' : '';
   const what = `The Daily checks page is drawn on the server in a headless browser as you (${d.user || md.door.user}) once a day at this hour and mailed: its grid in its colours, 'All checks pass' on a day nothing fails, and its workbook.`
     + (md.door.browser ? '' : ` ${md.door.browser_reason ?? 'This server has no headless browser'}.`);

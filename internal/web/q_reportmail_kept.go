@@ -303,7 +303,7 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 			wh = s.sessionWho(r)
 		}
 		if wh.err == nil && roleRank(wh.role) < needAdmin {
-			reason = roleWords("changing the Daily checks mail", needAdmin, wh)
+			reason = roleWords(routeWhat["POST /api/reportmail"], needAdmin, wh) // the POST's own words (review-26 go2 N4)
 		}
 	}
 	out["writable"], out["reason"] = reason == "", reason
@@ -328,7 +328,9 @@ type dailyRequest struct {
 	Recipients []string `json:"recipients"`
 	Channel    string   `json:"channel"`
 	AttachXLSX *bool    `json:"attach_xlsx"`
-	Post       []string `json:"post"` // B20-4: the webhook channels its counts are posted to
+	// Post (B20-4): the webhook channels its counts are posted to. No field at all (a page loaded before the upgrade
+	// saves the hour) leaves the kept list as it is; an explicit [] clears it (review-26 go2 S5)
+	Post *[]string `json:"post"`
 }
 
 // reportMailDaily is POST /api/reportmail with op daily_keep / daily_drop: the Daily checks page's control. user is
@@ -361,8 +363,19 @@ func (s *Server) reportMailDaily(w http.ResponseWriter, r *http.Request, user st
 	var err error
 	switch in.Op {
 	case "daily_keep":
+		var posts []string
+		if in.Post != nil {
+			posts = *in.Post
+		} else {
+			live, lerr := s.keptLive(r.Context())
+			if lerr != nil {
+				writeErr(w, http.StatusInternalServerError, fmt.Errorf("the kept schedule could not be read: %w", lerr))
+				return
+			}
+			posts = live.post
+		}
 		req := reportmail.KeptRequest{At: in.At, TZ: strings.TrimSpace(in.Timezone), As: user, Channel: strings.TrimSpace(in.Channel), To: in.Recipients,
-			AttachXLSX: in.AttachXLSX == nil || *in.AttachXLSX, Post: in.Post}
+			AttachXLSX: in.AttachXLSX == nil || *in.AttachXLSX, Post: posts}
 		pay, _, perr := req.Payload(time.Now())
 		if perr != nil {
 			writeErr(w, http.StatusBadRequest, perr)

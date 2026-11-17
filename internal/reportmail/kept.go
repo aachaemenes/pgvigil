@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -154,8 +155,13 @@ func ParseDailyChecks(raw []byte) (*DailyChecks, error) {
 	return d, nil
 }
 
+// postNameRE is a channel's name as the alerts: block takes it (internal/alerts nameRE)
+var postNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,62}$`)
+
 // checkPost: each name of an enabled block's post: list is a webhook channel of the same file's alerts: block (the
-// channel's own keys are the alerts package's to check; here only its name and kind are read)
+// channel's own keys are the alerts package's to check; here only its name and kind are read). An entry that cannot
+// be a channel's name is refused by its place, never printed: a webhook's URL pasted for its channel would otherwise
+// reach serve's log and the support report with its secret (review-26 go2 S2).
 func (d *DailyChecks) checkPost(raw []byte) error {
 	if !d.On() || len(d.Post) == 0 {
 		return nil
@@ -173,8 +179,12 @@ func (d *DailyChecks) checkPost(raw []byte) error {
 	for _, c := range file.Alerts {
 		kinds[strings.TrimSpace(c.Name)] = c.Kind
 	}
-	for _, name := range d.Post {
-		if n := strings.TrimSpace(name); kinds[n] != "webhook" {
+	for i, name := range d.Post {
+		n := strings.TrimSpace(name)
+		if !postNameRE.MatchString(n) {
+			return fmt.Errorf("%s: post: entry %d of the list is not a webhook channel of alerts:", DailyChecksKey, i+1)
+		}
+		if kinds[n] != "webhook" {
 			return fmt.Errorf("%s: post: %s is not a webhook channel of alerts:", DailyChecksKey, n)
 		}
 	}

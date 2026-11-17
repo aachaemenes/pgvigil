@@ -69,7 +69,8 @@ one (the repository holds it to one live schedule):
   off` and **Mail daily...** asks for the hour, the zone, the addresses, the smtp channel and, when the sender records
   any, the webhook channels to post the counts to; the mail is then drawn as the admin who turned it on.
   **Change...** edits it and **Turn off** ends it. Below the admin role the line is read only and says so in the
-  role's words (`changing the Daily checks mail needs the admin role: ...`); the server refuses the change the same.
+  role's words (`changing a report mail schedule needs the admin role: ...`); the server refuses the change in the
+  same words.
 
 The file wins. While the block is in the file the page's line shows the mail's state and its next send, and its
 buttons are off with the reason beside them (`kept by pgvigil.yaml` or `turned off in pgvigil.yaml`): `enabled: true`
@@ -127,8 +128,11 @@ the mail missed); a post that fails, and a sent mail whose page sent no counts, 
 (`post_error`) and alerted on every channel as `daily checks post failed`, the mail itself having gone. A `post:`
 channel added to `alerts:` together with the block waits, like `channel:`, until the sender has recorded it (tried
 again each minute). A `post:` name that is not a webhook channel of the same file's `alerts:` stops `pgvigil serve` at
-its start (`reports.daily_checks: post: <name> is not a webhook channel of alerts:`); the page's dialog offers only the
-webhook channels the sender records.
+its start (`reports.daily_checks: post: <name> is not a webhook channel of alerts:`); an entry that cannot be a
+channel's name at all - a webhook's URL pasted where its channel's name belongs - is refused by its place (`post:
+entry 1 of the list is not a webhook channel of alerts:`) and never printed, so the URL reaches neither the log nor
+`pgvigil report`. The page's dialog offers only the webhook channels the sender records; a kept channel the sender
+no longer records has no box there, and the dialog says that its Save drops it.
 
 ## How the mail equals the window
 
