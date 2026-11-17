@@ -13,7 +13,7 @@
 // header, which the export honours. The one hook is the grid's menu: ui.ts sends a 'pgvigil:gridmenu' event (askGridMenu)
 // and the tools build the menu from it, a page's own lines (the event's extra) at its end.
 import { Cell, Kind, Meta, Section, Status, csv, exportGrid, fillOf, fontOf, fromText, headFill, linkFill, linkFont, readGrid, saveGridAs, statusOf, timeZone, typed } from './export';
-import { GridMenuAsk, cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, isCondList, offControl, quoteFilter } from './ui';
+import { GridMenuAsk, cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, isCondList, offControl, quoteFilter, reorderGrid } from './ui';
 import { MenuItem, gridLines, showTreeMenu } from './treemenu';
 import { Grid, htmlDoc, json, markdown, sqlScript, tsv } from './gridwriters';
 
@@ -21,7 +21,8 @@ import { Grid, htmlDoc, json, markdown, sqlScript, tsv } from './gridwriters';
 // names loads as it), under the value, or a traffic light with the high values the worse or the better; rownum: the row
 // numbers drawn (a counter, no column)
 type BarStyle = 'behind' | 'under' | 'worse' | 'better';
-interface Prefs { hidden: string[]; frozen: number; bars: Record<string, BarStyle>; rownum?: boolean }
+// order: the columns' names in the order the browser moved them to (G-reorder, parity set 3 L203); none = as drawn
+interface Prefs { hidden: string[]; frozen: number; bars: Record<string, BarStyle>; rownum?: boolean; order?: string[] }
 const BAR_STYLES: [BarStyle, string][] = [['behind', 'Behind value'], ['under', 'Under value'], ['worse', 'Traffic light (higher is worse)'], ['better', 'Traffic light (higher is better)']];
 type Agg = 'sum' | 'avg' | 'min' | 'max';
 interface Grouping { col: string; agg: Agg; box: HTMLElement }
@@ -79,7 +80,13 @@ function hash(s: string): string {
   for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
   return h.toString(36);
 }
-const keyOf = (t: HTMLTableElement) => `pgvigil.grid.${(/^#\/([A-Za-z_]+)/.exec(location.hash)?.[1] ?? 'summary')}.${hash(headingOf(t) + '|' + names(t).join('|'))}`;
+// origNames: the grid's column names as first drawn, kept on the table the first time its choices are read - a grid
+// whose columns were moved keeps the key its choices are kept under
+function origNames(t: HTMLTableElement): string[] {
+  if (!t.dataset.gtNames) t.dataset.gtNames = JSON.stringify(names(t));
+  try { return JSON.parse(t.dataset.gtNames) as string[]; } catch { return names(t); }
+}
+const keyOf = (t: HTMLTableElement) => `pgvigil.grid.${(/^#\/([A-Za-z_]+)/.exec(location.hash)?.[1] ?? 'summary')}.${hash(headingOf(t) + '|' + origNames(t).join('|'))}`;
 
 // ---- a saved view's layouts (VIEWS slice B, views.ts) ------------------------------------------------------------
 // While a view is loaded its layouts are a layer over the browser's own choices: every grid of the page is drawn from
@@ -144,7 +151,8 @@ function load(t: HTMLTableElement): Prefs {
     const styles = new Set(BAR_STYLES.map(x => x[0]));
     const bars: Record<string, BarStyle> = Array.isArray(p.bars) ? Object.fromEntries(list(p.bars).map(n => [n, 'behind' as BarStyle]))
       : p.bars && typeof p.bars === 'object' ? Object.fromEntries(Object.entries(p.bars).filter(([, v]) => styles.has(v as BarStyle))) as Record<string, BarStyle> : {};
-    return { hidden: list(p.hidden), frozen: Math.max(0, Math.min(MAX_FROZEN, Math.floor(Number(p.frozen) || 0))), bars, rownum: p.rownum === true };
+    const order = list(p.order);
+    return { hidden: list(p.hidden), frozen: Math.max(0, Math.min(MAX_FROZEN, Math.floor(Number(p.frozen) || 0))), bars, rownum: p.rownum === true, ...(order.length ? { order } : {}) };
   } catch { return none; }   // a value another version wrote
 }
 function save(t: HTMLTableElement, p: Prefs) {
@@ -155,7 +163,7 @@ function save(t: HTMLTableElement, p: Prefs) {
     apply(t, p);
     return;
   }
-  const k = keyOf(t), empty = !p.hidden.length && !p.frozen && !Object.keys(p.bars).length && !p.rownum;
+  const k = keyOf(t), empty = !p.hidden.length && !p.frozen && !Object.keys(p.bars).length && !p.rownum && !p.order?.length;
   if (empty) mem.delete(k); else mem.set(k, p);
   try {
     if (empty) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(p));
@@ -169,6 +177,14 @@ function save(t: HTMLTableElement, p: Prefs) {
 // ones (sticky, each at the width of the ones before it) and the data bars. p: the choice just made; without it the
 // kept one. The hidden columns are written first, then every width is read in one pass, then the frozen ones written.
 function apply(t: HTMLTableElement, p: Prefs = load(t)) {
+  // the columns in the order kept (or as first drawn): a grid() moves them itself (ui.ts reorderGrid), before the
+  // hidden and frozen columns are worked out by their places
+  const want = p.order?.length ? p.order : origNames(t), now = names(t);
+  if (want.join('\u0001') !== now.join('\u0001')) {
+    const perm = want.map(n => now.indexOf(n)).filter(i => i >= 0);
+    for (let i = 0; i < now.length; i++) if (!perm.includes(i)) perm.push(i);
+    if (perm.some((x, i) => x !== i)) reorderGrid(t, perm);
+  }
   const ns = names(t), hs = heads(t);
   if (!hs.length) return;
   const hidden = new Set(p.hidden.filter(n => ns.includes(n)));
@@ -483,7 +499,7 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
     to?.focus();
   };
   // a bar ticked here keeps its style (behind the value when new); the row numbers stay as they are
-  const now = (): Prefs => ({ hidden: [...hidden], frozen: Number(freeze.value) || 0, bars: Object.fromEntries([...barsOn].map(n => [n, p.bars[n] ?? 'behind' as BarStyle])), rownum: p.rownum });
+  const now = (): Prefs => ({ hidden: [...hidden], frozen: Number(freeze.value) || 0, bars: Object.fromEntries([...barsOn].map(n => [n, p.bars[n] ?? 'behind' as BarStyle])), rownum: p.rownum, order: p.order });
   const list = el('div', { class: 'gt-cols' });
   ns.forEach((n, j) => {
     const tick = el('input', { type: 'checkbox' }) as HTMLInputElement;
@@ -514,7 +530,7 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   const all = el('button', { type: 'button' }, 'Show every column');
   all.addEventListener('click', () => { hidden.clear(); list.querySelectorAll<HTMLInputElement>('.gt-col > label:first-child input').forEach(i => { i.checked = true; }); save(t, now()); });
   const reset = el('button', { type: 'button' }, 'Reset this grid');
-  reset.addEventListener('click', () => { hidden.clear(); barsOn.clear(); freeze.value = '0'; save(t, { ...now(), rownum: false }); group(t, null); pickColumn(t, -1); chooser(t, back); });
+  reset.addEventListener('click', () => { hidden.clear(); barsOn.clear(); freeze.value = '0'; save(t, { ...now(), rownum: false, order: undefined }); group(t, null); pickColumn(t, -1); chooser(t, back); });
   const done = el('button', { type: 'button' }, 'Close');
   done.addEventListener('click', close);
   box.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } });
@@ -835,6 +851,13 @@ export function installGridTools() {
     d.done = true;
     const host = (d.table ?? d.empty)?.closest('dialog[open]') ?? undefined;
     showTreeMenu(d.x, d.y, items, d.back, 'Grid menu', host);
+  });
+  // a column moved by the grid (ui.ts moveCol): its order kept with the grid's choices (none when it is the first order)
+  document.addEventListener('pgvigil:gridorder', e => {
+    const t = e.target;
+    if (!(t instanceof HTMLTableElement) || !isGrid(t)) return;
+    const ord = names(t);
+    save(t, { ...load(t), order: ord.join('\u0001') === origNames(t).join('\u0001') ? undefined : ord });
   });
   document.addEventListener('click', onClick);
   document.addEventListener('mousedown', e => {   // a Shift+click on a cell extends the tools' selection, not the browser's text selection

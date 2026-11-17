@@ -69,6 +69,10 @@ export interface Col {
 // text: a row's cell as the screen words it (the grid menu's statistics read the rows without building them)
 export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[]; allRows?(): HTMLTableRowElement[]; text?(r: Record<string, unknown>, c: Col): string }
 const models = new WeakMap<HTMLTableElement, GridModel>();
+// orders: a grid()'s reorder (a permutation of its columns' present indexes: perm[k] = the column drawn k-th)
+const orders = new WeakMap<HTMLTableElement, (perm: number[]) => void>();
+let gridSeq = 0;
+export function reorderGrid(t: HTMLTableElement, perm: number[]): boolean { const f = orders.get(t); if (!f) return false; f(perm); return true; }
 export function gridModel(t: HTMLTableElement): GridModel | undefined { return models.get(t); }
 
 // a cell's words as the screen means them: a statement shown as its first characters carries the whole text in
@@ -318,6 +322,8 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   if (rows.length === 0) return el('div', { class: 'empty-grid', tabindex: '0', role: 'group', 'aria-label': 'Empty grid: ' + empty }, ...(rw ? [readWindowNote(rw)] : []),
     el('table', { class: 'grid-empty', 'aria-hidden': 'true' }, el('thead', {}, el('tr', {}, ...cols.map(c => el('th', {}, el('span', { class: 'th-label' }, c.label ?? c.key)))))),
     el('p', { class: 'empty visually-hidden', 'data-cols': JSON.stringify(cols.map(c => c.label ?? c.key)) }, empty));
+  cols = cols.slice();   // the grid's own list: a moved column (reorder below) never moves the caller's
+  const gid = String(++gridSeq);   // a drag says its grid: a header dropped from another grid moves nothing
   let sortKey = '', asc = true;
   let shown = rows;
   let scope: ((r: Record<string, unknown>) => boolean) | undefined, scopeNote = '';   // narrowGrid's predicate and its words
@@ -344,6 +350,16 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       asc = sortKey === c.key ? !asc : true; sortKey = c.key;
       draw();
     });
+    // a header dragged onto another moves its column there (G-reorder, parity set 3 L203); Alt+Left / Alt+Right by keys
+    th.draggable = true;
+    th.addEventListener('dragstart', e => { e.dataTransfer?.setData('text/x-pgvigil-col', `${gid}:${[...head.children].indexOf(th)}`); });
+    th.addEventListener('dragover', e => { if (e.dataTransfer?.types.includes('text/x-pgvigil-col')) e.preventDefault(); });
+    th.addEventListener('drop', e => {
+      const [g, i] = (e.dataTransfer?.getData('text/x-pgvigil-col') ?? '').split(':'), from = Number(i);
+      if (g !== gid || !Number.isInteger(from)) return;   // a header of another grid moves nothing here
+      e.preventDefault();
+      moveCol(from, [...head.children].indexOf(th));
+    });
     head.append(th);
     const inp = el('input', { type: 'search', class: 'filter', 'aria-label': 'Filter ' + name + (c.num ? ' (>, <, = a number as shown, or with a unit: >500 MB, <10m)' : ''), placeholder: c.num ? '>5, <10m, >1 GB' : 'contains' }) as HTMLInputElement;
     let wait: number | undefined;   // a redraw a beat after the last key, not on every key
@@ -361,6 +377,26 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   }
   thead.append(head, filterRow);
   table.append(thead, tbody);
+  // a column moved (G-reorder, parity set 3 L203): the grid's column list itself (the model, the export and the copies
+  // keep the shown order), its header cell and its filter cell move together and the rows are drawn again; gridtools
+  // keeps the order with the grid's other choices (the event) and gives it back when the grid is drawn (reorderGrid)
+  function reorder(perm: number[]) {
+    if (perm.length !== cols.length) return;
+    const hs = [...head.children], fs = [...filterRow.children], cs = perm.map(i => cols[i]);
+    cols.splice(0, cols.length, ...cs);
+    head.replaceChildren(...perm.map(i => hs[i]));
+    filterRow.replaceChildren(...perm.map(i => fs[i]));
+    draw();
+  }
+  function moveCol(from: number, to: number): boolean {
+    if (from === to || from < 0 || to < 0 || from >= cols.length || to >= cols.length) return false;
+    const perm = cols.map((_, i) => i), [x] = perm.splice(from, 1);
+    perm.splice(to, 0, x);
+    reorder(perm);
+    table.dispatchEvent(new CustomEvent('pgvigil:gridorder', { bubbles: true }));
+    return true;
+  }
+  orders.set(table, reorder);
   const fmtCell = (c: Col, r: Record<string, unknown>) => { const v = r[c.key]; return c.fmt ? c.fmt(v, r) : (c.num ? fmtNum(v) : fmtAny(v)); };
   const shownWords = (w: string) => w.replace(/\s+/g, ' ').trim();   // what a cell shows (cellText's rule), the filter's side
   const words = (out: string | Node) => typeof out === 'string' ? out : cellText(el('span', {}, out instanceof Node ? out.cloneNode(true) : String(out)));
@@ -462,6 +498,13 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     if (t !== cell) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cur = place; rove(true); } return; }
     const [r, j] = place;
     cur = place;
+    // Alt+Left / Alt+Right on a header cell moves its column (G-reorder), the focus with it
+    if (r < 0 && e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      const to2 = j + (e.key === 'ArrowLeft' ? -1 : 1);
+      if (moveCol(j, to2)) { cur = [-1, to2]; rove(true); }
+      return;
+    }
     const last = bodyRows().length - 1;
     let to: [number, number] | null = null;
     if (e.key === 'ArrowDown') to = [Math.min(last, r + 1), j];
