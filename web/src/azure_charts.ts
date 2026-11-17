@@ -33,11 +33,13 @@ export function pickRows(g: Grouping, parts: { minutes: Row[]; hours: Row[]; day
   return { rows: unit === 'day' ? parts.days : unit === 'hour' ? parts.hours : parts.minutes, unit };
 }
 
-// layout: the charts' box, the chosen number of charts a row
+// layout: the charts' box, at most the chosen number of charts a row - each track is a row's share of the box and
+// never under 320px (the whole box when it is narrower), so a narrow page wraps to fewer a row instead of squeezing
+// them (review t11-3 SHOULD 3); the gap is the house token
 export function layout(box: HTMLElement, columns: number): HTMLElement {
   box.style.display = 'grid';
-  box.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
-  box.style.gap = '1rem';
+  box.style.gap = 'var(--sp-4)';
+  box.style.gridTemplateColumns = `repeat(auto-fill, minmax(min(100%, max(320px, calc((100% - ${columns - 1} * var(--sp-4)) / ${columns}))), 1fr))`;
   return box;
 }
 

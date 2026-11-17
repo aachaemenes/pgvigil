@@ -142,18 +142,19 @@ func (s *Server) MSSQLAzureDB(w http.ResponseWriter, r *http.Request) {
 // else the instance's own server name (@@SERVERNAME, mssql_instance), else its governance row's server_name; its pool
 // the member row's while it is current, else the governance row's - the member row stays behind when a database leaves
 // its pool (0128), so it counts unless the governance row is newer and not ElasticPool (review t11-2 BLOCKER 1: a
-// database moved to a single tier is in no pool).
+// database moved to a single tier is in no pool). pool_read: the pool is the member row's - the database's own pool
+// read stored it, so the Elastic pool page read through this database has the pool's minutes (review t11-3 SHOULD 2).
 var sqlAzureScope = strings.Replace(sqlPerfScope, "WITH inst AS (", "WITH inst_scope AS (", 1) + `, inst AS (
-  SELECT s.instance_id, s.instance, s.engine, s.platform, x.az_server, x.az_pool
+  SELECT s.instance_id, s.instance, s.engine, s.platform, x.az_server, coalesce(x.pm_pool, g.pool) AS az_pool, x.pm_pool IS NOT NULL AS pool_read
     FROM inst_scope s
     LEFT JOIN pgvigil.mssql_pool_member pm ON pm.instance_id = s.instance_id
     LEFT JOIN pgvigil.mssql_instance mi ON mi.instance_id = s.instance_id
     LEFT JOIN pgvigil.mssql_azuredb_governance g ON g.instance_id = s.instance_id
     CROSS JOIN LATERAL (SELECT coalesce(pm.server, nullif(mi.server_name, ''), g.gov->>'server_name') AS az_server,
-                               coalesce(CASE WHEN NOT coalesce(g.snapshot_at > pm.seen_at AND g.service_objective IS DISTINCT FROM 'ElasticPool', false)
-                                             THEN pm.pool END, g.pool) AS az_pool) x
+                               CASE WHEN NOT coalesce(g.snapshot_at > pm.seen_at AND g.service_objective IS DISTINCT FROM 'ElasticPool', false)
+                                    THEN pm.pool END AS pm_pool) x
    WHERE ($5::text IS NULL OR upper(x.az_server) = upper($5::text))
-     AND ($6::text IS NULL OR upper(x.az_pool) = upper($6::text))
+     AND ($6::text IS NULL OR upper(coalesce(x.pm_pool, g.pool)) = upper($6::text))
 )`
 
 // the fleet's Azure SQL Databases over the window (DBA Dash's Azure Summary grid): the tier (its limits from the minutes
@@ -169,7 +170,7 @@ var sqlAzureDBFleet = sqlAzureScope + `, w AS (
     FROM pgvigil.mssql_azuredb_window(ARRAY(SELECT instance_id FROM inst WHERE platform = 'azuresqldb'), $1, $2) a
    GROUP BY a.instance_id
 )
-SELECT inst.instance_id, inst.instance, inst.az_server AS server, g.edition, g.service_objective, inst.az_pool AS pool,
+SELECT inst.instance_id, inst.instance, inst.az_server AS server, g.edition, g.service_objective, inst.az_pool AS pool, inst.pool_read,
        coalesce(g.dtu_limit, w.max_dtu_limit) AS dtu_limit, coalesce(g.cpu_limit, w.max_cpu_limit) AS cpu_limit, g.instance_id IS NOT NULL AS tier_read,
        w.samples, w.minutes, w.avg_cpu_percent, w.max_cpu_percent, w.avg_data_io_percent, w.max_data_io_percent, w.avg_log_write_percent,
        w.max_log_write_percent, w.avg_dtu_percent, w.max_dtu_percent, w.avg_dtu, w.max_dtu, w.unused_dtu,

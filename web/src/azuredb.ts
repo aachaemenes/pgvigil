@@ -32,6 +32,15 @@ const hist = (key: string, label: string): Col => ({ key, label, fmt: v => {
   ...b.map((c, i) => el('span', { style: `display:inline-block;width:4px;height:${Math.max(c ? 8 : 0, Math.round(100 * c / all))}%;background:${i >= 7 ? 'var(--crit, #c33)' : 'var(--accent, #36c)'}` })));
 } });
 
+// sloJump: the Azure Summary's tier cell - a button that moves to the Service Objectives changes below, on this page.
+// Never a '#azure-slo' link: the app routes on the hash, so that link opened the fleet Summary with the tag and the
+// range dropped (review t11-3 BLOCKER 1).
+const sloJump = (v: unknown): HTMLElement => {
+  const b = el('button', { type: 'button', class: 'link', title: 'its changes: Service Objectives below' }, String(v));
+  b.addEventListener('click', () => { const h = document.getElementById('azure-slo'); if (h) { h.tabIndex = -1; h.scrollIntoView({ block: 'start' }); h.focus(); } });
+  return b;
+};
+
 type Parts = Record<'tier' | 'summary' | 'minutes' | 'hours' | 'days' | 'gaps', Table | null>;
 
 export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
@@ -164,7 +173,7 @@ export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTML
   if (!rows.length) {
     const where = ctx.tag ? folderWords(ctx.tag) : '';
     return el('section', {}, el('h2', {}, head), el('p', { class: 'empty' }, node
-      ? `pgvigil reads no Azure SQL Database ${at}: this page has nothing to show (the names come from the databases' own reads: the pool's member rows, the server's name, the tier).`
+      ? `pgvigil reads no Azure SQL Database ${at.trimEnd()}: this page has nothing to show (the names come from the databases' own reads: the pool's member rows, the server's name, the tier).`
       : ctx.tag
         ? `${where.charAt(0).toUpperCase()}${where.slice(1)} holds no Azure SQL Database: this summary has nothing to show for it.`
         : 'pgvigil reads no Azure SQL Database: this summary has nothing to show.'));
@@ -182,7 +191,7 @@ export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTML
     ...(r.read_only ? { title: `Read through a read-only connection: ${roles[String(r.replica_role)] ?? 'a replica'} (replica role ${String(r.replica_role)})` } : {}) },
     String(v) + (r.read_only ? ' (read-only)' : ''));
   sec.append(grid(rows, [
-    { key: 'instance', label: 'database (instance)', fmt: name }, { key: 'service_objective', label: 'tier', fmt: (v, r) => v == null ? (r.tier_read ? '' : el('span', { class: 'meta' }, 'not read')) : el('a', { href: '#azure-slo', title: 'its changes: Service Objectives below' }, String(v)) },
+    { key: 'instance', label: 'database (instance)', fmt: name }, { key: 'service_objective', label: 'tier', fmt: (v, r) => v == null ? (r.tier_read ? '' : el('span', { class: 'meta' }, 'not read')) : sloJump(v) },
     n('dtu_limit', 'DTUs'), n('cpu_limit', 'vCores'),
     { key: 'pool', label: 'elastic pool', fmt: (v, r) => v == null ? '' : r.server == null ? String(v) : el('a', { href: poolHref(ctx, String(r.server), String(v)) }, String(v)) },
     { key: 'server', label: 'logical server', fmt: v => v == null ? '' : el('a', { href: serverHref(ctx, String(v)) }, String(v)) },
@@ -202,7 +211,10 @@ export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTML
   // part=pools); a pool's name opens its pool's page, the server its server's (task 7's nodes)
   const pools = rowsOf(d.pools);
   if (node?.pool) {
-    const m = rows.find(x => x.pool != null && String(x.pool).toUpperCase() === node.pool!.toUpperCase());
+    // a member that holds the pool's own read first (pool_read: its member row); one known by its governance row
+    // alone has no pool read to show (review t11-3 SHOULD 2)
+    const inPool = rows.filter(x => x.pool != null && String(x.pool).toUpperCase() === node.pool!.toUpperCase());
+    const m = inPool.find(x => x.pool_read) ?? inPool[0];
     if (m) sec.dataset.member = String(m.instance_id);
   }
   sec.append(el('h3', {}, 'Elastic pools'), grid(pools, [

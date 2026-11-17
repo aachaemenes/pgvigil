@@ -7,7 +7,7 @@ import { azureSummaryView } from './azuredb';
 import { hashParam } from './dbinfo';
 import { mssqlPoolView } from './pools';
 import { Ctx } from './router';
-import { el } from './ui';
+import { el, errorBox } from './ui';
 
 export async function azureServerView(ctx: Ctx): Promise<HTMLElement> {
   const server = hashParam('server');
@@ -23,6 +23,7 @@ export async function azurePoolView(ctx: Ctx): Promise<HTMLElement> {
   const sec = await azureSummaryView(ctx, { server, pool });
   // the pool's own minutes and storage (DBA Dash's Pool tab), read through one of its databases
   const member = Number(sec.dataset.member);
-  if (member) sec.append(await mssqlPoolView({ ...ctx, instance: member }));
+  // a failed pool read keeps the Summary above standing (review t11-3 NIT 7)
+  if (member) sec.append(await mssqlPoolView({ ...ctx, instance: member }).catch(e => errorBox(e)));
   return sec;
 }

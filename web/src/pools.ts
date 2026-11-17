@@ -75,7 +75,7 @@ export async function mssqlPoolView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'avg_data_io_percent', label: 'data IO', fmt: pct }, { key: 'avg_log_write_percent', label: 'log write', fmt: pct },
       { key: 'avg_edtu_percent', label: 'eDTU', fmt: pct }, { key: 'max_worker_percent', label: 'workers', fmt: pct },
       { key: 'max_session_percent', label: 'sessions', fmt: pct }, { key: 'allocated_storage_percent', label: 'allocated', fmt: pct },
-      ...(unit === 'minute' ? [{ key: 'read_through', label: 'read through' }] : [{ key: 'minutes', label: 'minutes', fmt: (v: unknown) => fmtNum(v) }]),
+      ...(unit === 'minute' ? [{ key: 'read_through', label: 'read through' }] : [{ key: 'minutes', label: 'minutes', num: true, fmt: (v: unknown) => fmtNum(v) }]),
     ];
     body.replaceChildren(charts, el('h3', {}, head), el('p', { class: 'meta' }, meta), grid(rows, cols, none));
   };
