@@ -37,6 +37,13 @@ const pages = [
   ['azureserver-azuresummary', `#/azureserver?server=${srv}&ntab=azuresummary`],
   ['azurepool-azuresummary', `#/azurepool?server=${srv}&pool=${pool}&ntab=azuresummary`],
   ['azurepool-perfsummary', `#/azurepool?server=${srv}&pool=${pool}&ntab=perfsummary`],
+  // the nodes' five other tabs, on the pooled databases' seeded requests, files and slow completions (Object Execution
+  // shows its words: the statistics are not yet read on Azure SQL Database)
+  ['azureserver-alerts', `#/azureserver?server=${srv}&ntab=alerts`],
+  ['azureserver-slowqueries', `#/azureserver?server=${srv}&ntab=slowqueries`],
+  ['azureserver-objexec', `#/azureserver?server=${srv}&ntab=objexec`],
+  ['azureserver-running', `#/azureserver?server=${srv}&ntab=running`],
+  ['azurepool-dbspace', `#/azurepool?server=${srv}&pool=${pool}&ntab=dbspace`],
 ];
 
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
