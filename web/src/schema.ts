@@ -5,8 +5,9 @@
 // opt-in event trigger, the statement text beside the change. The database page's Schema section (schemaDbSection)
 // is the same for one database. Data from /api/schema; the tab's and the section's calls are the shell's.
 import { get, Row, rowsOf, Table } from './api';
-import { dbLink } from './dbinfo';
+import { dbLink, link } from './dbinfo';
 import { textDiffView } from './diff';
+import { mssqlDbLink } from './mssql_db';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, tile } from './ui';
 
@@ -103,11 +104,16 @@ function compareCell(ctx: Ctx): (v: unknown, r: Row) => Node {
   };
 }
 
+// schemaDbLink: a database of the reply opened on its own page - on SQL Server its Snapshot Summary (the schema
+// history cut to it; DBA Dash's colDB, control audit X1), on PostgreSQL the database drill
+const schemaDbLink = (ctx: Ctx, mssql: boolean, v: unknown, dbid: unknown, instance = ctx.instance) =>
+  mssql ? link(String(v ?? ''), mssqlDbLink(ctx, String(v ?? ''), 'snapshots', instance)) : dbLink(ctx, v, dbid, instance);
+
 function changeCols(ctx: Ctx, withDb: boolean, mssql = false): Col[] {
   const cols: Col[] = [
     { key: 'snapshot_at', label: 'found', fmt: (v, r) => el('span', { title: `between the read of ${fmtTime(r.prev_at)} and this one` }, fmtTime(v)) },
   ];
-  if (withDb) cols.push({ key: 'datname', label: 'database', fmt: (v, r) => dbLink(ctx, v, r.dbid) });
+  if (withDb) cols.push({ key: 'datname', label: 'database', fmt: (v, r) => schemaDbLink(ctx, mssql, v, r.dbid) });
   cols.push(
     { key: 'kind' },
     { key: 'identity', label: 'object', wide: true },
@@ -297,7 +303,7 @@ export async function schemaView(instance: number, ctx: Ctx): Promise<HTMLElemen
     ]));
   }
   sec.append(el('h3', {}, 'Databases'), grid(dbs, [
-    { key: 'datname', label: 'database', fmt: (v, r) => dbLink(ctx, v, r.dbid, instance) },
+    { key: 'datname', label: 'database', fmt: (v, r) => schemaDbLink(ctx, mssql, v, r.dbid, instance) },
     { key: 'objects', num: true },
     { key: 'changes', label: 'changes in the range', num: true },
     { key: 'dropped', label: 'dropped (not partitions)', num: true },
