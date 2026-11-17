@@ -24,7 +24,9 @@
 //   CR-pickers     a standard picker (a list), a text picker (Enter runs) and a query picker (its values from the
 //                  report's picker query) shape the run's parameters; the menu bar marks a picker not at its default (L95)
 //   CR-assoc       Associate Collection lists the collections a Trigger Collection button runs now; the button's run
-//                  reaches the collector (its log row) - or the case says 'P13's trigger route not on this base' (L98)
+//                  reaches the collector (its log row) - or, on a server that starts no collection from the web (no
+//                  route on this base: parity P13's), the button is off with words naming each collection and the run
+//                  by hand ('pgvigil collect ... -once activity -instance <name>') (L98)
 //  task 4 - the result sets
 //   CR-select      with three result sets a Select Results list (by name, plus All) shows one or all; one set leaves
 //                  the list out (L102)
@@ -298,7 +300,7 @@ await guard('CR-assoc', async () => {
   const field = await ev(`!![...document.querySelectorAll('main label')].find(l => /^Associate Collection/.test(l.textContent.trim()))`);
   await openReport(saved.id, await idByName(crPg));
   const btn = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === 'Trigger Collection'); return b ? { title: b.title, off: b.getAttribute('aria-disabled') === 'true', note: document.getElementById(b.dataset.offNote ?? '')?.textContent ?? '' } : null; })()`);
-  const okBtn = !!btn && /activity/.test(btn.title + btn.note) && (!btn.off || /P13/.test(btn.note));
+  const okBtn = !!btn && /activity/.test(btn.title + btn.note) && (!btn.off || /-once activity -instance \S/.test(btn.note));
   check('CR-assoc', saved.status === 200 && field && okBtn, `saved ${saved.status}; the editor's Associate Collection ${field}; the Trigger Collection button ${JSON.stringify(btn)}`);
 });
 
