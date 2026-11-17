@@ -157,17 +157,44 @@ function optionsView(rows: Row[], expect: Row[] = [], expectErr = ''): HTMLEleme
 }
 
 // one row per database, one column per option: a deviating cell coloured and titled with its rule (DBA Dash's DB Options)
+// L20: the header titles of the database options DBA Dash describes, by the option's key (the labels are the server's,
+// internal/mssql/dboptions.go); a cell's own title still says its rule and verdict
+const optTitles: Record<string, string> = {
+  state: 'Whether the database is ONLINE, or RESTORING, RECOVERING, SUSPECT, OFFLINE or EMERGENCY',
+  read_only: 'On: the database takes no writes',
+  recovery_model: 'FULL and BULK_LOGGED keep the log until a log backup takes it; SIMPLE lets each checkpoint reuse it',
+  compatibility_level: 'The SQL Server version whose behaviour the database follows; held to the server\'s own',
+  page_verify: 'How a page read from disk is checked for damage: CHECKSUM, the default, catches the most',
+  auto_close: 'On: the database closes when its last user leaves and opens again for the next, a cost at every open; held to off',
+  auto_shrink: 'On: the server shrinks the files by itself, which fragments them and makes them grow again; held to off',
+  auto_create_stats: 'On: the optimizer makes the statistics it finds missing; held to on',
+  auto_update_stats: 'On: statistics are refreshed once enough of their rows changed; held to on',
+  trustworthy: 'On: code in the database may act at the server level as its owner, a path to more rights; held to off',
+  target_recovery_secs: 'Indirect checkpoints keep the work a crash leaves to redo within about this many seconds',
+  vlf_count: 'How many pieces the log is cut into: many of them slow startup, restores and log backups (held under 200)',
+  rcsi: 'Read committed snapshot: a reader sees the last committed rows instead of waiting for a writer',
+  adr: 'Accelerated database recovery: a rollback and the recovery after a crash take about the same time however long the transaction ran',
+  optimized_locking: 'Optimized locking: a write holds fewer locks until its transaction ends (it needs accelerated database recovery)',
+  encrypted: 'Transparent data encryption: the data files, the log and the backups encrypted at rest',
+  cdc: 'Change data capture: inserts, updates and deletes recorded into change tables',
+  last_good_checkdb: 'When DBCC CHECKDB last finished on the database with no error; held to within 7 days',
+  collation: 'How the database sorts and compares text; held to the server\'s own',
+  query_store: 'On: Query Store records the database\'s queries, their plans and their runtime figures',
+  broker: 'On: Service Broker sends and receives the database\'s queued messages',
+  log_reuse_wait: 'What the log waits for before its space can be used again (LOG_BACKUP, ACTIVE_TRANSACTION, REPLICATION ...); NOTHING when it waits for nothing',
+};
+
 function databasesView(dbs: Row[], columns: Row[], risk: string): HTMLElement[] {
   // risk: keys, any of which deviates; key:value also asks the option to hold that value
   const wants = risk ? risk.split(',').map(x => x.split(':')) : [];
   const hit = (d: Row) => wants.some(([k, v]) => dev(d)[k] && (v === undefined || String(opts(d)[k]) === v));
   const shown = risk ? dbs.filter(d => d.is_present !== false && hit(d)) : dbs;
   const labelOf = (k: string) => String(columns.find(c => c.key === k)?.label ?? k);
-  const cols: Col[] = [{ key: 'database_name', label: 'database', fmt: (v, r) => r.is_present === false ? `${String(v)} (gone)` : String(v ?? '') }];
+  const cols: Col[] = [{ key: 'database_name', label: 'database', title: 'The database; "(gone)" once a read no longer lists it', fmt: (v, r) => r.is_present === false ? `${String(v)} (gone)` : String(v ?? '') }];
   for (const c of columns) {
     const key = String(c.key);
     cols.push({
-      key: 'opt_' + key, label: String(c.label),
+      key: 'opt_' + key, label: String(c.label), title: optTitles[key],
       cls: (_v, r) => { const x = dev(r)[key]; return x ? statusCls(x.status) : opts(r)[key] == null || opts(r)[key] === '' ? '' : c.best ? 'status ok' : 'status none'; },
       fmt: (_v, r) => {
         const v = opts(r)[key], x = dev(r)[key];
