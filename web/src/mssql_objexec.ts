@@ -86,9 +86,9 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
       const rows = rowsOf(d.objects);
       body.replaceChildren(...(rows.length >= 2000 ? [el('p', { class: 'meta' }, 'The first 2,000 by total duration: a type or a search narrows the list.')] : []),
         grid(rows, cols, ids
-          // a node's databases are Azure SQL Databases, where the two collections do not run yet (internal/mssql
-          // procstats.go, funcstats.go): the list is empty for that reason, never because nothing ran
-          ? 'No figures: the procedure, function and trigger statistics (the mssql_procstats and mssql_funcstats collections) are not yet on Azure SQL Database, so pgvigil reads none for these databases.'
+          // a node's databases are Azure SQL Databases: the two collections there need the tier's right (control
+          // audit row A8), so an empty list may be a skipped collection - Collection health says which
+          ? 'No procedure, function or trigger of these types ran in these databases in this range, or the mssql_procstats and mssql_funcstats collections were skipped there (on Basic, S0, S1 and in an elastic pool they need ##MS_ServerStateReader##): Collection health says which.'
           : 'No procedure, function or trigger of these types ran in this range.'));
     } catch (e) {
       if (mine === seq) body.replaceChildren(errorBox(e));

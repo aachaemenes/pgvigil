@@ -16,8 +16,8 @@ import (
 //	        the anchor, sqldb01 30 hours: the Service Objectives grid's tier change), the pool's limits raised from 50
 //	        to 100 eDTU and 5 to 10 GB three days before the anchor (Pool history, from master's 14 days); for the
 //	        nodes' tabs, what the collector reads on an Azure SQL Database: the requests (Running Queries), the
-//	        database's own files (DB Space) and a database-scoped session's slow completions (Slow Queries). No
-//	        procedure or function statistics: those collections are not yet on Azure SQL Database.
+//	        database's own files (DB Space), a database-scoped session's slow completions (Slow Queries) and the
+//	        function and trigger statistics (Object Execution: control audit row A8).
 //	-sql01  its Sales database's scoped configuration (MAXDOP set from 0 to 4 30 hours before the anchor), the schema
 //	        reads of Sales and Ledger with changes in the last day (the Snapshot Summary tab: DBA Dash's schema
 //	        snapshots), and function and trigger statistics (the Object Execution grid, the Execution Stats strip). The
@@ -33,9 +33,8 @@ const (
 )
 
 // azureDBCollections names what the collector runs on a pooled Azure SQL Database (for the collection log).
-// mssql_procstats and mssql_funcstats are not among them: 'not yet on Azure SQL Database' (internal/mssql).
 var azureDBCollections = []string{"mssql_instance", "mssql_azuredb_resources", "mssql_azuredb_governance", "mssql_pool", "mssql_pool_limits",
-	"mssql_requests", "mssql_storage", "mssql_xe"}
+	"mssql_requests", "mssql_storage", "mssql_xe", "mssql_funcstats"}
 
 // azureMovedAt is when the database moved into the pool.
 func (g *Gen) azureMovedAt() time.Time {
@@ -84,6 +83,9 @@ func (g *Gen) azureDBStep(t time.Time) []Batch {
 	}
 	if t.Equal(g.end.Add(-time.Minute)) || !t.Before(g.end) {
 		add("mssql_xe", g.azureXERows(t))
+	}
+	if first || t.Minute()%5 == 0 || t.Equal(g.end) {
+		add("mssql_funcstats", g.azureFuncStatRows(t))
 	}
 	g.prev = t
 	return out
@@ -141,6 +143,18 @@ func (g *Gen) azureStorageRows(t time.Time) []Row {
 	}
 	return []Row{file(1, "data_0", "ROWS", db+"_data_0.mdf", int64(512)<<20, maxData, usedMB<<20, "PRIMARY"),
 		file(2, "log", "LOG", db+"_log.ldf", int64(64)<<20, int64(1)<<30, int64(6)<<20, nil)}
+}
+
+// azureFuncStatRows is the mssql_funcstats payload of an Azure SQL Database at t: -sql01's two functions and trigger
+// in the database itself (the read is cut to the connection's database there: control audit row A8).
+func (g *Gen) azureFuncStatRows(t time.Time) []Row {
+	rows := g.mssqlFuncStatRows(t)
+	for _, r := range rows {
+		if r["kind"] != "state" {
+			r["database_name"] = g.azureDBName()
+		}
+	}
+	return rows
 }
 
 // azureXERows is the mssql_xe payload of an Azure SQL Database at t: the slow completions' capture (a

@@ -43,7 +43,7 @@ func (funcStatsCollector) Name() string                   { return Prefix + "fun
 func (funcStatsCollector) DefaultInterval() time.Duration { return 5 * time.Minute }
 func (funcStatsCollector) Applies(info Info) (bool, string) {
 	if info.Kind == KindAzureDB {
-		return false, "not yet on Azure SQL Database (the database's own function and trigger statistics are a later wave)"
+		return azureDBStatsApplies(info, "sys.dm_exec_function_stats and sys.dm_exec_trigger_stats")
 	}
 	return perfApplies(info, "sys.dm_exec_function_stats and sys.dm_exec_trigger_stats")
 }
@@ -85,7 +85,7 @@ const funcStatsSQL = `SELECT TOP ({{top}}) '{{kind}}' AS kind, fs.plan_handle AS
   CAST(fs.total_logical_writes AS bigint) AS logical_writes,
   {{figures}}
 FROM {{view}} fs
-WHERE fs.database_id <> 32767
+WHERE fs.database_id <> 32767 AND (CAST(SERVERPROPERTY('EngineEdition') AS int) <> 5 OR fs.database_id = DB_ID())
 ORDER BY fs.total_worker_time DESC, fs.plan_handle`
 
 // funcStatsQuery fills funcStatsSQL for one view: with the names or without them, each figure the view's own column
@@ -108,12 +108,17 @@ func funcStatsQuery(kind, view string, names bool, have map[string]bool) string 
 }
 
 // serverTriggersSQL: the server's own DDL and logon triggers.
-const serverTriggersSQL = `SELECT CAST(object_id AS bigint) AS object_id, CAST(name AS nvarchar(128)) AS name FROM sys.server_triggers`
+// On Azure SQL Database (EngineEdition 5) there is no server trigger: the read is dynamic SQL behind the edition, so
+// sys.server_triggers is never compiled there, and the empty answer has the same columns.
+const serverTriggersSQL = `IF CAST(SERVERPROPERTY('EngineEdition') AS int) = 5
+  SELECT CAST(NULL AS bigint) AS object_id, CAST(NULL AS nvarchar(128)) AS name WHERE 1 = 0
+ELSE
+  EXEC (N'SELECT CAST(object_id AS bigint) AS object_id, CAST(name AS nvarchar(128)) AS name FROM sys.server_triggers')`
 
 // funcStatsDatabasesSQL: the online databases the login can enter, with the name as the server quotes it.
 const funcStatsDatabasesSQL = `SELECT CAST(d.database_id AS int) AS database_id, QUOTENAME(d.name) AS quoted_name
 FROM sys.databases d
-WHERE d.state = 0 AND HAS_DBACCESS(d.name) = 1`
+WHERE d.state = 0 AND HAS_DBACCESS(d.name) = 1 AND (CAST(SERVERPROPERTY('EngineEdition') AS int) <> 5 OR d.database_id = DB_ID())`
 
 // databaseTriggersSQL: one database's own DDL triggers (%s: its quoted name).
 const databaseTriggersSQL = `SELECT CAST(object_id AS bigint) AS object_id, CAST(name AS nvarchar(128)) AS name FROM %s.sys.triggers WHERE parent_class = 0`

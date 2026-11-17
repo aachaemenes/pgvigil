@@ -46,7 +46,7 @@ func (procStatsCollector) Name() string                   { return Prefix + "pro
 func (procStatsCollector) DefaultInterval() time.Duration { return 5 * time.Minute }
 func (procStatsCollector) Applies(info Info) (bool, string) {
 	if info.Kind == KindAzureDB {
-		return false, "not yet on Azure SQL Database (the database's own procedure statistics are a later wave)"
+		return azureDBStatsApplies(info, "sys.dm_exec_procedure_stats")
 	}
 	return perfApplies(info, "sys.dm_exec_procedure_stats")
 }
@@ -64,6 +64,20 @@ const procStateSQL = `SELECT 'state' AS kind,
   GETDATE() AS server_local
 FROM sys.dm_os_sys_info`
 
+// azureDBStatsApplies: the procedure, function and trigger statistics on Azure SQL Database (control audit row A8).
+// Microsoft Learn (sys.dm_exec_procedure_stats, _function_stats, _trigger_stats, sys.dm_os_sys_info; read
+// 2026-11-17): each applies there; on Basic, S0, S1 and in an elastic pool it asks for the server admin, the Entra
+// admin or ##MS_ServerStateReader##, on every other objective VIEW DATABASE STATE or that role - the rule
+// ViewServerState holds on Azure SQL Database (detectSQL). Each read is cut to the connection's own database there
+// (database_id is 'unique within a single database or an elastic pool, but not within a logical server').
+func azureDBStatsApplies(info Info, what string) (bool, string) {
+	if !info.ViewServerState {
+		return false, "the login lacks ##MS_ServerStateReader## (or is not the server admin or the Entra admin) on Basic, S0, S1 or in an " +
+			"elastic pool, or VIEW DATABASE STATE on another service objective: " + what + " cannot be read"
+	}
+	return true, ""
+}
+
 // procStatsSQL: one row per cached plan of a stored procedure, the most CPU first. {{schema}} and {{object}} are the
 // name expressions, or NULL in the second run; {{spread}} is procStatsSpread. The handle rides as 0x text (QueryRows).
 const procStatsSQL = `SELECT TOP ({{top}}) 'proc' AS kind, ps.plan_handle AS plan_handle, ps.cached_time AS cached_time,
@@ -77,7 +91,7 @@ const procStatsSQL = `SELECT TOP ({{top}}) 'proc' AS kind, ps.plan_handle AS pla
   CAST(ps.total_logical_writes AS bigint) AS logical_writes, {{spills}} AS spills,
   {{spread}}
 FROM sys.dm_exec_procedure_stats ps
-WHERE ps.database_id <> 32767
+WHERE ps.database_id <> 32767 AND (CAST(SERVERPROPERTY('EngineEdition') AS int) <> 5 OR ps.database_id = DB_ID())
 ORDER BY ps.total_worker_time DESC, ps.plan_handle`
 
 // procStatsQuery fills procStatsSQL: with the names, or without them; the spills as NULL (procStatsWithSpills puts
