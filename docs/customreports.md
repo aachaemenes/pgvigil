@@ -165,7 +165,14 @@ sp_HealthParser and sp_LogHunter 3.11, sp_IndexCleanup 2.11), sp_WhoIsActive 220
 **Print the install script** gives a PowerShell script for the server's DBA: dbatools' `Install-DbaFirstResponderKit`,
 `Install-DbaDarlingData` and `Install-DbaWhoIsActive` for each kit with a procedure missing, older than tested or of no
 readable version (sp_DBPermissions has no dbatools installer: its lines download the file at the tested commit, stop
-unless its SHA256 is the one pgvigil was tested with, then run it with `Invoke-DbaQuery` - it installs into master), into the database the page looks in (a newer one is left as it is). dbatools fetches each kit's newest
+unless its SHA256 is the one pgvigil was tested with - the check and the install one statement, TLS 1.2 on first - then run
+it with `Invoke-DbaQuery`: it installs into master, so its block is printed only on master's page), into the database the
+page looks in (a newer one is left as it is). The database page's **sp_DBPermissions** tab runs it for that database
+through the door on a click - a named difference: DBA Dash runs it as its tab opens; a run is audited and needs operator.
+Runs on one instance go one at a time (the procedure keeps its rows in global temp tables; a run of DBA Dash's own tab at
+the same moment can still cross them); without VIEW ANY DEFINITION its grids hold only what the read login sees, said
+beside the Run button; a database name holding a quote, or named All, is refused (the procedure splices the name). Not
+on Azure SQL Database (DBA Dash's own list). On Amazon RDS the install into master is NOT PROVEN (no RDS lab has run it). dbatools fetches each kit's newest
 release where it runs; to install the tested ones, download their release files and add `-LocalFile`. pgvigil runs none of
 it: nothing is deployed from pgvigil, and the server sends nothing anywhere.
 

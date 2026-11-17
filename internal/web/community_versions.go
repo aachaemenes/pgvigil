@@ -36,13 +36,21 @@ const (
 
 // dbPermsInstall: the printed lines that install sp_DBPermissions (into master, as its file says): the file at the
 // pinned commit, refused unless its SHA256 is the pin, then run with dbatools' Invoke-DbaQuery
+//
+// Review t11-9 item 7: TLS 1.2 on first (Windows PowerShell 5.1's default may lack it), any older download removed,
+// the download checked with its own words, and the SHA256 check and the install ONE statement - a paste the console
+// runs line by line can never install a file whose hash was not the pin; the temp folder by [IO.Path]::GetTempPath()
+// (pwsh on Linux has no $env:TEMP).
 func dbPermsInstall() string {
 	return "# sp_DBPermissions V7.0 (SQLStudies, MIT): no dbatools installer - the file at the commit pgvigil was tested with, its SHA256 checked first\n" +
+		"[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 'Tls12'\n" +
 		"$DbPermsUrl = 'https://raw.githubusercontent.com/sqlstudent144/SQL-Server-Scripts/" + dbPermsCommit + "/sp_DBPermissions.sql'\n" +
-		"$DbPermsFile = Join-Path $env:TEMP 'sp_DBPermissions.sql'\n" +
+		"$DbPermsFile = Join-Path ([IO.Path]::GetTempPath()) 'sp_DBPermissions.sql'\n" +
+		"Remove-Item -LiteralPath $DbPermsFile -ErrorAction SilentlyContinue\n" +
 		"Invoke-WebRequest -Uri $DbPermsUrl -OutFile $DbPermsFile -UseBasicParsing\n" +
-		"if ((Get-FileHash -Algorithm SHA256 -LiteralPath $DbPermsFile).Hash -ne '" + dbPermsSHA256 + "') { throw 'sp_DBPermissions.sql is not the file pgvigil was tested with (its SHA256 differs): nothing installed' }\n" +
-		"Invoke-DbaQuery -SqlInstance $SqlInstance -Database master -File $DbPermsFile\n"
+		"if (-not (Test-Path -LiteralPath $DbPermsFile)) { throw 'sp_DBPermissions.sql was not downloaded: nothing was installed' }\n" +
+		"if ((Get-FileHash -Algorithm SHA256 -LiteralPath $DbPermsFile).Hash -eq '" + dbPermsSHA256 + "') { Invoke-DbaQuery -SqlInstance $SqlInstance -Database master -File $DbPermsFile } " +
+		"else { throw 'sp_DBPermissions.sql is not the file pgvigil was tested with (its SHA256 differs): nothing installed' }\n"
 }
 
 // testedProc: each catalogue procedure's version in its group's tested release, as the release files' own version
@@ -69,8 +77,9 @@ var (
 	reVerDate = regexp.MustCompile(`(?i)@version_?date\s*=\s*'([0-9]{8})'`)
 	// sp_WhoIsActive's header: 'v2200.20260409' (its date in the version) or the older 'v12.00 (2021-11-10)'
 	reWhoIs = regexp.MustCompile(`Who Is Active\? v([0-9]+)\.([0-9]+)(?: \(([0-9]{4}-[0-9]{2}-[0-9]{2})\))?`)
-	// sp_DBPermissions' header comment: 'sp_DBPermissions V7.0'
-	reDBPerms = regexp.MustCompile(`sp_DBPermissions V([0-9]+\.[0-9]+)`)
+	// sp_DBPermissions' header comment: 'sp_DBPermissions V7.0' - read as DBA Dash's VersionPattern V(?<version>[\d.]+), in
+	// any case (review t11-9 item 10: 'V7.0.1' is 7.0.1, 'V7' is 7)
+	reDBPerms = regexp.MustCompile(`(?i)sp_DBPermissions V([0-9]+(?:\.[0-9]+)*)`)
 )
 
 // parseVersion reads a version and its date from the windows of a procedure's text.
@@ -254,7 +263,7 @@ func installScript(name, server, db string, tools []toolState) (script string, n
 	}
 	fmt.Fprintf(&b, "# pgvigil printed this script and runs none of it. Run it yourself in PowerShell with dbatools (https://dbatools.io),\n")
 	fmt.Fprintf(&b, "# as a login that may create procedures in %s.\n", db)
-	fmt.Fprintf(&b, "# dbatools fetches each tool's newest release. pgvigil was tested with")
+	fmt.Fprintf(&b, "# dbatools fetches each tool's newest release (its lines below; sp_DBPermissions' block takes its pinned file). pgvigil was tested with")
 	for i, g := range testedOrder {
 		sep := ","
 		if i == len(testedOrder)-1 {
@@ -266,12 +275,16 @@ func installScript(name, server, db string, tools []toolState) (script string, n
 	}
 	// dbatools 2.9.0's help: -LocalFile is the release's zip (the Kit and Darling Data: the zip only; sp_WhoIsActive:
 	// the zip or its .sql)
-	fmt.Fprintf(&b, "\n# to install those, download each release's zip and add -LocalFile <the zip> to its line (sp_WhoIsActive also takes its .sql).\n")
+	fmt.Fprintf(&b, "\n# to install those, download each release's zip and add -LocalFile <the zip> to its dbatools line (sp_WhoIsActive also takes its .sql).\n")
 	fmt.Fprintf(&b, "$SqlInstance = %s   # %s in pgvigil\n", psQuote(server), name)
 	for _, g := range testedOrder {
 		switch {
 		case !need[g]:
-		case testedVersions[g].Install == "":
+		case g == "SQLStudies" && !strings.EqualFold(db, "master"):
+			// review t11-9 item 6: sp_DBPermissions installs into master (its file's own USE master) - its state here is
+			// this database's read, so the block is printed only on master's page
+			fmt.Fprintf(&b, "# sp_DBPermissions installs into master (its file's own USE master), not into %s: open the Community tools page on master for its state and its install.\n", db)
+		case g == "SQLStudies":
 			b.WriteString(dbPermsInstall())
 		default:
 			fmt.Fprintf(&b, "%s -SqlInstance $SqlInstance -Database %s\n", testedVersions[g].Install, psQuote(db))

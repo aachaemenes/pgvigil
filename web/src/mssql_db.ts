@@ -14,9 +14,11 @@ import { objectExecutionSection } from './mssql_objexec';
 import { schemaDbSection } from './schema';
 import { get, post, Row, rowsOf, Table } from './api';
 import { InstanceRun, resultView } from './customreports';
+import { needControl } from './needs';
+import { cutWords, endView, isQueued, Queued, waitRequest } from './request';
 import { fleet } from './fleet';
 import { lineChart } from './chart';
-import { badge, el, errorBox, fmtNum, fmtTime, grid } from './ui';
+import { badge, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 
 export const mssqlDbTab = 'mssqldb';
 
@@ -181,30 +183,48 @@ async function dbPermissions(ctx: Ctx, db: string): Promise<HTMLElement> {
   if (inst?.platform === 'azuresqldb') {
     return el('p', { class: 'empty' }, `sp_DBPermissions does not run on Azure SQL Database (DBA Dash's own list marks it so): ${db} has no tab of it here.`);
   }
-  const d = await get<{ enabled: boolean; reason?: string; tools: { id: string; installed: boolean | null; state: string }[] }>('community', { instance: ctx.instance, database: 'master' });
+  // review t11-9 item 12: the procedure splices @DBName into its own statements (the pinned file L260, L459, L736) and
+  // reads every database for 'All': such a name is refused here, with why
+  if (db.includes("'") || db.toLowerCase() === 'all') {
+    return el('p', { class: 'empty' }, `sp_DBPermissions is not run for ${db}: the procedure splices the database name into its own statements, so a name that holds a quote breaks it, and the name All reads every database.`);
+  }
+  const d = await get<{ enabled: boolean; reason?: string; tools: { id: string; installed: boolean | null; state: string; on?: boolean; needs?: { what: string; how?: string; state: string }[] }[] }>('community', { instance: ctx.instance, database: 'master' });
   const tools = el('a', { href: href(ctx, { tab: 'community' }) }, 'Community tools');
-  if (!d.enabled) return el('p', { class: 'empty' }, `The Community tools door is off here${d.reason ? `: ${d.reason}` : ''}.`);
+  // review t11-9 item 15: the reason alone (a failed connection, a demo instance, a sysadmin read login, the door off)
+  if (!d.enabled) return el('p', { class: 'empty' }, d.reason ? `sp_DBPermissions cannot run here: ${d.reason}.` : 'sp_DBPermissions cannot run here.');
   const t = d.tools.find(x => x.id === 'sp_DBPermissions');
   if (!t || t.installed === false) {
     return el('p', { class: 'empty' }, 'sp_DBPermissions is not installed on this instance (in master): the ', tools,
       ' page prints its install script - the file at the commit pgvigil was tested with, its SHA256 checked before it runs.');
   }
-  const res = el('div'), status = el('span', { class: 'meta' });
-  const run = el('button', { type: 'button' }, `Run sp_DBPermissions for ${db}`) as HTMLButtonElement;
+  // review t11-9 item 5: the server's own words for what the tool lacks here (a login that cannot see the procedure, no
+  // EXECUTE on it: each with its line), never the tab's guess
+  if (t.on === false) {
+    return el('div', {}, el('p', { class: 'empty' }, 'sp_DBPermissions cannot run here as things stand:'),
+      el('ul', {}, ...(t.needs ?? []).map(n => el('li', {}, n.what, n.how ? el('span', { class: 'meta' }, ` - ${n.how}`) : ''))));
+  }
+  const notes = (t.needs ?? []).filter(n => n.state === 'note').map(n => n.what);
+  const res = el('div'), status = el('span', { class: 'meta', role: 'status' });
+  // review t11-9 item 2: the run needs operator - a viewer sees the button off and why
+  const run = needControl(el('button', { type: 'button' }, `Run sp_DBPermissions for ${db}`), 'community/run');
   run.addEventListener('click', async () => {
-    run.disabled = true; status.textContent = 'Running...';
+    status.textContent = 'Running...'; offControl(run, 'running', status);
     try {
-      const r = await post<{ runs?: InstanceRun[]; ran_at?: string }>('community/run', { instance_id: ctx.instance, tool: 'sp_DBPermissions', database: 'master', params: { DBName: db } });
-      if (r.runs) {
+      const r = await post<{ runs: InstanceRun[]; ran_at?: string } | Queued>('community/run', { instance_id: ctx.instance, tool: 'sp_DBPermissions', database: 'master', params: { DBName: db } });
+      // review t11-9 item 3: in queue mode the collector runs it; its answer is waited for and drawn here
+      if (isQueued(r)) {
+        res.replaceChildren();
+        const e = await waitRequest(r, status, res);
+        res.replaceChildren(...cutWords(e), endView(e, String(inst?.name ?? ctx.instance), 'sqlserver', 'sp_DBPermissions'));
+      } else {
         res.replaceChildren(resultView(r.runs, undefined, 'sp_DBPermissions'));
         status.textContent = r.ran_at ? `Ran at ${fmtTime(r.ran_at)}.` : '';
-      } else {
-        res.replaceChildren(el('p', { class: 'meta' }, 'Asked of the collector (queue mode): its answer is on the ', tools, ' page.'));
-        status.textContent = '';
       }
-    } catch (e) { res.replaceChildren(errorBox(e)); status.textContent = ''; } finally { run.disabled = false; }
+    } catch (e) { res.replaceChildren(errorBox(e)); status.textContent = ''; } finally { offControl(run, null, status); }
   });
   return el('div', {}, el('p', { class: 'meta' }, `sp_DBPermissions for ${db}: its principals, their role memberships and their permissions, each with the statement that would recreate it. A run is the Community tools door's, audited.`),
+    el('p', { class: 'meta' }, 'Runs on one instance go one at a time here (the procedure keeps its rows in global temp tables); a run of DBA Dash\'s own tab at the same moment would still cross its results.'),
+    notes.length ? el('p', { class: 'meta', role: 'note' }, notes.join(' ')) : '',
     el('div', { class: 'toolbar' }, run, ' ', status), res);
 }
 

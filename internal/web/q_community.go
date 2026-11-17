@@ -509,6 +509,22 @@ var noSample = map[string]string{
 	"sp_DBPermissions": "no sample is stored: its result is one database's own users, roles and permissions, never shown from another server; the database page's sp_DBPermissions tab runs it live through the door",
 }
 
+// serialTools: the tools the door runs one at a time per instance (review t11-9 item 4): sp_DBPermissions drops and
+// makes global temp tables (##DBPrincipals, ##DBRoles, ##DBPermissions; the pinned file L390-391, L560, L835), so two
+// runs at once on one server - every pgvigil user runs as the one read login - cross their results or fail (Msg 208).
+// A run of DBA Dash's own tab at the same moment is not serialised here: the tab says so.
+var serialTools = map[string]bool{"sp_DBPermissions": true}
+
+var serialLocks sync.Map // "<instance id>/<tool>" -> *sync.Mutex
+
+// serialRun takes the tool's lock on the instance and returns its release
+func serialRun(instanceID int, tool string) func() {
+	m, _ := serialLocks.LoadOrStore(strconv.Itoa(instanceID)+"/"+tool, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // kitLicense: the words a sample line says about whose words its findings are.
 var kitLicense = map[string]string{
 	"First Responder Kit": "the findings' words and links are the First Responder Kit's own (MIT, (c) Brent Ozar Unlimited; portions (c) Microsoft, tigertoolbox)",
@@ -909,7 +925,15 @@ func (s *Server) msChecks(ctx context.Context, id int, name, dsn, db string) *co
 		add("sp_HealthParser", hardNeed("sp_HealthParser does not run on Azure SQL Database: the procedure refuses the platform", "", "live"))
 		add("sp_HumanEventsBlockViewer", notChecked("the blocked process report's sessions are not read on Azure SQL Database"))
 		add("sp_IndexCleanup", noteNeed("on Azure SQL Database sp_IndexCleanup refuses @get_all_databases: name a database in @database_name", "", "live"))
+		// review t11-9 item 6: DBA Dash's manifest marks sp_DBPermissions "AzureSqlDb": false
+		add("sp_DBPermissions", hardNeed("sp_DBPermissions does not run on Azure SQL Database (DBA Dash's own list marks it so)", "", "live"))
 		return c
+	}
+	// sp_DBPermissions (review t11-9 item 9): without VIEW ANY DEFINITION its grids hold only what the login sees
+	var viewDef int
+	if err := conn.QueryRowContext(ctx, `SELECT ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION'), 0)`).Scan(&viewDef); err == nil && viewDef == 0 {
+		add("sp_DBPermissions", noteNeed("without VIEW ANY DEFINITION the read login sees only its own user, public and the fixed roles: sp_DBPermissions' grids are partial",
+			"GRANT VIEW ANY DEFINITION TO the read login", "live"))
 	}
 	if major > 0 && major < 11 {
 		for _, p := range []string{"sp_IndexCleanup", "sp_BlitzLock"} {
@@ -1639,6 +1663,9 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 			"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}}),
 			fmt.Errorf("%s is a demo instance: pgvigil demo invented its data and no server stands behind it, so no tool runs here", name))
 		return
+	}
+	if serialTools[t.ID] {
+		defer serialRun(in.InstanceID, t.ID)()
 	}
 	run, stmt, refused := communityExec(ctx, t, &in, name, dsn, no, run, user, clientIP(r))
 	if refused != nil {
