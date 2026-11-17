@@ -260,6 +260,22 @@
 //   P-opengrid        Open Grid's round trip (built on the base: expected ok there): Instances' Export file > JSON,
 //                     that file given to Tools > Open Grid or Data Set: 'Grid: <the file>', the same header names in
 //                     the same order, as many rows, and each row's name, platform and version the grid's own
+//   RELNOTES set 4 (the lead 11-17 02:56 / 05:59; written 11-17 06:2x before the first run; red on rel-pgrid 336ab7d1
+//   but H-logsfilter, which pins what the base already does):
+//   H-copytext        (L27) Statements of demo-onprem-erp01: a right-click on a cell that is NOT the statement, Copy >
+//                     Query text: the clipboard holds the row's WHOLE statement (the button's data-full); the
+//                     Instances grid (no statement column) has no 'Query text' under Copy. Red: no such item.
+//   H-drill           (L21) a drill that is not a link still opens a new tab: on the fleet's Running page a
+//                     Ctrl+click on a row's plain cell leaves the page where it is and asks for a new tab on the
+//                     row's own link (window.open, heard by a stub), a plain click moves there; on DB Space a MIDDLE
+//                     click on a doughnut slice that links asks for a new tab on its link and leaves the page. Red:
+//                     the Ctrl+click moves the page; the middle click asks for nothing.
+//   H-logsfilter      (L57, COVERED: expected ok on the base) the Logs page's message column: the cell menu has
+//                     'Exclude value: ...' and All filters has 'Not like'
+//   E-details         (L146) an error box (the Statements page with its read answered 500 'E-details marker ...' by a
+//                     stub of fetch): the message as today, and two buttons - Show details (aria-expanded false;
+//                     pressed: true, its region holds 'GET /api/statements', 'HTTP 500' and the server's words) and
+//                     Copy details (the clipboard holds exactly the region's text). Red: the box has no button.
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1697,6 +1713,75 @@ await guard('P-opengrid', async () => {
   const first = k => { const a = cols[k] ?? [], b = v?.[k] ?? [], i = a.findIndex((x, j) => x !== b[j]); return i < 0 ? `${k}: ${a.length} vs ${b.length} rows` : `${k} row ${i + 1}: the grid ${JSON.stringify(a[i]).slice(0, 160)}, opened ${JSON.stringify(b[i]).slice(0, 160)}`; };
   check('P-opengrid', !!file && !!v && v.title === 'Grid: ' + file.name && JSON.stringify(v.heads) === JSON.stringify(heads) && cols.name.length > 0 && differ.length === 0,
     `${file ? `the JSON file ${file.name}` : 'no JSON file'}; opened as '${v?.title ?? 'nothing'}': ${v?.heads ? `${v.heads.length} columns (the grid ${heads.length}${JSON.stringify(v.heads) === JSON.stringify(heads) ? ', the same names' : ', NOT the same names: ' + JSON.stringify(v.heads).slice(0, 200)}), ${v.name.length} rows (the grid ${cols.name.length}); columns that differ: ${differ.join(', ') || 'none of name, platform, version'}${v?.heads && differ.length ? ' (' + differ.map(first).join('; ') + ')' : ''}` : 'no grid in the viewer'}`);
+});
+
+// ---- RELNOTES set 4: L27 Copy query text, L21 the drills that are not links, L57's pin, L146 the error box -------------
+const openStub = () => ev(`(() => { window.__opened = []; window.open = u => { window.__opened.push(String(u)); return null; }; return true; })()`);
+const opened = () => ev(`(window.__opened || []).slice()`);
+const hashNow = () => ev(`location.hash`);
+
+await guard('H-copytext', async () => {
+  await go(`#/statements?i=${erpId}`); await sleep(500);
+  const row = `[...document.querySelectorAll('main table.grid tbody tr')].find(tr => tr.querySelector('td button.sqlcell'))`;
+  const other = `[...(${row}?.children ?? [])].find(td => !td.querySelector('button.sqlcell') && td.textContent.trim() !== '')`;
+  const full = await ev(`${row}?.querySelector('button.sqlcell')?.getAttribute('data-full') ?? ''`);
+  const got = await gmCopy(other, 'Copy', 'Query text');
+  await go('#/instances'); await sleep(300);
+  const plain = await gmSub(`${GT}.querySelector('tbody td')`, 'Copy');
+  const flat = x => String(x ?? '').replace(/\s+/g, ' ').trim();
+  check('H-copytext', full.length > 0 && got != null && flat(got) === flat(full) && Array.isArray(plain) && !plain.includes('Query text'),
+    `Statements: Copy > Query text from another cell of the row gave ${got == null ? 'no such item' : `'${flat(got).slice(0, 50)}' (${got.length} characters)`}, the statement is ${full.length}; Instances' Copy: ${(plain ?? ['(no Copy)']).join(' / ')}`);
+});
+
+await guard('H-drill', async () => {
+  // (a) the fleet's Running page: a click anywhere on a row opens what its instance link opens
+  await go('#/running'); await sleep(800); await openStub();
+  const cell = `(() => { const tr = [...document.querySelectorAll('main table tbody tr')].find(r => r.querySelector('a.row-open')); return tr ? [...tr.children].find(td => !td.querySelector('a, button')) : null; })()`;
+  const link = await ev(`document.querySelector('main table tbody tr a.row-open')?.getAttribute('href') ?? ''`);
+  const h0 = await hashNow();
+  const hadRow = await gClick(cell, { ctrlKey: true }); await sleep(600);
+  const h1 = await hashNow(), o1 = await opened();
+  let plainMoved = false;
+  if (hadRow && h1 === h0) { await gClick(cell); await sleep(800); plainMoved = (await hashNow()) !== h0; }
+  // (b) DB Space's doughnut: a slice that links
+  await go('#/dbspace'); await sleep(1200); await openStub();
+  const slice = `document.querySelector('main svg .go[data-href]')`;
+  const to = await ev(`${slice}?.getAttribute('data-href') ?? ''`);
+  const h2 = await hashNow();
+  const hadSlice = await ev(`(() => { const x = ${slice}; if (!x) return false; x.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 })); return true; })()`); await sleep(500);
+  const h3 = await hashNow(), o2 = await opened();
+  check('H-drill', !!hadRow && link !== '' && h1 === h0 && o1.some(u => u.endsWith(link)) && plainMoved && !!hadSlice && to !== '' && h3 === h2 && o2.some(u => u.endsWith(to)),
+    `Running: ${hadRow ? `Ctrl+click on a row's plain cell: the page ${h1 === h0 ? 'stayed' : 'moved to ' + h1}, new tabs asked [${o1.join(', ')}] (the row's link ${link}), a plain click ${plainMoved ? 'moved' : 'did not move'}` : 'no row with its link on the demo'}; DB Space: ${hadSlice ? `a middle click on a slice: the page ${h3 === h2 ? 'stayed' : 'moved to ' + h3}, new tabs asked [${o2.join(', ')}] (the slice's link ${to})` : 'no linked slice on the demo'}`);
+});
+
+await guard('H-logsfilter', async () => {
+  await go(`#/logs?i=${erpId}`); await sleep(800);
+  const t = `[...document.querySelectorAll('main table.grid')].find(x => [...x.querySelectorAll('thead tr:first-child th')].some(h => /message/.test(h.textContent)))`;
+  const td = `(() => { const t = ${t}; if (!t) return null; const j = [...t.querySelectorAll('thead tr:first-child th')].findIndex(h => /message/.test(h.textContent)); return [...t.querySelectorAll('tbody tr')].map(tr => tr.children[j]).find(c => c && c.textContent.trim() !== ''); })()`;
+  const L = await gmOpen(td); await gmClose();
+  const all = await gmSub(td, 'All filters');
+  check('H-logsfilter', (L[0] ?? []).some(x => x.label.startsWith('Exclude value')) && Array.isArray(all) && all.includes('Not like'),
+    `the Logs grid's message cell: ${(L[0] ?? []).map(x => x.label.slice(0, 22)).filter(x => /value|filters/i.test(x)).join(' / ') || '(no menu: no message cell on the demo)'}; All filters: ${(all ?? ['(none)']).join(' / ')}`);
+});
+
+await guard('E-details', async () => {
+  await go('#/summary'); await sleep(300);
+  await ev(`(() => { const f = window.fetch.bind(window); window.__realFetch = f;
+    window.fetch = (u, o) => /\\/api\\/statements(\\?|$)/.test(String(u)) ? Promise.resolve(new Response(JSON.stringify({ error: 'E-details marker: relation "x" does not exist' }), { status: 500, statusText: 'Internal Server Error', headers: { 'Content-Type': 'application/json' } })) : f(u, o);
+    return true; })()`);
+  await ev(`location.hash = '#/statements?i=${erpId}'`); await sleep(2500);
+  const box = `[...document.querySelectorAll('main .error')].find(e => /E-details marker/.test(e.textContent))`;
+  const said = await ev(`${box}?.textContent.trim().slice(0, 80) ?? ''`);
+  const btn = label => `[...(${box}?.querySelectorAll('button') ?? [])].find(b => b.textContent.trim() === ${JSON.stringify(label)})`;
+  const before = await ev(`${btn('Show details')}?.getAttribute('aria-expanded') ?? 'no button'`);
+  await gmClip();
+  await ev(`${btn('Show details')}?.click()`); await sleep(300);
+  const after = await ev(`[...(${box}?.querySelectorAll('button') ?? [])].map(b => b.getAttribute('aria-expanded')).filter(Boolean).join(',') || 'no button'`);
+  const region = await ev(`${box}?.querySelector('pre')?.textContent ?? ''`);
+  await ev(`${btn('Copy details')}?.click()`); const copied = await gmCopied();
+  await ev(`(() => { if (window.__realFetch) window.fetch = window.__realFetch; return true; })()`);
+  check('E-details', /^Error: E-details marker/.test(said) && before === 'false' && after === 'true' && /GET \/api\/statements/.test(region) && /HTTP 500/.test(region) && /E-details marker/.test(region) && copied != null && copied === region,
+    `the box '${said.slice(0, 40)}'; Show details aria-expanded ${before} -> ${after}; the details ${region ? `'${region.replace(/\s+/g, ' ').slice(0, 90)}'` : '(none)'}; Copy details gave ${copied == null ? 'nothing' : copied === region ? 'the same text' : 'another text'}`);
 });
 
 if (shots) await guard('G-themes', async () => {
