@@ -265,7 +265,11 @@ func (g *Gen) azurePoolRows(prev, t time.Time) []Row {
 			"avg_data_io_percent": pct("data", 25), "avg_log_write_percent": pct("log", 18), "avg_edtu_percent": math.Max(cpu, pct("data", 25)),
 			// control audit A3 (0418): the minute's largest samples, said as demo data (each its average's 1.3 times, capped)
 			"max_data_io_percent": math.Min(100, math.Round(pct("data", 25)*130)/100), "max_log_write_percent": math.Min(100, math.Round(pct("log", 18)*130)/100),
-			"max_edtu_percent":   math.Min(100, math.Round(math.Max(cpu, pct("data", 25))*130)/100),
+			"max_edtu_percent": math.Min(100, math.Round(math.Max(cpu, pct("data", 25))*130)/100),
+			// control audit A5: the minute's four samples in the 10 % buckets (three at the average, one at the largest)
+			"cpu_buckets": buckets(cpu, math.Min(100, cpu*1.3)), "data_buckets": buckets(pct("data", 25), math.Min(100, pct("data", 25)*1.3)),
+			"log_buckets":        buckets(pct("log", 18), math.Min(100, pct("log", 18)*1.3)),
+			"dtu_buckets":        buckets(math.Max(cpu, pct("data", 25)), math.Min(100, math.Max(cpu, pct("data", 25))*1.3)),
 			"max_worker_percent": pct("workers", 20), "max_session_percent": pct("sessions", 10),
 			"avg_instance_cpu_percent": nil, "avg_instance_memory_percent": nil, "instance_vcores": nil,
 			"used_storage_mb": math.Round(used), "allocated_storage_mb": math.Round(used * 1.2), "storage_limit_mb": limit,

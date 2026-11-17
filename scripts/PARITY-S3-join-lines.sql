@@ -187,4 +187,5 @@
 --    data-default-hidden (a JSON list of its column names, as names() gives them) as the hidden list when nothing is
 --    saved for that grid - DBA Dash's columns hidden by default (IsVisible false); the viewer's own choice, once saved,
 --    wins. This branch marks the Azure Summary grid (web/src/azuredb.ts defaultHidden: the four histograms, allocated,
---    used, max size); a named check at the join: the Azure Summary opens with those seven hidden, Columns... shows them.
+--    used, max size) and its Elastic pools grid (the four pool histograms, control audit A5; Designer L930-957); a named
+--    check at the join: the Azure Summary opens with those eleven hidden, Columns... shows them.

@@ -262,7 +262,8 @@ func avgW(col string) string {
 // sqlAzurePools: the Azure Summary's Elastic Pool grid (P25 task 8, DBA Dash's): each elastic pool one of the scope's
 // Azure SQL Databases belongs to (mssql_pool_member), once - how many of its databases pgvigil reads in the scope,
 // and over the window its minutes' figures (0128: an average weighs each minute by its samples, a maximum is the
-// largest) and its storage as last read. $1 / $2 the window, $3 / $4 sqlPerfScope's engine and tag, $5 the ids, $6 / $7 the node.
+// largest - of the minutes' stored largest samples since 0418, a minute stored before it its average) and its storage as
+// last read; the four histograms DBA Dash's grid shows hidden by default (control audit A5). $1 / $2 the window, $3 / $4 sqlPerfScope's engine and tag, $5 the ids, $6 / $7 the node.
 var sqlAzurePools = sqlAzureScope + `, mp AS (
   SELECT upper(inst.az_server) AS u_server, upper(inst.az_pool) AS u_pool, min(inst.az_server) AS server, min(inst.az_pool) AS pool,
          count(*) AS databases
@@ -275,9 +276,10 @@ var sqlAzurePools = sqlAzureScope + `, mp AS (
 )
 SELECT mp.server, mp.pool, mp.databases, count(w.snapshot_at) AS minutes,
        ` + avgW("avg_cpu_percent") + ` AS avg_cpu_percent, max(w.max_cpu_percent) AS max_cpu_percent,
-       ` + avgW("avg_data_io_percent") + ` AS avg_data_io_percent, max(w.avg_data_io_percent) AS max_data_io_percent,
-       ` + avgW("avg_log_write_percent") + ` AS avg_log_write_percent, max(w.avg_log_write_percent) AS max_log_write_percent,
-       ` + avgW("avg_edtu_percent") + ` AS avg_edtu_percent, max(w.avg_edtu_percent) AS max_edtu_percent,
+       ` + avgW("avg_data_io_percent") + ` AS avg_data_io_percent, max(coalesce(w.max_data_io_percent, w.avg_data_io_percent)) AS max_data_io_percent,
+       ` + avgW("avg_log_write_percent") + ` AS avg_log_write_percent, max(coalesce(w.max_log_write_percent, w.avg_log_write_percent)) AS max_log_write_percent,
+       ` + avgW("avg_edtu_percent") + ` AS avg_edtu_percent, max(coalesce(w.max_edtu_percent, w.avg_edtu_percent)) AS max_edtu_percent,
+       ` + poolHist("cpu") + ` AS cpu_hist, ` + poolHist("data") + ` AS data_hist, ` + poolHist("log") + ` AS log_hist, ` + poolHist("dtu") + ` AS dtu_hist,
        max(w.max_worker_percent) AS max_worker_percent, max(w.max_session_percent) AS max_session_percent,
        (array_agg(w.used_storage_percent ORDER BY w.snapshot_at DESC) FILTER (WHERE w.snapshot_at IS NOT NULL))[1] AS used_storage_percent,
        (array_agg(w.allocated_storage_percent ORDER BY w.snapshot_at DESC) FILTER (WHERE w.snapshot_at IS NOT NULL))[1] AS allocated_storage_percent,
@@ -285,6 +287,16 @@ SELECT mp.server, mp.pool, mp.databases, count(w.snapshot_at) AS minutes,
   FROM mp LEFT JOIN w ON w.u_server = mp.u_server AND w.u_pool = mp.u_pool
  GROUP BY mp.u_server, mp.u_pool, mp.server, mp.pool, mp.databases
  ORDER BY max(w.avg_edtu_percent) DESC NULLS LAST, max(w.max_cpu_percent) DESC NULLS LAST, mp.server, mp.pool`
+
+// poolHist (control audit A5): one pool histogram's ten sums over the window's minutes (alias w), NULL where no minute
+// carries the buckets (stored before 0418; dtu on a vCore pool)
+func poolHist(name string) string {
+	parts := make([]string, 10)
+	for k := range parts {
+		parts[k] = fmt.Sprintf("coalesce(sum(w.%s_buckets[%d]), 0)", name, k+1)
+	}
+	return fmt.Sprintf("CASE WHEN count(w.%s_buckets) > 0 THEN ARRAY[%s]::int[] END", name, strings.Join(parts, ", "))
+}
 
 // sqlAzurePoolHistory: DBA Dash's Pool history (P25 task 9b): each change of an elastic pool's DTU or storage limit -
 // a period of 0395's that follows another of the same pool with another limit - once, however many of the pool's

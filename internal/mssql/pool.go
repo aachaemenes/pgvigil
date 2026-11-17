@@ -185,12 +185,19 @@ func poolNumber(v any) (float64, bool, error) {
 var poolMaxOf = map[string]string{"avg_cpu_percent": "max_cpu_percent", "avg_data_io_percent": "max_data_io_percent",
 	"avg_log_write_percent": "max_log_write_percent", "avg_edtu_percent": "max_edtu_percent"}
 
+// poolBucketsOf (control audit A5): the averages whose samples a minute counts in ten 10 % buckets (DBA Dash's
+// AzureDBElasticPoolResourceStats_Raw L36-65, by azdbBucket - the database histograms' rule); the DTU buckets count the
+// view's avg_edtu_percent, Microsoft's own eDTU figure (DBA Dash computes it as the largest of CPU, data IO and log write)
+var poolBucketsOf = map[string]string{"avg_cpu_percent": "cpu_buckets", "avg_data_io_percent": "data_buckets",
+	"avg_log_write_percent": "log_buckets", "avg_edtu_percent": "dtu_buckets"}
+
 // poolMinute is one stored minute.
 type poolMinute struct {
 	minute  time.Time
 	samples int
 	vals    map[string]*float64 // avg_x / max_x / the last-figure names
 	maxes   map[string]*float64 // poolMaxOf's names: the minute's largest sample of each
+	buckets map[string][]int    // poolBucketsOf's names: the minute's samples counted, none where no sample carried it
 }
 
 // poolGrace is how long after a minute's end its last rows may still arrive (Microsoft: a row 'every few seconds';
@@ -219,7 +226,7 @@ func poolMinutes(samples []poolSample, serverNow time.Time) []poolMinute {
 	out := make([]poolMinute, 0, len(by))
 	for m, ss := range by {
 		sort.Slice(ss, func(i, j int) bool { return ss[i].end.Before(ss[j].end) })
-		pm := poolMinute{minute: m, samples: len(ss), vals: map[string]*float64{}, maxes: map[string]*float64{}}
+		pm := poolMinute{minute: m, samples: len(ss), vals: map[string]*float64{}, maxes: map[string]*float64{}, buckets: map[string][]int{}}
 		for _, fg := range poolFigures {
 			var sum, top float64
 			n := 0
@@ -230,6 +237,12 @@ func poolMinutes(samples []poolSample, serverNow time.Time) []poolMinute {
 					continue
 				}
 				sum += *v
+				if bk, ok := poolBucketsOf[fg.col]; ok {
+					if pm.buckets[bk] == nil {
+						pm.buckets[bk] = make([]int, 10)
+					}
+					pm.buckets[bk][azdbBucket(*v)]++
+				}
 				if n == 0 || *v > top {
 					top = *v
 				}
@@ -273,6 +286,13 @@ func (m poolMinute) row(server, pool, from string) collect.Row {
 			r[mx] = *v
 		} else {
 			r[mx] = nil
+		}
+	}
+	for _, bk := range poolBucketsOf {
+		if b := m.buckets[bk]; b != nil {
+			r[bk] = b
+		} else {
+			r[bk] = nil
 		}
 	}
 	return r

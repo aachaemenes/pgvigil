@@ -254,7 +254,7 @@ export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTML
     const m = inPool.find(x => x.pool_read) ?? inPool[0];
     if (m) sec.dataset.member = String(m.instance_id);
   }
-  sec.append(el('h3', {}, 'Elastic pools'), grid(pools, [
+  sec.append(el('h3', {}, 'Elastic pools'), defaultHidden(grid(pools, [
     { key: 'pool', label: 'elastic pool', fmt: (v, r) => el('a', { href: poolHref(ctx, String(r.server), String(v)) }, String(v)) },
     { key: 'server', label: 'logical server', fmt: v => el('a', { href: serverHref(ctx, String(v)) }, String(v)) }, n('databases', 'databases read'),
     n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct),
@@ -263,8 +263,10 @@ export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTML
     n('avg_edtu_percent', 'eDTU avg', pct), n('max_edtu_percent', 'eDTU max', pct),
     n('max_worker_percent', 'workers max', pct), n('max_session_percent', 'sessions max', pct),
     n('used_storage_percent', 'storage used', pct), n('allocated_storage_percent', 'storage allocated', pct),
+    // control audit A5: DBA Dash's four pool histograms, hidden by default as there (empty for minutes stored before 0418)
+    hist('cpu_hist', 'CPU histogram'), hist('data_hist', 'data IO histogram'), hist('log_hist', 'log write histogram'), hist('dtu_hist', 'DTU histogram'),
     n('minutes', 'minutes'), { key: 'last_minute', label: 'last minute', fmt: fmtTime },
-  ], 'No database of this scope is in an elastic pool pgvigil reads.'));
+  ], 'No database of this scope is in an elastic pool pgvigil reads.'), ['CPU histogram', 'data IO histogram', 'log write histogram', 'DTU histogram']));
   // DBA Dash's Pool history (P25 task 9b): each change of a pool's DTU or storage limit, from master's
   // sys.elastic_pool_resource_stats through mssql_pool_limits - a read that needs dbmanager in master, an opt-in; a
   // pool none of whose databases read it gets the words, never an empty grid (the CPU limit is never shown: Microsoft
