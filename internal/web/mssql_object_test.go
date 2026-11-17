@@ -197,7 +197,7 @@ func TestMSSQLObjectPageIsWired(t *testing.T) {
 	}
 	patch := string(p)
 	for _, want := range []string{
-		"+import { mssqlObjectView } from './mssql_object';",
+		"+import { mssqlObjectView, pgFunctionView } from './mssql_object';", // slice 5 widened the one import line
 		"mssqldb: mssqlDbView, mssqlobject: mssqlObjectView,",
 		"mssqldb: 'Database', mssqlobject: 'Object' };",
 		"mssqldb: 'dbspace', mssqlobject: 'mssqlprocs' };",

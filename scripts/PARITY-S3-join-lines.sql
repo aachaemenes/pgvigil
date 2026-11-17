@@ -177,3 +177,6 @@
 --    (h) qsdd-pgtwin's running requests (its RQ list A18 / E15, the lead's 13:42 D2 (a)): its Object Name cell becomes
 --        mssqlObjectCell(ctx, <database>, <schema>, <name>, 'running'), and mssql_object.ts' runningTab reads its column
 --        in place of its 'not carry the object's name yet' words.
+--    (i) web/src/statements.ts (the Statements tab's Functions grid, fnCols; its owners qsdd-pgtwin and others): the
+--        function's name becomes el('a', { href: pgFunctionHref(ctx, r.dbid, r.funcid) }, <schema.name(args)>) - the
+--        PostgreSQL twin of the object page (#/pgfunction, mssql_object.ts pgFunctionView).

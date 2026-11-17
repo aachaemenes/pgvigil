@@ -163,3 +163,61 @@ async function schemaTab(ctx: Ctx, o: Row): Promise<HTMLElement> {
       { key: 'compare', label: 'before / after', fmt: compareCell(ctx) },
     ], 'No schema snapshots include this object.'));
 }
+
+// THE POSTGRESQL TWIN (OBJ slice 5): one function of pg_stat_user_functions, #/pgfunction?i=&db=<dbid>&fn=<funcid>
+// [&otab=] - DBA Dash's object window's tabs where PostgreSQL has a twin (Object Execution: its calls and times over
+// the range; Schema History: its name's stored changes, the overloads' too), the others said with why. Data from
+// /api/pgfunction (q_pg_function.go); every link to it a real href.
+export const pgFunctionTab = 'pgfunction';
+export const pgFunctionHref = (ctx: Ctx, db: unknown, fn: unknown, tab?: string, instance = ctx.instance) =>
+  hrefWith(ctx, pgFunctionTab, { db: String(db ?? ''), fn: String(fn ?? ''), otab: tab }, instance);
+const pgTabs: [string, string][] = [['objexec', 'Object Execution'], ['schema', 'Schema History']];
+
+export async function pgFunctionView(ctx: Ctx): Promise<HTMLElement> {
+  const db = hashParam('db') ?? '', fn = hashParam('fn') ?? '';
+  const sec = el('section', {}, el('h2', {}, 'Function'));
+  if (!/^[0-9]{1,10}$/.test(db) || !/^[0-9]{1,10}$/.test(fn)) {
+    sec.append(el('p', { class: 'empty' }, 'No function named (db= and fn=, its database and function oids): the page opens from the Statements tab\'s Functions grid.'));
+    return sec;
+  }
+  const part = (p: string) => get<Record<string, Table | null>>('pgfunction', { instance: ctx.instance, ...window_(ctx), db, fn, part: p }).then(d => rowsOf(d[p]));
+  let f: Row | undefined;
+  try {
+    f = (await part('function'))[0];
+  } catch (e) {
+    sec.append(errorBox(e));
+    return sec;
+  }
+  const title = f ? `${String(f.schema_name ?? '')}.${String(f.func_name ?? '')}(${String(f.args ?? '')})` : `function ${fn}`;
+  sec.replaceChildren(el('h2', {}, `Function ${title}`),
+    el('p', { class: 'meta' }, f ? `${title} / ${String(f.datname ?? db)}, last read ${fmtTime(f.snapshot_at)}` : 'Not in the store: no read of pg_stat_user_functions holds it.'));
+  const asked = hashParam('otab');
+  const tab = pgTabs.some(([k]) => k === asked) ? asked! : 'objexec';
+  sec.append(el('nav', { class: 'subtabs', 'aria-label': `${title}'s pages` }, ...pgTabs.map(([k, label]) =>
+    el('a', { href: pgFunctionHref(ctx, db, fn, k), class: k === tab ? 'on' : '', ...(k === tab ? { 'aria-current': 'page' } : {}) }, label))),
+    el('p', { class: 'meta' }, 'Not shown: Query Stats (no PostgreSQL twin: pg_stat_statements names no calling function); Running Queries and Slow Queries ' +
+      '(no PostgreSQL twin: pg_stat_activity names no function, nor do the log\'s slow statements); Query Store (no PostgreSQL twin: PostgreSQL keeps no Query Store).'));
+  try {
+    if (tab === 'objexec') {
+      const rows = await part('history');
+      sec.append(lineChart('Time in it (ms/sec)', [...rows].reverse(), [{ key: 'total_ms_s', label: 'total ms/sec' }], v => fmtNum(v)),
+        el('h3', {}, 'Its reads'), grid(rows, [
+          { key: 'snapshot_at', label: 'read', fmt: fmtTime }, { key: 'interval_secs', label: 'seconds', num: true, fmt: ms },
+          { key: 'calls', num: true, fmt: ms }, { key: 'total_ms', label: 'total (ms, with its callees)', num: true, fmt: ms },
+          { key: 'self_ms', label: 'self (ms)', num: true, fmt: ms }, { key: 'mean_ms', label: 'mean (ms)', num: true, fmt: ms },
+        ], 'No read of it in the range (track_functions none counts nothing; an inlined SQL function is never counted).'));
+    } else {
+      const rows = await part('schema');
+      const cut = (v: unknown, r: Row) => r.cut ? `${String(v ?? '')} ...` : String(v ?? '');
+      sec.append(el('p', { class: 'meta' }, 'Every stored change of this function\'s name (its overloads\' too), the newest first, 200 at most.'),
+        grid(rows, [
+          { key: 'snapshot_at', label: 'found', fmt: fmtTime }, { key: 'identity', label: 'function', wide: true }, { key: 'change' },
+          { key: 'attribute', label: 'what changed' }, { key: 'before', wide: true, fmt: cut }, { key: 'after', wide: true, fmt: cut },
+          { key: 'compare', label: 'before / after', fmt: compareCell(ctx) },
+        ], 'No schema snapshots include this function.'));
+    }
+  } catch (e) {
+    sec.append(errorBox(e));
+  }
+  return sec;
+}
