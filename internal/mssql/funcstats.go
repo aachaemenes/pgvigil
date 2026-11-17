@@ -33,8 +33,8 @@ import (
 // mssql_procstats: not on Azure SQL Database.
 //
 // Reading the two views beside the procedures' view follows sp_QuickieCache 1.11's function and trigger reads
-// (DarlingData, sp_QuickieCache/sp_QuickieCache.sql L1918-1975 and L2023-2032 at Updates_20261101; MIT, Copyright
-// (c) 2021 Darling Data, LLC): the statements are pgvigil's own.
+// (DarlingData, sp_QuickieCache/sp_QuickieCache.sql L1918-2032 at Updates_20261101: the function read, then the
+// trigger read; MIT, Copyright (c) 2021 Darling Data, LLC): the statements are pgvigil's own.
 type funcStatsCollector struct{}
 
 func init() { Register(funcStatsCollector{}) }
