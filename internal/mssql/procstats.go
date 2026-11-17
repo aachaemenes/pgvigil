@@ -102,6 +102,9 @@ func procStatsWithSpills(q string) string {
 	return strings.Replace(q, procSpillsNone+" AS spills", "CAST(ps.total_spills AS bigint) AS spills", 1)
 }
 
+// procStatsWithExtremes: D421's extremes (the red rows' stub: the statement as it came).
+func procStatsWithExtremes(q string, have map[string]bool) string { return q }
+
 // isLockTimeout says whether the server refused a statement because a lock was not granted in time.
 func isLockTimeout(err error) bool {
 	var me mssqldb.Error
