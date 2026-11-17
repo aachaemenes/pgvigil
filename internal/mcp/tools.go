@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -333,7 +334,7 @@ func fleetSummary(ctx context.Context, s *Server, a map[string]any) (any, error)
 	counts := map[string]int{}
 	checks := []map[string]any{}
 	ovr := records(ov)
-	all := append(ovr, mssqlCellChecks(ctx, s, records(inst), ovr)...)
+	all := slices.Concat(ovr, mssqlCellChecks(ctx, s, records(inst), ovr)) // a new slice: ovr is never written through
 	// critical first, each severity in the order it came (the overview's, then the cells) - review-28 code S3
 	sort.SliceStable(all, func(i, j int) bool {
 		return fmt.Sprint(all[i]["severity"]) == "critical" && fmt.Sprint(all[j]["severity"]) != "critical"
