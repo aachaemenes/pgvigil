@@ -106,22 +106,37 @@
 #       critical on the fleet Summary is a row of the Daily checks page - its level, its words (the cell's reading, e.g.
 #       '1 critical'), its column's name as the check - and no SQL Server cell row without its cell; seeded first on
 #       demo-onprem-sql02 through the product's own imports: its full and differential backups late (thresholds 0.01 h)
-#       and one CHECKDB warning; blocking (the Activity cell) has no row (Q4), the two collection cells none (their rows
-#       are the overview's).
+#       and one CHECKDB warning; blocking (the Activity cell) has no row (Q4), Snapshot Age none (its rows are the
+#       overview's 'collection stale'); Collection Errors (24hrs) a row at warning only (K27); a row's check is its
+#       column's own label (review-28 rows S2: equal, not a prefix); no floor on the count of cells (S3).
 #   K23 each SQL Server row's instance link is its cell's own landing: the Summary cell's link where it has one, the
 #       Needs attention strip's link for the same cell.
 #   K24 THE ACKNOWLEDGEMENT IS THE CELL'S, BOTH ENGINES (Q1): Acknowledge on the Summary's strip (until the check changes)
 #       for demo-onprem-sql02 and k15-zzz - their rows leave the open grid for an acknowledged grid ('acknowledged by
 #       ...'), out of the tiles, the section's post numbers and the worst three; A SCHEDULED TURN's mail (rendered by the
 #       serve, no viewer's browser) draws the same open and acknowledged rows and its send's post the same counts;
-#       the acknowledgements ended, the page's rows are as before them.
+#       the send row's rows = the page's open rows (the acknowledged grid not counted - review-28 code S1) and the post's
+#       'acknowledged' = the acknowledged rows; the acknowledgements ended, sql02's and k15-zzz's rows are as before them
+#       (review-28 rows S1: compared on those two alone, the mail against the page read before OR after its turn, each
+#       compare read again once on a difference - a cell's words move with the clock: ', stale', uptime's hours).
 #   K25 the scheduled mail's grid carries demo-onprem-sql01's cell rows as the page draws them; the turn's post ranks
-#       by the same rows (its worst three = the page's first three instances, sql01's counts its rows').
+#       by the same rows (its worst three = the page's first three instances, EACH one's counts its rows' on the page -
+#       review-28 rows S4: sql01 named in the ok line when it is among them, never a silent skip).
 #   K26 GET /api/mssql/summary failing (a function its cells read renamed for the row): one critical 'check could not
 #       run' row naming the SQL Server status cells, no cell row; the function put back.
+#   K27 THE RECOVERED COLLECTION, BOTH ENGINES (the lead 11-16 20:01, review-28 code S6): one SQL Server and one
+#       PostgreSQL instance with no collection failing get a collection run that failed an hour ago and ran well now
+#       (log_collection, the collector's own function): the Summary's Collection Errors (24hrs) cell of each turns
+#       warning, and each is ONE warning row of the Daily checks page - the cell's words, its column's label, its link -;
+#       every instance whose cell is at warning has that row, none whose cell is critical or whose collection is failing
+#       now (its 'collection failing' row is the overview's); acknowledged on the cell (POST /api/ack, check_key errors,
+#       2 h), the PostgreSQL one's row moves to the acknowledged grid, out of the tiles and the post's counts, the post's
+#       'acknowledged' counting it; the acknowledgement ended.
 #       RED on d1ed4a6f (the page before DAILY-SQL): K22 FAIL (the Summary's cells, 0 of them rows), K23 FAIL (no row to
 #       compare), K24 FAIL (no acknowledged grid; k15-zzz's rows still open), K25 FAIL (no sql01 cell row), K26 FAIL
-#       (no such row) - each with its words, PGVIGIL_KROWS_GO=1 going on to the tally.
+#       (no such row), K27 FAIL (no Collection Errors row: the old page has no cell rows) - each with its words,
+#       PGVIGIL_KROWS_GO=1 going on to the tally. (Folded 11-16 20:2x before any run: review-28 rows B1 - K22's thresholds
+#       seed in the function's own order with an array -, B2 - the strip's 'Show all N' opened before its lines are read.)
 #   G1  a repository migrated and never seeded, the sender never run: the page-owner serve says the mail needs an smtp
 #       channel (writable false).
 #   G2  the block on there: for 130 s (three tries) nothing is kept, NOTHING is written to report_mail_log, the serve's
@@ -894,13 +909,15 @@ await cmd('Network.setCookie', { name: 'pgvigil_session', value: token, url: U, 
 const out = {};
 if (mode === 'sum' || mode === 'ack') {
   if (!await open('#/summary?w=24h')) { console.log(JSON.stringify({ error: 'the Summary did not settle' })); process.exit(1); }
-  // every '+n more' of the strip opened, so each instance's every reason link is there
+  // the strip's 'Show all N' first (it draws 8 lines until then - review-28 rows B2), then every '+n more' opened, so each
+  // instance's every reason link is there
+  for (let n = 0; n < 3; n++) { const c = await ev(`(() => { const b = [...document.querySelectorAll('main button.link[aria-expanded="false"]')].find(x => /^Show all \\d+$/.test(x.textContent)); if (b) b.click(); return !!b; })()`); if (!c) break; await sleep(300); }
   for (let n = 0; n < 40; n++) { const c = await ev(`(() => { const b = [...document.querySelectorAll('main .attention-row button.link')].find(x => /^\\+\\d+ more$/.test(x.textContent)); if (b) b.click(); return !!b; })()`); if (!c) break; await sleep(100); }
 }
 if (mode === 'sum') {
   out.instances = await ev(`fetch('/api/instances', { headers: { 'X-Pgvigil': '1' } }).then(r => r.json()).then(t => t.rows.map(r => Object.fromEntries(t.columns.map((c, i) => [c, r[i]])))).then(rs => rs.map(r => ({ id: Number(r.instance_id), name: String(r.name), engine: String(r.engine ?? 'postgres') })))`);
   out.cells = await ev(`[...document.querySelectorAll('main td.status [data-group][data-inst]')].map(e => { const td = e.closest('td'); const th = td.closest('table').tHead?.rows[0]?.cells[td.cellIndex];
-    return { inst: Number(e.dataset.inst), group: e.dataset.group, cls: td.className, text: e.dataset.text ?? '', href: e.getAttribute('href'), head: (th?.textContent ?? '').trim() }; })`);
+    return { inst: Number(e.dataset.inst), group: e.dataset.group, cls: td.className, text: e.dataset.text ?? '', href: e.getAttribute('href'), head: ((th?.querySelector('.th-label') ?? th)?.textContent ?? '').trim() }; })`);
   out.strip = await ev(`[...document.querySelectorAll('main .attention-row[data-inst] a[data-group]')].map(a => ({ inst: Number(a.closest('.attention-row').dataset.inst), group: a.dataset.group, href: a.getAttribute('href') }))`);
 }
 if (mode === 'ack') {
@@ -909,7 +926,7 @@ if (mode === 'ack') {
   for (let n = 0; n < 50 && !await ev(`!!document.querySelector('dialog[open] form')`); n++) await sleep(100);
   out.change = await ev(`[...document.querySelectorAll('dialog[open] label')].some(l => /until the check changes/.test(l.textContent) && l.querySelector('input[type=checkbox]')?.checked)`);
   await ev(`document.querySelector('dialog[open] button[type=submit]').click()`);
-  let s = ''; for (let n = 0; n < 100; n++) { await sleep(200); s = await ev(`document.querySelector('dialog[open] [role=status]')?.textContent ?? ''`); if (/done|not done/.test(s)) break; }
+  let s = ''; for (let n = 0; n < 100; n++) { await sleep(200); s = await ev(`document.querySelector('dialog[open] [role=status]')?.textContent ?? ''`); if (/done|not saved/.test(s)) break; }
   out.said = s;
 }
 if (mode === 'checks') {
@@ -938,16 +955,23 @@ import json, os, sys
 w = sys.argv[1]
 ld = lambda n: json.load(open(os.path.join(w, n))) if os.path.exists(os.path.join(w, n)) else None
 S, C = ld('ksum.json'), ld('kchk.json')
+# a read that is missing or failed ends the row in words, never a traceback (review-28 rows S5)
+usable = lambda x, k: isinstance(x, dict) and isinstance(x.get(k), list)
+def need(x, k, what):
+    if not usable(x, k): sys.exit(f'{what} is missing or failed: {str(x)[:200]}')
+    return x
+need(S, 'instances', 'the Summary read'); need(S, 'cells', 'the Summary read'); need(C, 'open', 'the Daily checks read')
 MS = {i['id'] for i in S['instances'] if i['engine'] == 'sqlserver'}
 NAME = {i['id']: i['name'] for i in S['instances']}
-LEFT = {'activity', 'errors', 'snapshot'}   # blocking (Q4), and the two collection cells whose rows the overview holds already
+LEFT = {'activity', 'snapshot'}   # blocking (Q4), and Snapshot Age whose rows ('collection stale') the overview holds already
 KS1, KS2, KZZ = (int(os.environ.get(k) or 0) for k in ('KS1', 'KS2', 'KZZ'))
 def lvl(cls):
     c = ' ' + cls + ' '
     return 'critical' if ' crit ' in c else 'warning' if ' warn ' in c else None
 def want_of(S):   # (instance, group) -> (severity, words, column) of every SQL Server cell at warning or critical
+    # (Collection Errors at warning only: at critical its collection is failing now, the overview's row - K27)
     return {(c['inst'], c['group']): (lvl(c['cls']), c['text'], c['head']) for c in S['cells']
-            if c['inst'] in MS and lvl(c['cls']) and c['group'] not in LEFT}
+            if c['inst'] in MS and lvl(c['cls']) and c['group'] not in LEFT and not (c['group'] == 'errors' and lvl(c['cls']) == 'critical')}
 def rows_of(rows):  # the SQL Server cell rows of a grid: (instance, group) -> the row
     return {(r['inst'], r['group']): r for r in (rows or []) if r.get('group') and r.get('inst') in MS}
 key = lambda r: (r['severity'], r['instance'], r['check'], r['object'])
@@ -959,27 +983,30 @@ KZZ=$(q "select instance_id from pgvigil.instances where name = 'k15-zzz'"); exp
 [[ -n $KS1 && -n $KS2 && -n $KZZ ]] || kfail "K22: the demo's demo-onprem-sql01 / sql02 or K15's k15-zzz not in the store ('$KS1' '$KS2' '$KZZ')"
 # the seeds, as the repository's owner through the product's own import functions: sql02's full and differential
 # backups judged late (its thresholds: 0.01 h), and one CHECKDB finding (a read of the checkdb area and its run)
-q "select pgvigil.import_mssql_hadr_thresholds($KS2, '{\"full_backup_hours\": 0.01, \"diff_backup_hours\": 0.01}'::jsonb, now())" > "$WORK/kseed.log" 2>&1 \
+q "select pgvigil.import_mssql_hadr_thresholds($KS2, now(), '[{\"full_backup_hours\": 0.01, \"diff_backup_hours\": 0.01}]'::jsonb)" > "$WORK/kseed.log" 2>&1 \
   || kfail "K22: the seed of sql02's backup thresholds: $(tail -1 "$WORK/kseed.log")"
 q "select pgvigil.log_collection($KS2, 'mssql_checks', now(), 5, 'ok', NULL); select pgvigil.import_mssql_checks($KS2, now(), '[{\"kind\":\"area\",\"area\":\"checkdb\",\"read\":1},{\"kind\":\"finding\",\"area\":\"checkdb\",\"check_name\":\"last good CHECKDB older than 7 days\",\"object\":\"Sales\",\"rule\":\"k22 seed\",\"severity\":\"warning\",\"value\":\"9 days\",\"explain\":\"database Sales: the last good CHECKDB is 9 days old\"}]'::jsonb)" > "$WORK/kseed.log" 2>&1 \
   || kfail "K22: the seed of sql02's CHECKDB finding: $(tail -1 "$WORK/kseed.log")"
-ksql sum > "$WORK/ksum.json" || kfail "K22: the Summary: $(head -c 300 "$WORK/ksum.json")"
-ksql checks > "$WORK/kchk.json" || kfail "K22: the Daily checks page: $(head -c 300 "$WORK/kchk.json")"
-why=$(kgrade 2>&1 <<'PY'
+ksread() { ksql sum > "$WORK/ksum.json" || kfail "$1: the Summary: $(head -c 300 "$WORK/ksum.json")"
+  ksql checks > "$WORK/kchk.json" || kfail "$1: the Daily checks page: $(head -c 300 "$WORK/kchk.json")"; }
+ksread K22
+k22() { kgrade 2>&1 <<'PY'
 want, got = want_of(S), rows_of(C['open'])
 miss = [k for k in [(KS2, 'full'), (KS2, 'diff'), (KS2, 'checkdb')] if k not in want]
 if miss: sys.exit(f'the seeds did not reach the Summary: {miss} (the row would test less)')
-if len(want) < 10: sys.exit(f'only {len(want)} SQL Server cells at warning or critical on the Summary')
+blk = [r for r in C['open'] if r.get('group') == 'activity']
+if blk: sys.exit(f'blocking has rows (left out, Q4): {len(blk)}')
 lost = sorted(f'{NAME[i]} {g}' for i, g in set(want) - set(got)); extra = sorted(f'{NAME[i]} {g}' for i, g in set(got) - set(want))
 if lost or extra: sys.exit(f'the Summary holds {len(want)} SQL Server cells at warning or critical, the Daily checks page {len(set(got) & set(want))} of them; missing {lost[:8]}; rows without a cell {extra[:8]}')
 bad = [f"{NAME[i]} {g}: row {r['severity']} / {r['check']} / {r['object']!r}, cell {want[(i, g)]}" for (i, g), r in got.items()
-       if (r['severity'], r['object']) != want[(i, g)][:2] or not want[(i, g)][2].startswith(r['check'])]
-if bad: sys.exit(f"rows not in their cell's words: {bad[:4]}")
-blk = [r for r in C['open'] if r.get('group') == 'activity']
-if blk: sys.exit(f'blocking has rows (left out, Q4): {len(blk)}')
+       if (r['severity'], r['object'], r['check']) != want[(i, g)]]
+if bad: sys.exit(f"rows not in their cell's words and column label: {bad[:4]}")
+print(len(want))
 PY
-) || kfail "K22: $why"
-kok "K22: every SQL Server cell at warning or critical on the Summary (the seeded FULL, DIFF and CHECKDB among them; blocking left out) is a row of the Daily checks page with the cell's level, words and column name, and no row without its cell"
+}
+# a cell's words move with the clock (', stale', uptime's hours): one difference reads both pages again once (review-28 rows S1)
+n22=$(k22) || { ksread K22; n22=$(k22) && echo "K22: equal on the second read (the first differed)"; } || kfail "K22: $n22"
+kok "K22: every SQL Server cell at warning or critical on the Summary ($n22 of them, the seeded FULL, DIFF and CHECKDB among them; blocking left out) is a row of the Daily checks page with the cell's level, words and column label, and no row without its cell"
 
 # ---- K23: each SQL Server row's link is its cell's own landing ------------------------------------------------------------
 KROW=$KBAD
@@ -1002,7 +1029,7 @@ for who in "$KS2" "$KZZ"; do
   [[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(bool(d.get("change")) and d.get("said","").startswith("done "))' "$WORK/kack.json" 2>/dev/null) == True ]] \
     || kfail "K24: the strip's Acknowledge for instance $who (until the check changes, done): $(cat "$WORK/kack.json")"
 done
-[[ $(q "select count(*) from pgvigil.acks where kind = 'ack' and instance_id in ($KS2, $KZZ) and until_change and seen_state is not null and ended_at is null") -ge 4 ]] \
+[[ $(q "select count(distinct instance_id) from pgvigil.acks where kind = 'ack' and instance_id in ($KS2, $KZZ) and until_change and seen_state is not null and ended_at is null") == 2 ]] \
   || kfail "K24: the acknowledgements stored: $(q "select string_agg(instance_id || ' ' || check_key || ' ' || until_change, ', ') from pgvigil.acks where kind = 'ack' and ended_at is null")"
 ksql checks > "$WORK/kchk2.json" || kfail "K24: the Daily checks page after the acknowledgements: $(head -c 300 "$WORK/kchk2.json")"
 why=$(kgrade 2>&1 <<'PY'
@@ -1020,6 +1047,7 @@ p = json.loads(C2['post'])
 if (int(C2['tiles']['Critical']), int(C2['tiles']['Warnings'])) != (crit, len(C2['open']) - crit) or (p['critical'], p['warnings']) != (crit, len(C2['open']) - crit):
     sys.exit(f"tiles {C2['tiles']}, post {p['critical']}/{p['warnings']}, open rows {crit}/{len(C2['open']) - crit}")
 if any(x['name'] in gone for x in p.get('worst', [])): sys.exit(f"an acknowledged instance in the worst three: {p['worst']}")
+if p.get('acknowledged') != len(C2['acked']): sys.exit(f"the section's post says {p.get('acknowledged')} acknowledged, the grid holds {len(C2['acked'])}")
 PY
 ) || kfail "K24: the page: $why"
 # the scheduled mail: rendered by the serve with no viewer's browser, from the acknowledgements the server holds
@@ -1029,6 +1057,8 @@ SEND5=$(kturn "$KID" q) || kfail "K24: no serve queued the turn in 3 minutes"
 kwaitsent "$SEND5" || kfail "K24: mail $SEND5 not answered in 3 minutes"
 [[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND5") == sent ]] || kfail "K24: mail $SEND5: $(q "select outcome, coalesce(error, render_error) from pgvigil.report_mail_sends where send_id = $SEND5")"
 q "select post from pgvigil.report_mail_sends where send_id = $SEND5" > "$WORK/kpost5.json" 2>/dev/null || true
+q "select rows from pgvigil.report_mail_sends where send_id = $SEND5" > "$WORK/krows5.txt" 2>/dev/null || true
+ksql checks > "$WORK/kchk2b.json" || kfail "K24: the Daily checks page after the turn: $(head -c 300 "$WORK/kchk2b.json")"
 KTO=$(klive "recipients[1]")
 python3 - "$WORK/sink" "$KTO" "$WORK/kmail2.json" <<'PY' || kfail "K24: the mail's grids: $(head -c 300 "$WORK/kmail2.json" 2>/dev/null)"
 import email, glob, json, re, sys
@@ -1059,49 +1089,67 @@ a = next((g for g in p.grids if g['head'][:1] == ['acknowledged']), None)
 json.dump({'open': [dict(zip(g['head'], r)) for r in g['rows']] if g else None, 'acked': [dict(zip(a['head'], r)) for r in a['rows']] if a else None}, open(out, 'w'))
 PY
 why=$(kgrade 2>&1 <<'PY'
-M, C2 = ld('kmail2.json'), ld('kchk2.json')
-if M['open'] is None: sys.exit('no checks grid in the mail')
-if M['acked'] is None: sys.exit('no acknowledged grid in the scheduled mail (its render drew none)')
-po, pa, mo, ma = sorted(map(key, C2['open'])), sorted(map(key, C2['acked'])), sorted(map(key, M['open'])), sorted(map(key, M['acked']))
-if mo != po: sys.exit(f"the mail's open rows {len(mo)}, the page's {len(po)}; first difference {next((x for x in zip(mo, po) if x[0] != x[1]), None)}")
-if ma != pa: sys.exit(f"the mail's acknowledged rows {len(ma)}, the page's {len(pa)}: {sorted(set(ma) ^ set(pa))[:3]}")
+M, C2, C2b = ld('kmail2.json'), ld('kchk2.json'), ld('kchk2b.json')
+if not usable(M, 'open'): sys.exit(f'no checks grid in the mail: {str(M)[:200]}')
+if M.get('acked') is None: sys.exit('no acknowledged grid in the scheduled mail (its render drew none)')
+need(C2, 'open', 'the page read before the turn'); need(C2b, 'open', 'the page read after the turn')
+mo, ma = sorted(map(key, M['open'])), sorted(map(key, M['acked']))
+# the mail was drawn between the two page reads: it equals one of them (a cell's words may move between - review-28 rows S1)
+pages = [x for x in (C2, C2b) if sorted(map(key, x['open'])) == mo and sorted(map(key, x['acked'] or [])) == ma]
+if not pages:
+    po = sorted(map(key, C2b['open']))
+    sys.exit(f"the mail's open rows {len(mo)} / acknowledged {len(ma)}, the page's {len(C2['open'])} / {len(C2['acked'] or [])} before the turn and {len(po)} / {len(C2b['acked'] or [])} after; first difference {next((x for x in zip(mo, po) if x[0] != x[1]), None)}")
+P = pages[0]
 raw = open(os.path.join(w, 'kpost5.json')).read().strip()
 if not raw: sys.exit("the turn's send carries no post")
-p = json.loads(raw); crit = sum(1 for r in C2['open'] if r['severity'] == 'critical')
-if (p['critical'], p['warnings']) != (crit, len(C2['open']) - crit): sys.exit(f"the send's post {p['critical']}/{p['warnings']}, the page's open rows {crit}/{len(C2['open']) - crit}")
+p = json.loads(raw); crit = sum(1 for r in P['open'] if r['severity'] == 'critical')
+if (p['critical'], p['warnings']) != (crit, len(P['open']) - crit): sys.exit(f"the send's post {p['critical']}/{p['warnings']}, the page's open rows {crit}/{len(P['open']) - crit}")
+if p.get('acknowledged') != len(P['acked'] or []): sys.exit(f"the send's post says {p.get('acknowledged')} acknowledged, the mail's grid {len(P['acked'] or [])}")
+rows = open(os.path.join(w, 'krows5.txt')).read().strip()
+if rows != str(len(P['open'])): sys.exit(f"the send row's rows {rows!r}, the open rows {len(P['open'])} (the acknowledged grid is not counted - review-28 code S1)")
 PY
 ) || kfail "K24: the scheduled mail $SEND5: $why"
 # ended, they count again
 for a in $(q "select ack_id from pgvigil.acks where kind = 'ack' and instance_id in ($KS2, $KZZ) and ended_at is null"); do
   c=$(postj ack/end "{\"ack_id\":$a}") || true; [[ $c == 200 ]] || kfail "K24: ending ack $a: $c $(cat "$WORK/body")"
 done
-ksql checks > "$WORK/kchk3.json" || kfail "K24: the page after the ends: $(head -c 300 "$WORK/kchk3.json")"
-why=$(kgrade 2>&1 <<'PY'
-C3 = ld('kchk3.json')
-if sorted(map(key, C3['open'])) != sorted(map(key, C['open'])) or C3['acked']: sys.exit(f"open rows {len(C3['open'])} (before the acknowledgements {len(C['open'])}), an acknowledged grid {bool(C3['acked'])}")
+k24end() { ksql checks > "$WORK/kchk3.json" || { echo "the page after the ends: $(head -c 300 "$WORK/kchk3.json")"; return 1; }
+  kgrade 2>&1 <<'PY'
+C3 = need(ld('kchk3.json'), 'open', 'the page read after the ends')
+two = ('demo-onprem-sql02', 'k15-zzz')
+now, then = sorted(key(r) for r in C3['open'] if r.get('instance') in two), sorted(key(r) for r in C['open'] if r.get('instance') in two)
+if now != then or C3['acked']: sys.exit(f"sql02's and k15-zzz's open rows {len(now)} (before the acknowledgements {len(then)}), an acknowledged grid {bool(C3['acked'])}; first difference {next((x for x in zip(now, then) if x[0] != x[1]), None)}")
 PY
-) || kfail "K24: after the ends: $why"
-kok "K24: Acknowledge (until the check changes) on the Summary's strip for demo-onprem-sql02 and k15-zzz: their rows moved to the page's acknowledged grid with the words, out of the tiles, the post's numbers and the worst three; the scheduled mail $SEND5 - rendered by the serve, no viewer's browser - drew the same open and acknowledged rows and its post the same counts; ended, they count again"
+}
+why=$(k24end) || why=$(k24end) || kfail "K24: after the ends (read twice): $why"
+kok "K24: Acknowledge (until the check changes) on the Summary's strip for demo-onprem-sql02 and k15-zzz: their rows moved to the page's acknowledged grid with the words, out of the tiles, the post's numbers and the worst three; the scheduled mail $SEND5 - rendered by the serve, no viewer's browser - drew the same open and acknowledged rows, its post the same counts and acknowledged count, its send row the open rows alone; ended, they count again"
 
 # ---- K25: the mail and the post carry the SQL Server rows -----------------------------------------------------------------
 KROW=$KBAD
 why=$(kgrade 2>&1 <<'PY'
 M, C2 = ld('kmail2.json'), ld('kchk2.json')
+need(M, 'open', 'the scheduled mail read'); need(C2, 'open', 'the page read after the acknowledgements')
+raw = open(os.path.join(w, 'kpost5.json')).read().strip() if os.path.exists(os.path.join(w, 'kpost5.json')) else ''
+if not raw: sys.exit("the turn's send carries no post")
 c1 = [r for r in C2['open'] if r['instance'] == 'demo-onprem-sql01']
 cells1 = [r for r in c1 if r.get('inst') == KS1]
 if not cells1: sys.exit('no demo-onprem-sql01 cell row on the page')
 mail1 = [(r['severity'], r['check'], r['object']) for r in M['open'] if r['instance'] == 'demo-onprem-sql01']
 if mail1 != [(r['severity'], r['check'], r['object']) for r in c1]: sys.exit(f'demo-onprem-sql01 in the mail {mail1[:4]}, on the page {[(r["severity"], r["check"], r["object"]) for r in c1][:4]}')
-p = json.loads(open(os.path.join(w, 'kpost5.json')).read())
+p = json.loads(raw)
 seq = []
 for r in C2['open']:
     if r['instance'] and r['instance'] not in seq: seq.append(r['instance'])
 if [x['name'] for x in p.get('worst', [])] != seq[:3]: sys.exit(f"the post's worst three {[x['name'] for x in p.get('worst', [])]}, the page's first three {seq[:3]}")
-w1 = next((x for x in p['worst'] if x['name'] == 'demo-onprem-sql01'), None)
-if w1 and (w1['critical'], w1['warnings']) != (sum(r['severity'] == 'critical' for r in c1), sum(r['severity'] != 'critical' for r in c1)): sys.exit(f'sql01 in the worst three {w1}, its page rows {len(c1)}')
+# each of the worst three counts its own rows on the page (review-28 rows S4: never a silent skip)
+for x in p.get('worst', []):
+    mine = [r for r in C2['open'] if r['instance'] == x['name']]
+    if (x['critical'], x['warnings']) != (sum(r['severity'] == 'critical' for r in mine), sum(r['severity'] != 'critical' for r in mine)):
+        sys.exit(f"{x['name']} in the worst three {x}, its page rows {len(mine)}")
+print(', '.join(f"{x['name']}{' (SQL Server)' if x['name'] in {NAME[i] for i in MS} else ''}" for x in p.get('worst', [])))
 PY
 ) || kfail "K25: $why"
-kok "K25: the scheduled mail's checks grid carries demo-onprem-sql01's cell rows as the page draws them, and the turn's post ranks by the same rows (its worst three the page's first three)"
+kok "K25: the scheduled mail's checks grid carries demo-onprem-sql01's cell rows as the page draws them, and the turn's post ranks by the same rows (its worst three the page's first three, each one's counts its rows': $why)"
 
 # ---- K26: a failed read of the cells is said, never silent ------------------------------------------------------------------
 KROW=$KBAD
@@ -1109,14 +1157,70 @@ q "alter function pgvigil.mssql_pool_storage_status(int, timestamptz) rename to 
 ksql checks > "$WORK/kchk4.json" || kfail "K26: the page with the cells' read failing: $(head -c 300 "$WORK/kchk4.json")"
 q "alter function pgvigil.mssql_pool_storage_status_k26(int, timestamptz) rename to mssql_pool_storage_status" >/dev/null || kfail "K26: the function could not be put back"
 why=$(kgrade 2>&1 <<'PY'
-C4 = ld('kchk4.json')
+C4 = need(ld('kchk4.json'), 'open', 'the page read with the cells failing')
 one = [r for r in C4['open'] if r['severity'] == 'critical' and r['instance'] == '' and r['check'] == 'check could not run' and 'SQL Server status cells' in r['object']]
 if len(one) != 1: sys.exit(f"{len(one)} check-could-not-run row(s) for the SQL Server status cells; rows naming no instance: {[(r['check'], r['object']) for r in C4['open'] if not r['instance']][:3]}")
 if rows_of(C4['open']): sys.exit('SQL Server cell rows drawn from a failed read')
 PY
 ) || kfail "K26: $why"
 kok "K26: with GET /api/mssql/summary failing, the Daily checks page draws one critical 'check could not run' row for the SQL Server status cells and no cell row"
-(( KBAD == 0 )) || fail "K15-K26: $KBAD row check(s) failed (PGVIGIL_KROWS_GO=1)"
+# ---- K27: the recovered collection is a row on both engines (the lead 11-16 20:01; review-28 code S6) ----------------------
+KROW=$KBAD
+# one instance of each engine with no collection failing and no error in the last 24 hours, so the seed alone turns its cell
+pick() { q "select i.instance_id from pgvigil.instances i where i.is_active and i.engine = '$1'
+  and not exists (select 1 from pgvigil.collection_dates c where c.instance_id = i.instance_id and c.status = 'error')
+  and not exists (select 1 from pgvigil.collection_log l where l.instance_id = i.instance_id and l.status = 'error' and l.snapshot_at > now() - interval '24 hours')
+  order by i.name limit 1"; }
+KEM=$(pick sqlserver); KEP=$(pick postgres); export KEM KEP
+[[ -n $KEM && -n $KEP ]] || kfail "K27: no SQL Server ('$KEM') or PostgreSQL ('$KEP') instance without a collection error to seed"
+for i in $KEM $KEP; do   # the collector's own function: a run that failed an hour ago, the same collection run well now
+  out=$(as "$COL" -c "select pgvigil.log_collection($i, 'k27_once', now() - interval '1 hour', 1, 'error', 'seeded by the proof (K27)'); select pgvigil.log_collection($i, 'k27_once', now(), 1, 'ok', NULL)")
+  [[ $out != *ERROR* ]] || kfail "K27: the seed on instance $i: $out"
+done
+ksread K27
+k27() { kgrade 2>&1 <<'PY'
+KEM, KEP = int(os.environ['KEM']), int(os.environ['KEP'])
+cell = {c['inst']: c for c in S['cells'] if c['group'] == 'errors'}
+for i in (KEM, KEP):
+    if i not in cell or lvl(cell[i]['cls']) != 'warning': sys.exit(f"the seed did not turn {NAME.get(i, i)}'s Collection Errors cell warning: {cell.get(i)}")
+failing = {r['instance'] for r in C['open'] if r.get('check') == 'collection failing'}
+got = {}
+for r in C['open']:
+    if r.get('group') == 'errors': got.setdefault(r['inst'], []).append(r)
+want = {i: c for i, c in cell.items() if lvl(c['cls']) == 'warning' and NAME.get(i) not in failing}
+strip = {(x['inst'], x['group']): x['href'] for x in S['strip']}
+bad = [f"{NAME.get(i, i)}: {len(got.get(i, []))} row(s)" for i in want if len(got.get(i, [])) != 1]
+bad += [f"{NAME.get(i, i)}: a row beside a critical cell or a collection failing now" for i in got if i not in want]
+if bad: sys.exit(f"Collection Errors rows against the cells at warning: {bad[:6]}")
+for i, c in want.items():
+    r = got[i][0]
+    if (r['severity'], r['object'], r['check']) != ('warning', c['text'], c['head']): sys.exit(f"{NAME[i]}: row {r['severity']} / {r['check']} / {r['object']!r}, cell {c['text']!r} / {c['head']!r}")
+    if not r['href'] or r['href'] != strip.get((i, 'errors')) or (c['href'] and c['href'] != r['href']): sys.exit(f"{NAME[i]}: the row's link {r['href']}, the strip's {strip.get((i, 'errors'))}, the cell's {c['href']}")
+print(f"{len(want)} instance(s) - {sorted(NAME.get(i, str(i)) for i in want)[:6]}")
+PY
+}
+n27=$(k27) || { ksread K27; n27=$(k27) && echo "K27: equal on the second read (the first differed)"; } || kfail "K27: $n27"
+# acknowledged on its cell (the Summary's own write: POST /api/ack, check_key errors, for 2 hours): out of the counts
+c=$(postj ack "{\"kind\":\"ack\",\"instance_id\":$KEP,\"check_key\":\"errors\",\"until\":\"$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)\",\"note\":\"K27\"}") || true
+[[ $c == 200 ]] || kfail "K27: the acknowledgement of instance $KEP's Collection Errors: $c $(cat "$WORK/body")"
+ksql checks > "$WORK/kchk5.json" || kfail "K27: the page after the acknowledgement: $(head -c 300 "$WORK/kchk5.json")"
+why=$(kgrade 2>&1 <<'PY'
+C5 = need(ld('kchk5.json'), 'open', 'the page read after the acknowledgement')
+KEP = int(os.environ['KEP'])
+if any(r.get('group') == 'errors' and r.get('inst') == KEP for r in C5['open']): sys.exit(f"{NAME.get(KEP)}'s Collection Errors row still open")
+ak = [r for r in (C5['acked'] or []) if r.get('group') == 'errors' and r.get('inst') == KEP]
+if len(ak) != 1 or 'acknowledged by' not in ak[0].get('acknowledged', ''): sys.exit(f"{NAME.get(KEP)}'s Collection Errors row in the acknowledged grid: {ak[:2]}")
+crit = sum(1 for r in C5['open'] if r['severity'] == 'critical'); p = json.loads(C5['post'] or '{}')
+if (int(C5['tiles']['Critical']), int(C5['tiles']['Warnings'])) != (crit, len(C5['open']) - crit) or (p.get('critical'), p.get('warnings')) != (crit, len(C5['open']) - crit):
+    sys.exit(f"tiles {C5['tiles']}, post {p.get('critical')}/{p.get('warnings')}, open rows {crit}/{len(C5['open']) - crit}")
+if p.get('acknowledged') != len(C5['acked']): sys.exit(f"the post says {p.get('acknowledged')} acknowledged, the grid {len(C5['acked'])}")
+PY
+) || kfail "K27: acknowledged: $why"
+for a in $(q "select ack_id from pgvigil.acks where kind = 'ack' and instance_id = $KEP and check_key = 'errors' and ended_at is null"); do
+  c=$(postj ack/end "{\"ack_id\":$a}") || true; [[ $c == 200 ]] || kfail "K27: ending ack $a: $c $(cat "$WORK/body")"
+done
+kok "K27: a collection that failed an hour ago and runs well now turns the Collection Errors (24hrs) cell warning on $n27, the seeded SQL Server and PostgreSQL ones among them: each is one warning row of the Daily checks page with the cell's words, column label and link, none beside a critical cell or a collection failing now; acknowledged on its cell, the PostgreSQL one's row moved to the acknowledged grid, out of the tiles and the post's counts, the post's acknowledged counting it"
+(( KBAD == 0 )) || fail "K15-K27: $KBAD row check(s) failed (PGVIGIL_KROWS_GO=1)"
 
 # ---- G: the green day, on a repository migrated and never seeded ------------------------------------------------------
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $REPO2" >/dev/null
@@ -1158,4 +1262,4 @@ for _ in $(seq 1 36); do sender2; [[ $(q2 "select count(*) from pgvigil.report_m
 got=$(kmail green@pgvigil.test 0 'All checks pass') || fail "G4: the green day's mail: $got"
 ok "G4: THE GREEN DAY: no check fails; the turn was SENT (mail $SEND) and its body holds the checks grid's header row, no data row and 'All checks pass' in place of 'No rows.'"
 kstop "$SG"
-ok "K: the Daily checks mail (K1-K26, G1-G4)"
+ok "K: the Daily checks mail (K1-K27, G1-G4)"

@@ -45,8 +45,9 @@
 #     tab of the Storage strip at the four scopes draws its page with no error box.
 #     [DAILY-SQL, written 11-16 19:2x before its first run: the Daily checks page's SQL Server rows - its Summary cells at
 #     warning or critical - each open the cell's own page by DBA Dash's map of the column the row names (its view,
-#     status filter, Server card row), never Daily checks, one click per column; a 'daily rows: <n>' line, n over 0 on
-#     the demo (sql01's failed job and Memory Dump, sql02's DB Mail); none drawn = a FAIL]
+#     status filter, Server card row), never Daily checks, one click per column; a 'daily rows: <n>' line printed for
+#     the record - what fails a run with none drawn is click-check's own FAIL record (no SQL Server cell row), not this
+#     line (review-28 rows NIT); a Collection Errors (24hrs) row at warning is either engine's (review-28 S6)]
 #     [after s176-c4, before the rerun: a SQL Server instance's Disk cell (the SQL Server summary's own 'disk' key: the
 #     volume finding, DBA Dash's Drive Space) lands on Drives too; under an instance the tree's Storage node is checked
 #     once the instance's node is opened (not shown, not a FAIL, when the node sits in a closed folder)]

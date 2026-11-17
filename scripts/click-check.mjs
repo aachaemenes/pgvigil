@@ -988,7 +988,8 @@ let ownTested = false;
     const clickedD = new Set();
     for (const l of rows) {
       const tab = tabOf(l.href), engine = engineOf.get(l.inst) ?? '';
-      let verdict = engine !== 'sqlserver' ? `FAIL a Summary cell row on a ${engine || 'unknown'} instance` : verdictFor(l.column, engine, tab);
+      // a cell row is a SQL Server instance's, but for Collection Errors (24hrs) at warning: both engines' (review-28 S6)
+      let verdict = engine !== 'sqlserver' && l.column !== 'Collection Errors (24hrs)' ? `FAIL a Summary cell row on a ${engine || 'unknown'} instance` : verdictFor(l.column, engine, tab);
       const cv = dbadash[l.column]?.cv?.[engine], stWant = statusWant[l.column], rwWant = dbadash[l.column]?.row?.[engine];
       if (!verdict.startsWith('FAIL') && cv && paramsOf(l.href).get('cv') !== cv) verdict = `FAIL the ${l.column} row does not open its cell's view (cv=${cv}; its href: ${l.href})`;
       if (!verdict.startsWith('FAIL') && stWant && paramsOf(l.href).get('status') !== stWant) verdict = `FAIL the ${l.column} row does not open its page on its status filter (status=${stWant}; its href: ${l.href})`;
@@ -1005,7 +1006,9 @@ let ownTested = false;
       }
       record({ scope: 'Daily checks', kind: 'daily', column: l.column, engine, link: l.text, inst: l.inst, landed, href: l.href, verdict });
     }
-    console.log(`daily rows: ${rows.length} SQL Server cell row link(s) on the Daily checks page, ${clickedD.size} column(s) clicked`);
+    const nsql = rows.filter(l => engineOf.get(l.inst) === 'sqlserver').length;
+    if (rows.length && !nsql) record({ scope: 'Daily checks', kind: 'daily', column: '-', engine: 'sqlserver', link: 'a SQL Server row', landed: 'none drawn', verdict: 'FAIL no SQL Server cell row on the Daily checks page (only Collection Errors rows of other engines)' });
+    console.log(`daily rows: ${rows.length} cell row link(s) on the Daily checks page (${nsql} of SQL Server instances), ${clickedD.size} column(s) clicked`);
   }
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -22,16 +23,17 @@ func fakeAPI(t *testing.T, seen *[]string) http.Handler {
 		return map[string]any{"columns": cols, "rows": rows}
 	}
 	answers := map[string]any{
-		"/api/instances": tbl([]string{"instance_id", "name"}, []any{1, "Alpha"}, []any{2, "beta"}, []any{3, "sql01"}),
+		"/api/instances": tbl([]string{"instance_id", "name", "engine"}, []any{1, "Alpha", "postgres"}, []any{2, "beta", "postgres"}, []any{3, "sql01", "sqlserver"}),
 		"/api/overview": tbl([]string{"severity", "instance", "instance_id", "check_name", "object", "at", "detail", "check_group"},
 			[]any{"critical", "Alpha", 1, "stale", "x", "t", "d", "g"}, []any{"warning", "beta", 2, "bloat", "y", "t", "d", "g"}),
 		"/api/findings": tbl([]string{"setting", "value"}, []any{"work_mem", "4MB"}),
 		// DAILY-SQL (Q3): the SQL Server instances' Summary cells, the Daily checks page's reader for that engine
-		"/api/mssql/summary": map[string]any{"cells": tbl([]string{"instance_id", "key", "state", "sampled", "critical", "warning", "value", "detail", "read_at", "err", "since"},
+		"/api/mssql/summary?part=cells": map[string]any{"cells": tbl([]string{"instance_id", "key", "state", "sampled", "critical", "warning", "value", "detail", "read_at", "err", "since"},
 			[]any{3, "jobs", "ok", true, 1, 0, nil, []any{"job ETL: the last run failed"}, "2026-11-16T01:00:00Z", nil, nil},
 			[]any{3, "blocking", "ok", true, 1, 0, nil, []any{"session 71 heads a chain"}, "2026-11-16T01:00:00Z", nil, nil},
 			[]any{3, "full", "ok", true, 0, 0, nil, []any{}, "2026-11-16T01:00:00Z", nil, nil},
 			[]any{3, "disk", "stale", true, 0, 2, nil, []any{"E: 5 % free", "F: 8 % free"}, "2026-11-15T20:00:00Z", nil, nil})},
+		"/api/mssql/summary?part=collect": map[string]any{"collect": tbl([]string{"instance_id", "failing", "errors_24h"}, []any{1, 0, 0}, []any{3, 0, 0})},
 		"/api/activity": map[string]any{"snapshot_at": "2026-11-09T10:00:00Z",
 			"summary": tbl([]string{"instance_id", "total"}, []any{1, 5}),
 			"chains":  tbl([]string{"pid", "head_pid", "depth"}, []any{11, 10, 1}, []any{12, 10, 2})},
@@ -64,7 +66,16 @@ func fakeAPI(t *testing.T, seen *[]string) http.Handler {
 			_, _ = w.Write([]byte(`{"error":"connect failed: password=s3cret-pw host=x postgres://u:s3cret-pw@h/db"}`))
 			return
 		}
-		v, ok := answers[r.URL.Path]
+		path := r.URL.Path
+		if path == "/api/mssql/summary" { // answered by its part, as the server does: a part it does not know is a 400
+			path += "?part=" + r.URL.Query().Get("part")
+			if _, ok := answers[path]; !ok {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"no such part"}`))
+				return
+			}
+		}
+		v, ok := answers[path]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"no such endpoint"}`))
@@ -365,20 +376,85 @@ func TestServeCancel(t *testing.T) {
 
 // DAILY-SQL (Q3): a failed read of the SQL Server cells is a check of its own, never a silent fleet summary
 func TestFleetSummaryCellsReadFails(t *testing.T) {
-	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/instances", "/api/overview":
-			_ = json.NewEncoder(w).Encode(map[string]any{"columns": []string{"severity"}, "rows": [][]any{}})
-		default:
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"error":"cells: boom"}`))
+	for _, c := range []struct {
+		engine string
+		want   bool
+	}{{"sqlserver", true}, {"postgres", false}} { // review-28 code S4: a PostgreSQL-only fleet gets no such check
+		api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/instances":
+				_ = json.NewEncoder(w).Encode(map[string]any{"columns": []string{"instance_id", "name", "engine"}, "rows": [][]any{{1, "one", c.engine}}})
+			case "/api/overview":
+				_ = json.NewEncoder(w).Encode(map[string]any{"columns": []string{"severity"}, "rows": [][]any{}})
+			default:
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":"cells: boom"}`))
+			}
+		})
+		got, _, _ := exchange(t, New(api, "test", ""), call(1, "fleet_summary", `{}`))
+		b, _ := json.Marshal(got["1"])
+		for _, w := range []string{"check could not run", "SQL Server status cells", "cells: boom", `\"critical\": 1`} {
+			if strings.Contains(string(b), w) != c.want {
+				t.Errorf("fleet_summary with the cells' read failing on a %s fleet: %q in it = %v, want %v: %s", c.engine, w, !c.want, c.want, b)
+			}
 		}
+	}
+}
+
+// DAILY-SQL (review-28 code S3, S6, NITs): critical first; a cell not yet read (state never) no check; a collection that
+// failed in the last 24 hours and runs well now a warning on either engine, never beside the overview's 'collection
+// failing'; the summary read by its parts cells and collect.
+func TestFleetSummaryOrderAndCollect(t *testing.T) {
+	var seen []string
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.String())
+		tb := func(cols []string, rows ...[]any) map[string]any {
+			return map[string]any{"columns": cols, "rows": rows}
+		}
+		var v any
+		switch r.URL.Path + "?" + r.URL.Query().Get("part") {
+		case "/api/instances?":
+			v = tb([]string{"instance_id", "name", "engine"}, []any{1, "Alpha", "postgres"}, []any{3, "sql01", "sqlserver"}, []any{4, "gamma", "postgres"})
+		case "/api/overview?":
+			v = tb([]string{"severity", "instance", "instance_id", "check_name", "object"},
+				[]any{"warning", "Alpha", 1, "bloat", "t1"}, []any{"critical", "Alpha", 1, "collection failing", "statements"})
+		case "/api/mssql/summary?cells":
+			v = map[string]any{"cells": tb([]string{"instance_id", "key", "state", "critical", "warning", "detail"},
+				[]any{3, "jobs", "ok", 1, 0, []any{"job ETL failed"}}, []any{3, "dbstate", "never", 1, 0, []any{"OFFLINE: Sales"}})}
+		case "/api/mssql/summary?collect":
+			v = map[string]any{"collect": tb([]string{"instance_id", "failing", "errors_24h"}, []any{1, 1, 2}, []any{3, 0, 0}, []any{4, 0, 3})}
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"no such part"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(v)
 	})
 	got, _, _ := exchange(t, New(api, "test", ""), call(1, "fleet_summary", `{}`))
-	b, _ := json.Marshal(got["1"])
-	for _, w := range []string{"check could not run", "SQL Server status cells", "cells: boom", `\"critical\": 1`} {
-		if !strings.Contains(string(b), w) {
-			t.Errorf("fleet_summary with the cells' read failing: %q not in %s", w, b)
+	txt, isErr := text(t, got["1"])
+	if isErr {
+		t.Fatalf("fleet_summary: %s", txt)
+	}
+	var res struct {
+		Checks []map[string]any `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(txt), &res); err != nil {
+		t.Fatalf("%v: %s", err, txt)
+	}
+	var order []string
+	for _, c := range res.Checks {
+		order = append(order, fmt.Sprintf("%v %v %v", c["severity"], c["instance"], c["check_name"]))
+	}
+	want := []string{"critical Alpha collection failing", "critical sql01 summary cell jobs", "warning Alpha bloat", "warning gamma summary cell errors"}
+	if strings.Join(order, " | ") != strings.Join(want, " | ") {
+		t.Errorf("checks %q, want %q", order, want)
+	}
+	for _, c := range res.Checks {
+		if c["check_name"] == "summary cell errors" && c["object"] != "3 warning" {
+			t.Errorf("gamma's Collection Errors: %v", c)
 		}
+	}
+	if j := strings.Join(seen, " "); !strings.Contains(j, "/api/mssql/summary?part=cells") || !strings.Contains(j, "/api/mssql/summary?part=collect") {
+		t.Errorf("the summary's parts read: %s", j)
 	}
 }
