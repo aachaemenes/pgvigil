@@ -59,6 +59,9 @@ func (m msSave) Exists(ctx context.Context, quoted string) (bool, error) {
 	return there == 1, err
 }
 
+// Place: RED STUB (review-31 part A2's rows) - nothing read.
+func (m msSave) Place(context.Context) (savetable.Place, error) { return savetable.Place{}, nil }
+
 // Write: CREATE TABLE, then CopyIn into the same quoted target, one transaction; rolled back on any error.
 func (m msSave) Write(ctx context.Context, t savetable.Target, cols []savetable.Col, rows [][]any) (int64, error) {
 	create, err := savetable.CreateSQL(savetable.SQLServer, t, cols)

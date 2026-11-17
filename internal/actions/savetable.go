@@ -52,6 +52,9 @@ func (p pgSave) Exists(ctx context.Context, quoted string) (bool, error) {
 	return there, err
 }
 
+// Place: RED STUB (review-31 part A2's rows) - nothing read.
+func (p pgSave) Place(context.Context) (savetable.Place, error) { return savetable.Place{}, nil }
+
 // Write: CREATE TABLE, then CopyFrom into it, one transaction; rolled back on any error.
 func (p pgSave) Write(ctx context.Context, t savetable.Target, cols []savetable.Col, rows [][]any) (int64, error) {
 	create, err := savetable.CreateSQL(savetable.Postgres, t, cols)

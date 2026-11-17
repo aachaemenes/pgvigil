@@ -42,6 +42,7 @@ type fakeConn struct {
 	super                 bool
 	schemaOK, schemaOwned bool
 	exists                bool
+	place                 Place
 	fail                  string // a method name that answers an error
 	asked                 []string
 }
@@ -60,6 +61,7 @@ func (f *fakeConn) Login(context.Context) (string, bool, error) {
 func (f *fakeConn) Schema(context.Context) (bool, bool, error) {
 	return f.schemaOK, f.schemaOwned, f.err("Schema")
 }
+func (f *fakeConn) Place(context.Context) (Place, error) { return f.place, f.err("Place") }
 func (f *fakeConn) Exists(_ context.Context, quoted string) (bool, error) {
 	f.asked = append(f.asked, "Exists "+quoted)
 	return f.exists, nil

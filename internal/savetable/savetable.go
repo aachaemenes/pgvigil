@@ -539,6 +539,16 @@ type Conn interface {
 	Schema(ctx context.Context) (exists, owned bool, err error)
 	// Exists reads whether the target exists, the quoted form bound as a parameter (review-29 S1)
 	Exists(ctx context.Context, quoted string) (bool, error)
+	// Place reads where this connection is and what a CREATE TABLE there would meet (review-31 part A2)
+	Place(ctx context.Context) (Place, error)
+}
+
+// Place is what a connection reads of the database it is in, at the save: Check asks the WRITING connection, so the
+// answer is the server's own and not the store's last read (review-31 part A2 SF4, part A1 S4).
+type Place struct {
+	DB       Database // SQL Server: database_id and is_distributor; PostgreSQL: datistemplate (the name is the caller's)
+	Owner    bool     // SQL Server: the login is the database's owner (dbo) or a member of db_owner there
+	Triggers []string // SQL Server: the enabled database-level DDL triggers (they run as the caller on a CREATE TABLE)
 }
 
 // Writer is the writing login's connection: the checks, then the write - CREATE TABLE (no IF NOT EXISTS: an 'already
@@ -553,6 +563,34 @@ type Writer interface {
 // same-named type; SQL Server Msg 2714): the race the existence read cannot close, refused in the same words
 // (review-29 N4).
 var ErrExists = errors.New("the table exists")
+
+// ErrCommitUnknown is what a Writer wraps an error of the COMMIT itself in when the server did not answer it (the
+// connection was cut, the deadline passed): the server may have committed (review-31 part A2 NIT 8).
+var ErrCommitUnknown = errors.New("the commit's outcome is unknown")
+
+// RefusedName stands in the audit row and the log for a name CheckName refused (review-31 part A2 SF3).
+const RefusedName = "(a refused name)"
+
+// AuditNames is the database and the target as the audit row and the log carry them.
+// RED STUB (review-31 part A2's rows): the names as the body gave them.
+func AuditNames(engine string, b Body) (datname, target string) {
+	return b.Database, Target{Database: b.Database, Schema: Schema, Table: b.Table}.Display()
+}
+
+// WriteWords is the end row's outcome, its words and the rows written, from what Write answered.
+// RED STUB (review-31 part A2's rows): the route's words as they were.
+func WriteWords(t Target, n int64, nuls int, err error) (outcome, detail string, rows int64) {
+	outcome, detail = "done", fmt.Sprintf("Saved %d rows to %s", n, t.Display())
+	switch {
+	case errors.Is(err, ErrExists):
+		return "refused", fmt.Sprintf("the table %s exists: pgvigil never overwrites a table", t.Display()), 0
+	case err != nil:
+		return "failed", fmt.Sprintf("the save of %s failed, nothing was kept (the transaction rolled back): %v", t.Display(), err), 0
+	case nuls > 0:
+		detail += fmt.Sprintf("; %d NUL character(s) dropped from text cells", nuls)
+	}
+	return outcome, detail, n
+}
 
 // CreateSQL is the CREATE TABLE of the target: every identifier quoted by QuoteIdent, every type from ColumnType's
 // closed list; no value of the grid is ever in it.
