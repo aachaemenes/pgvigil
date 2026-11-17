@@ -37,11 +37,11 @@ func TestPoolLimitHistoryOnAStore(t *testing.T) {
 		return map[string]any{"kind": "limit_period", "server": "srv1", "pool": "pool1", "valid_from": h(from), "valid_to": h(to),
 			"dtu_limit": dtu, "storage_limit_mb": storage, "cpu_limit": cpu}
 	}
-	// the periods in minutes from base: from, to, DTU, storage, CPU
+	// the periods in minutes from base: from, to, DTU, storage, CPU (as text: vals prints a numeric's pgx struct)
 	periods := func(id int) string {
 		t.Helper()
 		return s.vals(`SELECT (extract(epoch FROM valid_from - $2::timestamptz) / 60)::int, (extract(epoch FROM valid_to - $2::timestamptz) / 60)::int,
-		                      dtu_limit, storage_limit_mb, cpu_limit
+		                      dtu_limit, storage_limit_mb, cpu_limit::text
 		                 FROM pgvigil.mssql_pool_limit_history WHERE instance_id = $1 AND server = 'srv1' AND pool = 'pool1' ORDER BY valid_from`, id, at(0))
 	}
 	// the first read: master's 14 days, 50 DTUs until 100 hours ago, 100 since

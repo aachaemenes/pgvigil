@@ -68,7 +68,7 @@ func TestAzureSeriesByDateGroupingOnAStore(t *testing.T) {
 		cpu     float64
 	}{{d1, 4, 10}, {d1.Add(time.Minute), 4, 30}, {d2, 2, 50}} {
 		exec(`INSERT INTO pgvigil.mssql_azuredb_minute (instance_id, snapshot_at, samples, avg_cpu_percent, max_cpu_percent, dtu_buckets, cpu_buckets, data_buckets, log_buckets)
-		      VALUES ($1, $2, $3, $4, $4 + 5, `+z+`, `+z+`, `+z+`, `+z+`)`, id, m.at, m.samples, m.cpu)
+		      VALUES ($1, $2, $3, $4::numeric, $4::numeric + 5, `+z+`, `+z+`, `+z+`, `+z+`)`, id, m.at, m.samples, m.cpu)
 	}
 	// the pool: hour 1 two minutes (CPU 20 and 40, 4 samples each; storage used 40 then 41), hour 2 one (60, 2 samples)
 	exec(`INSERT INTO pgvigil.mssql_pool_member (instance_id, server, pool, seen_at) VALUES ($1, $2, 'pool1', $3)`, id, server, d1)
@@ -79,7 +79,7 @@ func TestAzureSeriesByDateGroupingOnAStore(t *testing.T) {
 		used    float64
 	}{{d1, 4, 20, 40}, {d1.Add(time.Minute), 4, 40, 41}, {d1.Add(time.Hour), 2, 60, 42}} {
 		exec(`INSERT INTO pgvigil.mssql_pool_minute (server, pool, snapshot_at, samples, avg_cpu_percent, max_cpu_percent, avg_edtu_percent, max_worker_percent,
-		        used_storage_percent, instance_id, name_from) VALUES ($1, 'pool1', $2, $3, $4, $4 + 5, $4, 10, $5, $6, 'tag')`, server, m.at, m.samples, m.cpu, m.used, id)
+		        used_storage_percent, instance_id, name_from) VALUES ($1, 'pool1', $2, $3, $4::numeric, $4::numeric + 5, $4::numeric, 10, $5::numeric, $6, 'tag')`, server, m.at, m.samples, m.cpu, m.used, id)
 	}
 	s := &Server{pool: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	call := func(h func(http.ResponseWriter, *http.Request), path, part string) []map[string]any {

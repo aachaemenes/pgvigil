@@ -129,7 +129,8 @@ func TestRightsCatalogueShape(t *testing.T) {
 // S0, S1 and in an elastic pool, ##MS_ServerStateReader## (Detect asks the server-level right there) - and the database's
 // VIEW DEFINITION (the schema read's probe; VIEW ANY DEFINITION is a server right it does not have); a managed platform
 // lists the registry rights as not applying; Cloud SQL lists CONNECT ANY DATABASE as not grantable; before SQL Server
-// 2022 the audit's events say why; Amazon RDS lists its own reader.
+// 2022 the audit's events say why; Amazon RDS lists its own reader. Pool history's dbmanager (an opt-in, P25 task 9b)
+// is listed only in an elastic pool.
 func TestRightsOnPlatforms(t *testing.T) {
 	listed := func(i Info) (apply, off, hidden string) {
 		var a, o, h []string
@@ -147,7 +148,7 @@ func TestRightsOnPlatforms(t *testing.T) {
 	}
 	const (
 		head    = "view_server_state view_any_definition msdb_reader"
-		azHide  = "view_database_state azure_server_state_reader view_definition_db"
+		azHide  = "view_database_state azure_server_state_reader azure_dbmanager_pool_history view_definition_db"
 		dbRight = "view_any_definition msdb_reader database_access restore_history registry_instance registry_machine default_trace audit_events audit_events_rds sp_whoisactive"
 	)
 	for _, c := range []struct {
@@ -157,9 +158,9 @@ func TestRightsOnPlatforms(t *testing.T) {
 	}{
 		{"SQL Server 2022", Info{Major: 16}, head + " database_access restore_history registry_instance registry_machine default_trace audit_events sp_whoisactive", "", azHide + " audit_events_rds"},
 		{"SQL Server 2019", Info{Major: 15}, head + " database_access restore_history registry_instance registry_machine default_trace sp_whoisactive", "audit_events", azHide + " audit_events_rds"},
-		{"Azure SQL Database (a vCore database)", Info{Kind: KindAzureDB, Major: 12, ServiceObjective: "GP_Gen5_2"}, "view_database_state view_definition_db", "", "view_server_state azure_server_state_reader " + dbRight},
-		{"Azure SQL Database S0", Info{Kind: KindAzureDB, Major: 12, ServiceObjective: "S0"}, "azure_server_state_reader view_definition_db", "", "view_server_state view_database_state " + dbRight},
-		{"Azure SQL Database in an elastic pool", Info{Kind: KindAzureDB, Major: 12, ServiceObjective: "ElasticPool"}, "azure_server_state_reader view_definition_db", "", "view_server_state view_database_state " + dbRight},
+		{"Azure SQL Database (a vCore database)", Info{Kind: KindAzureDB, Major: 12, ServiceObjective: "GP_Gen5_2"}, "view_database_state view_definition_db", "", "view_server_state azure_server_state_reader azure_dbmanager_pool_history " + dbRight},
+		{"Azure SQL Database S0", Info{Kind: KindAzureDB, Major: 12, ServiceObjective: "S0"}, "azure_server_state_reader view_definition_db", "", "view_server_state view_database_state azure_dbmanager_pool_history " + dbRight},
+		{"Azure SQL Database in an elastic pool", Info{Kind: KindAzureDB, Major: 12, ServiceObjective: "ElasticPool"}, "azure_server_state_reader azure_dbmanager_pool_history view_definition_db", "", "view_server_state view_database_state " + dbRight},
 		{"Azure SQL Managed Instance", Info{Kind: KindAzureMI, Major: 12}, head + " database_access restore_history default_trace audit_events sp_whoisactive", "registry_instance registry_machine", azHide + " audit_events_rds"},
 		{"Amazon RDS 2019", Info{Kind: KindRDS, Major: 15}, head + " database_access restore_history default_trace audit_events_rds sp_whoisactive", "registry_instance registry_machine", azHide + " audit_events"},
 		{"Google Cloud SQL 2022", Info{Kind: KindCloudSQL, Major: 16}, head + " restore_history default_trace audit_events sp_whoisactive", "database_access registry_instance registry_machine", azHide + " audit_events_rds"},
