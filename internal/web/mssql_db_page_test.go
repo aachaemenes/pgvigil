@@ -66,4 +66,18 @@ func TestMSSQLDatabasePageIsWired(t *testing.T) {
 	if !regexp.MustCompile(`export async function mssqlPlanCacheView\(ctx: Ctx, onlyDb\?: string\)`).MatchString(read("mssql_plancache.ts")) {
 		t.Error("mssql_plancache.ts: mssqlPlanCacheView takes no database to fix the page on")
 	}
+	// Object Execution (F102 / F505): one grid of the procedures, functions and triggers (mssql_objexec.ts, part=objects
+	// with its Type filter and Search), on the database page cut to the database and on the instance's Procedures page
+	if !strings.Contains(page, "objectExecutionSection(ctx, db)") {
+		t.Error("mssql_db.ts draws no Object Execution tab with objectExecutionSection(ctx, db)")
+	}
+	if !strings.Contains(read("mssql_procs.ts"), "objectExecutionSection(ctx)") {
+		t.Error("mssql_procs.ts: the instance's Procedures page has no Object Execution grid")
+	}
+	oe := read("mssql_objexec.ts")
+	for _, w := range []string{"part: 'objects'", "['procedure', 'Procedures'], ['function', 'Functions'], ['trigger', 'Triggers']", "label: 'Period Time (sec)'", "label: 'Query Stats'", "label: 'Query Store'"} {
+		if !strings.Contains(oe, w) {
+			t.Errorf("mssql_objexec.ts has no %q", w)
+		}
+	}
 }
