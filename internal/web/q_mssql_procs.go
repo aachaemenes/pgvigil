@@ -542,7 +542,7 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 		}
 		parts = append(parts, part{"objects", sqlMSSQLObjects, []any{id, from, to, database, kinds, search}})
 	}
-	if q.Get("db_id") != "" || q.Get("object") != "" {
+	if (q.Get("db_id") != "" || q.Get("object") != "") && q.Get("part") != "object_statements" {
 		dbID, err1 := strconv.Atoi(q.Get("db_id"))
 		obj, err2 := strconv.ParseInt(q.Get("object"), 10, 64)
 		if err1 != nil || err2 != nil {
@@ -561,6 +561,15 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 		}
 		parts = append(parts, part{"intervals", intervals, []any{id, from, to, dbID, obj}},
 			part{"history", history, []any{planEach, id, from, to, dbID, obj, procStep(to.Sub(from).Seconds())}})
+	}
+	// the object page's Query Stats (OBJ, q_mssql_object.go): its module's statements in its database, when asked
+	if q.Get("part") == "object_statements" {
+		p, err := objectStatementsPart(q, id, from, to)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		parts = append(parts, p)
 	}
 	// the object page's lookup (OBJ, q_mssql_object.go): read only when asked, its database by name (dbname=; db= stays
 	// the database id this endpoint's other parts read)

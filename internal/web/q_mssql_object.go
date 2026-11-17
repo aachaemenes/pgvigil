@@ -3,6 +3,7 @@ package web
 import (
 	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -105,4 +106,21 @@ func objectLookupPart(q url.Values, id int, from, to time.Time) (part, error) {
 		db = q.Get("dbname")
 	}
 	return part{"object_lookup", sqlMSSQLObjectLookup, []any{id, from, to, nilIfEmpty(db), nilIfEmpty(schema), name}}, nil
+}
+
+// sqlMSSQLObjectStatements: the object page's Query Stats (DBA Dash's Query Stats report by @ObjectName): the Plan cache
+// page's top read of the window (sqlMSSQLPCTop, its columns and order) cut to one database ($4) and to the keys whose
+// text names the module ($5, 'schema.name' as 0092's mssql_pc_text.object_name holds it; case-insensitive) - in place
+// of the page's own scope (pcScope: a database filter and the Query Store switch), the parameters kept in their places.
+var sqlMSSQLObjectStatements = strings.Replace(sqlMSSQLPCTop, pcScope, `s.database_id = $4
+   AND s.query_key IN (SELECT t2.query_key FROM pgvigil.mssql_pc_text t2 WHERE t2.instance_id = $1 AND lower(t2.object_name) = lower($5))`, 1)
+
+// objectStatementsPart: part=object_statements from db_id= (the database id) and module= (schema.name)
+func objectStatementsPart(q url.Values, id int, from, to time.Time) (part, error) {
+	dbID, err := strconv.Atoi(q.Get("db_id"))
+	module := q.Get("module")
+	if err != nil || module == "" || len([]rune(module)) > 2*128+1 {
+		return part{}, errors.New("part=object_statements needs db_id= (the database id) and module= (schema.name)")
+	}
+	return part{"object_statements", sqlMSSQLObjectStatements, []any{id, from, to, dbID, module}}, nil
 }
