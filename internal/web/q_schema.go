@@ -108,6 +108,79 @@ SELECT f.severity, f.setting, f.value, f.suggested, f.detail, f.at
  WHERE f.instance_id = $1
  ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, f.value, f.setting`
 
+// DBA Dash's Snapshot Summary (control audit D3 a; SchemaCompare/SchemaSnapshots.cs, DDLSnapshots_Get /
+// DDLSnapshotDiff_Get) over pgvigil's change history. A snapshot is a read that found changes (schema_changes by
+// snapshot_at) - or a database's BASELINE, its first read, which stores no change (0058 / 0267's import: its objects
+// are its Created). An object is a standalone one (objectKindsSQL); a column's, an index's or a constraint's change
+// counts as its parent modified (DBA Dash's whole-object DDL would show it so), never an object created or dropped by
+// the same read. Validated is the read before the next snapshot (its prev_at), the newest's the database's last read;
+// the day counts as DATEDIFF(d) counts them (UTC midnights crossed). $2 one database or NULL (the instance's), page $4
+// of $3 rows, newest first.
+const sqlDDLSnapshots = `
+WITH d AS (
+  SELECT sd.dbid, sd.datname, sd.first_read, sd.snapshot_at AS last_read
+    FROM pgvigil.schema_databases sd
+   WHERE sd.instance_id = $1 AND ($2::bigint IS NULL OR sd.dbid = $2)
+), k AS (
+  SELECT c.dbid, c.snapshot_at, min(c.prev_at) OVER (PARTITION BY c.dbid, c.snapshot_at) AS prev_at,
+         CASE WHEN c.kind IN ` + objectKindsSQL + ` THEN c.identity ELSE c.parent END AS obj,
+         c.kind IN ` + objectKindsSQL + ` AND c.change = 'added' AS is_created,
+         c.kind IN ` + objectKindsSQL + ` AND c.change = 'dropped' AS is_dropped,
+         (c.kind IN ` + objectKindsSQL + ` AND c.change = 'changed') OR c.kind NOT IN ` + objectKindsSQL + ` AS is_modified
+    FROM pgvigil.schema_changes c JOIN d ON d.dbid = c.dbid
+   WHERE c.instance_id = $1
+), o AS (
+  SELECT k.dbid, k.snapshot_at, k.prev_at, k.obj, bool_or(k.is_created) AS cr, bool_or(k.is_dropped) AS dr, bool_or(k.is_modified) AS md
+    FROM k WHERE k.obj IS NOT NULL
+   GROUP BY 1, 2, 3, 4
+), s AS (
+  SELECT o.dbid, o.snapshot_at, o.prev_at, count(*) FILTER (WHERE o.cr) AS created,
+         count(*) FILTER (WHERE o.md AND NOT o.cr AND NOT o.dr) AS modified, count(*) FILTER (WHERE o.dr AND NOT o.cr) AS dropped
+    FROM o GROUP BY 1, 2, 3
+  UNION ALL
+  SELECT d.dbid, d.first_read, NULL,
+         (SELECT count(*) FROM pgvigil.schema_objects so
+           WHERE so.instance_id = $1 AND so.dbid = d.dbid AND so.first_seen = d.first_read AND so.kind IN ` + objectKindsSQL + `), 0, 0
+    FROM d
+), v AS (
+  SELECT s.*, d.datname, coalesce(lead(s.prev_at) OVER (PARTITION BY s.dbid ORDER BY s.snapshot_at), d.last_read) AS validated_at
+    FROM s JOIN d USING (dbid)
+)
+SELECT v.dbid, v.datname AS database, v.snapshot_at, v.validated_at,
+       (v.validated_at AT TIME ZONE 'UTC')::date - (v.snapshot_at AT TIME ZONE 'UTC')::date AS valid_for_days,
+       (now() AT TIME ZONE 'UTC')::date - (v.validated_at AT TIME ZONE 'UTC')::date AS days_since_validation,
+       v.created, v.modified, v.dropped, v.prev_at IS NULL AS baseline
+  FROM v
+ ORDER BY v.snapshot_at DESC, v.dbid
+ LIMIT $3 OFFSET ($4::int - 1) * $3`
+
+// sqlDDLSnapshotObjects: one snapshot's objects (DDLSnapshotDiff_Get; $2 the database, $3 the snapshot): its stored
+// changes, or - at a database's baseline, which stores none - its standalone objects first seen by that read, each
+// with its definition as of then (the 'before' of the first later change of its definition, or of its drop; else its
+// definition now), the change 'added'; ordered by schema and identity (a table's columns follow it, an index sorts
+// by its own name).
+const sqlDDLSnapshotObjects = `
+SELECT w.snapshot_at, w.dbid, w.kind, w.identity, w.schema_name, w.object_name, w.parent, w.change, w.attribute,
+       ` + schemaChangeCut + `, false AS baseline
+  FROM pgvigil.schema_changes w
+ WHERE w.instance_id = $1 AND w.dbid = $2 AND w.snapshot_at = $3
+UNION ALL
+SELECT so.first_seen, so.dbid, so.kind, so.identity, so.schema_name, so.object_name, so.parent, 'added', NULL,
+       NULL, left(x.def, 400), coalesce(length(x.def) > 400, false), true
+  FROM pgvigil.schema_objects so
+  JOIN pgvigil.schema_databases sd ON sd.instance_id = so.instance_id AND sd.dbid = so.dbid AND sd.first_read = $3
+  CROSS JOIN LATERAL (SELECT coalesce((SELECT c.before FROM pgvigil.schema_changes c
+                                        WHERE c.instance_id = so.instance_id AND c.dbid = so.dbid AND c.kind = so.kind AND c.identity = so.identity
+                                          AND c.snapshot_at > $3 AND c.before IS NOT NULL
+                                          AND (c.change = 'dropped' OR (c.change = 'changed' AND c.attribute = 'definition'))
+                                        ORDER BY c.snapshot_at LIMIT 1), so.definition) AS def) x
+ WHERE so.instance_id = $1 AND so.dbid = $2 AND so.first_seen = $3 AND so.kind IN ` + objectKindsSQL + `
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.schema_changes e WHERE e.instance_id = $1 AND e.dbid = $2 AND e.snapshot_at = $3)
+ ORDER BY 5, 4, 3`
+
+// ddlSnapshotSizes: DBA Dash's Snapshot Summary Page Size list (SchemaSnapshots.Designer.cs tsSummaryPageSize; 100 the default)
+var ddlSnapshotSizes = map[int]bool{100: true, 200: true, 500: true, 1000: true, 5000: true}
+
 // Schema serves the schema snapshots of one instance, or of one of its databases, over the window.
 func (s *Server) Schema(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
@@ -141,6 +214,33 @@ func (s *Server) Schema(w http.ResponseWriter, r *http.Request) {
 			attr = &a
 		}
 		s.multiPart(w, r, []part{{"change", sqlSchemaChange, []any{id, t, *db, q.Get("kind"), q.Get("identity"), attr}}})
+		return
+	}
+	// DBA Dash's Snapshot Summary (control audit D3 a): read alone when asked, either engine (the store is shared)
+	switch q.Get("part") {
+	case "ddl_snapshots":
+		size, page := 100, 1
+		if v := q.Get("size"); v != "" {
+			if size, err = strconv.Atoi(v); err != nil || !ddlSnapshotSizes[size] {
+				writeErr(w, http.StatusBadRequest, errors.New("size must be one of 100, 200, 500, 1000, 5000"))
+				return
+			}
+		}
+		if v := q.Get("page"); v != "" {
+			if page, err = strconv.Atoi(v); err != nil || page < 1 || page > 100000 {
+				writeErr(w, http.StatusBadRequest, errors.New("page must be 1 or more"))
+				return
+			}
+		}
+		s.multiPart(w, r, []part{{"ddl_snapshots", sqlDDLSnapshots, []any{id, db, size, page}}})
+		return
+	case "ddl_snapshot_objects":
+		at, err := time.Parse(time.RFC3339Nano, q.Get("snap_at"))
+		if err != nil || db == nil {
+			writeErr(w, http.StatusBadRequest, errors.New("part=ddl_snapshot_objects needs db= and snap_at= (the snapshot's time, RFC 3339)"))
+			return
+		}
+		s.multiPart(w, r, []part{{"ddl_snapshot_objects", sqlDDLSnapshotObjects, []any{id, *db, at}}})
 		return
 	}
 	var parts []part

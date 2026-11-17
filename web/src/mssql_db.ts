@@ -11,7 +11,7 @@ import { dbSpaceView } from './drives';
 import { mssqlPlanCacheView } from './mssql_plancache';
 import { mssqlSlow } from './mssql_xe';
 import { objectExecutionSection } from './mssql_objexec';
-import { schemaDbSection } from './schema';
+import { compareCell, schemaDbSection } from './schema';
 import { get, post, Row, rowsOf, Table } from './api';
 import { InstanceRun, resultView } from './customreports';
 import { needControl } from './needs';
@@ -104,14 +104,65 @@ async function snapshotSummary(ctx: Ctx, db: string): Promise<HTMLElement> {
       : 'the mssql_schema collection holds no current row for it - it never read it (it reads the databases of mssql_schema.databases), or the database is gone (its changes stay on the instance\'s Schema tab)';
     return el('p', { class: 'empty' }, `No schema read of ${db}: ${why}.`);
   }
-  const sec = await schemaDbSection(ctx, row.dbid as number);
+  const [snaps, sec] = await Promise.all([ddlSnapshots(ctx, row.dbid as number), schemaDbSection(ctx, row.dbid as number)]);
   if (row.state !== 'read' && row.state !== 'seen') {
     const p = el('p', { class: 'meta' }, badge(String(row.state ?? 'not read'), 'warn'),
       ` the collection's last pass of ${db}${row.note ? ': ' + String(row.note) : ''}.`);
     const h = sec.firstElementChild;
     if (h) h.after(p); else sec.prepend(p);
   }
-  return sec;
+  // DBA Dash's snapshot list first (control audit D3 a), then the Schema tab's section for the range
+  return el('div', {}, snaps, sec);
+}
+
+// ddlSnapshots (control audit D3 a): DBA Dash's Snapshot Summary list of one database (SchemaSnapshots.cs,
+// DDLSnapshots_Get over /api/schema part=ddl_snapshots): its schema snapshots newest first - the first read its
+// baseline - paged with Previous / Next and Page Size; a snapshot's Objects button lists them below (DDLSnapshotDiff_Get:
+// part=ddl_snapshot_objects; View = its definition after, Diff = the Schema tab's compare)
+async function ddlSnapshots(ctx: Ctx, dbid: number): Promise<HTMLElement> {
+  const size = el('select', { 'aria-label': 'Page Size' }, ...[100, 200, 500, 1000, 5000].map(n => el('option', { value: String(n) }, String(n)))) as HTMLSelectElement;
+  const prev = el('button', { type: 'button' }, 'Previous') as HTMLButtonElement, next = el('button', { type: 'button' }, 'Next') as HTMLButtonElement;
+  const at = el('span', { class: 'meta' }), list = el('div'), objs = el('div');
+  const cutCell = (v: unknown, r: Row) => r.cut ? `${String(v ?? '')} ...` : String(v ?? '');
+  let page = 1, seq = 0;
+  const pick = async (r: Row) => {
+    objs.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
+    try {
+      const d = await get<{ ddl_snapshot_objects: Table | null }>('schema',
+        { instance: ctx.instance, ...window_(ctx), part: 'ddl_snapshot_objects', db: String(dbid), snap_at: String(r.snapshot_at) });
+      objs.replaceChildren(el('h4', {}, `The snapshot of ${fmtTime(r.snapshot_at)}${r.baseline ? ' (the first read: every object it found)' : ''}`),
+        grid(rowsOf(d.ddl_snapshot_objects), [
+          { key: 'object_name', label: 'Object Name' }, { key: 'schema_name', label: 'Schema Name' }, { key: 'kind', label: 'type' },
+          { key: 'change', label: 'Action' }, { key: 'attribute', label: 'what changed' },
+          { key: 'after', label: 'View', wide: true, fmt: cutCell },
+          { key: 'diff', label: 'Diff', fmt: (v, x) => x.baseline ? '' : compareCell(ctx)(v, x) },
+        ], 'No object in this snapshot.'));
+    } catch (e) { objs.replaceChildren(errorBox(e)); }
+  };
+  const draw = async () => {
+    const mine = ++seq;
+    try {
+      const d = await get<{ ddl_snapshots: Table | null }>('schema',
+        { instance: ctx.instance, ...window_(ctx), part: 'ddl_snapshots', db: String(dbid), size: size.value, page });
+      if (mine !== seq) return;
+      const rows = rowsOf(d.ddl_snapshots);
+      prev.disabled = page <= 1;
+      next.disabled = rows.length < Number(size.value);
+      at.textContent = ` Page ${page} `;
+      list.replaceChildren(grid(rows, [
+        { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime }, { key: 'validated_at', label: 'Validated Date', fmt: fmtTime },
+        { key: 'valid_for_days', label: 'Valid For (Days)', num: true }, { key: 'days_since_validation', label: 'Days Since Validation', num: true },
+        { key: 'created', label: 'Created', num: true }, { key: 'modified', label: 'Modified', num: true }, { key: 'dropped', label: 'Dropped', num: true },
+        { key: 'objects', label: 'objects', fmt: (_, r) => { const b = el('button', { type: 'button' }, 'Objects'); b.addEventListener('click', () => void pick(r)); return b; } },
+      ], page > 1 ? 'No more snapshots: this page is past the last.' : 'No schema snapshot of this database yet: the first read is its baseline.'));
+    } catch (e) { if (mine === seq) list.replaceChildren(errorBox(e)); }
+  };
+  prev.addEventListener('click', () => { if (page > 1) { page--; void draw(); } });
+  next.addEventListener('click', () => { page++; void draw(); });
+  size.addEventListener('change', () => { page = 1; void draw(); });
+  await draw();
+  return el('section', {}, el('h3', {}, 'Snapshots'),
+    el('div', { class: 'toolbar', role: 'group', 'aria-label': 'Snapshot pages' }, prev, at, next, el('label', {}, ' Page Size ', size)), list, objs);
 }
 
 // serviceBroker: DBA Dash's database Service Broker tab (P25 row 73; 0392, the mssql_service_broker collection every 5
