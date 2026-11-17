@@ -70,7 +70,7 @@ export async function mssqlObjectView(ctx: Ctx): Promise<HTMLElement> {
   const asked = hashParam('otab');
   const tab = shown.some(([k]) => k === asked) ? asked! : shown[0][0];
   sec.append(el('nav', { class: 'subtabs', 'aria-label': `${title}'s pages` }, ...shown.map(([k, label]) =>
-    el('a', { href: mssqlObjectHref(ctx, where, obj, k), class: k === tab ? 'on' : '', ...(k === tab ? { 'aria-current': 'page' } : {}) }, label))));
+    el('a', { href: mssqlObjectHref(ctx, where, obj, k, undefined, { ocmp: hashParam('ocmp') ?? undefined }), class: k === tab ? 'on' : '', ...(k === tab ? { 'aria-current': 'page' } : {}) }, label))));
   const left = tabs.filter(([k]) => why[k]);
   if (left.length) sec.append(el('p', { class: 'meta' }, 'Not shown: ' + left.map(([k, label]) => `${label} (${why[k]})`).join('; ') + '.'));
   const name = String(o?.object_name ?? obj), schema = o?.schema_name == null ? '' : String(o.schema_name);
