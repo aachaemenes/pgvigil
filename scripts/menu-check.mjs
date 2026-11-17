@@ -93,7 +93,8 @@
 //                     JSON (DD's order), As Markdown > Standard | Prettified, As JSON > Compact | Prettified, Export file >
 //                     CSV | JSON | Markdown | HTML | SQL (INSERT) for PostgreSQL | for SQL Server, Transpose > This row |
 //                     Selected rows | Grid, Select > Row | Column | All, Data bar > Behind value | Under value | Traffic
-//                     light (higher is worse) | (higher is better) | Remove, All filters > = <> > < >= <= (a text column:
+//                     light (higher is worse) | (higher is better) | Options... | Copy to All Numeric Columns | Remove | Remove
+//                     All Data Bars (task PGRID B14), All filters > = <> > < >= <= (a text column:
 //                     Like | Not like first); Clear filters off with the visible words 'no filter is set'
 //   G-select          Select > Column: n cells, the tools' line says so, the menu's last line 'Selected Cells: n (k
 //                     numeric) | Sum: ...'; Select > Row: the row's shown cells; a version cell: no Sum line, 'Rows: ...' last
@@ -762,7 +763,7 @@ await guard('G-menu', async () => {
   const tail = top.slice(-2);
   const W = { Copy: ['Grid', 'Column', 'Cell', 'Row', 'Selected', 'As Markdown', 'As JSON'], 'Copy > As Markdown': ['Standard', 'Prettified'], 'Copy > As JSON': ['Compact', 'Prettified'],
     'Export file': ['CSV', 'JSON', 'Markdown', 'HTML', 'SQL (INSERT) for PostgreSQL', 'SQL (INSERT) for SQL Server'], Transpose: ['This row', 'Selected rows', 'Grid'], Select: ['Row', 'Column', 'All'], 'Row Headers': ['Hide', 'Show', 'Show with Row Numbers'],
-    'Data bar': ['Behind value', 'Under value', 'Traffic light (higher is worse)', 'Traffic light (higher is better)', 'Remove'], 'All filters': ['=', '<>', '>', '<', '>=', '<='] };
+    'Data bar': ['Behind value', 'Under value', 'Traffic light (higher is worse)', 'Traffic light (higher is better)', 'Options', 'Copy to All Numeric Columns', 'Remove', 'Remove All Data Bars'], 'All filters': ['=', '<>', '>', '<', '>=', '<='] };
   const got = {};
   for (const k of Object.keys(W)) got[k] = await gmSub(gCell('sessions'), ...k.split(' > '));
   const txt = await gmSub(gCell('platform'), 'All filters'), txtWant = ['Like', 'Not like', '=', '<>', '>', '<', '>=', '<='];

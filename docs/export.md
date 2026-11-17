@@ -196,7 +196,13 @@ dialog. In DBA Dash's order:
   group by; for the others Count Distinct, Min and Max, and on a number column Sum, Sum % and Avg; Include Count and
   Count % of Total - the groups above the grid, under DBA Dash's names such as `failed | Sum`, following its filters; a
   group's row filters the grid to that group, Clear filters undoes it), **Ungroup**, **Data bar** > **Behind
-  value**, **Under value**, **Traffic light (higher is worse)**, **Traffic light (higher is better)**, **Remove**.
+  value**, **Under value**, **Traffic light (higher is worse)**, **Traffic light (higher is better)**, **Options...**
+  (Style; Minimum and Maximum - empty, the smaller of 0 and the column's lowest value and its highest; a traffic light's
+  Warning at and Critical at, 20 and 50 % of that scale as DBA Dash sets them, or with Thresholds are values the values
+  themselves), **Copy to All Numeric Columns** (the style and its thresholds on every shown number column, each on its
+  own scale), **Remove**, **Remove All Data Bars**. DBA Dash's two colour pickers are not offered: the bars keep the
+  theme's colours, which hold their contrast in the light and the dark theme (Section 508 / WCAG 1.4.11); a picked
+  colour could fail one of them.
 - **Filter by value** and **Exclude value** (the clicked value, exactly), **Filter by these values** / **Exclude these
   values** (cells selected in one column), **All filters** > Like / Not like (a text column), `=` `<>` `>` `<` `>=` `<=`
   (a prompt with the clicked value), **Clear filters**. A menu's filter is added to what the column's filter holds:

@@ -25,7 +25,16 @@ import { AGG_NAMES, AGG_ORDER, AggKind, GCell, GValue, GroupSpec, groupBy } from
 // saved before B07 as 'Row numbers' on opens so), rowhead - shown with no number, neither - hidden; added: the rows' keys the page does not draw, drawn as columns at the grid's
 // end (the chooser's undrawn data columns, task PGRID B05) - a key no longer offered is kept here and drawn never
 type BarStyle = 'behind' | 'under' | 'worse' | 'better';
-interface Prefs { hidden: string[]; frozen: number; bars: Record<string, BarStyle>; rownum?: boolean; rowhead?: boolean; added?: string[] }
+// a bar's options (DBA Dash's DataBarConfig, task PGRID B14): min / max - the values an empty / a full bar stand for
+// (none: the smaller of 0 and the column's lowest, and its highest); warn / crit - where a traffic light turns amber /
+// red, as % of that scale (none: DBA Dash's 20 and 50) or with values, as values in the column's own units; a bar with no
+// option set is kept as its style alone (the form before the options)
+interface BarSet { style: BarStyle; min?: number; max?: number; warn?: number; crit?: number; values?: boolean }
+type Bar = BarStyle | BarSet;
+const barOf = (b: Bar | undefined): BarSet | undefined => b === undefined ? undefined : typeof b === 'string' ? { style: b } : b;
+const barKeep = (b: BarSet): Bar => b.min === undefined && b.max === undefined && b.warn === undefined && b.crit === undefined && !b.values ? b.style
+  : { style: b.style, ...(b.min !== undefined ? { min: b.min } : {}), ...(b.max !== undefined ? { max: b.max } : {}), ...(b.warn !== undefined ? { warn: b.warn } : {}), ...(b.crit !== undefined ? { crit: b.crit } : {}), ...(b.values ? { values: true } : {}) };
+interface Prefs { hidden: string[]; frozen: number; bars: Record<string, Bar>; rownum?: boolean; rowhead?: boolean; added?: string[] }
 const BAR_STYLES: [BarStyle, string][] = [['behind', 'Behind value'], ['under', 'Under value'], ['worse', 'Traffic light (higher is worse)'], ['better', 'Traffic light (higher is better)']];
 interface Grouping { spec: GroupSpec; box: HTMLElement }
 
@@ -139,8 +148,13 @@ function load(t: HTMLTableElement): Prefs {
     if (!p || typeof p !== 'object') return none;
     const list = (v: unknown) => Array.isArray(v) ? v.filter(x => typeof x === 'string') as string[] : [];
     const styles = new Set(BAR_STYLES.map(x => x[0]));
-    const bars: Record<string, BarStyle> = Array.isArray(p.bars) ? Object.fromEntries(list(p.bars).map(n => [n, 'behind' as BarStyle]))
-      : p.bars && typeof p.bars === 'object' ? Object.fromEntries(Object.entries(p.bars).filter(([, v]) => styles.has(v as BarStyle))) as Record<string, BarStyle> : {};
+    const fin = (x: unknown) => typeof x === 'number' && Number.isFinite(x) ? x : undefined;
+    const bars: Record<string, Bar> = Array.isArray(p.bars) ? Object.fromEntries(list(p.bars).map(n => [n, 'behind' as BarStyle]))
+      : p.bars && typeof p.bars === 'object' ? Object.fromEntries(Object.entries(p.bars as Record<string, unknown>).flatMap(([n, v]): [string, Bar][] => {
+        if (typeof v === 'string') return styles.has(v as BarStyle) ? [[n, v as BarStyle]] : [];
+        const o = v && typeof v === 'object' ? v as Record<string, unknown> : null;
+        return o && styles.has(o.style as BarStyle) ? [[n, barKeep({ style: o.style as BarStyle, min: fin(o.min), max: fin(o.max), warn: fin(o.warn), crit: fin(o.crit), values: o.values === true })]] : [];
+      })) : {};
     return { hidden: list(p.hidden), frozen: Math.max(0, Math.min(MAX_FROZEN, Math.floor(Number(p.frozen) || 0))), bars, rownum: p.rownum === true, rowhead: p.rowhead === true && p.rownum !== true, added: list(p.added) };
   } catch { return none; }   // a value another version wrote
 }
@@ -217,34 +231,39 @@ function apply(t: HTMLTableElement, p: Prefs = load(t)) {
   bars(t, p, ns);
 }
 
-// bars: a column's data bar (the rows drawn; a cell the page colours carries none): behind each number above zero or
-// under it, its length the value's share of the column's largest; or a traffic light, the column's range in thirds,
-// the top third red and the bottom green (higher is worse) or the reverse (higher is better). A screen aid in the
-// tools' own classes (never ok / warn / crit, which the export reads as a status): no file carries it.
+// bars: a column's data bar (the rows drawn; a cell the page colours carries none): behind each number or under it, its
+// length the value's place on the scale (from the bar's Minimum, else the smaller of 0 and the column's lowest, to its
+// Maximum, else the column's highest); or a traffic light (DBA Dash's DataBarSettings.ColorFor): red at or above
+// Critical at, amber at or above Warning at, else green - % of the scale measured up for 'higher is worse' and down for
+// 'higher is better', or with 'Thresholds are values' the values themselves (at or below them for 'higher is better').
+// A screen aid in the tools' own classes (never ok / warn / crit, which the export reads as a status): no file carries it.
 function bars(t: HTMLTableElement, p: Prefs, ns: string[]) {
-  const on = new Map(Object.entries(p.bars).map(([n, st]) => [ns.indexOf(n), st] as [number, BarStyle]).filter(([j]) => j >= 0));
+  const on = new Map(Object.entries(p.bars).map(([n, b]) => [ns.indexOf(n), barOf(b)!] as [number, BarSet]).filter(([j]) => j >= 0));
   const had = t.hasAttribute('data-gt-bars');
   if (!on.size && !had) return;
   t.toggleAttribute('data-gt-bars', on.size > 0);
   const trs = bodyRows(t);
   const m = gridModel(t), data = m?.rows(), modelled = !!(data && m && m.cols.length === ns.length);
   ns.forEach((_, j) => {
-    const st = on.get(j);
+    const b = on.get(j), st = b?.style;
     const vals = trs.map((tr, i) => st ? numberAt(t, tr.children[j], modelled ? data![i]?.[m!.cols[j].key] : undefined)?.n : undefined);
     const nums = vals.filter((v): v is number => v !== undefined);
-    const max = Math.max(0, ...nums), lo = nums.length ? Math.min(...nums) : 0, hi = nums.length ? Math.max(...nums) : 0;
+    const lo = nums.length ? Math.min(...nums) : 0, hi = nums.length ? Math.max(...nums) : 0;
+    const mn = b?.min ?? Math.min(0, lo), mx = b?.max ?? hi;
+    const place = (v: number) => mx > mn ? Math.min(1, Math.max(0, (v - mn) / (mx - mn))) : 0;
     trs.forEach((tr, i) => {
       const td = tr.children[j] as HTMLElement | undefined, v = vals[i];
       if (!td) return;
       const own = !!statusOf(td);
-      const share = (st === 'behind' || st === 'under') && v !== undefined && v > 0 && max > 0 && !own ? Math.max(1, Math.round(v / max * 100)) : 0;
+      const share = (st === 'behind' || st === 'under') && v !== undefined && v > mn && mx > mn && !own ? Math.max(1, Math.round(place(v) * 100)) : 0;
       td.classList.toggle('gt-bar', share > 0);
       td.classList.toggle('gt-bar-under', share > 0 && st === 'under');
       if (share > 0) td.style.setProperty('--gt-share', `${share}%`); else td.style.removeProperty('--gt-share');
       let light = '';
       if ((st === 'worse' || st === 'better') && v !== undefined && !own) {
-        const third = hi > lo ? (v - lo) / (hi - lo) : 0.5, top = third >= 2 / 3, bottom = third <= 1 / 3;
-        light = top ? (st === 'worse' ? 'r' : 'g') : bottom ? (st === 'worse' ? 'g' : 'r') : 'a';
+        const warn = b!.warn ?? 20, crit = b!.crit ?? 50, better = st === 'better';
+        if (b!.values) light = (better ? v <= crit : v >= crit) ? 'r' : (better ? v <= warn : v >= warn) ? 'a' : 'g';
+        else { const at = (better ? 1 - place(v) : place(v)) * 100; light = at >= crit ? 'r' : at >= warn ? 'a' : 'g'; }
       }
       for (const x of ['r', 'a', 'g']) td.classList.toggle('gt-tl-' + x, light === x);
     });
@@ -723,6 +742,45 @@ function filterPrompt(t: HTMLTableElement, j: number, op: string, value: string,
   cancel.addEventListener('click', () => d.close());
   inp.focus(); inp.select();
 }
+// barOptions: DBA Dash's data bar Options (DataBarConfig, task PGRID B14): Style, Minimum and Maximum (empty: the
+// grid's own values), and a traffic light's Warning at / Critical at with Thresholds are values; OK, Cancel, Remove. A
+// field that is no number is refused in words naming it, the dialog open and the bar as it was. DBA Dash's two colour
+// pickers are not offered: the bars keep the theme's colours, which hold their contrast in both themes (docs/export.md).
+function barOptions(t: HTMLTableElement, n: string, back: HTMLElement | null) {
+  const cur = barOf(load(t).bars[n]) ?? { style: 'behind' as BarStyle };
+  const style = el('select', { 'aria-label': 'Style' }, ...BAR_STYLES.map(([k, l]) => el('option', k === cur.style ? { value: k, selected: '' } : { value: k }, l))) as HTMLSelectElement;
+  const field = (label: string, v: number | undefined) => { const i = el('input', { type: 'text', inputmode: 'decimal', size: '10', 'aria-label': label }) as HTMLInputElement; i.value = v === undefined ? '' : String(v); return i; };
+  const min = field("Minimum (empty: the smaller of 0 and the column's lowest value)", cur.min), max = field("Maximum (empty: the column's highest value)", cur.max);
+  const warn = field('Warning at (a traffic light: % of the scale, or a value)', cur.warn ?? 20), crit = field('Critical at (a traffic light: % of the scale, or a value)', cur.crit ?? 50);
+  const values = el('input', { type: 'checkbox', 'aria-label': 'Thresholds are values' }) as HTMLInputElement; values.checked = !!cur.values;
+  const err = el('p', { class: 'error', role: 'alert' });
+  const ok = el('button', { type: 'button' }, 'OK'), cancel = el('button', { type: 'button' }, 'Cancel'), remove = el('button', { type: 'button' }, 'Remove');
+  const d = toolDialog(t, `Data bar: ${n}`, back,
+    el('p', {}, el('label', {}, 'Style ', style)),
+    el('p', {}, el('label', {}, 'Minimum ', min), ' ', el('label', {}, 'Maximum ', max)),
+    el('p', { class: 'meta' }, "Leave Minimum and Maximum empty to scale the bars to the grid's own values."),
+    el('p', {}, el('label', {}, 'Warning at ', warn), ' ', el('label', {}, 'Critical at ', crit), ' ', el('label', {}, values, ' Thresholds are values, not % of the scale')),
+    err, el('p', {}, ok, ' ', cancel, ' ', remove));
+  const read = (i: HTMLInputElement, name: string): number | undefined | string => {
+    const x = i.value.trim().replace(/,/g, '');
+    if (x === '') return undefined;
+    const v = Number(x);
+    return Number.isFinite(v) ? v : `${name}: '${i.value.trim()}' is not a number.`;
+  };
+  const put = (b: Bar | null) => { const p = load(t), bs = { ...p.bars }; if (b) bs[n] = b; else delete bs[n]; save(t, { ...p, bars: bs }); redrawPanel(t); };
+  ok.addEventListener('click', () => {
+    const got = [read(min, 'Minimum'), read(max, 'Maximum'), read(warn, 'Warning at'), read(crit, 'Critical at')];
+    const bad = got.find((x): x is string => typeof x === 'string');
+    if (bad) { err.textContent = bad; return; }
+    const [lo, hi, w, c] = got as (number | undefined)[];
+    if (lo !== undefined && hi !== undefined && lo >= hi) { err.textContent = 'Minimum: it must be under the Maximum.'; return; }
+    put(barKeep({ style: style.value as BarStyle, min: lo, max: hi, warn: w === 20 && !values.checked ? undefined : w, crit: c === 50 && !values.checked ? undefined : c, values: values.checked }));
+    d.close();
+  });
+  cancel.addEventListener('click', () => d.close());
+  remove.addEventListener('click', () => { put(null); d.close(); });
+  style.focus();
+}
 // editFilter: DBA Dash's Edit Filter (task PGRID B11) - the filter row's fields as one text, a line per column
 // (gridfilter.ts); Apply writes each line into its column's field and empties the others (a field left as it was is
 // not touched: the text applied unchanged changes nothing); a text it cannot read is refused in words naming the line,
@@ -849,9 +907,18 @@ export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | 
   if (frozen) out.push({ label: 'Unfreeze Column', act: then(() => save(t, { ...p, frozen: 0 })) });
   if (groupings.has(t)) out.push({ label: 'Ungroup', act: then(() => group(t, null)) });
   if (n !== undefined && hs[j].classList.contains('num')) {
-    const st = p.bars[n];
-    const pick = (to: BarStyle | null) => then(() => { const b = { ...p.bars }; if (to) b[n] = to; else delete b[n]; save(t, { ...p, bars: b }); });
-    out.push({ label: 'Data bar', sub: [...BAR_STYLES.map(([k, l]) => ({ label: l, checked: st === k, act: pick(k) })), { label: 'Remove', off: st ? undefined : `no data bar on ${n}`, act: pick(null) }] });
+    // Data bar (DBA Dash's submenu, task PGRID B14): the styles, Options..., Copy to All Numeric Columns (the look, each
+    // column on its own scale), Remove, Remove All Data Bars
+    const cur = barOf(p.bars[n]), st = cur?.style;
+    const pick = (to: BarStyle | null) => then(() => { const bs = { ...p.bars }; if (to) bs[n] = barKeep({ ...(cur ?? {}), style: to }); else delete bs[n]; save(t, { ...p, bars: bs }); });
+    const others = hs.map((h, k) => ({ h, k })).filter(x => x.k !== j && x.h.classList.contains('num') && !x.h.hasAttribute('data-gt-hidden'));
+    const anyBar = Object.keys(p.bars).some(b => ns.includes(b));
+    out.push({ label: 'Data bar', sub: [...BAR_STYLES.map(([k, l]) => ({ label: l, checked: st === k, act: pick(k) })),
+      { label: 'Options...', act: () => barOptions(t, n, back) },
+      { label: 'Copy to All Numeric Columns', off: !cur ? `no data bar on ${n}` : !others.length ? 'no other number column is shown' : undefined,
+        act: then(() => { const bs = { ...p.bars }; for (const x of others) bs[ns[x.k]] = barKeep({ style: cur!.style, warn: cur!.warn, crit: cur!.crit, values: cur!.values }); save(t, { ...p, bars: bs }); }) },
+      { label: 'Remove', off: st ? undefined : `no data bar on ${n}`, act: pick(null) },
+      { label: 'Remove All Data Bars', off: anyBar ? undefined : 'no data bar on this grid', act: then(() => save(t, { ...p, bars: {} })) }] });
   }
   // 7. the filters (a grid with a filter row): by the clicked value, by a selection in one column, any operator, clear
   out.push({ sep: true, label: '' });
