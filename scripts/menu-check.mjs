@@ -87,7 +87,7 @@
 //                     (number column 'sessions', text 'platform', unique 'name'), a dropped JSON file's viewer grid (a
 //                     modal dialog; the hostile fixture), slow.ts's own table, demo-onprem-sql01's Drives, a statements
 //                     grid, an empty one. Contracts: the block's head. Each case:
-//   G-menu            a sessions cell: Copy, Export Excel, Export file, Transpose, Select, Columns..., Row numbers, Data bar,
+//   G-menu            a sessions cell: Copy, Export Excel, Export file, Transpose, Select, Columns..., Row Headers, Data bar,
 //                     'Filter by value...', 'Exclude value...', All filters, Clear filters in that order, then 'Rows: n |
 //                     Cols: m' and '[sessions] Sum: ...'; Copy > Grid | Column | Cell | Row | Selected | As Markdown | As
 //                     JSON (DD's order), As Markdown > Standard | Prettified, As JSON > Compact | Prettified, Export file >
@@ -97,7 +97,7 @@
 //                     Like | Not like first); Clear filters off with the visible words 'no filter is set'
 //   G-select          Select > Column: n cells, the tools' line says so, the menu's last line 'Selected Cells: n (k
 //                     numeric) | Sum: ...'; Select > Row: the row's shown cells; a version cell: no Sum line, 'Rows: ...' last
-//   G-header          sessions' header: the grid-level items, Hide column / Freeze up to / Group by sessions, Data bar,
+//   G-header          sessions' header: the grid-level items, Row Headers, Hide column / Freeze Column / Group by sessions, Data bar,
 //                     its Sum line last; its Copy holds Grid, Column, Selected, As Markdown, As JSON (no Cell, no Row)
 //   G-copy            through a stubbed clipboard: Cell; Row ends with the row tab-separated; Column = the shown column;
 //                     Selected = a 2x2 rectangle with HTML beside it; Grid = the header and n rows; Markdown n+2 lines,
@@ -112,9 +112,9 @@
 //                     no N''; SQL Server: a BOM, IF OBJECT_ID('tempdb..#pgvigil_grid') ... DROP, [sessions], every string N''
 //   G-hidden          platform hidden: in no copy and no file
 //   G-order           sessions descending and '>0': Copy > Column and the CSV in that order
-//   G-rownum          Row numbers: a CSS counter, no cell added; kept after a reload; with it on, Hide platform hides
-//                     platform, Freeze up to sessions ends at sessions, Filter by value counts right; not in Copy > Grid or
-//                     the CSV; off again
+//   G-rownum          Row Headers > Show with Row Numbers (B07; 'Row numbers' before it): a CSS counter, no cell added;
+//                     kept after a reload; with it on, Hide platform hides platform, Freeze Column on sessions ends at
+//                     sessions, Filter by value counts right; not in Copy > Grid or the CSV; Row Headers > Hide: off again
 //   G-transpose       This row: 'Transposed ...' of the shown columns, name and value, with Copy; Selected rows (2): three
 //                     cells a row; Grid on a page over 50 rows: 50 values a row, the cap's reason, its Copy every row
 //   G-filters         Filter by value AND Exclude value: the rows by hand; the six operators from a prompt holding the
@@ -753,14 +753,14 @@ await guard('G-menu', async () => {
   const L = await gmOpen(gCell('sessions'));
   await shot('grid-cell-menu-light');   // S's picture (the retired case G wrote it)
   const top = (L[0] ?? []).map(x => x.label);
-  const wantTop = ['Copy', 'Export Excel', 'Export file', 'Transpose', 'Select', 'Columns...', 'Row numbers', 'Data bar', 'All filters', 'Clear filters'];
+  const wantTop = ['Copy', 'Export Excel', 'Export file', 'Transpose', 'Select', 'Columns...', 'Row Headers', 'Data bar', 'All filters', 'Clear filters'];
   const at = wantTop.map(w => top.indexOf(w)), ordered = at.every((x, i) => x >= 0 && (i === 0 || x > at[i - 1]));
   const fv = top.findIndex(x => x.startsWith('Filter by value')), xv = top.findIndex(x => x.startsWith('Exclude value'));
-  const subsOk = ['Copy', 'Export file', 'Transpose', 'Select', 'Data bar', 'All filters'].every(s => L[0]?.find(x => x.label === s)?.sub);
+  const subsOk = ['Copy', 'Export file', 'Transpose', 'Select', 'Row Headers', 'Data bar', 'All filters'].every(s => L[0]?.find(x => x.label === s)?.sub);
   const clear = L[0]?.find(x => x.label === 'Clear filters');
   const tail = top.slice(-2);
   const W = { Copy: ['Grid', 'Column', 'Cell', 'Row', 'Selected', 'As Markdown', 'As JSON'], 'Copy > As Markdown': ['Standard', 'Prettified'], 'Copy > As JSON': ['Compact', 'Prettified'],
-    'Export file': ['CSV', 'JSON', 'Markdown', 'HTML', 'SQL (INSERT) for PostgreSQL', 'SQL (INSERT) for SQL Server'], Transpose: ['This row', 'Selected rows', 'Grid'], Select: ['Row', 'Column', 'All'],
+    'Export file': ['CSV', 'JSON', 'Markdown', 'HTML', 'SQL (INSERT) for PostgreSQL', 'SQL (INSERT) for SQL Server'], Transpose: ['This row', 'Selected rows', 'Grid'], Select: ['Row', 'Column', 'All'], 'Row Headers': ['Hide', 'Show', 'Show with Row Numbers'],
     'Data bar': ['Behind value', 'Under value', 'Traffic light (higher is worse)', 'Traffic light (higher is better)', 'Remove'], 'All filters': ['=', '<>', '>', '<', '>=', '<='] };
   const got = {};
   for (const k of Object.keys(W)) got[k] = await gmSub(gCell('sessions'), ...k.split(' > '));
@@ -795,9 +795,9 @@ await guard('G-header', async () => {
   const th = `${GT}.querySelectorAll('thead tr:first-child th')[${await ev(gIx('sessions'))}]`;
   const H = await gmOpen(th), top = (H[0] ?? []).map(x => x.label);
   const copy = await gmSub(th, 'Copy');
-  const wantIn = ['Copy', 'Export Excel', 'Export file', 'Columns...', 'Row numbers', 'Hide column sessions', 'Group by sessions', 'Data bar', 'Clear filters'];
+  const wantIn = ['Copy', 'Export Excel', 'Export file', 'Columns...', 'Row Headers', 'Hide column sessions', 'Freeze Column', 'Group by sessions', 'Data bar', 'Clear filters'];
   const missing = wantIn.filter(w => !top.includes(w));
-  check('G-header', missing.length === 0 && top.some(x => x.startsWith('Freeze the columns up to sessions')) && top.some(x => /^Rows: /.test(x)) && /^\[sessions\] Sum: /.test(top[top.length - 1] ?? '')
+  check('G-header', missing.length === 0 && !top.some(x => x.startsWith('Freeze the columns up to')) && top.some(x => /^Rows: /.test(x)) && /^\[sessions\] Sum: /.test(top[top.length - 1] ?? '')
     && ['Grid', 'Column', 'Selected', 'As Markdown', 'As JSON'].every(x => copy?.includes(x)) && !copy?.includes('Cell') && !copy?.includes('Row'),
     `sessions' header menu: ${top.join(' / ') || '(no .tm-menu)'}${missing.length ? '; missing ' + missing.join(', ') : ''}; its Copy: ${JSON.stringify(copy)}`);
 });
@@ -913,7 +913,7 @@ await guard('G-order', async () => {
 await guard('G-rownum', async () => {
   await gFresh();
   const n = (await gCol('sessions')).length, cells0 = await ev(`${gRows}[0].children.length`), heads0 = (await gHeads()).length;
-  await gmOpen(gCell('sessions')); const on = await gmPick('Row numbers'); await sleep(300);
+  await gmOpen(gCell('sessions')); const on = await gmPick('Row Headers', 'Show with Row Numbers'); await sleep(300);
   // numbers drawn without a DOM column: a CSS counter on the row (no cell added)
   const look = () => ev(`(() => { const tr = ${gRows}[0]; if (!tr) return null; const xs = [tr, ...tr.children];
     return { cells: tr.children.length, counter: xs.some(x => /counter\\(/.test(getComputedStyle(x, '::before').content)), heads: [...${GT}.querySelectorAll('thead tr:first-child th')].length }; })()`);
@@ -923,7 +923,7 @@ await guard('G-rownum', async () => {
   // with the numbers on: Hide, Freeze and Filter reach the column they name
   await gmOpen(gCell('platform')); await gmPick('Hide column platform'); await sleep(300);
   const hiddenHead = await ev(`[...${GT}.querySelectorAll('thead tr:first-child th')].filter(h => h.hasAttribute('data-gt-hidden')).map(h => h.textContent.trim()).join(',')`);
-  await gmOpen(gCell('sessions')); const fz = await ev(`(() => { const b = [...document.querySelectorAll('.tm-menu button')].find(b => b.textContent.startsWith('Freeze the columns up to sessions')); b?.click(); return !!b; })()`); await sleep(300);
+  await gmOpen(gCell('sessions')); const fz = await gmPick('Freeze Column'); await sleep(300);
   // the frozen columns: the table's gt-f<n> classes (gridtools apply) - every header cell is sticky (the header row stays in
   // view), so 'position: sticky' cannot tell a frozen one (b3: it named the last column)
   const frozenLast = await ev(`(() => { const t = ${GT}, hs = [...t.querySelectorAll('thead tr:first-child th')]; const fs = [...t.classList].map(c => /^gt-f(\\d+)$/.exec(c)).filter(Boolean).map(m => Number(m[1])); return fs.length ? hs[Math.max(...fs) - 1]?.textContent.trim() ?? '' : ''; })()`);
@@ -931,7 +931,7 @@ await guard('G-rownum', async () => {
   await gmOpen(gCell('sessions')); await gmPick('Filter by value:'); await sleep(500); const fv = await gCol('sessions');
   const grid = await gmCopy(gCell('sessions'), 'Copy', 'Grid');
   const csv = await gmFile(gCell('sessions'), 'CSV', 'csv');
-  await gmOpen(gCell('sessions')); const off = await gmPick('Row numbers'); await sleep(300);
+  await gmOpen(gCell('sessions')); const off = await gmPick('Row Headers', 'Hide'); await sleep(300);
   const c = await look();
   await gReset();
   check('G-rownum', on && !!a && a.counter && a.cells === cells0 && a.heads === heads0 && !!b && b.counter && hiddenHead === 'platform' && fz && frozenLast === 'sessions' && fv.length === eq && fv.every(x => x === v)
@@ -1243,7 +1243,7 @@ await guard('G-mssql', async () => {
   } finally {
     await ev(before === '<none>' ? `localStorage.removeItem('pgvigil.drivesMetrics'); true` : `localStorage.setItem('pgvigil.drivesMetrics', ${JSON.stringify(before)}); true`);
   }
-  const wantTop = ['Copy', 'Export Excel', 'Export file', 'Transpose', 'Select', 'Columns...', 'Row numbers', 'All filters', 'Clear filters'];
+  const wantTop = ['Copy', 'Export Excel', 'Export file', 'Transpose', 'Select', 'Columns...', 'Row Headers', 'All filters', 'Clear filters'];
   check('G-mssql', wantTop.every(w => top.includes(w)), `demo-onprem-sql01's Drives grid (${pressed}): ${cellThere ? top.join(' / ') || '(no .tm-menu)' : `no grid cell on the page in 20 s (${cards} drive card(s) drawn)`}`);
 });
 

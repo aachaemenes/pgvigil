@@ -65,7 +65,7 @@
 #              row per grid row; 'Copy > As Markdown > Standard' a pipe table of rows + 2 lines; Ctrl+click on two numbers
 #              says '2 cells selected' with their sum, a plain click clears it; 'Group by platform' lists one group
 #              per platform, their rows adding up to the grid's; 'Data bar > Behind value' on failed draws a bar on each failed
-#              count above zero, the largest at 100 %; 'Freeze the columns up to platform' makes the first two sticky;
+#              count above zero, the largest at 100 %; 'Freeze Column' on platform makes the first two sticky;
 #              'Hide column platform' hides it, keeps the choice in localStorage and after a reload it is still
 #              hidden, frozen and barred; the workbook exported then has no platform column (one column fewer, the
 #              table too); 'Columns...' lists every column and 'Reset this grid' brings all back and forgets the choice
@@ -540,7 +540,7 @@ const tools = async () => {
   await choose('failed', 'Data bar > Behind value');
   const BARS = `(() => { const j = ${HS}.indexOf('failed'); return [...${T}.querySelectorAll(':scope > tbody > tr')].map(tr => { const td = tr.children[j]; return { t: td.textContent.trim(), bar: td.classList.contains('gt-bar'), share: td.style.getPropertyValue('--gt-share'), badge: !!td.querySelector('.badge') }; }); })()`;
   out.bars = await ev(BARS);
-  await choose('platform', 'Freeze the columns up to platform');
+  await choose('platform', 'Freeze Column');
   const FROZEN = `(() => { const t = ${T}; const tr = t.querySelector(':scope > tbody > tr'); return { on: t.hasAttribute('data-gt-frozen'), classes: [...t.classList].filter(c => /^gt-f/.test(c)).sort(), sticky: [0, 1, 2].map(j => getComputedStyle(tr.children[j]).position) }; })()`;
   out.frozen = await ev(FROZEN);
   await choose('platform', 'Hide column platform');
@@ -2344,7 +2344,7 @@ else:
     def bars_ok(bs): return len(bs) == len(g['cells']) and all(b['bar'] == (int(digits(b['t']) or 0) > 0) for b in bs) and any(b['share'] == '100%' for b in bs) and any(b['bar'] for b in bs)
     check(bars_ok(t['bars']), f"tools: 'Data bar > Behind value' on failed draws a bar on each failed count above zero, the largest at 100 % ({[(b['t'], b['share']) for b in t['bars'] if b['bar']][:4]})")
     fz = t['frozen']
-    check(fz['on'] and fz['classes'] == ['gt-f1', 'gt-f2'] and fz['sticky'][:2] == ['sticky', 'sticky'] and fz['sticky'][2] != 'sticky', f"tools: 'Freeze the columns up to platform' makes the first two columns sticky ({fz})")
+    check(fz['on'] and fz['classes'] == ['gt-f1', 'gt-f2'] and fz['sticky'][:2] == ['sticky', 'sticky'] and fz['sticky'][2] != 'sticky', f"tools: 'Freeze Column' on platform makes the first two columns sticky ({fz})")
     hd = t['hidden']
     check(hd['marked'] == 1 and hd['th'] == 'none' and hd['td'] == 'none' and len(hd['keys']) == 1 and hd['keys'][0].startswith('pgvigil.grid.backups.'),
           f"tools: 'Hide column platform' hides the header and the cells and keeps the choice in localStorage ({hd})")

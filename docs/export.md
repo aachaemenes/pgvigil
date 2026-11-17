@@ -189,8 +189,10 @@ dialog. In DBA Dash's order:
 - **Transpose** > **This row**, **Selected rows**, **Grid**: the rows as columns in a dialog, with Copy; the grid form
   shows its first 50 rows and says so, its Copy takes every row.
 - **Select** > **Row**, **Column**, **All**; **Clear the selection**.
-- **Columns...** (the chooser below), **Row numbers** (drawn before each row, never copied or exported), **Hide
-  column**, **Freeze the columns up to** this one, **Unfreeze**, **Group by**, **Ungroup**, **Data bar** > **Behind
+- **Columns...** (the chooser below), **Row Headers** > **Hide**, **Show**, **Show with Row Numbers** (a header before
+  each row, with its number in the third; never copied or exported; a browser that kept 'Row numbers' on opens with the
+  numbers), **Hide column**, **Freeze Column** (this column and every shown one before it; ticked while it is frozen, a
+  click then unfreezes it and the ones after it), **Unfreeze Column**, **Group by**, **Ungroup**, **Data bar** > **Behind
   value**, **Under value**, **Traffic light (higher is worse)**, **Traffic light (higher is better)**, **Remove**.
 - **Filter by value** and **Exclude value** (the clicked value, exactly), **Filter by these values** / **Exclude these
   values** (cells selected in one column), **All filters** > Like / Not like (a text column), `=` `<>` `>` `<` `>=` `<=`

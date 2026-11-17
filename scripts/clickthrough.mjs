@@ -392,18 +392,20 @@ const MARK = `(() => { window.__walk = 1; window.__walkCopied = 0; try { const c
   if (!document.__walk) { const ex = document.execCommand.bind(document); document.execCommand = (k, ...a) => { if (k === 'copy') window.__walkCopied++; return ex(k, ...a); }; document.__walk = 1; } })()`;
 // the grid's own controls (the same component on every page): each at most GRID_MAX times a driver
 const GRID_MAX = 3;
-const gridKey = sig => { const m = /^(menu B (?:Freeze the columns up to|Filter by value|Exclude value|Hide the column|Sort|Copy|Rows:|Selected Cells|Clear filters|Group by)|B Filter |S The aggregate of each number column|S Group by a column|S Select the cells of a column|B Show every column|CTX)/.exec(sig); return m ? m[1] : null; };
+const gridKey = sig => { const m = /^(menu B (?:Freeze Column|Unfreeze Column|Filter by value|Exclude value|Hide the column|Sort|Copy|Rows:|Selected Cells|Clear filters|Group by)|B Filter |S The aggregate of each number column|S Group by a column|S Select the cells of a column|CTX)/.exec(sig); return m ? m[1] : null; };
 const gridSeen = new Map();
 // the grid's menu (CTX: a right-click on a grid's first cell opens GM's .tm-menu, web/src/gridtools.ts gridMenu): each
 // item counted by its own path (GRID_MAX a driver), its varying words folded (a column's name, a cell's value, a tick,
 // the submenu's arrow); what an item opens that is not the menu (the Columns... panel's controls) by its first word
 // ('Icheckbox', 'B'; a gridKey control by its own key), as before.
 // One 'CTX menu' count for every item reached three items a driver and left the rest unclicked (the GM walk rows)
-const gmWords = sig => !/^menu /.test(sig) ? (gridKey(sig) ?? sig.replace(/\s.*$/, ''))
-  : sig.replace(/▸$/, '').replace(/^menu B ✓ /, 'menu B ').replace(/^(menu B (?:Hide column|Freeze the columns up to|Group by|Filter by value|Exclude value)\b).*/, '$1').replace(/^menu B \[.*\] .*/, 'menu B [column] statistics');
-for (const [got, want] of [[gmWords('menu B Copy▸'), 'menu B Copy'], [gmWords('menu B ✓ Row numbers'), 'menu B Row numbers'], [gmWords('menu B Hide column Free space'), 'menu B Hide column'],
+// (the chooser's All, None and Toggle selected each keyed by its own words, as 'Show every column' was before task PGRID
+// B05: a bare 'B' would share one count with every other button of the panel)
+const gmWords = sig => !/^menu /.test(sig) ? (gridKey(sig) ?? (/^B (All|None|Toggle selected)$/.test(sig) ? sig : sig.replace(/\s.*$/, '')))
+  : sig.replace(/▸$/, '').replace(/^menu B ✓ /, 'menu B ').replace(/^(menu B (?:Hide column|Freeze Column|Group by|Filter by value|Exclude value)\b).*/, '$1').replace(/^menu B \[.*\] .*/, 'menu B [column] statistics');
+for (const [got, want] of [[gmWords('menu B Copy▸'), 'menu B Copy'], [gmWords('menu B ✓ Show with Row Numbers'), 'menu B Show with Row Numbers'], [gmWords('menu B ✓ Freeze Column'), 'menu B Freeze Column'], [gmWords('menu B Hide column Free space'), 'menu B Hide column'],
   [gmWords('menu B Filter by value: OK'), 'menu B Filter by value'], [gmWords('menu B [Free] Count: #| Sum: #'), 'menu B [column] statistics'], [gmWords('menu B Rows: #| Cols: #'), 'menu B Rows: #| Cols: #'],
-  [gmWords('Icheckbox Free space'), 'Icheckbox'], [gmWords('B All'), 'B All']]) {
+  [gmWords('Icheckbox Free space'), 'Icheckbox'], [gmWords('B All'), 'B All'], [gmWords('B Toggle selected'), 'B Toggle selected'], [gmWords('B Reset this grid'), 'B']]) {
   if (got !== want) { console.error(`the grid menu's count fixture: '${got}', want '${want}'`); process.exit(2); }
 }
 const pagesOf = shard.pages;

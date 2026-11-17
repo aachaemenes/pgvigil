@@ -18,11 +18,12 @@ import { MenuItem, gridLines, showTreeMenu } from './treemenu';
 import { Grid, htmlDoc, json, markdown, sqlScript, tsv } from './gridwriters';
 
 // bars: a column's data bar by its name - behind the value (the default, the only style before task GM: a stored list of
-// names loads as it), under the value, or a traffic light with the high values the worse or the better; rownum: the row
-// numbers drawn (a counter, no column); added: the rows' keys the page does not draw, drawn as columns at the grid's
+// names loads as it), under the value, or a traffic light with the high values the worse or the better; the row
+// headers (DBA Dash's Row Headers, task PGRID B07): rownum - shown with the row numbers (a counter, no column; a choice
+// saved before B07 as 'Row numbers' on opens so), rowhead - shown with no number, neither - hidden; added: the rows' keys the page does not draw, drawn as columns at the grid's
 // end (the chooser's undrawn data columns, task PGRID B05) - a key no longer offered is kept here and drawn never
 type BarStyle = 'behind' | 'under' | 'worse' | 'better';
-interface Prefs { hidden: string[]; frozen: number; bars: Record<string, BarStyle>; rownum?: boolean; added?: string[] }
+interface Prefs { hidden: string[]; frozen: number; bars: Record<string, BarStyle>; rownum?: boolean; rowhead?: boolean; added?: string[] }
 const BAR_STYLES: [BarStyle, string][] = [['behind', 'Behind value'], ['under', 'Under value'], ['worse', 'Traffic light (higher is worse)'], ['better', 'Traffic light (higher is better)']];
 type Agg = 'sum' | 'avg' | 'min' | 'max';
 interface Grouping { col: string; agg: Agg; box: HTMLElement }
@@ -139,7 +140,7 @@ function load(t: HTMLTableElement): Prefs {
     const styles = new Set(BAR_STYLES.map(x => x[0]));
     const bars: Record<string, BarStyle> = Array.isArray(p.bars) ? Object.fromEntries(list(p.bars).map(n => [n, 'behind' as BarStyle]))
       : p.bars && typeof p.bars === 'object' ? Object.fromEntries(Object.entries(p.bars).filter(([, v]) => styles.has(v as BarStyle))) as Record<string, BarStyle> : {};
-    return { hidden: list(p.hidden), frozen: Math.max(0, Math.min(MAX_FROZEN, Math.floor(Number(p.frozen) || 0))), bars, rownum: p.rownum === true, added: list(p.added) };
+    return { hidden: list(p.hidden), frozen: Math.max(0, Math.min(MAX_FROZEN, Math.floor(Number(p.frozen) || 0))), bars, rownum: p.rownum === true, rowhead: p.rowhead === true && p.rownum !== true, added: list(p.added) };
   } catch { return none; }   // a value another version wrote
 }
 function save(t: HTMLTableElement, p: Prefs) {
@@ -150,7 +151,7 @@ function save(t: HTMLTableElement, p: Prefs) {
     apply(t, p);
     return;
   }
-  const k = keyOf(t), empty = !p.hidden.length && !p.frozen && !Object.keys(p.bars).length && !p.rownum && !p.added?.length;
+  const k = keyOf(t), empty = !p.hidden.length && !p.frozen && !Object.keys(p.bars).length && !p.rownum && !p.rowhead && !p.added?.length;
   if (empty) mem.delete(k); else mem.set(k, p);
   try {
     if (empty) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(p));
@@ -211,6 +212,7 @@ function apply(t: HTMLTableElement, p: Prefs = load(t)) {
   if (wrap) wrap.style.isolation = freeze.length ? 'isolate' : '';
   if (freeze.length) sizes?.observe(t); else sizes?.unobserve(t);
   t.classList.toggle('gt-rownum', !!p.rownum);
+  t.classList.toggle('gt-rowhead', !p.rownum && !!p.rowhead);
   bars(t, p, ns);
 }
 
@@ -512,7 +514,7 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
     to?.focus();
   };
   // a bar ticked here keeps its style (behind the value when new); the row numbers stay as they are
-  const now = (): Prefs => ({ hidden: [...hidden], frozen: Number(freeze.value) || 0, bars: Object.fromEntries([...barsOn].map(n => [n, p.bars[n] ?? 'behind' as BarStyle])), rownum: p.rownum, added: [...added] });
+  const now = (): Prefs => ({ hidden: [...hidden], frozen: Number(freeze.value) || 0, bars: Object.fromEntries([...barsOn].map(n => [n, p.bars[n] ?? 'behind' as BarStyle])), rownum: p.rownum, rowhead: p.rowhead, added: [...added] });
   const said = el('span', { class: 'meta', role: 'status' });
   const list = el('div', { class: 'gt-cols', role: 'listbox', 'aria-multiselectable': 'true', tabindex: '0',
     'aria-label': 'The columns: the arrows move, Space picks a name, Shift with an arrow picks a range, Ctrl+A picks every name; Toggle selected ticks or unticks the picked names' });
@@ -599,7 +601,7 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
     keep(); ticks(); save(t, now()); offState();
   });
   const reset = el('button', { type: 'button' }, 'Reset this grid');
-  reset.addEventListener('click', () => { hidden.clear(); barsOn.clear(); added.clear(); freeze.value = '0'; save(t, { ...now(), rownum: false, added: [] }); group(t, null); pickColumn(t, -1); chooser(t, back); });
+  reset.addEventListener('click', () => { hidden.clear(); barsOn.clear(); added.clear(); freeze.value = '0'; save(t, { ...now(), rownum: false, rowhead: false, added: [] }); group(t, null); pickColumn(t, -1); chooser(t, back); });
   const done = el('button', { type: 'button' }, 'Close');
   done.addEventListener('click', close);
   box.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } });
@@ -608,7 +610,7 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   const offNote = el('span', { class: 'off-reason' });
   function offState() {
     const allShown = hidden.size === 0, onlyFirst = own.every(x => x.n === first || hidden.has(x.n)) && added.size === 0;
-    const plain = allShown && barsOn.size === 0 && added.size === 0 && (Number(freeze.value) || 0) === 0 && !groupings.get(t) && picked(t).length === 0 && !p.rownum;
+    const plain = allShown && barsOn.size === 0 && added.size === 0 && (Number(freeze.value) || 0) === 0 && !groupings.get(t) && picked(t).length === 0 && !p.rownum && !p.rowhead;
     const why = { all: allShown ? 'every column is shown' : null, none: onlyFirst ? 'only the first column is shown' : null,
       toggle: picks.size ? null : 'no name is picked in the list', reset: plain ? 'nothing in this grid is changed from its default' : null };
     offNote.textContent = Object.values(why).filter(Boolean).join('; ');
@@ -770,16 +772,25 @@ export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | 
   if (lines.select.length) out.push({ label: 'Select', sub: lines.select });
   if (sel.length) out.push({ label: 'Clear the selection', act: () => clear(t) });
   // 6. the columns: the chooser, the row numbers, hide / freeze / group, the data bar
-  out.push({ sep: true, label: '' }, { label: 'Columns...', act: () => chooser(t, back) }, { label: 'Row numbers', checked: !!p.rownum, act: then(() => save(t, { ...p, rownum: !p.rownum })) });
+  // Row Headers (DBA Dash's: Hide, Show, Show with Row Numbers): the one in force ticked and off with its words (a click
+  // there would change nothing)
+  const rh = p.rownum ? 'num' : p.rowhead ? 'show' : 'hide';
+  const rhs: [string, string, string][] = [['hide', 'Hide', 'the row headers are hidden now'], ['show', 'Show', 'the row headers are shown now'], ['num', 'Show with Row Numbers', 'the row numbers are shown now']];
+  out.push({ sep: true, label: '' }, { label: 'Columns...', act: () => chooser(t, back) },
+    { label: 'Row Headers', sub: rhs.map(([k, l, now]) => ({ label: l, checked: rh === k, off: rh === k ? now : undefined, act: then(() => save(t, { ...p, rownum: k === 'num', rowhead: k === 'show' })) })) });
   const visible = hs.filter(h => !h.hasAttribute('data-gt-hidden')).length;
   const frozen = [...t.classList].filter(c => /^gt-f\d+$/.test(c)).length;
   if (n !== undefined) {
     if (visible > 1) out.push({ label: `Hide column ${n}`, act: then(() => save(t, { ...p, hidden: [...new Set([...p.hidden, n])] })) });
-    const upTo = hs.slice(0, j + 1).filter(h => !h.hasAttribute('data-gt-hidden')).length;
-    if (j < FREEZE_POS && upTo <= MAX_FROZEN && upTo < visible && frozen !== upTo) out.push({ label: `Freeze the columns up to ${n}`, act: then(() => save(t, { ...p, frozen: upTo })) });
+    // Freeze Column (DBA Dash's, task PGRID B09): this column and every shown one before it; ticked while this column
+    // is frozen, and then a click unfreezes it and every one after it (as DBA Dash's column.Frozen = false)
+    const upTo = hs.slice(0, j + 1).filter(h => !h.hasAttribute('data-gt-hidden')).length, isFrozen = frozen >= upTo;
+    const cannot = isFrozen ? undefined : j >= FREEZE_POS || upTo > MAX_FROZEN ? `only the first ${MAX_FROZEN} columns can be frozen`
+      : upTo >= visible ? 'the last column shown is never frozen: the frozen ones stay while the rest scroll' : undefined;
+    out.push({ label: 'Freeze Column', checked: isFrozen, off: cannot, act: then(() => save(t, { ...p, frozen: isFrozen ? upTo - 1 : upTo })) });
     if (groupings.get(t)?.col !== n) out.push({ label: `Group by ${n}`, act: then(() => group(t, n)) });
   }
-  if (frozen) out.push({ label: 'Unfreeze the columns', act: then(() => save(t, { ...p, frozen: 0 })) });
+  if (frozen) out.push({ label: 'Unfreeze Column', act: then(() => save(t, { ...p, frozen: 0 })) });
   if (groupings.has(t)) out.push({ label: 'Ungroup', act: then(() => group(t, null)) });
   if (n !== undefined && hs[j].classList.contains('num')) {
     const st = p.bars[n];
@@ -852,6 +863,7 @@ const css = () => {
     + '.grid td.gt-bar.gt-bar-under{background-size:100% 4px;background-position:0 100%;background-repeat:no-repeat}'
     + '.grid td.gt-tl-r{background-color:rgba(217,48,37,.3)}.grid td.gt-tl-a{background-color:rgba(242,153,0,.3)}.grid td.gt-tl-g{background-color:rgba(30,142,62,.3)}'
     // the row numbers: a counter in a cell the CSS draws before each row (no column: hide, freeze and filter keep theirs)
+    + 'table.grid.gt-rowhead > tbody > tr:not(.trend-row)::before,table.grid.gt-rowhead > thead > tr::before{content:"";display:table-cell;padding:.2rem .5rem;background:var(--line)}'
     + 'table.grid.gt-rownum > tbody{counter-reset:gtrow}table.grid.gt-rownum > tbody > tr:not(.trend-row){counter-increment:gtrow}'
     + 'table.grid.gt-rownum > tbody > tr:not(.trend-row)::before{content:counter(gtrow);display:table-cell;padding:.2rem .5rem;color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}'
     + 'table.grid.gt-rownum > thead > tr::before{content:"";display:table-cell}table.grid.gt-rownum > thead > tr:first-child::before{content:"#";color:var(--muted);padding:.2rem .5rem}'
