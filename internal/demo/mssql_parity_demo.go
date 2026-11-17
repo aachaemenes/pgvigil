@@ -202,8 +202,74 @@ func (g *Gen) mssqlParityBatches(t time.Time, first bool) []Batch {
 	}
 	if first || t.Minute()%5 == 0 || t.Equal(g.end) {
 		out = append(out, Batch{Collection: "mssql_funcstats", At: t, Rows: g.mssqlFuncStatRows(t)})
+		// the database page's Query Stats (the plan cache cut to Sales) and its Service Broker tab (P25 row 73)
+		out = append(out, Batch{Collection: "mssql_plancache", At: t, Rows: g.mssqlPlanCacheRows(t)})
+		out = append(out, Batch{Collection: "mssql_service_broker", At: t, Rows: g.mssqlBrokerRows(t)})
 	}
 	return out
+}
+
+// mssqlPlanCacheRows is the mssql_plancache payload at t (said as demo data): the state row, -sql01's two databases,
+// and three statements of Sales' procedures with their counters since their plans were compiled at the server's
+// start, rising with the day's load - two reads make the first difference (0092's rule); their texts once an hour.
+func (g *Gen) mssqlPlanCacheRows(t time.Time) []Row {
+	start := g.mssqlStart()
+	local := func(x time.Time) string { return x.UTC().Format("2006-01-02T15:04:05") }
+	rows := []Row{{"kind": "state", "server_utc": t.UTC().Format(time.RFC3339), "server_start": start.UTC().Format(time.RFC3339),
+		"server_local": local(t), "capped": false},
+		{"kind": "database", "database_id": 5, "database_name": "Sales", "database_state": "ONLINE", "query_store_on": 1},
+		{"kind": "database", "database_id": 6, "database_name": "Ledger", "database_state": "ONLINE", "query_store_on": 0}}
+	stmts := []struct {
+		key, object, query    string
+		start, end            int
+		rate, workerUS, reads float64
+	}{
+		{"0x7A1F3C2B9D4E5A60", "dbo.usp_GetOrders", "SELECT o.OrderId, o.CustomerId, o.Total FROM dbo.Orders AS o WHERE o.CustomerId = @CustomerId AND o.Status = @Status", 120, 640, 30, 850, 120},
+		{"0x2C9B8E1D4F6A7B03", "dbo.usp_AddOrder", "INSERT INTO dbo.Orders (CustomerId, Total, Status) VALUES (@CustomerId, @Total, N'open')", 96, 410, 8, 320, 14},
+		{"0x5E3A7D9C1B2F4E86", "dbo.usp_MonthEnd", "SELECT c.CustomerId, SUM(o.Total) AS Total FROM dbo.Orders AS o JOIN dbo.Customers AS c ON c.CustomerId = o.CustomerId GROUP BY c.CustomerId", 64, 980, 0.2, 240000, 52000},
+	}
+	secs := t.Sub(start).Seconds()
+	for i, st := range stmts {
+		n := int64(st.rate * secs * 0.5 * g.Spec.Load)
+		worker := int64(float64(n) * st.workerUS)
+		rows = append(rows, Row{"kind": "stmt", "plan_handle": fmt.Sprintf("0x0600050%07X%s", 4100+i, mssqlPlanTail[:32]), "stmt_start": st.start, "stmt_end": st.end,
+			"creation_time": local(start), "database_id": 5, "database_name": "Sales", "query_key": st.key, "execution_count": n,
+			"worker_us": worker, "elapsed_us": worker + worker/4, "logical_reads": int64(float64(n) * st.reads), "physical_reads": int64(float64(n) * st.reads / 50),
+			"logical_writes": int64(float64(n) * 0.5), "row_count": n * 3, "spills": 0, "max_grant_kb": 1024, "max_used_grant_kb": 512, "max_dop": 1,
+			"last_execution": local(t.Add(-30 * time.Second)), "last_elapsed_us": int64(st.workerUS * 1.25)})
+		if t.Minute() == 0 || t.Equal(g.start) {
+			rows = append(rows, Row{"kind": "text", "query_key": st.key, "database_id": 5, "object_name": st.object, "query": st.query})
+		}
+	}
+	return rows
+}
+
+// mssqlBrokerRows is the mssql_service_broker payload at t (said as demo data): Sales visited, OrderQueue draining and
+// filling with the hour, AuditQueue receive-disabled (as a poison message leaves it) with its messages kept, one
+// transmission group to a remote service, the conversations, no endpoint, and the Broker counters rising.
+func (g *Gen) mssqlBrokerRows(t time.Time) []Row {
+	depth := int64(t.Minute() % 20)
+	secs := int64(t.Sub(g.mssqlStart()).Seconds())
+	return []Row{{"kind": "database", "database_name": "Sales"},
+		{"kind": "queue", "database_name": "Sales", "schema_name": "dbo", "queue_name": "OrderQueue", "object_id": 1093578934,
+			"is_receive_enabled": true, "is_enqueue_enabled": true, "is_retention_enabled": false, "is_activation_enabled": true,
+			"is_poison_message_handling_enabled": true, "activation_procedure": "[Sales].[dbo].[usp_ProcessOrderQueue]", "activation_procedure_exists": true,
+			"max_readers": 4, "message_count": depth, "activated_tasks": 2, "monitor_state": "RECEIVES_OCCURRING", "monitor_tasks_waiting": 0,
+			"monitor_last_activated_time": t.Add(-time.Minute).UTC().Format(time.RFC3339), "oldest_message_time": t.Add(-time.Duration(depth) * time.Second).UTC().Format(time.RFC3339)},
+		{"kind": "queue", "database_name": "Sales", "schema_name": "dbo", "queue_name": "AuditQueue", "object_id": 1109579001,
+			"is_receive_enabled": false, "is_enqueue_enabled": true, "is_retention_enabled": false, "is_activation_enabled": true,
+			"is_poison_message_handling_enabled": true, "activation_procedure": "[Sales].[dbo].[usp_ProcessAudit]", "activation_procedure_exists": true,
+			"max_readers": 1, "message_count": 37, "activated_tasks": 0, "monitor_state": "INACTIVE", "monitor_tasks_waiting": 0,
+			"oldest_message_time": g.end.Add(-6 * time.Hour).UTC().Format(time.RFC3339)},
+		{"kind": "transmission", "database_name": "Sales", "to_service_name": "//ledger/post", "transmission_status": "Connection attempt failed with error: '10061(No connection could be made because the target machine actively refused it.)'.",
+			"message_count": 12, "oldest_enqueue_time": g.end.Add(-2 * time.Hour).UTC().Format(time.RFC3339)},
+		{"kind": "conversation", "database_name": "Sales", "state": "CO", "conversation_count": 18},
+		{"kind": "conversation", "database_name": "Sales", "state": "DI", "conversation_count": 3},
+		{"kind": "endpoints_read"},
+		{"kind": "counter", "object": "Broker Statistics", "instance_name": "", "counter_name": "SQL SEND Total", "cntr_value": secs / 3},
+		{"kind": "counter", "object": "Broker Statistics", "instance_name": "", "counter_name": "SQL RECEIVE Total", "cntr_value": secs/3 - depth},
+		{"kind": "counter", "object": "Broker Statistics", "instance_name": "", "counter_name": "Enqueued Messages Total", "cntr_value": secs / 3},
+	}
 }
 
 // mssqlScopedRows is sys.database_scoped_configurations of Sales and Ledger: Sales' MAXDOP set from 0 to 4 30 hours
