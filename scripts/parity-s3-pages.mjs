@@ -44,6 +44,14 @@ const pages = [
   ['azureserver-objexec', `#/azureserver?server=${srv}&ntab=objexec`],
   ['azureserver-running', `#/azureserver?server=${srv}&ntab=running`],
   ['azurepool-dbspace', `#/azurepool?server=${srv}&pool=${pool}&ntab=dbspace`],
+  // OBJ, the object page (DBA Dash's object window): -sql01's dbo.usp_GetOrders on its tabs with data (its statistics,
+  // its plan cache statements, its schema history), and usp_SearchOrders' slow completions (not in the store: matched by
+  // name). Not walked: Running Queries (words until qsdd-pgtwin's object column), Query Store (a link), the PostgreSQL
+  // twin #/pgfunction (the demo seeds no pg_stat_user_functions rows)
+  ['object-objexec', `#/mssqlobject?i=${sql01}&db=Sales&obj=dbo.usp_GetOrders&otab=objexec`],
+  ['object-querystats', `#/mssqlobject?i=${sql01}&db=Sales&obj=dbo.usp_GetOrders&otab=querystats`],
+  ['object-schema', `#/mssqlobject?i=${sql01}&db=Sales&obj=dbo.usp_GetOrders&otab=schema`],
+  ['object-slow', `#/mssqlobject?i=${sql01}&db=Sales&obj=usp_SearchOrders&otab=slow`],
 ];
 
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();

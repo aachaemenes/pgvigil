@@ -302,6 +302,8 @@ func (g *Gen) mssqlParityBatches(t time.Time, first bool) []Batch {
 	}
 	if first || t.Minute()%5 == 0 || t.Equal(g.end) {
 		out = append(out, Batch{Collection: "mssql_funcstats", At: t, Rows: g.mssqlFuncStatRows(t)})
+		// the object page (OBJ): the procedures the plan cache's texts name, with their execution statistics
+		out = append(out, Batch{Collection: "mssql_procstats", At: t, Rows: g.mssqlProcStatRows(t)})
 		// the database page's Query Stats (the plan cache cut to Sales) and its Service Broker tab (P25 row 73)
 		out = append(out, Batch{Collection: "mssql_plancache", At: t, Rows: g.mssqlPlanCacheRows(t)})
 		out = append(out, Batch{Collection: "mssql_service_broker", At: t, Rows: g.mssqlBrokerRows(t)})
@@ -469,6 +471,34 @@ func (g *Gen) mssqlSchemaRows(t time.Time) []Row {
 		out = append(out, objs...)
 	}
 	return append(out, Row{"kind": "end"})
+}
+
+// mssqlProcStatRows is the mssql_procstats payload at t (said as demo data; the object page, OBJ): the state row and the
+// three Sales procedures the plan cache's texts name (mssqlPlanCacheRows), their counters since their plans were cached
+// (at the server's start), rising with the day's load.
+func (g *Gen) mssqlProcStatRows(t time.Time) []Row {
+	cached := g.mssqlStart()
+	rows := []Row{{"kind": "state", "server_utc": t.UTC().Format(time.RFC3339), "server_start": cached.UTC().Format(time.RFC3339),
+		"server_local": t.UTC().Format("2006-01-02T15:04:05"), "capped": false}}
+	objs := []struct {
+		name                  string
+		id                    int
+		rate, workerUS, reads float64
+	}{
+		{"usp_GetOrders", 965578478, 2, 640, 850},
+		{"usp_AddOrder", 981578535, 1.6, 410, 320},
+		{"usp_MonthEnd", 997578592, 0.05, 980000, 120000},
+	}
+	secs := t.Sub(cached).Seconds()
+	for _, o := range objs {
+		n := int64(o.rate * secs * 0.5 * g.Spec.Load)
+		worker := int64(float64(n) * o.workerUS)
+		rows = append(rows, Row{"kind": "proc", "plan_handle": fmt.Sprintf("0x05000500%08X%s", o.id, mssqlPlanTail[:32]), "cached_time": cached.UTC().Format(time.RFC3339),
+			"database_id": 5, "object_id": o.id, "database_name": "Sales", "schema_name": "dbo", "object_name": o.name, "type_desc": "SQL_STORED_PROCEDURE",
+			"execution_count": n, "worker_us": worker, "elapsed_us": worker + worker/4, "logical_reads": int64(float64(n) * o.reads),
+			"physical_reads": int64(float64(n)*o.reads) / 300, "logical_writes": n / 20, "spills": 0})
+	}
+	return rows
 }
 
 // mssqlFuncStatRows is the mssql_funcstats payload at t: the state row and, for two scalar functions and a trigger of
