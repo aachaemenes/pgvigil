@@ -6,7 +6,6 @@
 // logical server's or elastic pool's tab, DBA Dash's one grid with an instance column) part=objects with instances=.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
-import { mssqlDbLink } from './mssql_db';
 import { mssqlObjectCell, mssqlObjectHref, mssqlObjectName } from './mssql_object';
 import { hashParam } from './dbinfo';
 import { Col, el, errorBox, fmtNum, grid } from './ui';
@@ -68,8 +67,6 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
       if (mine !== seq) return;
       // a row's database page: on a node's list, the row's own instance
       const inst = (r: Row) => ids ? Number(r.instance_id) : ctx.instance;
-      const link = (r: Row, tab: string, text: string, why: string) =>
-        el('a', { href: mssqlDbLink(ctx, String(r.database), tab, inst(r)), title: why }, text);
       const objName = (r: Row) => mssqlObjectName(r.schema_name, r.object_name);
       const cols: Col[] = [
         ...(ids ? [{ key: 'instance', label: 'database (instance)' }] : []),
@@ -90,7 +87,8 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
         { key: 'logical_writes', label: 'writes', num: true }, { key: 'avg_logical_writes', label: 'avg writes', num: true, fmt: num3 },
         // DBA Dash's Query Stats link (F15 / E6): the object's own statements, on its page's Query Stats tab
         { key: 'qs_link', label: 'Query Stats', fmt: (_, r) => r.object_name == null ? '' : el('a', { href: mssqlObjectHref(ctx, String(r.database), objName(r), 'querystats', inst(r)), title: `the plan cache's statements of ${objName(r)}` }, 'Query Stats') },
-        { key: 'qstore_link', label: 'Query Store', fmt: (_, r) => link(r, 'topqueries', 'Query Store', `the Query Store's top queries of ${String(r.database)}`) },
+        // control audit E7: the object's own Query Store tab (its Top Queries cut to it), as Query Stats opens its statements
+        { key: 'qstore_link', label: 'Query Store', fmt: (_, r) => r.object_name == null ? '' : el('a', { href: mssqlObjectHref(ctx, String(r.database), objName(r), 'qs', inst(r)), title: `the Query Store's top queries of ${objName(r)}` }, 'Query Store') },
       ];
       const rows = rowsOf(d.objects);
       body.replaceChildren(...(rows.length >= 2000 ? [el('p', { class: 'meta' }, 'The first 2,000 by total duration: a type or a search narrows the list.')] : []),
