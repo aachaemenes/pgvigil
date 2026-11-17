@@ -12,3 +12,23 @@ index f372f4dc..6267a6c8 100644
  | The default of every sys.configurations option (the #ConfigurationDefaults table) and sp_Blitz's CheckIDs, as data; the database options its #DatabaseDefaults table holds off, as rules; the notes on global trace flags (CheckID 74), in this project's words | SQL Server First Responder Kit 8.34, sp_Blitz.sql | MIT, Copyright (c) 2022 Brent Ozar Unlimited; portions of sp_Blitz Copyright Microsoft (tigertoolbox, MIT) | internal/mssql/checks.go (configDefaultList, traceFlagNotes), internal/mssql/dboptions.go (databaseRules) |
  | The catalogue of SQL Server builds 2016-2025 with their release and support end dates and each build's page (its [Url]), as data | SQL Server First Responder Kit 8.34, SqlServerVersions.sql (the script by Josh Darnell, SqlServerVersionScript, MIT) | MIT, Copyright (c) 2022 Brent Ozar Unlimited; Copyright for SqlServerVersionScript held by Josh Darnell | internal/mssql/checks.go (buildCatalogue, BuildDocs) |
  | The waits per core per minute figure (its formula and its 180 flag) and the 27 wait types its per-core list leaves out beyond sp_BlitzFirst's Ignorable ones, as data | SQLMonitor (github.com/imajaydwivedi/SQLMonitor) at de87d37: DDLs/SCH-usp_waits_per_core_per_minute.sql, DDLs/SCH-Create-All-Objects.sql (BlitzFirst_WaitStats_Categories) | MIT, Copyright (c) 2022 Ajay Dwivedi | internal/repo/sql/0152_mssql_counters.sql (mssql_wait_percore_ignored, mssql_wait_core_points, mssql_wait_core_summary), internal/repo/sql/0153_mssql_counter_checks.sql (the seed) |
+diff --git i/internal/community/kits/ports.json w/internal/community/kits/ports.json
+index ab5f21e5..115420f5 100644
+--- i/internal/community/kits/ports.json
++++ w/internal/community/kits/ports.json
+@@ -1841,5 +1841,15 @@
+     "items": [
+       "5000"
+     ]
++  },
++  {
++    "name": "quickieCacheDiagnostics",
++    "go_file": "internal/repo/sql/0342_mssql_cache_spread.sql",
++    "repo": "erikdarlingdata/DarlingData",
++    "path": "Install-All/DarlingData.sql",
++    "follows": "sp_QuickieCache 1.11 (20261101), its Step 5 diagnostics: row count variance, parameter sniffing by CPU and by physical reads, wasteful grant",
++    "begin": "Row count variance: huge gap between min and max rows",
++    "end": "Spilling queries",
++    "sha256": "120ebca6cce04ef75d0671726b7d5d227021ef8e91977aa2f2e26677822ead88"
+   }
+ ]
