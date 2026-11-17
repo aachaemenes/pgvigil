@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -430,6 +431,19 @@ SELECT o.kind, ` + objCols + `, o.period_secs
  ORDER BY o.duration_ms DESC NULLS LAST, o.database, o.object_name, o.object_id
  LIMIT 2000`
 
+// sqlMSSQLNodeObjects: Object Execution over a node's databases (P25 (i): DBA Dash's logical server and elastic pool
+// Object Execution, one grid with an instance column - the lead's Q2 (a)): sqlMSSQLObjects run for each id of $1 (an
+// int[]: the node's Azure SQL Databases, each an instance of its own) through a lateral join, its own $1 the id, the
+// longest total duration first over the whole list; $2 / $3 the window, $4 a database id (NULL here), $5 the kinds,
+// $6 the search, as sqlMSSQLObjects.
+var sqlMSSQLNodeObjects = `
+SELECT i.instance_id, i.name AS instance, o.*
+  FROM unnest($1::int[]) AS u(id)
+  JOIN pgvigil.instances i ON i.instance_id = u.id
+  CROSS JOIN LATERAL (` + strings.ReplaceAll(sqlMSSQLObjects, "$1", "u.id") + `) o
+ ORDER BY o.duration_ms DESC NULLS LAST, i.name, o.database, o.object_name, o.object_id
+ LIMIT 2000`
+
 // objectKinds reads types= (procedure, function, trigger; a comma list): nil = every kind.
 func objectKinds(v string) ([]string, error) {
 	if v == "" {
@@ -464,8 +478,13 @@ func procsParts(id int, from, to time.Time, database any) []part {
 	}
 }
 
-// MSSQLProcs is GET /api/mssql/procs?instance=N[&from=&to=][&db=][&db_id=&object=][&part=...].
+// MSSQLProcs is GET /api/mssql/procs?instance=N[&from=&to=][&db=][&db_id=&object=][&part=...]; with instances=
+// in place of instance=, part=objects over those instances (the node tabs' Object Execution).
 func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("instances") != "" {
+		s.mssqlNodeObjects(w, r)
+		return
+	}
 	id, from, to, err := params(r, true)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -512,3 +531,40 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 	}
 	s.multiPart(w, r, parts)
 }
+
+// mssqlNodeObjects: part=objects over instances= (at most nodeObjectsMax ids; types= and search= as for one instance).
+func (s *Server) mssqlNodeObjects(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if q.Get("part") != "objects" {
+		writeErr(w, http.StatusBadRequest, errors.New("instances= is read by part=objects only"))
+		return
+	}
+	_, ids, err := storageScope(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(ids) > nodeObjectsMax {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("at most %d instances in one Object Execution list (%d given)", nodeObjectsMax, len(ids)))
+		return
+	}
+	_, from, to, err := params(r, false)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	kinds, err := objectKinds(q.Get("types"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	search := q.Get("search")
+	if len([]rune(search)) > 128 {
+		writeErr(w, http.StatusBadRequest, errors.New("search is longer than 128 characters"))
+		return
+	}
+	s.multiPart(w, r, []part{{"objects", sqlMSSQLNodeObjects, []any{ids, from, to, nil, kinds, search}}})
+}
+
+// nodeObjectsMax: the most databases one node's Object Execution reads at once (each runs the three kinds' reads)
+const nodeObjectsMax = 500

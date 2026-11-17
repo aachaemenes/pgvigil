@@ -64,7 +64,7 @@ func TestAzurePagesReview3(t *testing.T) {
 	if !strings.Contains(pl, "{ key: 'minutes', label: 'minutes', num: true") {
 		t.Error("pools.ts: the pool grid's minutes column is not a number column (it sorts '12' before '9')")
 	}
-	if !strings.Contains(read("azure_nodes.ts"), "mssqlPoolView({ ...ctx, instance: member }).catch(") {
+	if !strings.Contains(read("azure_nodes.ts"), "mssqlPoolView({ ...ctx, instance: Number(m.instance_id) }).catch(") {
 		t.Error("azure_nodes.ts: a failed pool read replaces the whole pool page (no .catch on mssqlPoolView)")
 	}
 }

@@ -27,8 +27,9 @@ func TestAzureNodePagesAreWired(t *testing.T) {
 			t.Errorf("azure_nodes.ts has no %s", w)
 		}
 	}
-	if !regexp.MustCompile(`azureSummaryView\(ctx, \{[^}]*server`).MatchString(page) {
-		t.Error("azure_nodes.ts draws no Azure Summary cut to the node (azureSummaryView(ctx, { server ... }))")
+	// the node page (P25 (i)): its tabs, the Azure Summary one of them, cut to the node
+	if !strings.Contains(page, "nodeView(ctx, { server })") || !strings.Contains(page, "nodeView(ctx, { server, pool })") || !strings.Contains(page, "azureSummaryView(ctx, node)") {
+		t.Error("azure_nodes.ts draws no Azure Summary cut to the node (nodeView(ctx, { server }), nodeView(ctx, { server, pool }), azureSummaryView(ctx, node))")
 	}
 	if !regexp.MustCompile(`export async function azureSummaryView\(ctx: Ctx, node\?: `).MatchString(read("azuredb.ts")) {
 		t.Error("azuredb.ts azureSummaryView takes no node (the server / pool cut)")
@@ -40,8 +41,8 @@ func TestAzureNodePagesAreWired(t *testing.T) {
 	if !regexp.MustCompile(`pageEngine: Record<string, 'sqlserver' \| 'postgres'> = \{[^}]*\bazureserver: 'sqlserver', azurepool: 'sqlserver'`).MatchString(router) {
 		t.Error("router.ts pageEngine does not mark azureserver / azurepool SQL Server's")
 	}
-	if !regexp.MustCompile(`c\.tab === 'azureserver' \|\| c\.tab === 'azurepool'\)\) \{[^}]*for \(const k of \['server', 'pool'\]\)`).MatchString(router) {
-		t.Error("router.ts: a range change on azureserver / azurepool keeps no server / pool")
+	if !regexp.MustCompile(`c\.tab === 'azureserver' \|\| c\.tab === 'azurepool'\)\) \{[^}]*for \(const k of \['server', 'pool', 'ntab'\]\)`).MatchString(router) {
+		t.Error("router.ts: a range change on azureserver / azurepool keeps no server / pool / ntab")
 	}
 	if !regexp.MustCompile(`const rootPages: Record<string, Render> = \{[^\n]*\bazureserver: azureServerView, azurepool: azurePoolView\b`).MatchString(read("main.ts")) {
 		t.Error("main.ts rootPages has no azureserver: azureServerView, azurepool: azurePoolView")

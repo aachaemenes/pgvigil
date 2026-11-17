@@ -127,12 +127,12 @@ func TestAzureDBPagesOnAStore(t *testing.T) {
 	check("gaps", text(`SELECT minutes FROM (`+sqlAzureDBGaps+`) g`, az, from, to), `{"minutes":15}`)
 	check("an empty window", text(`SELECT samples, cpu_hist FROM (`+sqlAzureDBSummary+`) s`, az, to, to.Add(time.Hour)), `{"samples":null,"cpu_hist":[0,0,0,0,0,0,0,0,0,0]}`)
 	// the fleet: the Azure SQL Database only, its files 1700 of 2048 MB allocated (83.0 %: a warning), 600 used (29.3 %)
-	check("fleet", text(`SELECT instance_id, service_objective, samples, avg_cpu_percent, gaps, gap_minutes, allocated_mb, used_mb, max_size_mb, allocated_pct, used_pct, pctmax_status, cpu_hist, dtu_hist, dtu_hot_pct FROM (`+sqlAzureDBFleet+`) f WHERE instance_id IN ($7, $8)`,
-		from, to, "sqlserver", nil, nil, nil, az, ss),
+	check("fleet", text(`SELECT instance_id, service_objective, samples, avg_cpu_percent, gaps, gap_minutes, allocated_mb, used_mb, max_size_mb, allocated_pct, used_pct, pctmax_status, cpu_hist, dtu_hist, dtu_hot_pct FROM (`+sqlAzureDBFleet+`) f WHERE instance_id IN ($8, $9)`,
+		from, to, "sqlserver", nil, nil, nil, nil, az, ss),
 		fmt.Sprintf(`{"instance_id":%d,"service_objective":"Basic","samples":6,"avg_cpu_percent":20.00,"gaps":1,"gap_minutes":15,"allocated_mb":1700,"used_mb":600,"max_size_mb":2048,"allocated_pct":83.0,"used_pct":29.3,"pctmax_status":"warning","cpu_hist":[2,1,0,1,1,0,0,0,0,1],"dtu_hist":[2,1,0,1,1,0,0,0,0,1],"dtu_hot_pct":16.7}`, az))
 	// the order (most unused DTUs first, none last) and the two databases without a tier row
-	check("fleet order and the untiered", text(`SELECT instance_id, tier_read, dtu_limit, cpu_limit, unused_dtu, pctmax_status FROM (`+sqlAzureDBFleet+`) f WHERE instance_id IN ($7, $8, $9)`,
-		from, to, "sqlserver", nil, nil, nil, az, nogov, vcore),
+	check("fleet order and the untiered", text(`SELECT instance_id, tier_read, dtu_limit, cpu_limit, unused_dtu, pctmax_status FROM (`+sqlAzureDBFleet+`) f WHERE instance_id IN ($8, $9, $10)`,
+		from, to, "sqlserver", nil, nil, nil, nil, az, nogov, vcore),
 		fmt.Sprintf(`{"instance_id":%d,"tier_read":false,"dtu_limit":10,"cpu_limit":null,"unused_dtu":9.0000,"pctmax_status":"stale"} `+
 			`{"instance_id":%d,"tier_read":true,"dtu_limit":5,"cpu_limit":null,"unused_dtu":0.2500,"pctmax_status":"warning"} `+
 			`{"instance_id":%d,"tier_read":false,"dtu_limit":null,"cpu_limit":2.00,"unused_dtu":null,"pctmax_status":"no max size"}`, nogov, az, vcore))

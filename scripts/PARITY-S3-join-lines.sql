@@ -123,3 +123,15 @@
 --    points?: boolean (series points.show), and chartToolbar then gains the two checkboxes and passes them through its
 --    ChartChoice to the pages' lineChart calls (azuredb.ts mssqlAzureView, pools.ts mssqlPoolView). Until then the two
 --    are NOT in v0.4.0's toolbar - said in the parity DONE.
+-- 11. scripts/NODETABS-wiring.patch (P25 (i), the lead's 11-17 11:26 Q1 (a)): the Azure logical server's and elastic
+--    pool's tabs (web/src/azure_nodes.ts) cut each fleet page to the node's databases through ONE optional parameter of
+--    that page, in files of other slices - web/src/running_fleet.ts runningFleet(ctx, keep?) (sqltoolsbuild-s2's D10,
+--    relw4-s1's relgm), web/src/alerts.ts alertsView(ctx, keep?) (relw2c-s2's), web/src/drives.ts dbSpaceView(ctx, ids?)
+--    (dbadashvm-s1's rel-p20files), web/src/perfsummary.ts perfSummaryView(ctx, ids?) + internal/web/q_perfsummary.go
+--    ids= on /api/perfsummary (variants of its statements; sqlPerfScope and the default calls unchanged: visual-s1's
+--    PERF REDO). The patch is cut against 65083820's text of those files and applied at the join AFTER each owner's
+--    branch; a named check per file: every default call unchanged, the page's existing rows rerun. azure_nodes.ts needs
+--    the patch (its calls pass the parameter): this branch's tsc and its proofs run with it applied.
+--    ALSO NAMED for the join (a stray found 11-17 while cutting this patch): 7806d311 (P25 F103, task 2) changed
+--    web/src/drives.ts on this branch itself - the DB Space read takes db= on the database page (L411) - outside any
+--    patch; it rides the branch's merge, and the owner's branch meets it there.

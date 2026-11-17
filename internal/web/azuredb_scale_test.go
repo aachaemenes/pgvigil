@@ -252,7 +252,7 @@ func TestAzureDBFleetScaleOnAStore(t *testing.T) {
 		name string
 		from time.Time
 	}{{"1 hour", now.Add(-time.Hour)}, {"24 hours", from24}} {
-		took["summary "+w.name] = count("the Azure Summary over "+w.name, sqlAzureDBFleet, w.from, now.Add(time.Minute), "sqlserver", nil, nil, nil)
+		took["summary "+w.name] = count("the Azure Summary over "+w.name, sqlAzureDBFleet, w.from, now.Add(time.Minute), "sqlserver", nil, nil, nil, nil)
 		count("the Performance summary's SQL Server part over "+w.name, sqlPerfSummaryMSSQL, w.from, now.Add(time.Minute), "sqlserver", nil)
 	}
 	// the same 24-hour Azure Summary over the minutes alone (B2a's read): the hours' must take under a third of it
@@ -264,7 +264,7 @@ func TestAzureDBFleetScaleOnAStore(t *testing.T) {
 	if minutesFleet == sqlAzureDBFleet {
 		t.Fatal("the Azure Summary's window part was not found: the minutes-only reference was not made")
 	}
-	minutesTook := count("the Azure Summary over 24 hours on the minutes alone (B2a's read)", minutesFleet, from24, now.Add(time.Minute), "sqlserver", nil, nil, nil)
+	minutesTook := count("the Azure Summary over 24 hours on the minutes alone (B2a's read)", minutesFleet, from24, now.Add(time.Minute), "sqlserver", nil, nil, nil, nil)
 	t.Logf("the 24-hour Azure Summary: %v through the hours, %v on the minutes alone (%.1f x)", took["summary 24 hours"].Round(time.Millisecond),
 		minutesTook.Round(time.Millisecond), float64(minutesTook)/float64(took["summary 24 hours"]))
 	if took["summary 24 hours"]*3 > minutesTook {

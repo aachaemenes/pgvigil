@@ -136,8 +136,10 @@ func (s *Server) MSSQLAzureDB(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// sqlAzureScope: sqlPerfScope's instances, each with its logical server and its elastic pool, cut to one logical server
-// ($5; NULL = every server) and one pool of it ($6; NULL = in a pool or not) - P25 task 7's server and pool nodes; a
+// sqlAzureScope: sqlPerfScope's instances, each with its logical server and its elastic pool, cut to a list of
+// instance ids ($5 int[]; NULL = no cut: P25 (i)'s node tabs' own cut; sqlPerfScope itself stays as it is, the
+// Performance Summary's ids= being a variant of its own statements), one logical server ($6; NULL = every
+// server) and one pool of it ($7; NULL = in a pool or not) - P25 task 7's server and pool nodes; a
 // name is matched without case, as Azure names them. A database's server is its pool member row's (the pool read),
 // else the instance's own server name (@@SERVERNAME, mssql_instance), else its governance row's server_name; its pool
 // the member row's while it is current, else the governance row's - the member row stays behind when a database leaves
@@ -153,8 +155,9 @@ var sqlAzureScope = strings.Replace(sqlPerfScope, "WITH inst AS (", "WITH inst_s
     CROSS JOIN LATERAL (SELECT coalesce(pm.server, nullif(mi.server_name, ''), g.gov->>'server_name') AS az_server,
                                CASE WHEN NOT coalesce(g.snapshot_at > pm.seen_at AND g.service_objective IS DISTINCT FROM 'ElasticPool', false)
                                     THEN pm.pool END AS pm_pool) x
-   WHERE ($5::text IS NULL OR upper(x.az_server) = upper($5::text))
-     AND ($6::text IS NULL OR upper(coalesce(x.pm_pool, g.pool)) = upper($6::text))
+   WHERE ($5::int[] IS NULL OR s.instance_id = ANY ($5::int[]))
+     AND ($6::text IS NULL OR upper(x.az_server) = upper($6::text))
+     AND ($7::text IS NULL OR upper(coalesce(x.pm_pool, g.pool)) = upper($7::text))
 )`
 
 // the fleet's Azure SQL Databases over the window (DBA Dash's Azure Summary grid): the tier (its limits from the minutes
@@ -164,7 +167,7 @@ var sqlAzureScope = strings.Replace(sqlPerfScope, "WITH inst AS (", "WITH inst_s
 // max size, none when a file is unlimited) with the % Max Size status of 0145's arm computed here from the same read:
 // over 90 % critical, over 80 % warning (a strict 'over'), 'stale' when the files were read over 3 hours ago (the
 // findings' window), 'no max size' with an unlimited file. DBA Dash's order: the most unused DTUs first. $1 from,
-// $2 to, $3 'sqlserver', $4 the tag scope (sqlPerfScope's rule), $5 / $6 the node (sqlAzureScope's).
+// $2 to, $3 'sqlserver', $4 the tag scope (sqlPerfScope's rule), $5 the ids, $6 / $7 the node (sqlAzureScope's).
 var sqlAzureDBFleet = sqlAzureScope + `, w AS (
   SELECT a.instance_id, ` + azdbWindowCols + `
     FROM pgvigil.mssql_azuredb_window(ARRAY(SELECT instance_id FROM inst WHERE platform = 'azuresqldb'), $1, $2) a
@@ -247,7 +250,7 @@ func avgW(col string) string {
 // sqlAzurePools: the Azure Summary's Elastic Pool grid (P25 task 8, DBA Dash's): each elastic pool one of the scope's
 // Azure SQL Databases belongs to (mssql_pool_member), once - how many of its databases pgvigil reads in the scope,
 // and over the window its minutes' figures (0128: an average weighs each minute by its samples, a maximum is the
-// largest) and its storage as last read. $1 / $2 the window, $3 / $4 sqlPerfScope's engine and tag, $5 / $6 the node.
+// largest) and its storage as last read. $1 / $2 the window, $3 / $4 sqlPerfScope's engine and tag, $5 the ids, $6 / $7 the node.
 var sqlAzurePools = sqlAzureScope + `, mp AS (
   SELECT upper(inst.az_server) AS u_server, upper(inst.az_pool) AS u_pool, min(inst.az_server) AS server, min(inst.az_pool) AS pool,
          count(*) AS databases
@@ -348,7 +351,8 @@ func (s *Server) AzureDBSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		pool = v
 	}
-	args := []any{from, to, "sqlserver", tag, server, pool}
+	// the ids cut (sqlAzureScope's $5) is the node tabs' own; the Summary's call never cuts by it
+	args := []any{from, to, "sqlserver", tag, nil, server, pool}
 	s.multiPart(w, r, []part{{"databases", sqlAzureDBFleet, args},
 		{"pools", sqlAzurePools, args},            // P25 task 8: the Elastic Pool grid
 		{"slo_history", sqlAzureSLOHistory, args}, // P25 task 9
