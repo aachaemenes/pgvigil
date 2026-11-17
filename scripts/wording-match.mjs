@@ -283,6 +283,13 @@ export function selfTest() {
     ['postgres', { tag: 'aurora' }, 'storage?tag=aurora&w=1h', 'cell', 'mssql_wait_state', ['mssql_']],
     ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'prose', 'rows mssql_wait_state no longer names', ['mssql_']],
     ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'cell', 'mssql_plancache: the Query Store of each database', ['mssql_', 'Query Store']],
+    // review-30 (1): each anchor of the row bites - the rule shape's end and start, the bare name's start - and the
+    // shape with its escaped parenthesis clears; (3) on a SQL Server tag folder the row clears no PostgreSQL word
+    ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'cell', 'rows mssql_wait_state no longer names; the Query Store of each database', ['mssql_', 'Query Store']],
+    ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'cell', 'the Query Store of each database; rows mssql_wait_state no longer names', ['Query Store', 'mssql_']],
+    ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'cell', 'the Query Store of mssql_wait_state', ['Query Store', 'mssql_']],
+    ['postgres', { tag: 'aurora' }, 'retention?tag=aurora&w=1h', 'cell', '2 rules: rows older than the age, under conditions (see purge()); rows mssql_requests no longer names', []],
+    ['sqlserver', { tag: 'sales' }, 'retention?tag=sales&w=1h', 'cell', 'rows vacuum_databases no longer names', ['vacuum']],
   ];
   for (const [engine, scope, page, kind, text, want] of scoped) {
     const got = check({ text, kind, page }, { engine, words, allow, names: scopeNames(fleet, scope) }).map(r => r.word);
