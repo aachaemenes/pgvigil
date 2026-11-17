@@ -667,7 +667,19 @@ func compareShift(v string, from, to time.Time) (float64, bool, error) {
 	case "week":
 		return 7 * 24 * 3600, true, nil
 	}
-	return 0, false, errors.New("compare must be one of prev, day, week")
+	// at:<time> (P25 F102, DBA Dash's Compare To): a second window of the range's length from a start of the reader's
+	// own, before the range's
+	if at, ok := strings.CutPrefix(v, "at:"); ok {
+		start, err := time.Parse(time.RFC3339, at)
+		if err != nil {
+			return 0, false, errors.New("compare=at: must be followed by an RFC 3339 time")
+		}
+		if !start.Before(from) {
+			return 0, false, errors.New("compare=at: the second window must start before the range does")
+		}
+		return from.Sub(start).Seconds(), true, nil
+	}
+	return 0, false, errors.New("compare must be one of prev, day, week or at:<time>")
 }
 
 // orNull is a text argument, NULL when empty (an optional filter).

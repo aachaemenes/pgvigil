@@ -225,16 +225,22 @@ export function compareSection(ctx: Ctx, kind: CompareKind, filter: Record<strin
   const sel = el('select', { id }) as HTMLSelectElement;
   for (const [k, l] of comparePicks) sel.append(el('option', { value: k }, l));
   sel.value = pick;
+  // a start of the reader's own (DBA Dash's Compare To, P25 F102): a window of the range's length from that time
+  sel.append(el('option', { value: 'at' }, 'a window starting at...'));
+  const atId = `${id}-at`;
+  const at = el('input', { id: atId, type: 'datetime-local' });
+  const atLabel = el('label', { for: atId, hidden: '' }, ' starting ', at);
   const body = el('div', { 'aria-live': 'polite' });
   const box = el('section', { class: 'compare' }, el('h3', {}, 'Compare with an earlier window'),
-    el('div', { class: 'toolbar' }, el('label', { for: id }, 'Compare with '), sel), body);
+    el('div', { class: 'toolbar' }, el('label', { for: id }, 'Compare with '), sel, atLabel), body);
   let seq = 0;
   async function draw() {
     const mine = ++seq;
-    if (!pick) { body.replaceChildren(); return; }
+    atLabel.hidden = pick !== 'at';
+    if (!pick || (pick === 'at' && !at.value)) { body.replaceChildren(); return; }
     body.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
     const w = window_(ctx);
-    const q = { instance: ctx.instance, ...w, ...filter, compare: pick };
+    const q = { instance: ctx.instance, ...w, ...filter, compare: pick === 'at' ? `at:${new Date(at.value).toISOString().replace(/\.\d{3}Z$/, 'Z')}` : pick };
     try {
       const [wd, cd] = await Promise.all([
         get<{ compare_windows: Table | null }>(`mssql/${kind}`, { ...q, part: 'compare_windows' }),
@@ -246,6 +252,7 @@ export function compareSection(ctx: Ctx, kind: CompareKind, filter: Record<strin
       if (mine === seq) body.replaceChildren(errorBox(e));
     }
   }
+  at.addEventListener('change', () => void draw());
   sel.addEventListener('change', () => {
     pick = sel.value;
     try { sessionStorage.setItem(store, pick); } catch { /* private window */ }
