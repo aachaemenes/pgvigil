@@ -15,7 +15,15 @@ const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
 await new Promise(r => ws.addEventListener('open', r));
 let id = 0; const wait = new Map();
-ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+// what the browser itself reported (an uncaught exception, console.error, a failed request): said when a page does not draw
+const errs = [];
+ws.addEventListener('message', m => {
+  const d = JSON.parse(m.data);
+  if (d.method === 'Runtime.exceptionThrown') errs.push(`exception: ${d.params?.exceptionDetails?.exception?.description ?? d.params?.exceptionDetails?.text ?? ''}`.slice(0, 300));
+  if (d.method === 'Runtime.consoleAPICalled' && d.params?.type === 'error') errs.push(`console.error: ${(d.params.args ?? []).map(a => a.value ?? a.description ?? '').join(' ')}`.slice(0, 300));
+  if (d.method === 'Log.entryAdded' && d.params?.entry?.level === 'error') errs.push(`log: ${d.params.entry.text} ${d.params.entry.url ?? ''}`.slice(0, 300));
+  if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); }
+});
 const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
 const ev = async (expr, awaitPromise = false) => {
   const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise });
@@ -24,7 +32,19 @@ const ev = async (expr, awaitPromise = false) => {
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let bad = 0;
-const check = (ok, words) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${words}`); if (!ok) bad++; };
+const check = (ok, words) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${words}`); if (!ok) bad++; return ok; };
+// stuck: a page's grid did not draw, so nothing below can be read - what the page shows and what the browser
+// reported, then the end
+const stuck = async () => {
+  console.log(`  the page: ${await ev('location.href')}`);
+  console.log(`  its headings: ${JSON.stringify(await ev(`[...document.querySelectorAll('main h2, main h3')].map(x => x.textContent.slice(0, 50))`))}`);
+  console.log(`  it reads: ${JSON.stringify(await ev(`(document.querySelector('main')?.innerText ?? 'no main element').slice(0, 600)`))}`);
+  console.log(`  the browser reported: ${errs.length ? errs.slice(0, 6).join(' || ') : 'nothing'}`);
+  const api = `${U}api/mssql/plancache?instance=${inst}&w=1h`;
+  console.log(`  the page's own fetch of ${api}: ${await ev(`fetch(${JSON.stringify(api)}).then(async r => r.status + ' ' + (await r.text()).slice(0, 200)).catch(e => 'failed: ' + e)`, true)}`);
+  console.log(`cache-spread page: ${bad} check(s) FAILED`);
+  process.exit(1);
+};
 // until: the page's own state, asked until it holds (a read redraws the section) or the time is up
 const until = async (expr, ms = 20000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await ev(expr)) return true; await sleep(150); } return false; };
 // the first grid after the heading whose text starts with the words: its header labels and its body rows
@@ -42,7 +62,7 @@ const axe = async where => {
   const nodes = res.reduce((a, v) => a + v.nodes, 0);
   check(nodes === 0, `${where}: axe, ${res.length} rule(s), ${nodes} node(s)${res.map(v => ` [${v.id} x${v.nodes}: ${v.first}]`).join('')}`);
 };
-await cmd('Page.enable'); await cmd('Runtime.enable');
+await cmd('Page.enable'); await cmd('Runtime.enable'); await cmd('Log.enable');
 await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
 const GROUPS = { Times: ['plan generation', 'CLR time (ms)', 'peak CPU (ms/s)'],
   Extremes: ['min CPU (ms)', 'max CPU (ms)', 'min duration (ms)', 'max duration (ms)', 'min physical reads', 'max physical reads', 'min rows', 'max rows', 'min spilled pages', 'max spilled pages'],
@@ -56,9 +76,13 @@ for (const theme of ['light', 'dark']) {
   await cmd('Page.navigate', { url: U + '#/summary' }); await sleep(500);
   await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); sessionStorage.clear(); 'ok'`);
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
-  await cmd('Page.navigate', { url: `${U}#/mssqlplancache?i=${inst}` }); await cmd('Page.reload'); await sleep(300);
+  // a full load of the page (from about:blank, so the theme just set is read at the start): a hash change followed
+  // by Page.reload can reload the page before the hash is committed (the dark pass of run 3 stayed on the Summary)
+  await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200);
+  await cmd('Page.navigate', { url: `${U}#/mssqlplancache?i=${inst}` }); await sleep(300);
+  check(await until(`location.hash.startsWith('#/mssqlplancache')`, 5000), `${theme} Plan cache: the page's address is the Plan cache's`);
   const stmts = gridOf('Statements over the range');
-  check(await until(`!!(${stmts})`), `${theme} Plan cache: the statements' grid drew`);
+  if (!check(await until(`!!(${stmts})`), `${theme} Plan cache: the statements' grid drew`)) await stuck();
   let b = await ev(boxes), g = await ev(stmts);
   const off = ['Times', 'Extremes', 'Memory grants', 'Parallelism', 'Slow and frequent', 'with a diagnostic'];
   check(off.every(k => b[k] === false), `${theme} Plan cache: the six boxes are there and unticked at first (${JSON.stringify(b)})`);
@@ -83,7 +107,7 @@ for (const theme of ['light', 'dark']) {
 
   await cmd('Page.navigate', { url: `${U}#/mssqlprocs?i=${inst}` }); await sleep(300);
   const procs = gridOf('Procedures (');
-  check(await until(`!!(${procs})`), `${theme} Procedures: the grid drew`);
+  if (!check(await until(`!!(${procs})`), `${theme} Procedures: the grid drew`)) await stuck();
   b = await ev(boxes); g = await ev(procs);
   check(b.Extremes === false && !PROC.some(c => g.heads.includes(c)), `${theme} Procedures: the Extremes box unticked and no extreme column at first`);
   await tick('Extremes');
