@@ -223,9 +223,11 @@ export function compileFilter(f: string, num: boolean): (w: string) => boolean {
 // .gt-table, a grid empty from the start (empty: its p.empty[data-cols], as the export reads it). A page adds its own
 // lines to the end of the menu (extra: [label, action] pairs) from a listener on an element around its grid: the event
 // bubbles there before it reaches gridtools' listener on the document (mssql_backups.ts: Verify this backup...).
-export interface GridMenuAsk { table: HTMLTableElement | null; empty?: Element | null; td: Element | null; th: Element | null; x: number; y: number; back: HTMLElement; extra: [string, () => void][]; done: boolean }
-export function askGridMenu(at: Element, d: Omit<GridMenuAsk, 'done' | 'extra'>): boolean {
-  const detail: GridMenuAsk = { ...d, extra: [], done: false };
+// more: a page's own lines that hold a submenu or a tick (a custom report's Edit Report, parity set 3), after extra
+export interface MenuLine { label: string; act?: () => void; sub?: MenuLine[]; off?: string; checked?: boolean }
+export interface GridMenuAsk { table: HTMLTableElement | null; empty?: Element | null; td: Element | null; th: Element | null; x: number; y: number; back: HTMLElement; extra: [string, () => void][]; more: MenuLine[]; done: boolean }
+export function askGridMenu(at: Element, d: Omit<GridMenuAsk, 'done' | 'extra' | 'more'>): boolean {
+  const detail: GridMenuAsk = { ...d, extra: [], more: [], done: false };
   at.dispatchEvent(new CustomEvent('pgvigil:gridmenu', { bubbles: true, detail }));
   return detail.done;
 }

@@ -12,16 +12,17 @@ import { reloadTree } from './tree';
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
 import { fleetWideNote, folderWords, inTagScope, tagWords, writtenTag } from './fleet';
-import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, gridModel, GridMenuAsk, MenuLine, offControl } from './ui';
 import { Can, markNeed, routeWhy } from './needs';
-import { gridFiltered, gridMenu, resetGrid } from './gridtools';
+import { gridFiltered, gridHidden, gridMenu, resetGrid, setGridDefault } from './gridtools';
 import { openViewer } from './sqlview';
 
 // picker: how the run's form offers the value (DBA Dash's Pickers, L95) - a list, a text box (Enter runs) or a query's
 // values (its first column the value, its second the words); menu = on the run's toolbar first
 export interface Picker { kind: 'list' | 'text' | 'query'; values?: string[]; query?: string; menu?: boolean }
 export interface Param { name: string; type: string; label?: string; default?: string; required?: boolean; picker?: Picker }
-export interface ColFmt { set: number; column: string; label?: string; format?: string; decimals?: number; hidden?: boolean }
+// tooltip: the header's title (Set Column Tooltip, L117); utc: a time shown as stored, in UTC (Convert to local time zone off, L118)
+export interface ColFmt { set: number; column: string; label?: string; format?: string; decimals?: number; hidden?: boolean; tooltip?: string; utc?: boolean }
 export interface Rule { set: number; column: string; eval?: string; cond: string; value1?: string; value2?: string; status: string; case_sensitive?: boolean }
 export interface ReportDef {
   report_id?: number; name: string; description?: string; folder: string; engine: string; kind: string; body: string;
@@ -32,7 +33,9 @@ export interface ReportDef {
   sets?: SetView[];                             // a result set's name and whether All shows it (L102, L110)
   pair?: { report_id: number; label: string };  // the switch button's report and words (L106)
   url?: string; url_label?: string;             // a link under the description (L107)
+  layout?: SavedLayout;                         // Save Layout: every viewer's default (L109, L208)
 }
+export interface SavedLayout { sets?: { set: number; hidden?: string[] }[]; grid_off?: boolean; heights?: Record<string, number> }
 export interface SetView { set: number; name?: string; in_all?: boolean }
 export interface Visibility { engines?: string[]; tags?: string[]; include?: string[]; exclude?: string[] }
 // matches: whether an instance meets a report's visibility rules (the server's visibleOn, internal/web/q_customreports_view.go)
@@ -136,8 +139,11 @@ export function cellStatus(rules: Rule[], set: number, own: number, row: Record<
   return '';
 }
 
+// asUTC: a time as stored, in UTC (a column whose Convert to local time zone is off)
+const asUTC = (v: unknown): string => { const d = new Date(String(v)); return isNaN(d.getTime()) ? String(v) : d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC'; };
 function fmtCell(v: unknown, type: string, f?: ColFmt): string {
   if (v == null) return '';
+  if (f?.utc && (f.format === 'time' || (!f.format && type === 'time')) && typeof v === 'string' && /T/.test(v)) return asUTC(v);
   const fmtKind = f?.format ?? '';
   const d = f?.decimals;
   const n = asNum(v);
@@ -175,7 +181,7 @@ export function setGrid(set: ResultSet, idx: number, cols: ColFmt[] = [], rules:
     const type = set.types[i] ?? 'text';
     const hasRule = rules.some(r => r.set === idx && r.column.toLowerCase() === name.toLowerCase());
     gcols.push({
-      key: 'c' + i, label: f?.label || name || `(column ${i + 1})`,
+      key: 'c' + i, label: f?.label || name || `(column ${i + 1})`, title: f?.tooltip || undefined,
       num: f?.format ? numericFormat.has(f.format) : type === 'number',
       wide: type === 'text' && !f?.format,
       fmt: v => fmtCell(v, type, f),
@@ -212,7 +218,7 @@ export function resultView(runs: InstanceRun[], def?: Pick<ReportDef, 'columns' 
 // ---- reading the definitions ------------------------------------------------------------------------------------
 
 // viewOf: 0372's view column as the definition's own keys (an empty view, '{}': none of them - the report as before)
-type ViewKeys = Pick<ReportDef, 'visibility' | 'access' | 'status_from_messages' | 'collections' | 'sets' | 'pair' | 'url' | 'url_label'>;
+type ViewKeys = Pick<ReportDef, 'visibility' | 'access' | 'status_from_messages' | 'collections' | 'sets' | 'pair' | 'url' | 'url_label' | 'layout'>;
 function viewOf(v: unknown): ViewKeys {
   const o = v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
   const out: ViewKeys = {};
@@ -224,6 +230,7 @@ function viewOf(v: unknown): ViewKeys {
   const pr = o.pair as { report_id?: unknown; label?: unknown } | undefined;
   if (pr && typeof pr === 'object' && Number(pr.report_id) > 0) out.pair = { report_id: Number(pr.report_id), label: String(pr.label ?? '') };
   if (typeof o.url === 'string' && o.url) { out.url = o.url; if (typeof o.url_label === 'string' && o.url_label) out.url_label = o.url_label; }
+  if (o.layout && typeof o.layout === 'object' && !Array.isArray(o.layout)) out.layout = o.layout as SavedLayout;
   return out;
 }
 
@@ -249,6 +256,30 @@ export function askText(heading: string, label: string, value: string): Promise<
     document.body.append(dlg);
     dlg.showModal();
     input.select();
+  });
+}
+
+// highlightDialog: Highlight Cell Value (DBA Dash L123) - the colour rule dialog prefilled with the column and the
+// value clicked; null = cancelled
+function highlightDialog(column: string, value: string): Promise<{ cond: string; value: string; status: string } | null> {
+  return new Promise(done => {
+    const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const col = el('input', { type: 'text', 'aria-label': 'Column', value: column, readonly: '' }) as HTMLInputElement;
+    const cond = sel('Condition', condNames, 'eq');
+    const val = el('input', { type: 'text', 'aria-label': 'Value', value, size: '30' }) as HTMLInputElement;
+    const st = sel('Status', statusNames, 'warn');
+    const form = el('form', { method: 'dialog' }, el('h3', {}, 'Highlight Cell Value'),
+      el('p', { class: 'meta' }, 'A colour rule for the column: the first rule that matches colours the cell (saved with the report).'),
+      el('div', { class: 'toolbar' }, el('label', {}, 'Column ', col), el('label', {}, 'when ', cond), el('label', {}, 'Value ', val), el('label', {}, 'Status ', st)),
+      el('div', { class: 'toolbar' }, el('button', { type: 'submit' }, 'Save'), el('button', { type: 'button', class: 'cr-cancel' }, 'Cancel')));
+    const dlg = el('dialog', { class: 'cr-ask', 'aria-label': 'Highlight Cell Value' }, form) as HTMLDialogElement;
+    let out: { cond: string; value: string; status: string } | null = null;
+    form.addEventListener('submit', e => { e.preventDefault(); out = { cond: cond.value, value: val.value, status: st.value }; dlg.close(); });
+    form.querySelector('.cr-cancel')!.addEventListener('click', () => dlg.close());
+    dlg.addEventListener('close', () => { dlg.remove(); if (back?.isConnected) back.focus(); done(out); });
+    document.body.append(dlg);
+    dlg.showModal();
+    val.select();
   });
 }
 
@@ -580,9 +611,19 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   const fitLabel = el('label', {}, fitBox, ' Fit to one screen');
   const scriptBtn = el('button', { type: 'button' }, 'Script Report');
   scriptBtn.addEventListener('click', () => openViewer(`Script Report: ${def.name}`, scriptOf(def)));
-  const viewBar = el('div', { class: 'toolbar cr-view-bar' }, selBox, restoreBtn, gridBtn, chartsBtn, fitLabel, scriptBtn);
-  // Rename saves the report: an admin's (B24f), with the server's own reason first
+  // Save Layout / Reset Layout (DBA Dash L109, L208): the sets' hidden columns, the grids shown or not and the sets'
+  // heights, saved with the report as every viewer's default; a viewer's own browser choices are drawn over it
+  const saveLayBtn = el('button', { type: 'button' }, 'Save Layout'), resetLayBtn = el('button', { type: 'button' }, 'Reset Layout');
+  const viewBar = el('div', { class: 'toolbar cr-view-bar' }, selBox, restoreBtn, gridBtn, chartsBtn, fitLabel, saveLayBtn, resetLayBtn, scriptBtn);
+  // a change on the page (Rename, the layout, the column items) saves the report: an admin's (B24f), with the server's
+  // own reason first
   const renameWhy = !d.state.enabled ? (d.state.reason || 'saving is off on this server') : (routeWhy('customreports', d.state.can) ?? '');
+  const layWhy = () => renameWhy ? 'Saving the layout saves the report: ' + renameWhy : '';
+  const resetWhy = () => renameWhy ? 'Resetting the layout saves the report: ' + renameWhy : def.layout ? '' : 'no layout is saved with the report';
+  const layState = () => { offControl(saveLayBtn, layWhy() || (lastRuns ? null : 'run the report first: the layout is read from its grids')); offControl(resetLayBtn, resetWhy() || null); };
+  layState();
+  if (def.layout?.grid_off) gridOff = true;
+  for (const [k, v] of Object.entries(def.layout?.heights ?? {})) heights.set(`0:${k}`, v);
   const apply = () => {
     const boxes = [...out.querySelectorAll<HTMLElement>('.cr-set')];
     for (const b of boxes) {
@@ -611,6 +652,10 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
     b.dataset.set = String(i); b.dataset.key = `${ri}:${i}`;
     const g = el('div', { class: 'cr-set-grid' }, setGrid(s, i, def.columns, def.rules));
     const t = () => g.querySelector<HTMLTableElement>('table.grid');
+    // the saved layout: this set's hidden columns, every viewer's default until the viewer's browser keeps its own
+    const lay = def.layout?.sets?.find(x => x.set === i);
+    const tt0 = t();
+    if (lay?.hidden?.length && tt0) setGridDefault(tt0, { hidden: lay.hidden });
     if (several) {
       const act = (label: string, sub?: string) => (back: HTMLElement) => {
         const tt = t(); if (!tt) return;
@@ -670,7 +715,79 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
     selRes.value = only;
     selBox.hidden = n < 2; fitLabel.hidden = n < 2;
     apply();
+    layState();
   };
+  // saveWith: a change made on the page, saved with the report; the page drawn again from the saved definition
+  const saveWith = async (patch: Partial<ReportDef>, said: string) => {
+    const keys = Object.keys(patch) as (keyof ReportDef)[];
+    const was = Object.fromEntries(keys.map(k => [k, def[k]])) as Partial<ReportDef>;
+    Object.assign(def, patch);
+    try { await saveDef(def); draw(); status.textContent = said; }
+    catch (e) { Object.assign(def, was); status.textContent = 'Not saved: ' + (e instanceof Error ? e.message : String(e)); }
+  };
+  saveLayBtn.addEventListener('click', () => {
+    const sets: { set: number; hidden?: string[] }[] = [];
+    for (const b of out.querySelectorAll<HTMLElement>('.cr-set')) {
+      const tb = b.querySelector<HTMLTableElement>('table.grid');
+      if (!tb || b.dataset.key?.split(':')[0] !== '0') continue;   // the first run's sets: every run draws the same ones
+      const hidden = gridHidden(tb);
+      if (hidden.length) sets.push({ set: Number(b.dataset.set), hidden });
+    }
+    const hs = Object.fromEntries([...heights].filter(([k]) => k.startsWith('0:')).map(([k, v]) => [k.slice(2), v]));
+    const layout: SavedLayout = { sets: sets.length ? sets : undefined, grid_off: gridOff || undefined, heights: Object.keys(hs).length ? hs : undefined };
+    void saveWith({ layout: layout.sets || layout.grid_off || layout.heights ? layout : undefined }, 'The layout is saved with the report: every viewer opens it so (a viewer\'s own choices drawn over it).');
+  });
+  resetLayBtn.addEventListener('click', () => {
+    for (const t of out.querySelectorAll<HTMLTableElement>('table.grid')) resetGrid(t);
+    gridOff = false; heights.clear();
+    void saveWith({ layout: undefined }, 'The saved layout is cleared: the grids are drawn as the report returns them.');
+  });
+
+  // Edit Report (DBA Dash's column and cell menu, L116-L118, L123): a grid's right-click menu gets the report's own
+  // items for the column or the cell clicked, each saved with the report
+  out.addEventListener('pgvigil:gridmenu', e => {
+    const q0 = (e as CustomEvent<GridMenuAsk>).detail;
+    if (!q0?.table || q0.done) return;
+    const box = q0.table.closest<HTMLElement>('.cr-set');
+    const run = lastRuns?.[Number(box?.dataset.key?.split(':')[0] ?? -1)], si = Number(box?.dataset.set ?? -1), set = run?.sets[si];
+    if (!box || !set) return;
+    const cell = (q0.th ?? q0.td) as HTMLTableCellElement | null;
+    const key = cell ? gridModel(q0.table)?.cols[cell.cellIndex]?.key : undefined;
+    const ci = key ? Number(key.slice(1)) : -1, name = set.columns[ci];
+    const off = renameWhy ? 'Changing the report saves it: ' + renameWhy : undefined;
+    if (name == null) { q0.more.push({ label: 'Edit Report', sub: [{ label: 'Rename Column', off: 'right-click a column\'s header or cell' }] }); return; }
+    const f = def.columns.find(c => c.set === si && c.column.toLowerCase() === name.toLowerCase());
+    const withCol = (change: (x: ColFmt) => void) => {
+      const cols = def.columns.map(c => ({ ...c })), k = cols.findIndex(c => c.set === si && c.column.toLowerCase() === name.toLowerCase());
+      const x: ColFmt = k >= 0 ? cols[k] : { set: si, column: name };
+      change(x);
+      if (k < 0) cols.push(x);
+      return cols;
+    };
+    const isTime = set.types[ci] === 'time' || f?.format === 'time';
+    const sub: MenuLine[] = [
+      { label: 'Rename Column', off, act: () => { void askText(`Rename the column ${name}`, 'Column name (empty = as the report returns it)', f?.label ?? name).then(v => {
+        if (v == null) return;
+        void saveWith({ columns: withCol(x => { x.label = v.trim() && v.trim() !== name ? v.trim() : undefined; }) }, `The column ${name} is shown as '${v.trim() || name}' (saved with the report).`);
+      }); } },
+      { label: 'Set Column Tooltip', off, act: () => { void askText(`Set the tooltip of ${f?.label || name}`, 'Tooltip (empty = none)', f?.tooltip ?? '').then(v => {
+        if (v == null) return;
+        void saveWith({ columns: withCol(x => { x.tooltip = v.trim() || undefined; }) }, `The column ${name}'s tooltip is saved with the report.`);
+      }); } },
+      { label: 'Convert to local time zone', checked: isTime && !f?.utc, off: off ?? (isTime ? undefined : 'not a date and time column'), act: () => {
+        void saveWith({ columns: withCol(x => { x.utc = x.utc ? undefined : true; }) }, f?.utc ? `${name} is shown in this browser's time zone.` : `${name} is shown as stored, in UTC.`);
+      } },
+      { label: 'Highlight Cell Value', off: off ?? (q0.td ? undefined : 'right-click a cell: its value is the rule\'s'), act: () => {
+        const tr = q0.td!.parentElement as HTMLTableRowElement, idx = [...tr.parentElement!.children].indexOf(tr);
+        const raw = gridModel(q0.table!)?.rows()[idx]?.[key!];
+        void highlightDialog(name, raw == null ? q0.td!.textContent?.trim() ?? '' : String(raw)).then(r => {
+          if (!r) return;
+          void saveWith({ rules: [...def.rules, { set: si, column: name, cond: r.cond, value1: r.value, status: r.status }] }, `A colour rule on ${name} is saved with the report (${condNames[r.cond]} ${r.value}).`);
+        });
+      } },
+    ];
+    q0.more.push({ label: 'Edit Report', sub });
+  });
   const renameSet = async (i: number) => {
     const now = setName(i), v = await askText(`Rename ${now}`, 'Result set name', now);
     if (v == null) return;

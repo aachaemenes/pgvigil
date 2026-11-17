@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -54,6 +55,20 @@ type reportView struct {
 	// URL and URLLabel: a link under the description (DBA Dash's URL label, L107)
 	URL      string `json:"url,omitempty"`
 	URLLabel string `json:"url_label,omitempty"`
+	// Layout: Save Layout's choices, every viewer's default where the viewer's browser keeps none of its own (DBA Dash's
+	// Save Layout, L109 / L208): per result set the hidden columns, the grids shown or not, each set's height
+	Layout *reportLayout `json:"layout,omitempty"`
+}
+
+type reportLayout struct {
+	Sets    []reportSetLayout `json:"sets,omitempty"`
+	GridOff bool              `json:"grid_off,omitempty"`
+	Heights map[string]int    `json:"heights,omitempty"` // a result set's number (0 = the first) -> its height in px
+}
+
+type reportSetLayout struct {
+	Set    int      `json:"set"`
+	Hidden []string `json:"hidden,omitempty"` // the column headers hidden, as the grid names them
 }
 
 type reportSetView struct {
@@ -253,6 +268,29 @@ func validView(v *reportView) error {
 		u, err := url.Parse(v.URL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || len(v.URL) > 2000 {
 			return errors.New("url: an http or https address of at most 2000 characters")
+		}
+	}
+	if x := v.Layout; x != nil {
+		if len(x.Sets) > 50 || len(x.Heights) > 50 {
+			return errors.New("layout: at most 50 result sets")
+		}
+		for _, st := range x.Sets {
+			if st.Set < 0 || st.Set > 49 || len(st.Hidden) > 500 {
+				return errors.New("layout: a result set's number is 0 to 49, its hidden columns at most 500")
+			}
+			for _, h := range st.Hidden {
+				if len([]rune(h)) > 200 || strings.ContainsRune(h, 0) {
+					return errors.New("layout: a column's name is at most 200 characters and holds no NUL")
+				}
+			}
+		}
+		for k, h := range x.Heights {
+			if n, err := strconv.Atoi(k); err != nil || n < 0 || n > 49 || h < 100 || h > 4000 {
+				return errors.New("layout: a height is a result set's number (0 to 49) and 100 to 4000 px")
+			}
+		}
+		if len(x.Sets) == 0 && !x.GridOff && len(x.Heights) == 0 {
+			v.Layout = nil // nothing saved
 		}
 	}
 	switch {

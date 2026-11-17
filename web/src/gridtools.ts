@@ -122,8 +122,17 @@ export function layoutsOf(root: ParentNode = document): Layout[] {
   return [...out.values()];
 }
 
+// defaults: a grid's choices where the browser keeps none of its own - a custom report's saved layout (parity set 3,
+// L109 / L208), set by the page as it draws the grid; the browser's own choice, once made, is drawn instead
+const defaults = new WeakMap<HTMLTableElement, Prefs>();
+export function setGridDefault(t: HTMLTableElement, d: { hidden?: string[] }) {
+  defaults.set(t, { hidden: (d.hidden ?? []).filter(x => typeof x === 'string'), frozen: 0, bars: {} });
+  if (t.isConnected) apply(t);
+}
+// gridHidden: the grid's hidden columns as drawn now (by its name for each: what a saved layout keeps)
+export const gridHidden = (t: HTMLTableElement): string[] => [...load(t).hidden];
 function load(t: HTMLTableElement): Prefs {
-  const none: Prefs = { hidden: [], frozen: 0, bars: {} }, k = keyOf(t);
+  const none: Prefs = defaults.get(t) ?? { hidden: [], frozen: 0, bars: {} }, k = keyOf(t);
   if (layer) { const n = gridName(t); layerSeen.add(n); return layer.get(n) ?? none; }
   let raw: string | null = null;
   try { raw = localStorage.getItem(k); } catch { /* the browser refuses storage: what this page load chose is in mem */ }
@@ -822,7 +831,7 @@ export function installGridTools() {
     if (!d || d.done) return;
     const items = d.table ? gridMenu(d.table, d.td, d.th, d.back) : d.empty ? emptyMenu(d.empty) : null;
     if (!items) return;
-    items.push(...d.extra.map(([label, act]) => ({ label, act })));   // a page's own lines, after the tools'
+    items.push(...d.extra.map(([label, act]) => ({ label, act })), ...d.more);   // a page's own lines, after the tools'
     d.done = true;
     const host = (d.table ?? d.empty)?.closest('dialog[open]') ?? undefined;
     showTreeMenu(d.x, d.y, items, d.back, 'Grid menu', host);

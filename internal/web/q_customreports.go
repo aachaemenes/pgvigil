@@ -86,6 +86,10 @@ type reportColumn struct {
 	Format   string `json:"format,omitempty"` // see reportFormats
 	Decimals *int   `json:"decimals,omitempty"`
 	Hidden   bool   `json:"hidden,omitempty"`
+	// set 3, task 5: the header's tooltip (DBA Dash's Set Column Tooltip, L117) and a time shown as stored, in UTC,
+	// rather than in the viewer's zone (its Convert to local time zone unticked, L118)
+	Tooltip string `json:"tooltip,omitempty"`
+	UTC     bool   `json:"utc,omitempty"`
 }
 
 type reportRule struct {
@@ -212,6 +216,8 @@ func validReport(d *reportDef) error {
 			return fmt.Errorf("column %q: decimals is 0 to 6", c.Column)
 		case len(c.Label) > 200:
 			return fmt.Errorf("column %q: a label is at most 200 characters", c.Column)
+		case len([]rune(c.Tooltip)) > 1000 || strings.ContainsRune(c.Tooltip, 0):
+			return fmt.Errorf("column %q: a tooltip is at most 1000 characters and holds no NUL", c.Column)
 		}
 	}
 	for i, x := range d.Rules {
@@ -1089,6 +1095,7 @@ type reportWriteBody struct {
 	Pair               *reportPair       `json:"pair"`
 	URL                string            `json:"url"`
 	URLLabel           string            `json:"url_label"`
+	Layout             *reportLayout     `json:"layout"`
 }
 
 // CustomReportWrite is POST /api/customreports: a save, a move, a delete or a folder change.
@@ -1121,7 +1128,7 @@ func (s *Server) CustomReportWrite(w http.ResponseWriter, r *http.Request) {
 			in.MaxRows = *in.Rows
 		}
 		in.View = reportView{Visibility: in.Visibility, Access: in.Access, StatusFromMessages: in.StatusFromMessages, Collections: in.Collections,
-			Sets: in.Sets, Pair: in.Pair, URL: in.URL, URLLabel: in.URLLabel}
+			Sets: in.Sets, Pair: in.Pair, URL: in.URL, URLLabel: in.URLLabel, Layout: in.Layout}
 		if err := validReport(&in.reportDef); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
