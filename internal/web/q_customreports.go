@@ -110,6 +110,7 @@ type reportDef struct {
 	TimeoutSecs int            `json:"timeout_secs"`
 	MaxRows     int            `json:"max_rows"`
 	Version     int            `json:"version"`
+	View        reportView     `json:"view"` // 0372: who sees and opens it, and the view's own settings (q_customreports_view.go)
 }
 
 var (
@@ -127,6 +128,9 @@ var (
 
 // validReport checks a definition before it is written; the message is the user's to read.
 func validReport(d *reportDef) error {
+	if err := validView(&d.View); err != nil {
+		return err
+	}
 	d.Name = strings.TrimSpace(d.Name)
 	switch {
 	case d.Name == "" || len([]rune(d.Name)) > 200:
@@ -840,7 +844,7 @@ func (s *Server) serverOff() string {
 	return ""
 }
 
-const sqlCustomReportCols = `report_id, name, description, folder, engine, kind, body, params, columns, rules, timeout_secs,
+const sqlCustomReportCols = `report_id, name, description, folder, engine, kind, body, params, columns, rules, view, timeout_secs,
        max_rows, version, created_by, created_at, updated_by, updated_at`
 
 const sqlCustomReportList = `SELECT ` + sqlCustomReportCols + `
@@ -901,6 +905,16 @@ func (s *Server) CustomReports(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("no report %d", id))
 			return
 		}
+		// 0372: a role outside the report's access opens nothing of it, its SQL included
+		if err == nil {
+			if j := slices.Index(one.Columns, "view"); j >= 0 {
+				raw, _ := json.Marshal(one.Rows[0][j])
+				if v, verr := viewOf(raw); verr != nil || !accessOK(v, s.roleOf(r)) {
+					writeErr(w, http.StatusForbidden, errors.New(accessWords(v)))
+					return
+				}
+			}
+		}
 		var log *table
 		if err == nil {
 			log, err = s.query(ctx, sqlCustomReportOneLog, id)
@@ -913,6 +927,14 @@ func (s *Server) CustomReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reports, err := s.query(ctx, sqlCustomReportList)
+	// 0372: the list as the scope sees it - an instance ('i') or a tag folder ('tag'); the fleet lists every report
+	if err == nil {
+		iid, _ := strconv.ParseInt(r.URL.Query().Get("i"), 10, 64)
+		var inst *scopeInstance
+		if inst, err = s.scopeOf(ctx, iid); err == nil {
+			filterVisible(reports, inst, r.URL.Query().Get("tag"))
+		}
+	}
 	var folders, log *table
 	if err == nil {
 		folders, err = s.query(ctx, sqlCustomReportFolders)
@@ -966,6 +988,9 @@ type reportWriteBody struct {
 	// absent = the default (30 s, 5000 rows); a value given is checked, 0 included (these shadow reportDef's ints)
 	Timeout *int `json:"timeout_secs"`
 	Rows    *int `json:"max_rows"`
+	// the view's settings as the page sends them, kept in custom_reports.view (0372)
+	Visibility *reportVisibility `json:"visibility"`
+	Access     []string          `json:"access"`
 }
 
 // CustomReportWrite is POST /api/customreports: a save, a move, a delete or a folder change.
@@ -997,6 +1022,7 @@ func (s *Server) CustomReportWrite(w http.ResponseWriter, r *http.Request) {
 		if in.Rows != nil {
 			in.MaxRows = *in.Rows
 		}
+		in.View = reportView{Visibility: in.Visibility, Access: in.Access}
 		if err := validReport(&in.reportDef); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
@@ -1013,7 +1039,7 @@ func (s *Server) CustomReportWrite(w http.ResponseWriter, r *http.Request) {
 	if in.Op == "add" || in.Op == "edit" {
 		pay["name"], pay["description"], pay["engine"], pay["kind"] = in.Name, in.Description, in.Engine, in.Kind
 		pay["body"], pay["params"], pay["columns"], pay["rules"] = in.Body, in.Params, in.Columns, in.Rules
-		pay["timeout_secs"], pay["max_rows"], pay["version"] = in.TimeoutSecs, in.MaxRows, in.Version
+		pay["timeout_secs"], pay["max_rows"], pay["version"], pay["view"] = in.TimeoutSecs, in.MaxRows, in.Version, in.View
 		if in.Kind == "procedure" {
 			pay["body"] = strings.TrimSpace(in.Body)
 		}
@@ -1101,12 +1127,12 @@ func runWindow(from, to string) (time.Time, time.Time, error) {
 // loadReport reads one live report's definition.
 func (s *Server) loadReport(ctx context.Context, id int64) (*reportDef, error) {
 	var d reportDef
-	var params, cols, rules []byte
+	var params, cols, rules, view []byte
 	var cb, ub string
 	var ca, ua time.Time
 	var desc *string
 	err := s.pool.QueryRow(ctx, sqlCustomReportOne, id).Scan(&d.ID, &d.Name, &desc, &d.Folder, &d.Engine, &d.Kind, &d.Body,
-		&params, &cols, &rules, &d.TimeoutSecs, &d.MaxRows, &d.Version, &cb, &ca, &ub, &ua)
+		&params, &cols, &rules, &view, &d.TimeoutSecs, &d.MaxRows, &d.Version, &cb, &ca, &ub, &ua)
 	if err != nil {
 		return nil, err
 	}
@@ -1123,6 +1149,11 @@ func (s *Server) loadReport(ctx context.Context, id int64) (*reportDef, error) {
 			return nil, fmt.Errorf("report %d: its stored %s cannot be read (%v): save it again", id, x.what, err)
 		}
 	}
+	v, err := viewOf(view)
+	if err != nil {
+		return nil, fmt.Errorf("report %d: its stored view cannot be read (%v): save it again", id, err)
+	}
+	d.View = v
 	return &d, nil
 }
 
@@ -1202,6 +1233,12 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 	refuse := func(err error) {
 		s.refuseRun(w, r, map[string]any{"op": "run", "ui_user": user, "client": clientIP(r), "report_id": d.ID, "report_name": d.Name,
 			"params": map[string]any{"values": in.Params, "target": in.Target, "tag": in.Tag, "instance_id": in.InstanceID}}, err)
+	}
+	// 0372: a role outside the report's access runs nothing of it (403, audited as every refused run)
+	if !accessOK(d.View, s.roleOf(r)) {
+		s.refuseRunStatus(w, r, map[string]any{"op": "run", "ui_user": user, "client": clientIP(r), "report_id": d.ID, "report_name": d.Name,
+			"params": map[string]any{"target": in.Target}}, errors.New(accessWords(d.View)), http.StatusForbidden)
+		return
 	}
 	from, to, err := runWindow(in.From, in.To)
 	if err != nil {

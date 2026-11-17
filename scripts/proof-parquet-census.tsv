@@ -76,7 +76,7 @@ cq_workers	state							collector_id,host,instances
 custom_checks	state			sql				check_name,description,sql,rule,value_column,compare,targets
 custom_report_folders	state					created_by		folder,created_by
 custom_report_log	window	at	audit	statement,payload				ui_user,client,op,report_name,tool,instance,outcome,detail,statement,payload,door
-custom_reports	state			body		created_by,updated_by,deleted_by		name,description,folder,engine,kind,body,params,columns,rules,created_by,updated_by,deleted_by
+custom_reports	state			body		created_by,updated_by,deleted_by		name,description,folder,engine,kind,body,params,columns,rules,view,created_by,updated_by,deleted_by
 custom_results	window	snapshot_at		columns,rows				check_name,status,columns,rows,error,note
 custom_status_rows	state			info				check_name,test,context,info
 darling_benign_waits	state							wait_type
