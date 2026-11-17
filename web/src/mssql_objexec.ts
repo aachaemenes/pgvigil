@@ -6,6 +6,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
 import { mssqlDbLink } from './mssql_db';
+import { hashParam } from './dbinfo';
 import { Col, el, errorBox, fmtNum, grid } from './ui';
 
 const kinds: [string, string][] = [['procedure', 'Procedures'], ['function', 'Functions'], ['trigger', 'Triggers']];
@@ -23,6 +24,8 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string): HTMLElement {
     return el('label', {}, c, ` ${label}`);
   });
   const search = el('input', { type: 'search', 'aria-label': 'Search objects (schema or name)', placeholder: 'Search', size: '24' });
+  // oesearch= presets it: an object node of the tree opens its database's tab searched by its name (join line 3)
+  search.value = hashParam('oesearch')?.slice(0, 128) ?? '';
   let timer = 0;
   search.addEventListener('input', () => { clearTimeout(timer); timer = window.setTimeout(() => void draw(), 300); });
   const body = el('div');

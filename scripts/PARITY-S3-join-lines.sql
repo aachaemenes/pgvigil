@@ -35,5 +35,5 @@
 --    kind group, lazy (loaded() on open, as the PostgreSQL Tables folder at tree.ts L330-345), each object a leaf -
 --    a table or a view to the instance's Schema tab on that database (#/schema?i=N&db=<dbid>), a procedure, function
 --    or trigger to the database page's Object Execution tab searched by its name
---    (mssqlDbLink(ctx, datname, 'objexec') + '&oesearch=<name>' once mssql_objexec.ts reads it), at most
+--    (mssqlDbLink(ctx, datname, 'objexec') + '&oesearch=<name>': mssql_objexec.ts presets its Search from it), at most
 --    TABLES_SHOWN per folder with 'all N ...' to the Schema tab, as the Tables folder does.
