@@ -154,3 +154,26 @@
 --    gains mssql_service_broker - ok on RDS [inferred: Amazon RDS for SQL Server runs Service Broker within an instance;
 --    its endpoints are not supported - the endpoint part then reads none; NOT PROVEN until the next RDS lab] - and
 --    mssql_pool_limits, skipped by its Kind gate ('elastic pools are Azure SQL Database's').
+
+-- 13. THE OBJECT PAGE'S CELLS in other slices' files (OBJ, the lead's 11-17 13:27: every object-name cell lands on the
+--    object page #/mssqlobject; web/src/mssql_object.ts exports mssqlObjectCell(ctx, db, schema, name, tab?, instance?),
+--    mssqlObjectHref(ctx, db, obj, tab?, instance?) and mssqlObjectName(schema, name)). Each a one-line change applied
+--    after its owner's branch, its named check at the join: the cell is a link to #/mssqlobject with its db= and obj=.
+--    (a) web/src/mssql_procs.ts (the Procedures tab; sqltoolsbuild-s3's QSPAR and hash window change it): the name
+--        cell keeps its drill and the name becomes mssqlObjectCell(ctx, String(r.database), r.schema_name, r.object_name).
+--    (b) web/src/mssql_plancache.ts: the statement's module (object_name, 'schema.module') becomes
+--        el('a', { href: mssqlObjectHref(ctx, String(r.database), String(r.object_name), 'querystats') }, String(r.object_name)).
+--    (c) web/src/mssql_xe.ts: the slow completions' object (the shapes' "object_name@obj", the one shape's object_name)
+--        becomes mssqlObjectCell(ctx, <the row's database>, '', v, 'slow') - the bare name, as the capture records it.
+--    (d) web/src/reports.ts: Reports > Query Stats' Object column (DBA Dash's F16: the object window on Object
+--        Execution) becomes a link mssqlObjectHref(ctx, <database>, <schema.name>, 'objexec').
+--    (e) web/src/mssql_deadlocks.ts: the deadlock's procedure (victim and processes, DBA Dash's F17 / F18) becomes
+--        mssqlObjectCell(ctx, <database>, <schema>, <name>).
+--    (f) web/src/schema.ts: the Objects grid's procedure, function and trigger rows' name becomes
+--        mssqlObjectCell(ctx, String(r.datname), r.schema_name, r.object_name, 'schema') (SQL Server replies only).
+--    (g) web/src/tree.ts (line 3's object nodes): a procedure, function or trigger leaf opens
+--        mssqlObjectHref(ctx, datname, mssqlObjectName(schema_name, object_name)) in place of the database page's
+--        Object Execution searched by its name.
+--    (h) qsdd-pgtwin's running requests (its RQ list A18 / E15, the lead's 13:42 D2 (a)): its Object Name cell becomes
+--        mssqlObjectCell(ctx, <database>, <schema>, <name>, 'running'), and mssql_object.ts' runningTab reads its column
+--        in place of its 'not carry the object's name yet' words.

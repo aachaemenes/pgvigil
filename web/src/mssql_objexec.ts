@@ -7,6 +7,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
 import { mssqlDbLink } from './mssql_db';
+import { mssqlObjectCell, mssqlObjectHref, mssqlObjectName } from './mssql_object';
 import { hashParam } from './dbinfo';
 import { Col, el, errorBox, fmtNum, grid } from './ui';
 
@@ -66,11 +67,14 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
         : { instance: ctx.instance, ...window_(ctx), part: 'objects', types, search: q, db: dbId }, ac.signal);
       if (mine !== seq) return;
       // a row's database page: on a node's list, the row's own instance
+      const inst = (r: Row) => ids ? Number(r.instance_id) : ctx.instance;
       const link = (r: Row, tab: string, text: string, why: string) =>
-        el('a', { href: mssqlDbLink(ctx, String(r.database), tab, ids ? Number(r.instance_id) : ctx.instance), title: why }, text);
+        el('a', { href: mssqlDbLink(ctx, String(r.database), tab, inst(r)), title: why }, text);
+      const objName = (r: Row) => mssqlObjectName(r.schema_name, r.object_name);
       const cols: Col[] = [
         ...(ids ? [{ key: 'instance', label: 'database (instance)' }] : []),
-        { key: 'kind', label: 'type' }, { key: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'object_name', label: 'name' },
+        { key: 'kind', label: 'type' }, { key: 'database' }, { key: 'schema_name', label: 'schema' },
+        { key: 'object_name', label: 'name', fmt: (v, r) => mssqlObjectCell(ctx, String(r.database), r.schema_name, v, undefined, inst(r)) },
         { key: 'period_secs', label: 'Period Time (sec)', num: true, fmt: v => v == null ? '' : fmtNum(v) },
         { key: 'duration_ms', label: 'total duration (sec)', num: true, fmt: secs },
         { key: 'duration_ms_sec', label: 'duration (ms/sec)', num: true, fmt: num3 },
@@ -80,7 +84,8 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
         { key: 'cpu_ms', label: 'total CPU (sec)', num: true, fmt: secs }, { key: 'avg_cpu_ms', label: 'avg CPU (ms)', num: true, fmt: num3 },
         { key: 'logical_reads', label: 'logical reads', num: true }, { key: 'physical_reads', label: 'physical reads', num: true },
         { key: 'logical_writes', label: 'writes', num: true },
-        { key: 'qs_link', label: 'Query Stats', fmt: (_, r) => link(r, 'querystats', 'Query Stats', `the plan cache's statements of ${String(r.database)}`) },
+        // DBA Dash's Query Stats link (F15 / E6): the object's own statements, on its page's Query Stats tab
+        { key: 'qs_link', label: 'Query Stats', fmt: (_, r) => r.object_name == null ? '' : el('a', { href: mssqlObjectHref(ctx, String(r.database), objName(r), 'querystats', inst(r)), title: `the plan cache's statements of ${objName(r)}` }, 'Query Stats') },
         { key: 'qstore_link', label: 'Query Store', fmt: (_, r) => link(r, 'topqueries', 'Query Store', `the Query Store's top queries of ${String(r.database)}`) },
       ];
       const rows = rowsOf(d.objects);

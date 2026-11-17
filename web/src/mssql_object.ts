@@ -19,6 +19,15 @@ export const mssqlObjectTab = 'mssqlobject';
 export const mssqlObjectHref = (ctx: Ctx, db: string, obj: string, tab?: string, instance = ctx.instance) =>
   hrefWith(ctx, mssqlObjectTab, { db, obj, otab: tab }, instance);
 
+// mssqlObjectCell: an object's name as a link to its page (schema.name in its database; the tab given) - every
+// object-name cell of the app lands here (the cells in other slices' files: scripts/PARITY-S3-join-lines.sql line 13);
+// a part holding a dot, a bracket or a quote goes in [brackets] (]] for a ]) so the page's name split reads it back
+const quotePart = (s: string) => /[.\[\]"]/.test(s) ? `[${s.replace(/]/g, ']]')}]` : s;
+export const mssqlObjectName = (schema: unknown, name: unknown): string =>
+  schema == null || schema === '' ? quotePart(String(name ?? '')) : `${quotePart(String(schema))}.${quotePart(String(name ?? ''))}`;
+export const mssqlObjectCell = (ctx: Ctx, db: string, schema: unknown, name: unknown, tab?: string, instance = ctx.instance): Node =>
+  name == null || name === '' ? document.createTextNode('') : el('a', { href: mssqlObjectHref(ctx, db, mssqlObjectName(schema, name), tab, instance) }, String(name));
+
 // DBA Dash's tabs in its order (ObjectDetailControl.BuildTabs)
 const tabs: [string, string][] = [['objexec', 'Object Execution'], ['querystats', 'Query Stats'], ['running', 'Running Queries'], ['slow', 'Slow Queries'], ['qs', 'Query Store'], ['schema', 'Schema History']];
 
