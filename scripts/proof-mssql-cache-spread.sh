@@ -23,7 +23,9 @@
 #  S0. (Added after run 1, which stopped in its setup with no message.) A batch the server refuses - CREATE PROCEDURE
 #      behind sq's SET NOCOUNT ON, Msg 111 - comes back through sq with sqlcmd's exit and the server's message on
 #      stderr: a failing setup statement stops the proof with its message, never silently.
-#  C1. The statement columns. Marked statements over cs_big (220,000 rows, about 11,600 pages), each one cached plan,
+#  C1. The statement columns. Marked statements over cs_big (220,000 rows, about 11,600 pages), each one cached plan
+#      and a query hash of its own (the hash is the collector's key and leaves comments out, so the six scans
+#      differ by an aggregate pair each; no two marked statements, nor one and a statement of cs_p, share a hash),
 #      run AFTER a first read; a second read. For each (csrows, cssniff, csgate, csgrant, csreads1-3, cseven, csclr,
 #      and cspar, an aggregate asked to prefer a parallel plan: its stored largest used threads is over 0)
 #      the newest mssql_pc_extreme row of its query hash in the proof's database holds exactly sa's read of
@@ -170,14 +172,20 @@ collect() { "$BIN" collect -config "$CFG" -once "$1" -instance "$2" > "$OUT" 2>&
 win() { echo "from=$(date -u -d '-6 hours' +%FT%TZ)&to=$(date -u -d '+1 minute' +%FT%TZ)"; }
 objs() { jq -c --arg p "$2" '.[$p] as $t | [$t.rows[] | [$t.columns, .] | transpose | map({(.[0]): .[1]}) | add]' "$1"; }
 
-# the marked statements: each a parameterized batch, so one cached plan whatever the value
-SCAN="SELECT @r = COUNT_BIG(*) FROM dbo.cs_big WHERE id <= @n AND HASHBYTES(''SHA2_256'', pad) <> 0x00 OPTION (MAXDOP 1)"
+# the marked statements: each a parameterized batch, so one cached plan whatever the value. The collector's key is
+# the server's query hash, and the hash leaves comments out (C1 prints the server's answer for two batches that
+# differ in a comment alone), so a marker does not make a statement its own key: each scan also adds an aggregate
+# pair of its own, which changes no result and costs nothing beside the hashing. C1 checks the hashes are distinct.
+declare -A SCANX=([cssniff]="MAX(id) - MAX(id)" [csgate]="MIN(id) - MIN(id)" [cseven]="COUNT_BIG(id) - COUNT_BIG(id)"
+  [csreads1]="MAX(id) - MIN(id) + MIN(id) - MAX(id)" [csreads2]="SUM(CAST(id AS bigint)) - SUM(CAST(id AS bigint))" [csreads3]="MAX(id + id) - MAX(id + id)")
+scan() { echo "SELECT @r = COUNT_BIG(*) + (${SCANX[$1]}) FROM dbo.cs_big WHERE id <= @n AND HASHBYTES(''SHA2_256'', pad) <> 0x00 OPTION (MAXDOP 1)"; }
 # runscan <marker> <value>...: the scan once per value; a value 'cold:<n>' empties the buffer pool first
 runscan() {
-  local m=$1 b="DECLARE @r bigint;" v; shift
+  local m=$1 b="DECLARE @r bigint;" v s; shift
+  s=$(scan "$m")
   for v in "$@"; do
     case $v in cold:*) b+=" CHECKPOINT; DBCC DROPCLEANBUFFERS WITH NO_INFOMSGS;"; v=${v#cold:};; esac
-    b+=" EXEC sys.sp_executesql N'$SCAN /*$m*/', N'@n int, @r bigint OUTPUT', @n = $v, @r = @r OUTPUT;"
+    b+=" EXEC sys.sp_executesql N'$s /*$m*/', N'@n int, @r bigint OUTPUT', @n = $v, @r = @r OUTPUT;"
   done
   sq "$b" "$DPC" >/dev/null
 }
@@ -211,7 +219,15 @@ collect mssql_plancache "$N"; collect mssql_procstats "$N"
 
 echo "--- C1. the statement columns against sa's read"
 declare -A HASHOF
-for m in csrows cssniff csgate csgrant csreads1 csreads2 csreads3 cseven csclr cspar; do
+MARKS="csrows cssniff csgate csgrant csreads1 csreads2 csreads3 cseven csclr cspar"
+# each marked statement its own key: no two share a query hash, nor does one share it with a statement of cs_p
+ALLH=$(for m in $MARKS; do X=$(XS "$m"); echo "${X%%|*} $m"; done
+  sq "SELECT CONVERT(varchar(20), qs.query_hash, 1) + ' cs_p' FROM sys.dm_exec_procedure_stats ps JOIN sys.dm_exec_query_stats qs ON qs.plan_handle = ps.plan_handle WHERE ps.database_id = DB_ID('$DPC') AND ps.object_id = OBJECT_ID('$DPC.dbo.cs_p')")
+DUP=$(cut -d' ' -f1 <<<"$ALLH" | sort | uniq -d | head -1)
+[ -z "$DUP" ] || fail "C1: the statements $(grep -F "$DUP " <<<"$ALLH" | cut -d' ' -f2 | tr '\n' ' ')share the query hash $DUP: the collector stores them under one key (they must differ in more than a comment)"
+sq "DECLARE @r int; EXEC sys.sp_executesql N'SELECT @r = COUNT(*) FROM dbo.cs_sink WHERE id = @n /*cshash1*/', N'@n int, @r int OUTPUT', @n = 1, @r = @r OUTPUT; EXEC sys.sp_executesql N'SELECT @r = COUNT(*) FROM dbo.cs_sink WHERE id = @n /*cshash2*/', N'@n int, @r int OUTPUT', @n = 1, @r = @r OUTPUT;" "$DPC" >/dev/null
+echo "  two batches that differ in a comment alone (printed, not graded): cached statements|query hashes $(sq "SELECT COUNT(*), COUNT(DISTINCT qs.query_hash) FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t WHERE t.text LIKE N'(@n int%/*cshash[12]*/%'")"
+for m in $MARKS; do
   X=$(XS "$m"); [ "$(wc -l <<<"$X")" = 1 ] && [ -n "$X" ] || fail "C1: sa reads $(grep -c . <<<"$X") cached statements for $m, want 1"
   H=${X%%|*}; WANT=${X#*|}; WANT=${WANT%|*}; HASHOF[$m]=$H
   GOT=$(ES "$H")
