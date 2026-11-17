@@ -11,7 +11,7 @@
 #                         P = the parity rows of P01 / P02 / P04 alone (P-chooser .. P-opengrid); G,P = both
 #   PGVIGIL_GRIDMENU_NO_MSSQL=1  no container (G-sql then fails, saying so); a run whose cases name neither G nor G-sql
 #                         starts none by itself (the container serves G-sql alone)
-# Part U (task PGRID B11), after the web build: web/src/gridfilter.test.mjs on the compiled gridfilter.ts, its FAIL lines
+# Part U (tasks PGRID B11 / B10), after the web build: web/src/gridfilter.test.mjs and groupby.test.mjs on their compiled modules, the FAIL lines
 # and its count line printed; a failed or missing module makes the run's rc 1 whatever menu-check says.
 # Needs node 22+, npm, go, psql, chromium and docker. Exit: menu-check's (0 = every case ok), 1 = the build or the
 # container failed, 2 = no DSN.
@@ -63,8 +63,12 @@ fi
 U=0
 if web/node_modules/.bin/esbuild web/src/gridfilter.ts --format=esm --outfile="$OUT/gridfilter.mjs" --log-level=warning > "$OUT/u.log" 2>&1; then
   node web/src/gridfilter.test.mjs "$OUT/gridfilter.mjs" >> "$OUT/u.log" 2>&1 || U=1
-  grep -E '^(FAIL|gridfilter:)' "$OUT/u.log"
 else U=1; echo "FAIL U: gridfilter.ts did not compile"; fi
+# (task PGRID B10) the Group By dialog's result
+if web/node_modules/.bin/esbuild web/src/groupby.ts --format=esm --outfile="$OUT/groupby.mjs" --log-level=warning >> "$OUT/u.log" 2>&1; then
+  node web/src/groupby.test.mjs "$OUT/groupby.mjs" >> "$OUT/u.log" 2>&1 || U=1
+else U=1; echo "FAIL U: groupby.ts did not compile"; fi
+grep -E '^(FAIL|gridfilter:|groupby:)' "$OUT/u.log"
 PGVIGIL_MENU_ONLY="${PGVIGIL_MENU_ONLY:-G}" PGVIGIL_MENU_SHOTS="${PGVIGIL_MENU_SHOTS:-$OUT/shots}" \
   node scripts/menu-check.mjs 2>&1 | tee "$OUT/menu-check.log"
 R=${PIPESTATUS[0]}

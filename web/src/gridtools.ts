@@ -17,6 +17,7 @@ import { GridMenuAsk, cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridMod
 import { MenuItem, gridLines, showTreeMenu } from './treemenu';
 import { Grid, htmlDoc, json, markdown, sqlScript, tsv } from './gridwriters';
 import { filterText, readFilterText } from './gridfilter';
+import { AGG_NAMES, AGG_ORDER, AggKind, GCell, GValue, GroupSpec, groupBy } from './groupby';
 
 // bars: a column's data bar by its name - behind the value (the default, the only style before task GM: a stored list of
 // names loads as it), under the value, or a traffic light with the high values the worse or the better; the row
@@ -26,8 +27,7 @@ import { filterText, readFilterText } from './gridfilter';
 type BarStyle = 'behind' | 'under' | 'worse' | 'better';
 interface Prefs { hidden: string[]; frozen: number; bars: Record<string, BarStyle>; rownum?: boolean; rowhead?: boolean; added?: string[] }
 const BAR_STYLES: [BarStyle, string][] = [['behind', 'Behind value'], ['under', 'Under value'], ['worse', 'Traffic light (higher is worse)'], ['better', 'Traffic light (higher is better)']];
-type Agg = 'sum' | 'avg' | 'min' | 'max';
-interface Grouping { col: string; agg: Agg; box: HTMLElement }
+interface Grouping { spec: GroupSpec; box: HTMLElement }
 
 // MAX_COLS: the columns the hide rules reach; FREEZE_POS: the column positions the freeze rules reach; MAX_FROZEN: the
 // columns frozen at most
@@ -40,7 +40,7 @@ const anchors = new WeakMap<HTMLTableElement, HTMLTableCellElement>();   // the 
 // by the grid's key, so they hold when the page draws the grid again: the choices of a browser that keeps nothing,
 // the grouping, the open chooser
 const mem = new Map<string, Prefs>();
-const keptGroups = new Map<string, { col: string; agg: Agg }>();
+const keptGroups = new Map<string, GroupSpec>();
 const openPanels = new Set<string>();
 let ask: (t: HTMLTableElement) => void = () => { /* set by installGridTools: draw a grid's kept choices at the next frame */ };
 let sizes: ResizeObserver | undefined;   // a frozen grid whose size changes (a details opened, the filter row) is measured again
@@ -435,50 +435,83 @@ function said(t: HTMLTableElement, what: string) {
   };
 }
 
-// ---- group by ------------------------------------------------------------------------------------------------
+// ---- group by (task PGRID B10: DBA Dash's Group By dialog) --------------------------------------------------
 
-// group: a panel above the grid: one line per value of a column (the rows the filter leaves), its row count and one
-// aggregate of every number column, the largest group first. It follows the grid's filters; the grid itself stays.
-// col null = no grouping. The grouping is kept by the grid's key while the page is loaded.
-function group(t: HTMLTableElement, col: string | null, agg: Agg = groupings.get(t)?.agg ?? 'sum') {
+// group: a panel above the grid with the grouped rows (groupby.ts: the rows the filters leave, grouped by the spec's
+// columns, with its counts and aggregates under DBA Dash's names), the largest group first. It follows the grid's
+// filters; the grid itself stays. A group's row (a click, or Enter on its key) filters the grid to that group's values
+// (DBA Dash's drill: ANDed with what the filter row holds; Clear filters undoes it). spec null = no grouping. The
+// grouping is kept by the grid's key while the page is loaded.
+function group(t: HTMLTableElement, spec: GroupSpec | null) {
   groupings.get(t)?.box.remove();
   groupings.delete(t);
   const k = keyOf(t);
-  if (col === null) { keptGroups.delete(k); return; }
-  const ns = names(t), at = ns.indexOf(col);
-  if (at < 0) return;
-  keptGroups.set(k, { col, agg });
-  const g = readGrid(t, true), hs = heads(t);
-  const numCols = ns.map((_, j) => j).filter(j => j !== at && !hs[j].hasAttribute('data-gt-hidden') && g.rows.some(r => !!numOf(r[j])));
-  const groups = new Map<string, { rows: number; nums: Num[][] }>();
-  for (const r of g.rows) {
-    const key = r[at]?.text ?? '';
-    let x = groups.get(key);
-    if (!x) { x = { rows: 0, nums: numCols.map(() => []) }; groups.set(key, x); }
-    x.rows++;
-    numCols.forEach((j, n) => { const v = numOf(r[j]); if (v) x!.nums[n].push(v); });
-  }
-  const one = (v: Num[]): string => {
-    if (!v.length) return '';
-    if (new Set(v.map(x => x.kind)).size > 1) return 'mixed units';
-    const xs = v.map(x => x.n), sum = xs.reduce((a, b) => a + b, 0);
-    return show(agg === 'sum' ? sum : agg === 'avg' ? sum / xs.length : agg === 'min' ? Math.min(...xs) : Math.max(...xs), v[0].kind);
-  };
-  const pick = el('select', { 'aria-label': 'The aggregate of each number column' }) as HTMLSelectElement;
-  for (const [v, l] of [['sum', 'sum'], ['avg', 'average'], ['min', 'min'], ['max', 'max']]) pick.append(el('option', v === agg ? { value: v, selected: '' } : { value: v }, l));
-  pick.addEventListener('change', () => { group(t, col, pick.value as Agg); (groupings.get(t)?.box.querySelector('select') as HTMLElement | null)?.focus(); });
+  if (spec === null) { keptGroups.delete(k); return; }
+  const ns = names(t), g = readGrid(t, true);
+  const cells: GCell[][] = g.rows.map(r => ns.map((_, j) => { const c = r[j], v = numOf(c); return v ? { text: c?.text ?? '', n: v.n, kind: v.kind } : { text: c?.text ?? '' }; }));
+  const res = groupBy(ns, cells, spec);
+  if (!res.cols.length) { keptGroups.delete(k); return; }   // a key column gone from the grid: no grouping
+  keptGroups.set(k, spec);
+  const nk = spec.keys.length;
+  const word = (v: GValue): string => v === null ? '' : 'text' in v ? v.text : v.pct ? `${fmtNum(Math.round(v.n * 10) / 10)} %` : show(v.n, (v.kind ?? 'int') as Kind);
+  const drill = (key: string[]) => { if (!filterable(t)) return; clear(t); spec.keys.forEach((c, i) => { const j = ns.indexOf(c); if (j >= 0) addCond(t, j, '=' + quoteFilter(key[i])); }); };
+  const body = el('tbody', {}, ...res.rows.map(r => {
+    const keyBtn = el('button', { type: 'button', class: 'link', title: filterable(t) ? `Filter the grid to ${r.key.map((x, i) => `${spec.keys[i]} ${x || '(empty)'}`).join(', ')}` : '' }, r.key[0] || '(empty)');
+    const tr = el('tr', {}, el('th', { scope: 'row' }, keyBtn), ...r.key.slice(1).map(x => el('td', {}, x || '(empty)')),
+      ...r.vals.map((v, i) => el('td', /\| (Min|Max)$/.test(res.cols[nk + i]) && v !== null && 'text' in v ? {} : { class: 'num' }, word(v))));
+    tr.addEventListener('click', e => { if ((e.target as Element).closest('a[href]')) return; drill(r.key); });
+    return tr;
+  }));
+  const table = el('table', { class: 'gt-table' }, el('thead', {}, el('tr', {}, ...res.cols.map((c, i) => el('th', i < nk ? { scope: 'col' } : { scope: 'col', class: 'num' }, c)))), body);
   const off = el('button', { type: 'button', class: 'link' }, 'Ungroup');
   off.addEventListener('click', () => { group(t, null); redrawPanel(t); homeOf(t)?.focus(); });
-  const table = el('table', { class: 'gt-table' },
-    el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, ns[at]), el('th', { scope: 'col', class: 'num' }, 'rows'), ...numCols.map(j => el('th', { scope: 'col', class: 'num' }, `${ns[j]} (${agg})`)))),
-    el('tbody', {}, ...[...groups.entries()].sort((a, b) => b[1].rows - a[1].rows || a[0].localeCompare(b[0])).map(([key, x]) =>
-      el('tr', {}, el('th', { scope: 'row' }, key || '(empty)'), el('td', { class: 'num' }, fmtNum(x.rows)), ...x.nums.map(v => el('td', { class: 'num' }, one(v)))))));
-  const box = el('div', { class: 'gt-groups', role: 'group', 'aria-label': `Grouped by ${ns[at]}` },
-    el('p', { class: 'meta' }, `Grouped by ${ns[at]}: ${fmtNum(groups.size)} group${groups.size === 1 ? '' : 's'} of ${fmtNum(g.rows.length)} rows; each number column's `, pick, ' ', off),
-    el('div', { class: 'gt-scroll', tabindex: '0', role: 'region', 'aria-label': `The groups by ${ns[at]}` }, table));
+  const box = el('div', { class: 'gt-groups', role: 'group', 'aria-label': `Grouped by ${spec.keys.join(', ')}` },
+    el('p', { class: 'meta' }, `Grouped by ${spec.keys.join(', ')}: ${fmtNum(res.rows.length)} group${res.rows.length === 1 ? '' : 's'} of ${fmtNum(g.rows.length)} rows${filterable(t) ? "; a group's row filters the grid to it" : ''}. `, off),
+    el('div', { class: 'gt-scroll', tabindex: '0', role: 'region', 'aria-label': `The groups by ${spec.keys.join(', ')}` }, table));
   const host = boxOf(t);
   if (host.classList.contains('grid-box')) host.insertBefore(box, wrapOf(t)); else host.before(box);
-  groupings.set(t, { col, agg, box });
+  groupings.set(t, { spec, box });
+}
+// numCols: the columns with a number in any row the filters leave (their Sum, Sum % and Avg are offered); the grid read once
+const numCols = (t: HTMLTableElement): Set<number> => { const rs = readGrid(t, true).rows, out = new Set<number>(); names(t).forEach((_, j) => { if (rs.some(r => !!numOf(r[j]))) out.add(j); }); return out; };
+// simpleGroup: the chooser's 'Group by' select - the column, its row count and the sum of every other shown number
+// column (the panel before B10's dialog)
+function simpleGroup(t: HTMLTableElement, col: string): GroupSpec {
+  const ns = names(t), hs = heads(t), num = numCols(t);
+  return { keys: [col], count: true, pct: false, aggs: ns.map((n, j) => ({ n, j })).filter(x => x.n !== col && !hs[x.j].hasAttribute('data-gt-hidden') && num.has(x.j)).map(x => ({ col: x.n, kinds: ['sum'] as AggKind[] })) };
+}
+// groupDialog: DBA Dash's Group By dialog - a row per shown column: Group By, then its aggregates (Count Distinct, Min
+// and Max on every column; Sum, Sum % and Avg on a number column); Include Count (ticked) and Count % of Total; OK with
+// no column to group by is refused in words. pre: the clicked column, ticked to group by (or the grouping in force).
+function groupDialog(t: HTMLTableElement, pre: string | null, back: HTMLElement | null) {
+  const ns = names(t), hs = heads(t), was = groupings.get(t)?.spec, num = numCols(t);
+  const tick = (label: string, on: boolean) => { const c = el('input', { type: 'checkbox', 'aria-label': label }) as HTMLInputElement; c.checked = on; return c; };
+  const rows = ns.map((n, j) => ({ n, j })).filter(x => !hs[x.j].hasAttribute('data-gt-hidden')).map(({ n, j }) => {
+    const kinds: AggKind[] = num.has(j) ? AGG_ORDER : ['distinct', 'min', 'max'];
+    const has = was?.aggs.find(a => a.col === n)?.kinds ?? [];
+    return { n, key: tick(`Group By ${n}`, was ? was.keys.includes(n) : n === pre), aggs: new Map(kinds.map(k => [k, tick(`${AGG_NAMES[k]} ${n}`, has.includes(k))])) };
+  });
+  const incl = el('input', { type: 'checkbox' }) as HTMLInputElement; incl.checked = was ? was.count : true;
+  const pct = el('input', { type: 'checkbox' }) as HTMLInputElement; pct.checked = !!was?.pct;
+  const table = el('table', { class: 'gt-table' },
+    el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'Group By'), el('th', { scope: 'col' }, 'Column'), ...AGG_ORDER.map(k => el('th', { scope: 'col' }, AGG_NAMES[k])))),
+    el('tbody', {}, ...rows.map(r => el('tr', {}, el('td', {}, r.key), el('th', { scope: 'row' }, r.n), ...AGG_ORDER.map(k => el('td', {}, r.aggs.get(k) ?? ''))))));
+  const err = el('p', { class: 'error', role: 'alert' });
+  const ok = el('button', { type: 'button' }, 'OK'), cancel = el('button', { type: 'button' }, 'Cancel');
+  const d = toolDialog(t, 'Group By', back,
+    el('p', { class: 'meta' }, 'Tick the columns to group by; for the others, the aggregates to show (Sum, Sum % and Avg on a number column). The groups show above the grid and follow its filters.'),
+    el('div', { class: 'gt-scroll' }, table),
+    el('p', {}, el('label', {}, incl, ' Include Count'), ' ', el('label', {}, pct, ' Count % of Total')), err, el('p', {}, ok, ' ', cancel));
+  ok.addEventListener('click', () => {
+    const keys = rows.filter(r => r.key.checked).map(r => r.n);
+    if (!keys.length) { err.textContent = 'Tick at least one column to group by (its Group By box).'; return; }
+    const aggs = rows.filter(r => !r.key.checked).map(r => ({ col: r.n, kinds: AGG_ORDER.filter(k => r.aggs.get(k)?.checked) })).filter(a => a.kinds.length);
+    group(t, { keys, count: incl.checked, pct: pct.checked, aggs });
+    redrawPanel(t);
+    d.close();
+  });
+  cancel.addEventListener('click', () => d.close());
+  (rows.find(r => r.n === pre)?.key ?? rows[0]?.key)?.focus();
 }
 
 // ---- the chooser ---------------------------------------------------------------------------------------------
@@ -580,8 +613,8 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   const freeze = el('input', { type: 'number', min: '0', max: String(Math.min(MAX_FROZEN, ns.length - 1)), value: String(Math.min(p.frozen, Math.max(0, ns.length - 1))), 'aria-label': 'Columns frozen at the left' }) as HTMLInputElement;
   freeze.addEventListener('change', () => { freeze.value = String(Math.max(0, Math.min(Number(freeze.max), Math.floor(Number(freeze.value) || 0)))); save(t, now()); });
   const by = el('select', { 'aria-label': 'Group by a column' }, el('option', { value: '' }, 'no grouping')) as HTMLSelectElement;
-  ns.forEach(n => by.append(el('option', groupings.get(t)?.col === n ? { value: n, selected: '' } : { value: n }, n)));
-  by.addEventListener('change', () => group(t, by.value || null));
+  ns.forEach(n => by.append(el('option', groupings.get(t)?.spec.keys[0] === n ? { value: n, selected: '' } : { value: n }, n)));
+  by.addEventListener('change', () => group(t, by.value ? simpleGroup(t, by.value) : null));
   // the selection without a mouse: a column's cells, their count and sum in the line above the grid
   const sum = el('select', { 'aria-label': 'Select the cells of a column: their count, sum, average, min and max show above the grid' }, el('option', { value: '' }, 'no column')) as HTMLSelectElement;
   ns.forEach((n, j) => { if (!hidden.has(n)) sum.append(el('option', { value: String(j) }, n)); });
@@ -811,8 +844,8 @@ export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | 
     const cannot = isFrozen ? undefined : j >= FREEZE_POS || upTo > MAX_FROZEN ? `only the first ${MAX_FROZEN} columns can be frozen`
       : upTo >= visible ? 'the last column shown is never frozen: the frozen ones stay while the rest scroll' : undefined;
     out.push({ label: 'Freeze Column', checked: isFrozen, off: cannot, act: then(() => save(t, { ...p, frozen: isFrozen ? upTo - 1 : upTo })) });
-    if (groupings.get(t)?.col !== n) out.push({ label: `Group by ${n}`, act: then(() => group(t, n)) });
   }
+  out.push({ label: 'Group By...', act: () => groupDialog(t, n ?? null, back) });
   if (frozen) out.push({ label: 'Unfreeze Column', act: then(() => save(t, { ...p, frozen: 0 })) });
   if (groupings.has(t)) out.push({ label: 'Ungroup', act: then(() => group(t, null)) });
   if (n !== undefined && hs[j].classList.contains('num')) {
@@ -918,8 +951,8 @@ export function installGridTools() {
     for (const t of ts) {
       if (!t.isConnected) continue;
       apply(t);
-      const k = keyOf(t), g = groupings.get(t) ?? keptGroups.get(k);
-      if (g) group(t, g.col, g.agg);
+      const k = keyOf(t), g = groupings.get(t)?.spec ?? keptGroups.get(k);
+      if (g) group(t, g);
       // a chooser open when the page drew the grid again comes back; it takes the focus only if the redraw lost it
       if (openPanels.has(k) && !panels.get(t)?.isConnected) chooser(t, null, document.activeElement === document.body || document.activeElement === null);
       if (lineOf(t)?.textContent?.includes('selected')) stats(t);

@@ -66,6 +66,6 @@ must redraws|status | * | .* | ^CTX > menu B Columns\.\.\.$ | Columns...: the gr
 must menu | * | .* | ^CTX > menu B Row Headers▸$ | Row Headers opens Hide / Show / Show with Row Numbers (B07, task PGRID; 'Row numbers' before it)
 must disabled|redraws|status | * | .* | ^CTX > menu B Row Headers▸ > menu B (✓ )?(Hide|Show|Show with Row Numbers)$ | Row Headers' three: the one in force ticked and off with its words ('the row headers are hidden now', '... shown now', 'the row numbers are shown now'), each other one redraws the grid (B07)
 must redraws|status | * | .* | ^CTX > menu B Hide column  | Hide column <name>: the column hidden (Columns... shows it again)
-must redraws|status | * | .* | ^CTX > menu B Group by  | Group by <name>: the rows grouped by the column's values
+must dialog | * | .* | ^CTX > menu B Group By\.\.\.$ | Group By...: DBA Dash's Group By dialog - the columns to group by and each one's aggregates (B10, task PGRID; the one-click 'Group by <name>' before it)
 must disabled | * | .* | ^CTX > menu B Clear filters$ | Clear filters with no filter set: off, 'no filter is set' (B12)
 must copies | * | .* | ^CTX > menu B Rows: #\| Cols: #$ | the 'Rows: n | Cols: n' line copies itself (B13)

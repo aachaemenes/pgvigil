@@ -63,7 +63,8 @@
 #              the fleet Backups grid: 'Copy > Grid' (task GM) puts a table on the clipboard whose
 #              header is #0063a3 and whose cells carry each status the screen shows as background and text colour, a
 #              row per grid row; 'Copy > As Markdown > Standard' a pipe table of rows + 2 lines; Ctrl+click on two numbers
-#              says '2 cells selected' with their sum, a plain click clears it; 'Group by platform' lists one group
+#              says '2 cells selected' with their sum, a plain click clears it; 'Group By...' on platform, its dialog's OK with
+#              Sum ticked for failed (task PGRID B10), lists one group
 #              per platform, their rows adding up to the grid's; 'Data bar > Behind value' on failed draws a bar on each failed
 #              count above zero, the largest at 100 %; 'Freeze Column' on platform makes the first two sticky;
 #              'Hide column platform' hides it, keeps the choice in localStorage and after a reload it is still
@@ -531,7 +532,8 @@ const tools = async () => {
     return { cells: tds.map(td => td.textContent.trim()), picked: ${T}.querySelectorAll('td.gt-sel').length, line: document.querySelector('main .gt-stats')?.textContent ?? '' }; })()`);
   out.selCleared = await ev(`(() => { const j = ${HS}.indexOf('platform'); ${T}.querySelector(':scope > tbody > tr').children[j].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     return { picked: ${T}.querySelectorAll('td.gt-sel').length, line: document.querySelector('main .gt-stats')?.textContent ?? '' }; })()`);
-  await choose('platform', 'Group by platform');
+  await choose('platform', 'Group By...'); await sleep(300);
+  await ev(`(() => { const d = [...document.querySelectorAll('dialog[open]')].pop(); const s = d?.querySelector('input[aria-label="Sum failed"]'); if (s && !s.checked) s.click(); [...(d?.querySelectorAll('button') ?? [])].find(b => b.textContent.trim() === 'OK')?.click(); })()`); await sleep(300);
   out.group = await ev(`(() => { const g = document.querySelector('main .gt-groups'); if (!g) return null;
     return { label: g.getAttribute('aria-label'), head: [...g.querySelectorAll('thead th')].map(h => h.textContent), rows: [...g.querySelectorAll('tbody tr')].map(tr => [...tr.children].map(c => c.textContent)),
       platforms: [...new Set([...${T}.querySelectorAll(':scope > tbody > tr')].map(tr => tr.children[${HS}.indexOf('platform')].textContent.trim()))].length }; })()`);
@@ -2338,9 +2340,9 @@ else:
           f"tools: Ctrl+click on two 'failed' counts {sel['cells']}: {sel['line']!r}")
     check(t['selCleared'] == {'picked': 0, 'line': ''}, f"tools: a plain click clears the selection and its line ({t['selCleared']})")
     gp = t.get('group') or {}
-    check(gp.get('label') == 'Grouped by platform' and gp.get('head', [None])[:2] == ['platform', 'rows'] and any(x.endswith('(sum)') for x in gp.get('head', []))
+    check(gp.get('label') == 'Grouped by platform' and gp.get('head', [None])[:2] == ['platform', 'Count'] and 'failed | Sum' in gp.get('head', [])
           and len(gp.get('rows', [])) == gp.get('platforms') and sum(int(digits(r[1]) or 0) for r in gp.get('rows', [])) == rows and t.get('ungrouped') is True,
-          f"tools: 'Group by platform' lists {len(gp.get('rows', []))} groups for {gp.get('platforms')} platforms, their rows adding up to {rows}, each number column summed; 'Ungroup' removes it")
+          f"tools: 'Group By...' on platform lists {len(gp.get('rows', []))} groups for {gp.get('platforms')} platforms, their Count adding up to {rows}, failed summed; 'Ungroup' removes it")
     def bars_ok(bs): return len(bs) == len(g['cells']) and all(b['bar'] == (int(digits(b['t']) or 0) > 0) for b in bs) and any(b['share'] == '100%' for b in bs) and any(b['bar'] for b in bs)
     check(bars_ok(t['bars']), f"tools: 'Data bar > Behind value' on failed draws a bar on each failed count above zero, the largest at 100 % ({[(b['t'], b['share']) for b in t['bars'] if b['bar']][:4]})")
     fz = t['frozen']

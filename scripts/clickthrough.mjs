@@ -392,7 +392,7 @@ const MARK = `(() => { window.__walk = 1; window.__walkCopied = 0; try { const c
   if (!document.__walk) { const ex = document.execCommand.bind(document); document.execCommand = (k, ...a) => { if (k === 'copy') window.__walkCopied++; return ex(k, ...a); }; document.__walk = 1; } })()`;
 // the grid's own controls (the same component on every page): each at most GRID_MAX times a driver
 const GRID_MAX = 3;
-const gridKey = sig => { const m = /^(menu B (?:Freeze Column|Unfreeze Column|Filter by value|Exclude value|Hide the column|Sort|Copy|Rows:|Selected Cells|Clear filters|Group by)|B Filter |S The aggregate of each number column|S Group by a column|S Select the cells of a column|CTX)/.exec(sig); return m ? m[1] : null; };
+const gridKey = sig => { const m = /^(menu B (?:Freeze Column|Unfreeze Column|Filter by value|Exclude value|Hide the column|Sort|Copy|Rows:|Selected Cells|Clear filters|Group [Bb]y)|B Filter |S Group by a column|S Select the cells of a column|CTX)/.exec(sig); return m ? m[1] : null; };
 const gridSeen = new Map();
 // the grid's menu (CTX: a right-click on a grid's first cell opens GM's .tm-menu, web/src/gridtools.ts gridMenu): each
 // item counted by its own path (GRID_MAX a driver), its varying words folded (a column's name, a cell's value, a tick,

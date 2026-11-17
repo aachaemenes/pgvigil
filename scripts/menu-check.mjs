@@ -97,7 +97,7 @@
 //                     Like | Not like first); Clear filters off with the visible words 'no filter is set'
 //   G-select          Select > Column: n cells, the tools' line says so, the menu's last line 'Selected Cells: n (k
 //                     numeric) | Sum: ...'; Select > Row: the row's shown cells; a version cell: no Sum line, 'Rows: ...' last
-//   G-header          sessions' header: the grid-level items, Row Headers, Hide column / Freeze Column / Group by sessions, Data bar,
+//   G-header          sessions' header: the grid-level items, Row Headers, Hide column / Freeze Column / Group By..., Data bar,
 //                     its Sum line last; its Copy holds Grid, Column, Selected, As Markdown, As JSON (no Cell, no Row)
 //   G-copy            through a stubbed clipboard: Cell; Row ends with the row tab-separated; Column = the shown column;
 //                     Selected = a 2x2 rectangle with HTML beside it; Grid = the header and n rows; Markdown n+2 lines,
@@ -127,7 +127,8 @@
 //   G-keys            Tab lands in the grid (role grid, aria-rowcount n, no other tab stop in its body); Down, Right: the
 //                     cell of row 2, column 2; Shift+F10: the menu at it, the focus on Copy; Right, Down, Enter: Copy >
 //                     Column, the focus back on the cell; Shift+F10, Escape: the cell; Tab leaves the grid
-//   G-grouped         Group by platform: the grid's menu works, Copy > Grid n rows; the group panel's table has a menu
+//   G-grouped         Group By... on platform, OK with its defaults (B10's dialog): the grid's menu works, Copy > Grid n rows;
+//                     the group panel's table has a menu
 //   G-empty0          a grid empty from the start: Copy items off 'No data to copy', Export Excel on, Columns..., 'Rows: 0'
 //   G-dialog          the viewer's grid: the menu inside the dialog, Copy > Cell 'a]b'
 //   G-sql             the fixture's two SQL files on the box's PostgreSQL (standard_conforming_strings on, then off, then off
@@ -795,7 +796,7 @@ await guard('G-header', async () => {
   const th = `${GT}.querySelectorAll('thead tr:first-child th')[${await ev(gIx('sessions'))}]`;
   const H = await gmOpen(th), top = (H[0] ?? []).map(x => x.label);
   const copy = await gmSub(th, 'Copy');
-  const wantIn = ['Copy', 'Export Excel', 'Export file', 'Columns...', 'Row Headers', 'Hide column sessions', 'Freeze Column', 'Group by sessions', 'Data bar', 'Clear filters'];
+  const wantIn = ['Copy', 'Export Excel', 'Export file', 'Columns...', 'Row Headers', 'Hide column sessions', 'Freeze Column', 'Group By...', 'Data bar', 'Clear filters'];
   const missing = wantIn.filter(w => !top.includes(w));
   check('G-header', missing.length === 0 && !top.some(x => x.startsWith('Freeze the columns up to')) && top.some(x => /^Rows: /.test(x)) && /^\[sessions\] Sum: /.test(top[top.length - 1] ?? '')
     && ['Grid', 'Column', 'Selected', 'As Markdown', 'As JSON'].every(x => copy?.includes(x)) && !copy?.includes('Cell') && !copy?.includes('Row'),
@@ -1089,7 +1090,8 @@ await guard('G-keys', async () => {
 await guard('G-grouped', async () => {
   await gFresh();
   const n = (await gCol('sessions')).length;
-  await gmOpen(gCell('platform')); const g = await gmPick('Group by platform'); await sleep(500);
+  // Group By... (task PGRID B10's dialog, platform ticked by the click): OK with its defaults
+  await gmOpen(gCell('platform')); const g = await gmPick('Group By') && await ev(`(() => { const b = [...([...document.querySelectorAll('dialog[open]')].pop()?.querySelectorAll('button') ?? [])].find(x => x.textContent.trim() === 'OK'); if (!b) return false; b.click(); return true; })()`); await sleep(500);
   const panel = await ev(`!!document.querySelector('main .gt-groups')`);
   const L = await gmOpen(gCell('sessions'));
   const grid = await gmCopy(gCell('sessions'), 'Copy', 'Grid');
@@ -1097,7 +1099,7 @@ await guard('G-grouped', async () => {
   const P = await gmOpen(`document.querySelector('main .gt-groups table tbody td')`);
   await gmOpen(gCell('sessions')); await gmPick('Ungroup'); await sleep(300);
   check('G-grouped', g && panel && (L[0] ?? []).length > 0 && (grid ?? '').replace(/\r/g, '').split('\n').length === n + 1 && (P[0] ?? []).some(x => x.label === 'Copy'),
-    `Group by platform ${g}, its panel ${panel}; the grid's menu then: ${(L[0] ?? []).map(x => x.label).slice(0, 6).join(' / ') || '(no .tm-menu)'}...; Copy Grid ${(grid ?? '').split('\n').length - 1} rows of ${n}; the panel's own menu: ${(P[0] ?? []).map(x => x.label).slice(0, 4).join(' / ') || '(no .tm-menu)'}`);
+    `Group By... on platform, OK ${g}, its panel ${panel}; the grid's menu then: ${(L[0] ?? []).map(x => x.label).slice(0, 6).join(' / ') || '(no .tm-menu)'}...; Copy Grid ${(grid ?? '').split('\n').length - 1} rows of ${n}; the panel's own menu: ${(P[0] ?? []).map(x => x.label).slice(0, 4).join(' / ') || '(no .tm-menu)'}`);
 });
 
 await guard('G-empty0', async () => {

@@ -192,7 +192,10 @@ dialog. In DBA Dash's order:
 - **Columns...** (the chooser below), **Row Headers** > **Hide**, **Show**, **Show with Row Numbers** (a header before
   each row, with its number in the third; never copied or exported; a browser that kept 'Row numbers' on opens with the
   numbers), **Hide column**, **Freeze Column** (this column and every shown one before it; ticked while it is frozen, a
-  click then unfreezes it and the ones after it), **Unfreeze Column**, **Group by**, **Ungroup**, **Data bar** > **Behind
+  click then unfreezes it and the ones after it), **Unfreeze Column**, **Group By...** (DBA Dash's dialog: the columns to
+  group by; for the others Count Distinct, Min and Max, and on a number column Sum, Sum % and Avg; Include Count and
+  Count % of Total - the groups above the grid, under DBA Dash's names such as `failed | Sum`, following its filters; a
+  group's row filters the grid to that group, Clear filters undoes it), **Ungroup**, **Data bar** > **Behind
   value**, **Under value**, **Traffic light (higher is worse)**, **Traffic light (higher is better)**, **Remove**.
 - **Filter by value** and **Exclude value** (the clicked value, exactly), **Filter by these values** / **Exclude these
   values** (cells selected in one column), **All filters** > Like / Not like (a text column), `=` `<>` `>` `<` `>=` `<=`
