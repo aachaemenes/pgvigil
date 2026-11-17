@@ -229,6 +229,7 @@ func (funcStatsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 	}
 	var all, notes []collect.Row
 	capped := false
+	kinds := []string{} // the views this read held: the import leaves a kind it did not hold as it was
 	for _, v := range funcStatsViews {
 		have, err := columnSet(ctx, conn, fmt.Sprintf(funcStatsColsSQL, v.view))
 		if err != nil {
@@ -268,10 +269,11 @@ func (funcStatsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 				"message": fmt.Sprintf("%d of %d %s plans are stored without a name: the login cannot enter their database (CONNECT ANY DATABASE, or a user there), lacks VIEW ANY DEFINITION, or the object is gone", n, len(rows), v.kind)})
 		}
 		all = append(all, rows...)
+		kinds = append(kinds, v.kind)
 	}
 	// one flag for both kinds: a cut read of either makes the import fall back on the cached time for both
 	for _, s := range out {
-		s["capped"] = capped
+		s["capped"], s["kinds"] = capped, kinds
 	}
 	out = append(out, all...)
 	return append(out, notes...), nil
