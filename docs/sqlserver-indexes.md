@@ -34,6 +34,9 @@ The **Plan cache** tab shows:
 - The statements of the range, the most CPU first.
 - A **database** filter.
 - **Only databases without Query Store**, the scope for which the plan cache is the only statement history. Databases with Query Store have a fuller history on the Query Store tab.
+- Four column groups on the statements, each off until its box is ticked: **Times** (the plan's generation, CLR time, peak CPU per second), **Extremes** (the smallest and largest CPU, duration, physical reads, rows and spilled pages of a single run), **Memory grants** (the smallest grant, the largest use, the smallest and largest ideal grant) and **Parallelism** (the smallest DOP, reserved and used threads). The server keeps each extreme per cached statement since its compile, so a group shows the plans that ran in the range, each since its compile, not the range's own smallest and largest. "not read" means the server has no such column, or the reads came before pgvigil stored it.
+- A **diagnostics** column with sp_QuickieCache's words: *Row count variance* (the largest run returned 100 times the smallest or more), *Parameter sniffing* (over 3 executions, and a run under 0.70 or over 1.30 of the average CPU; or, with the CPU inside that band, of an average of physical reads over 1,000) and *Wasteful grant* (over 1 MB granted, under 10 % used). They are judged on the statement's newest read of the range, on its figures since compile. sp_QuickieCache counts every cached plan of the query hash; pgvigil counts the plans that ran in that read. **with a diagnostic** keeps the statements that carry one.
+- **Slow and frequent**: dbatools' `Get-DbaQueryExecutionTime` filter with its defaults - an average CPU of 500 ms or more over 100 executions or more, and of each database the first 100 by average CPU - on the range's figures (dbatools reads the counts since compile). The API takes the three values as `min_avg_cpu_ms`, `min_executions` and `per_db`.
 - What the cache holds, per database: plans, single-use plans and their size, statements compiled in the last 24, 4 and 1 hours, and statements whose query hash has more than one cached plan.
 - Two lists: the largest single-use plans, and the query hashes with the most plans.
 
@@ -44,6 +47,11 @@ Findings (a read older than three hours raises nothing):
 | most cached plans are recent (warning) | over 75 % of the 1,000 or more cached statements were compiled in the last 24 hours, on a server up for more than a day |
 | single-use plans in the cache | single-use ad hoc or prepared plans are over 10 % of a user database's compiled plans (info) or over 75 % (warning), with 100 at least |
 | one statement compiled into many plans | statements of a query hash with several plans are over 5 % of a user database's cached statements (info) or over 75 % (warning), with 100 at least |
+| wasteful memory grants (info) | a statement that ran in the last 3 hours was granted over 1 MB of memory and used under 10 % of it; one finding per instance, with the count and the five largest |
+
+The grant finding looks at the last 3 hours only, and its words say so: a nightly job's grant is gone from Findings by morning without having been fixed. The Plan cache tab's own grant columns and its diagnostics follow the tab's range, so the job's statement is found there by picking the night.
+
+The **Procedures** tab has an **Extremes** box: the smallest and largest CPU, duration, logical and physical reads, writes and spilled pages of a single execution, as the server keeps them per cached procedure plan.
 
 ### Cached plans, read on demand
 
@@ -185,6 +193,7 @@ For each database the read stores:
 `scripts/proof-mssql-plancache-indexes.sh` runs against a SQL Server 2022 container that it starts and removes (or an existing sandbox it is given). It shows:
 
 - A seeded workload's top statement equals a hand read of `sys.dm_exec_query_stats`.
+- (`scripts/proof-mssql-cache-spread.sh`) Every extreme stored for a statement, and for a procedure, equals a hand read of the server's own view; the three diagnostics appear on statements made to show them and stay off a statement held under the rule's 3 executions; the grant finding appears, and is gone once its interval is over three hours old; the filter keeps what a hand read keeps and ranks each database before the 1,000-row cap.
 - An exact duplicate and a key subset are found on a fresh server, and an unused index is **not**: the guard says "too early".
 - Once the stored window is moved back 10 days in the proof's own repository, the unused index is found, with its DISABLE line.
 - The stored modification count of a NORECOMPUTE statistic equals the DMV's. Moved back 40 days, the statistic is stale.
