@@ -108,11 +108,27 @@ each instance's rows together, the instances by their critical rows, then their 
 instance's own rows keep their order (critical first, then the check and the object). The mail draws the page, so it
 has the same order.
 
-The page's rows, and so the mail's grid and the post's counts below, are the checks `/api/overview` runs. For a
-PostgreSQL instance those are its collections, replication, jobs, backups, integrity checks, disks and the rest of the
-page's list. For a SQL Server instance they are its collection health alone (a collection failing or stale): its
-Agent jobs, backups, last good CHECKDB and drive space are judged in the cells of its Summary page and are not among
-these rows or counts.
+The page's rows, and so the mail's grid and the post's counts below, come from two readers, one per engine. For a
+PostgreSQL instance they are the checks `/api/overview` runs: its collections, replication, jobs, backups, integrity
+checks, disks and the rest of the page's list, one row per failing object. For a SQL Server instance they are the cells
+of its Summary at warning or critical - Agent Jobs, Backup FULL, DIFF and LOG, Last Good Check DB, Drive Space, and every
+other column with a SQL Server read (Corruption, Database State, Is Agent Running, DB Mail, Memory Dump, Availability
+Groups, Log Shipping, Mirroring, File Space, % Max Size, Log Space, Elastic Pool Storage, Audit, SQL Agent Alerts,
+Identity Columns, QS, Instance Uptime and the deadlocks and blocked-process reports) - read and judged as the Summary
+does: the same thresholds, the same words (`2 critical`, `1 warning, stale`), the column's name as the check, and the
+cell's own page as the instance's link. A cell is one row however many jobs or databases it counts (its detail names
+them, twelve at most), so a SQL Server instance ranks by its cells at warning or critical. Blocking (the Activity cell)
+has no row: it is the state of one minute, not of a day, and the page's **Lock waiters now** tile holds it. A cell
+with no count (stale, read failed, not yet, n/a) adds no row; the collection behind it is already a `collection stale`
+or `collection failing` row, for both engines. If the read of the SQL Server cells fails, the page draws one critical
+`check could not run` row for the SQL Server status cells.
+
+A row whose Summary cell is acknowledged - in force, and for "until the check changes" in the same state it was given
+for - is listed under **Acknowledged** below the grid with who acknowledged it and until when, and is not counted: not
+in the tiles, the mail's counts, the post or its worst three, as the Summary counts an acknowledged cell under
+Acknowledged only. The rule is one for both engines (a PostgreSQL row by the cell of its group). A scheduled mail is
+drawn by the server's own render of the page, from the acknowledgements the repository holds, so a cell acknowledged
+in one browser is drawn acknowledged in the mail.
 
 With `post:` (or the dialog's webhook channels) each day's mail, once it is **sent**, also posts a short text through
 those webhook channels of the `alerts:` block (Slack, Teams, Discord, Google Chat or json): the counts the drawn page

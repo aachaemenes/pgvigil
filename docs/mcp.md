@@ -15,7 +15,7 @@
 
 | Tool | Arguments | What it answers | API read |
 |---|---|---|---|
-| `fleet_summary` | `severity` (critical, warning) | every instance (platform, version, sessions, failing collections) and the fleet's failing daily checks, with counts per severity | `/api/instances`, `/api/overview` |
+| `fleet_summary` | `severity` (critical, warning) | every instance (platform, version, sessions, failing collections) and the fleet's failing daily checks, with counts per severity - a SQL Server instance's as its Summary cells at warning or critical (`summary cell <key>`, the count and the read's state in words; blocking left out; acknowledgements are the page's, not the tool's) | `/api/instances`, `/api/overview`, `/api/mssql/summary` |
 | `instance_findings` | `instance` | one instance's failing daily checks and its parameter findings (setting, value, suggested value, why) | `/api/overview`, `/api/findings` |
 | `blocking_chain` | `instance`, `at` | the lock-wait chains at the activity snapshot at or before `at` (default the latest): each waiter with its head, depth, the head's state and statement, and the snapshot's session counts | `/api/activity` |
 | `top_statements` | `instance`, `from`, `to`, `hours`, `order`, `limit` | the top statements over the window (default the last hour) by time, calls, io, mean, rows, temp or wal; at most 100 | `/api/statements` |
