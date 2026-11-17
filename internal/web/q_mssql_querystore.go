@@ -677,6 +677,11 @@ func compareShift(v string, from, to time.Time) (float64, bool, error) {
 		if !start.Before(from) {
 			return 0, false, errors.New("compare=at: the second window must start before the range does")
 		}
+		// no further back than the longest window the API takes: time.Duration caps at about 292 years, so an older
+		// start would move the second window
+		if from.Sub(start) > maxWindow {
+			return 0, false, errors.New("compare=at: the second window must start at most 366 days and an hour before the range")
+		}
 		return from.Sub(start).Seconds(), true, nil
 	}
 	return 0, false, errors.New("compare must be one of prev, day, week or at:<time>")

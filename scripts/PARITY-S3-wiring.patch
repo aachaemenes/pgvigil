@@ -105,7 +105,7 @@
  // the page parameters of the Database info tab and the drill-down pages: the router keeps them on a link to the same
  // page (a range change), hrefWith sets only the ones it is given
 -export const pageKeys = ['db', 'rel', 'scheduler', 'job', 'idx'];
-+export const pageKeys = ['db', 'rel', 'scheduler', 'job', 'idx', 'dbtab', 'fg'];
++export const pageKeys = ['db', 'rel', 'scheduler', 'job', 'idx', 'dbtab', 'fg', 'oesearch'];
  
  // hrefWith is the router's link to a tab (instance, tag and time range kept) plus page parameters of its own.
  export function hrefWith(ctx: Ctx, tab: string, extra: Record<string, string | number | undefined>, instance = ctx.instance): string {

@@ -95,12 +95,14 @@ function titled(chart: HTMLElement, text: string, link: string): HTMLElement {
 }
 
 // the Execution Stats strip (DBA Dash's SQL Server Performance > Execution Stats: Duration ms/sec of the top 5
-// objects, its measure and Top N menus; P25 task 5): the procedures, functions and triggers, one line each, on the
-// page's shared steps, drawn by the shared lineChart (no axis or scale of its own); on a database's page that
-// database's objects. Read apart (part=execstats) so a menu change reads only the strip.
+// objects, its measure and Top N menus; P25 task 5): the procedures, functions and triggers, one line each keyed by
+// database_id:object_id (one object, one line, whatever names its reads stored), on the strip's OWN steps (the
+// server's: never finer than the collections' five minutes, a 0 where an object did not run), drawn by the shared
+// lineChart (no axis or scale of its own); on a database's page that database's objects. Read apart
+// (part=execstats) so a menu change reads only the strip.
 const esMeasures: [string, string, string][] = [['duration', 'Duration', 'ms/sec'], ['cpu', 'CPU', 'ms/sec'], ['executions', 'Executions', '/sec'],
   ['logical_reads', 'Logical reads', '/sec'], ['physical_reads', 'Physical reads', '/sec'], ['writes', 'Writes', '/sec']];
-function execStatsStrip(ctx: Ctx, g: Row[], link: string, db?: string): HTMLElement {
+function execStatsStrip(ctx: Ctx, link: string, db?: string): HTMLElement {
   const mSel = el('select', { id: 'perf-es-measure', 'aria-label': 'Execution Stats measure' }, ...esMeasures.map(([k, l]) => el('option', { value: k }, l)));
   const tSel = el('select', { id: 'perf-es-top', 'aria-label': 'Execution Stats objects shown' }, ...[5, 10, 20].map(n => el('option', { value: String(n) }, `Top ${n}`)));
   const body = el('div');
@@ -110,25 +112,25 @@ function execStatsStrip(ctx: Ctx, g: Row[], link: string, db?: string): HTMLElem
     const mine = ++seq;
     const [k, label, unit] = esMeasures.find(m => m[0] === mSel.value) ?? esMeasures[0];
     try {
-      const d = await get<{ execstats: Table | null }>('performance', { instance: ctx.instance, ...window_(ctx), part: 'execstats', measure: k, top: tSel.value, db });
+      const d = await get<{ execstats: Table | null; execstats_state: Table | null }>('performance',
+        { instance: ctx.instance, ...window_(ctx), part: 'execstats', measure: k, top: tSel.value, db });
       if (mine !== seq) return;
-      const rows = rowsOf(d.execstats), names = [...new Set(rows.map(r => String(r.object)))];
+      // one line per object by its ids; its label the server's one name for it
+      const rows = rowsOf(d.execstats), key = (r: Row) => `${String(r.database_id)}:${String(r.object_id)}`;
+      const series = new Map<string, string>();
+      for (const r of rows) if (!series.has(key(r))) series.set(key(r), String(r.object));
+      // the strip's own steps, as the server returns them (every covered step, each object 0 where it did not run)
       const by = new Map<number, Row>();
       for (const r of rows) {
         const t = new Date(String(r.snapshot_at)).getTime();
-        if (!by.has(t)) by.set(t, {});
-        by.get(t)![String(r.object)] = r.per_sec;
+        if (!by.has(t)) by.set(t, { snapshot_at: r.snapshot_at });
+        by.get(t)![key(r)] = r.per_sec;
       }
-      const pts = g.map(st => {
-        const r = by.get(new Date(String(st.snapshot_at)).getTime());
-        const o: Row = { snapshot_at: st.snapshot_at };
-        for (const n of names) o[n] = r ? r[n] ?? null : null;
-        return o;
-      });
+      const pts = [...by.keys()].sort((a, b) => a - b).map(t => by.get(t)!);
       const title = `Execution Stats: ${label} (${unit}), the top ${tSel.value} objects${db ? ` of ${db}` : ''}`;
       body.replaceChildren(rows.length
-        ? titled(lineChart('Execution Stats', pts, names.map(n => ({ key: n, label: n })), v => `${fmtNum(v)} ${unit}`), title, link)
-        : emptyChart(title, link, 'No procedure, function or trigger ran in this window (the mssql_procstats and mssql_funcstats collections read every five minutes).'));
+        ? titled(lineChart('Execution Stats', pts, [...series].map(([id, name]) => ({ key: id, label: name })), v => `${fmtNum(v)} ${unit}`), title, link)
+        : emptyChart(title, link, esEmpty(rowsOf(d.execstats_state))));
     } catch (e) {
       if (mine === seq) body.replaceChildren(errorBox(e));
     }
@@ -137,6 +139,19 @@ function execStatsStrip(ctx: Ctx, g: Row[], link: string, db?: string): HTMLElem
   tSel.addEventListener('change', () => void draw());
   void draw();
   return box;
+}
+
+// esEmpty: the strip's empty words from its two collections' state (collection_dates): one not run on this
+// instance, or its last run not ok, is named with its note; both ok = nothing ran in the range
+function esEmpty(state: Row[]): string {
+  const said = (['mssql_procstats', 'mssql_funcstats'] as const).map(c => {
+    const r = state.find(x => x.collection === c);
+    if (!r) return `the ${c} collection has not run on this instance (it reads every five minutes and needs VIEW SERVER STATE)`;
+    return r.status !== 'ok' ? `the ${c} collection's last run: ${String(r.status)}${r.note ? ' (' + String(r.note) + ')' : ''}` : '';
+  }).filter(Boolean);
+  return said.length
+    ? `No procedure, function or trigger figure in this window: ${said.join('; ')}.`
+    : 'No procedure, function or trigger ran in this window (the mssql_procstats and mssql_funcstats collections read every five minutes; a first read only sets the starting counters).';
 }
 
 // cut: a SQL Server database's page (mssql_db.ts, P25 F101) - its IO (with the file group picked) and the blocking
@@ -200,7 +215,7 @@ export async function performanceView(ctx: Ctx, cut?: PerfCut): Promise<HTMLElem
       `IO latency (${files})`, to(mssqlFileIOTab)));
     box.append(titled(lineChart('IO throughput', io, [{ key: 'read_mb_s', label: 'read MB/s' }, { key: 'write_mb_s', label: 'write MB/s' }], v => fmtNum(v) + ' MB/s'),
       `IO throughput (${files})`, to(mssqlFileIOTab)));
-    box.append(execStatsStrip(ctx, g, to('mssqlprocs'), cut?.db));
+    box.append(execStatsStrip(ctx, to('mssqlprocs'), cut?.db));
     if (cut) {
       const blk = rowsOf(d.blocking);
       box.append(blk.length

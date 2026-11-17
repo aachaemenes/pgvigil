@@ -14,6 +14,7 @@ import { lineChart } from './chart';
 import { qsOverlay, qsStrip } from './mssql_queries';
 import { Ctx, rangeLabel, window_ } from './router';
 import { sqlCell } from './sqlview';
+import { fromInput, toInput } from './tz';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
 
 // The tab key of the page (the router's entry carries the same key).
@@ -237,10 +238,14 @@ export function compareSection(ctx: Ctx, kind: CompareKind, filter: Record<strin
   async function draw() {
     const mine = ++seq;
     atLabel.hidden = pick !== 'at';
-    if (!pick || (pick === 'at' && !at.value)) { body.replaceChildren(); return; }
-    body.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
     const w = window_(ctx);
-    const q = { instance: ctx.instance, ...w, ...filter, compare: pick === 'at' ? `at:${new Date(at.value).toISOString().replace(/\.\d{3}Z$/, 'Z')}` : pick };
+    // the typed start is the display zone's wall clock (tz.ts), as the page's own times; the input stops at the
+    // range's start (the second window starts before it)
+    at.max = toInput(new Date(w.from));
+    const start = pick === 'at' ? fromInput(at.value) : null;
+    if (!pick || (start && isNaN(start.getTime()))) { body.replaceChildren(); return; }
+    body.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
+    const q = { instance: ctx.instance, ...w, ...filter, compare: start ? `at:${start.toISOString().replace(/\.\d{3}Z$/, 'Z')}` : pick };
     try {
       const [wd, cd] = await Promise.all([
         get<{ compare_windows: Table | null }>(`mssql/${kind}`, { ...q, part: 'compare_windows' }),

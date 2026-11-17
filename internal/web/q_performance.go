@@ -247,43 +247,65 @@ SELECT DISTINCT mf.filegroup
  ORDER BY 1`
 
 // sqlPerfMSSQLExecStats: DBA Dash's Execution Stats on the SQL Server Performance page (P25 task 5, the sweep's L15):
-// the procedures', functions' and triggers' samples (0084, 0343), the top $6 objects by the measure $5 over the window,
-// each one's measure per second of the step's read time (the longer of the two collections' covered seconds in the
-// step); duration and CPU in ms. $7 one database's name (its page) or empty.
+// the procedures', functions' and triggers' samples (0084, 0343), the top $6 objects by the measure $5 over the
+// window, each one's measure per second of the seconds its OWN kind's reads cover in the step (the procedures' reads,
+// the functions' and triggers' reads), 0 on a covered step where it did not run; duration and CPU in ms. $4 the
+// strip's step (procStep: never finer than the collections' five minutes, so the two kinds' reads share a step). One
+// label per object: its database's newest name (procDBNames' rule over both kinds' samples) and its own schema and
+// name (max() skips a read that gave up on a lock); each row carries database_id and object_id, the page's key. $7
+// one database by its newest name (its page), or empty: taken by its id, so its samples stored under an older name,
+// or with none, count.
 const sqlPerfMSSQLExecStats = `
-WITH s AS (
-  SELECT x.snapshot_at, x.database_id, x.object_id,
-         coalesce(x.database_name, 'database ' || x.database_id) || '.' || coalesce(x.schema_name, '') || '.' ||
-         coalesce(x.object_name, 'object ' || x.object_id) AS name,
+WITH x AS (
+  SELECT 'p'::text AS k, p.snapshot_at, p.database_id, p.object_id, p.database_name, p.schema_name, p.object_name,
+         p.duration_us, p.cpu_us, p.executions, p.logical_reads, p.physical_reads, p.logical_writes
+    FROM pgvigil.mssql_proc_sample p
+   WHERE p.instance_id = $1 AND p.snapshot_at > $2 AND p.snapshot_at <= $3
+  UNION ALL
+  SELECT 'f', f.snapshot_at, f.database_id, f.object_id, f.database_name, f.schema_name, f.object_name,
+         f.duration_us, f.cpu_us, f.executions, f.logical_reads, f.physical_reads, f.logical_writes
+    FROM pgvigil.mssql_func_sample f
+   WHERE f.instance_id = $1 AND f.snapshot_at > $2 AND f.snapshot_at <= $3
+), dbn AS (
+  SELECT DISTINCT ON (x.database_id) x.database_id, coalesce(x.database_name, 'database ' || x.database_id) AS database
+    FROM x
+   ORDER BY x.database_id, (x.database_name IS NULL), x.snapshot_at DESC
+), s AS (
+  SELECT x.k, to_timestamp(floor(extract(epoch FROM x.snapshot_at) / $4) * $4) AS step, x.database_id, x.object_id,
+         n.database, x.schema_name, x.object_name,
          CASE $5::text WHEN 'duration' THEN x.duration_us / 1000.0 WHEN 'cpu' THEN x.cpu_us / 1000.0
                        WHEN 'executions' THEN x.executions WHEN 'logical_reads' THEN x.logical_reads
                        WHEN 'physical_reads' THEN x.physical_reads ELSE x.logical_writes END::float8 AS v
-    FROM (SELECT p.snapshot_at, p.database_id, p.object_id, p.database_name, p.schema_name, p.object_name, p.duration_us, p.cpu_us,
-                 p.executions, p.logical_reads, p.physical_reads, p.logical_writes
-            FROM pgvigil.mssql_proc_sample p
-           WHERE p.instance_id = $1 AND p.snapshot_at > $2 AND p.snapshot_at <= $3 AND ($7::text = '' OR p.database_name = $7::text)
-          UNION ALL
-          SELECT f.snapshot_at, f.database_id, f.object_id, f.database_name, f.schema_name, f.object_name, f.duration_us, f.cpu_us,
-                 f.executions, f.logical_reads, f.physical_reads, f.logical_writes
-            FROM pgvigil.mssql_func_sample f
-           WHERE f.instance_id = $1 AND f.snapshot_at > $2 AND f.snapshot_at <= $3 AND ($7::text = '' OR f.database_name = $7::text)) x
+    FROM x JOIN dbn n ON n.database_id = x.database_id
+   WHERE $7::text = '' OR n.database = $7::text
 ), top AS (
-  SELECT s.database_id, s.object_id FROM s GROUP BY 1, 2 ORDER BY sum(s.v) DESC NULLS LAST, max(s.name) LIMIT $6
+  SELECT s.k, s.database_id, s.object_id,
+         s.database || '.' || coalesce(max(s.schema_name), '') || '.' || coalesce(max(s.object_name), 'object ' || s.object_id) AS name
+    FROM s
+   GROUP BY s.k, s.database_id, s.object_id, s.database
+   ORDER BY sum(s.v) DESC NULLS LAST, s.database_id, s.object_id, s.k
+   LIMIT $6
 ), cover AS (
-  SELECT c.step, max(c.secs) AS secs
-    FROM (SELECT to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4) AS step, 'p' AS k, sum(r.interval_secs) AS secs
-            FROM pgvigil.mssql_proc_read r WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3 GROUP BY 1
-          UNION ALL
-          SELECT to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4), 'f', sum(r.interval_secs)
-            FROM pgvigil.mssql_func_read r WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3 GROUP BY 1) c
-   GROUP BY c.step
+  SELECT 'p'::text AS k, to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4) AS step, sum(r.interval_secs)::float8 AS secs
+    FROM pgvigil.mssql_proc_read r
+   WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
+   GROUP BY 2
+  UNION ALL
+  SELECT 'f', to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4), sum(r.interval_secs)::float8
+    FROM pgvigil.mssql_func_read r
+   WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
+   GROUP BY 2
+), w AS (
+  SELECT s.k, s.step, s.database_id, s.object_id, sum(s.v) AS v
+    FROM s JOIN top t ON t.k = s.k AND t.database_id = s.database_id AND t.object_id = s.object_id
+   GROUP BY 1, 2, 3, 4
 )
-SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snapshot_at, max(s.name) AS object,
-       round((sum(s.v) / nullif(max(c.secs), 0))::numeric, 3) AS per_sec
-  FROM s JOIN top USING (database_id, object_id)
-  JOIN cover c ON c.step = to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4)
- GROUP BY 1, s.database_id, s.object_id
- ORDER BY 1, 2`
+SELECT c.step AS snapshot_at, t.database_id, t.object_id, t.name AS object,
+       round((coalesce(w.v, 0) / c.secs)::numeric, 3) AS per_sec
+  FROM top t
+  JOIN cover c ON c.k = t.k AND c.secs > 0
+  LEFT JOIN w ON w.k = t.k AND w.step = c.step AND w.database_id = t.database_id AND w.object_id = t.object_id
+ ORDER BY 1, 4, 2, 3`
 
 // execStatsMeasures: the Execution Stats strip's measures (DBA Dash's chooser), the default first
 var execStatsMeasures = map[string]bool{"duration": true, "cpu": true, "executions": true, "logical_reads": true, "physical_reads": true, "writes": true}
@@ -329,7 +351,9 @@ func (s *Server) Performance(w http.ResponseWriter, r *http.Request) {
 				}
 				top = n
 			}
-			parts = append(parts, part{"execstats", sqlPerfMSSQLExecStats, []any{id, from, to, step, measure, top, q.Get("db")}})
+			// the strip's own step (procStep), and the two collections' state for its empty words
+			parts = append(parts, part{"execstats", sqlPerfMSSQLExecStats, []any{id, from, to, procStep(to.Sub(from).Seconds()), measure, top, q.Get("db")}},
+				part{"execstats_state", sqlMssqlRunningState, []any{id, []string{"mssql_procstats", "mssql_funcstats"}}})
 		}
 		if db := r.URL.Query().Get("db"); db != "" {
 			cut := []any{id, from, to, step, db, r.URL.Query().Get("filegroup")}

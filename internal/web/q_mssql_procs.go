@@ -411,25 +411,40 @@ const objCols = `o.database_id, o.object_id, o.database, o.schema_name, o.object
 // sqlMSSQLObjects: DBA Dash's Object Execution (P25 F102 / F505) - the procedures, the scalar functions and the
 // triggers in ONE list, each row its kind and its Period Time (the seconds its kind's reads cover: the procedures'
 // reads, the functions' and triggers' reads); $5 the kinds asked (NULL = every kind, DBA Dash's Type filter), $6 a
-// text the schema or the name holds (case ignored; empty = any); the longest total duration first.
+// text the schema or the name holds (case ignored; empty = any); the longest total duration first, 2,000 at most.
+// The kind and the text are applied INSIDE each kind's read, before its own 2,000-row cut (objKind), so a search
+// finds an object past the cut, and a kind not asked is not read at all.
 var sqlMSSQLObjects = `
 WITH pc AS (SELECT coalesce(sum(r.interval_secs), 0)::float8 AS secs FROM pgvigil.mssql_proc_read r
              WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3),
 fc AS (SELECT coalesce(sum(r.interval_secs), 0)::float8 AS secs FROM pgvigil.mssql_func_read r
         WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3),
 o AS (
-  SELECT 'procedure'::text AS kind, ` + objCols + `, pc.secs AS period_secs FROM (` + sqlMSSQLProcs + `) o CROSS JOIN pc
+  SELECT 'procedure'::text AS kind, ` + objCols + `, pc.secs AS period_secs FROM (` + objKind(sqlMSSQLProcs, "procedure") + `) o CROSS JOIN pc
   UNION ALL
-  SELECT 'function', ` + objCols + `, fc.secs FROM (` + sqlMSSQLFuncs + `) o CROSS JOIN fc
+  SELECT 'function', ` + objCols + `, fc.secs FROM (` + objKind(sqlMSSQLFuncs, "function") + `) o CROSS JOIN fc
   UNION ALL
-  SELECT 'trigger', ` + objCols + `, fc.secs FROM (` + sqlMSSQLTriggers + `) o CROSS JOIN fc
+  SELECT 'trigger', ` + objCols + `, fc.secs FROM (` + objKind(sqlMSSQLTriggers, "trigger") + `) o CROSS JOIN fc
 )
 SELECT o.kind, ` + objCols + `, o.period_secs
   FROM o
- WHERE ($5::text[] IS NULL OR o.kind = ANY ($5::text[]))
-   AND ($6::text = '' OR strpos(lower(coalesce(o.schema_name, '') || '.' || o.object_name), lower($6::text)) > 0)
  ORDER BY o.duration_ms DESC NULLS LAST, o.database, o.object_name, o.object_id
  LIMIT 2000`
+
+// objKind: one kind's grid read (sqlMSSQLProcs, sqlMSSQLFuncs or sqlMSSQLTriggers: each ends 'LIMIT 2000') as Object
+// Execution reads it - its rows filtered by the kinds asked ($5) and the text ($6) BEFORE the cut, the longest total
+// duration first. A read that does not end so panics at start-up (a change to the grid reads is seen at once).
+func objKind(grid, kind string) string {
+	body, ok := strings.CutSuffix(grid, "\n LIMIT 2000")
+	if !ok {
+		panic("objKind: the " + kind + " read does not end with LIMIT 2000")
+	}
+	return `SELECT * FROM (` + body + `) g
+ WHERE ($5::text[] IS NULL OR '` + kind + `' = ANY ($5::text[]))
+   AND ($6::text = '' OR strpos(lower(coalesce(g.schema_name, '') || '.' || g.object_name), lower($6::text)) > 0)
+ ORDER BY g.duration_ms DESC NULLS LAST, g.database, g.object_name, g.object_id
+ LIMIT 2000`
+}
 
 // sqlMSSQLNodeObjects: Object Execution over a node's databases (P25 (i): DBA Dash's logical server and elastic pool
 // Object Execution, one grid with an instance column - the lead's Q2 (a)): sqlMSSQLObjects run for each id of $1 (an
