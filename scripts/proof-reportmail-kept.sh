@@ -61,7 +61,8 @@
 #   K16 a failed mail posts nothing: the kept row with post [hook] through the door (post_channels {hook}) and the
 #       channel badmail; its turn is answered failed; no post reaches the sink, the send's post_taken_at and posted_at
 #       stay NULL - on a turn that carried its post (post, post_channels {hook} and post_day set: review-26 proof 6).
-#       From K16 on the rows judge one UTC day: within 20 minutes of 00:00 UTC the block waits for it first (proof 11).
+#       From K16 on the rows judge one UTC day: within 30 minutes of 00:00 UTC the block waits for it first (proof 11;
+#       review-27 N2: 30, not 20 - K16, K17, K18 and K18b each allow 3 + 3 minutes).
 #   K17 THE POST: the channel mail again (the same schedule): its turn is answered sent; the mail's checks grid is worst
 #       first by its own rows; ONE post reaches the sink, its body (format json) kind 'daily checks' with the counts of
 #       that same mail (critical = its critical rows, warnings = the rest), instances = the page's Instances tile, the
@@ -70,7 +71,8 @@
 #       configured webhook channels) and post [hook].
 #   K17c THE DIALOG'S POST BOXES (review-26 go2 S4; written 11-16 16:4x before its first run): Change... on the page -
 #       the line says 'Its counts are posted to hook.', every field labelled, the hook box checked and the deadhook box
-#       not; Save with nothing changed answers done and writes nothing (post_channels still {hook}, no log row).
+#       not; Save with nothing changed answers done and writes nothing (post_channels still {hook}, no log row) -
+#       'done ... as asked', the unchanged keep's own words: a refused Save says 'not done' (review-27 S1).
 #   K18 a second turn the same day is mailed (sent) and posts nothing: the sink unchanged, its post_taken_at NULL, its
 #       post_error 'the schedule's post of <day> was taken already' (review-26 N5; written 15:5x before its first run).
 #   K18b a turn due yesterday and mailed today posts ONCE under its due day: post_day and the post's day / summary are
@@ -83,12 +85,12 @@
 #       before its first run): the kept row's route set by hand to the Summary (a page that draws no counts), its turn
 #       mailed; the send row AS THE SERVER WROTE IT holds post NULL and post_error 'the drawn page sent no counts:
 #       nothing posted', and a 'daily checks post failed' notice naming the mail and 'sent no counts' reaches the file
-#       drop; the route is put back.
+#       drop; the route is put back (read back on the kept row: review-27 N4).
 #   K19c THE KEEP'S POST LIST (review-26 go2 S5, S6, N3; written 11-16 16:4x before its first run): a daily_keep with no
 #       post field (a page loaded before the upgrade) leaves post_channels {deadhook} and writes nothing; post [hook]
 #       then post [hook, deadhook] is a change ('changed', one log row, post_channels {deadhook,hook}); with deadhook
 #       no longer recorded by the sender the dialog says 'deadhook is no longer a recorded webhook channel: Save drops
-#       it', offers hook alone and its Save keeps {hook}; post [] clears the list.
+#       it', offers hook alone and its Save answers 'done ... changed' and keeps {hook}; post [] clears the list.
 #   K20 the block's post: list: a serve whose block says post: [hook] keeps post_channels {hook} (kept_by file); a block
 #       with post: [mail] (an smtp channel) stops serve at start with 'reports.daily_checks: post: mail is not a webhook
 #       channel of the alerts: block'; a block with a webhook's URL for a name stops it with 'reports.daily_checks: post: entry 1
@@ -436,8 +438,11 @@ ok "K14: a block with 'enable:' for enabled (named with line $KBADLINE of its fi
 
 # ---- K15-K21: B20-4, the daily fleet health (worst first, the post through the alert channels, the role) ---------------
 # PGVIGIL_KROWS_GO=1 (a red run): a failed row of K15-K21 prints FAIL and the next row runs; the block fails at its end.
-# Under set -euo pipefail a bare assignment from a command that can fail (a grep that finds nothing, a query on a
-# column the tree lacks) ends the script without a word: every such line here is guarded (|| kfail, || true).
+# Under set -euo pipefail a bare assignment from a command that can fail ends the script without a word. Guarded here
+# (|| kfail, || true): a grep that may find nothing, a query on a column the tree lacks, and every curl on a serve -
+# c=$(postj ...), c=$(code ...) and login (review-27 S2: a dead serve is curl's exit 7; c is then 000 and the next
+# line's kfail says it). Left bare: reads that fail only when the store itself is gone (klive schedule_id, nposts,
+# nlog, nlive, ensure_instance) and freeport, openssl, date.
 KBAD=0
 kfail() { if [[ ${PGVIGIL_KROWS_GO:-0} == 1 ]]; then echo "FAIL $*"; KBAD=$((KBAD + 1)); else fail "$@"; fi; }
 KROW=0
@@ -480,7 +485,8 @@ for l in open(src).read().splitlines():
 open(out, 'w').write('\n'.join(res) + '\n')
 PY
 ksender() { "$BIN" alerts -config "$WORK/cfg-kpost.yaml" >> "$WORK/ksender.log" 2>&1 || true; }
-kwaitsent() {   # kwaitsent <id>: this part's sender until the mail is answered (3 minutes)
+kwaitsent() {   # kwaitsent <id>: this part's sender until the mail is answered (3 minutes); no id (a failed kturn) = 1 at once
+  [[ -n ${1:-} ]] || return 1
   for _ in $(seq 1 36); do
     ksender
     [[ $(q "select count(*) from pgvigil.report_mail_sends where send_id = $1 and done_at is not null") == 1 ]] && return 0
@@ -568,7 +574,7 @@ if seq != want: sys.exit(f'instances in the order {seq[:6]}, worst first is {wan
 PY
 }
 node "$WORK/kord.mjs" "$CDP" "$U" "$TOKEN" '#/checks?w=24h' > "$WORK/kord.json" || kfail "K15: the driver: $(cat "$WORK/kord.json")"
-python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); json.dump(d["rows"], open(sys.argv[2], "w"))' "$WORK/kord.json" "$WORK/kord-rows.json" || kfail "K15: no checks grid on the page: $(head -c 400 "$WORK/kord.json")"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["rows"] is None and sys.exit(1); json.dump(d["rows"], open(sys.argv[2], "w"))' "$WORK/kord.json" "$WORK/kord-rows.json" || kfail "K15: no checks grid on the page: $(head -c 400 "$WORK/kord.json")"
 KSEEN=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(" ".join(sorted({i for _, i in r if i.startswith("k15-")})))' "$WORK/kord-rows.json" 2>/dev/null || true)
 [[ $KSEEN == "k15-aaa k15-zzz" ]] || kfail "K15: the seeded instances on the page: '$KSEEN' (the seed did not reach the page: the row would test nothing)"
 why=$(kwf "$WORK/kord-rows.json" 2>&1) || kfail "K15: the Daily checks page is not worst first: $why"
@@ -602,13 +608,15 @@ PY
 kok "K15: the Daily checks page draws worst first (k15-zzz's two critical before k15-aaa's one, each instance's rows together, by the screen's own rows); its section carries the post's numbers equal to its tiles"
 
 # ---- K16: a failed mail posts nothing -----------------------------------------------------------------------------------
-# K16-K19b judge one UTC day (a second turn the same day, yesterday's turn): within 20 minutes of 00:00 UTC, wait for it
-if (( 10#$(date -u +%H%M) >= 2340 )); then
+# K16-K19b judge one UTC day (a second turn the same day, yesterday's turn): within 30 minutes of 00:00 UTC, wait for it
+# (K16, K17, K18 and K18b each allow 3 + 3 minutes: 20 was under the rows' own worst case). The wait is 1805 s at most;
+# a box job has no time limit of its own (its box stops after 4 h of run), and a T4 job runs about 19 minutes.
+if (( 10#$(date -u +%H%M) >= 2330 )); then
   echo "K16: waits $(( 86400 - $(date -u +%s) % 86400 + 5 )) s for 00:00 UTC: the rows from here judge one UTC day"
   sleep $(( 86400 - $(date -u +%s) % 86400 + 5 ))
 fi
 KROW=$KBAD
-c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"badmail","post":["hook"]}')
+c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"badmail","post":["hook"]}') || true
 [[ $c == 200 && $(jget "d['outcome']") == done && $(klive "post_channels") == "{hook}" && $(klive channel) == badmail ]] || kfail "K16: the keep with post [hook]: $c $(cat "$WORK/body"); post_channels $(klive "post_channels")"
 KID=$(klive schedule_id); P0=$(nposts)
 SEND=$(kturn "$KID" q) || kfail "K16: no serve queued the turn in 3 minutes"
@@ -623,7 +631,7 @@ kok "K16: the kept row with post [hook] and the channel badmail: its turn (mail 
 
 # ---- K17: the post --------------------------------------------------------------------------------------------------------
 KROW=$KBAD
-c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"mail","post":["hook"]}')
+c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"mail","post":["hook"]}') || true
 [[ $c == 200 && $(klive schedule_id) == "$KID" && $(klive channel) == mail && $(klive "post_channels") == "{hook}" ]] || kfail "K17: the keep with the channel mail: $c $(cat "$WORK/body")"
 [[ $(kget "$U") == 200 && $(jget "sorted(d['daily']['post_choices'])") == "['deadhook', 'hook']" && $(jget "d['daily']['post']") == "['hook']" ]] || kfail "K17: the page's state: $(cat "$WORK/body")"
 P0=$(nposts)
@@ -694,8 +702,8 @@ KROW=$KBAD
 L5=$(nlog)
 kdrive change '#/checks?w=24h' 'post@pgvigil.test' > "$WORK/kd.json" || kfail "K17c: Change...: $(cat "$WORK/kd.json")"
 [[ $(kd "d['line']") == *"Its counts are posted to hook."* && $(kd "d['title']") == "Change the daily mail" && $(kd "d['unlabelled']") == 0 \
-   && $(kd "sorted(map(tuple, d['posts']))") == "[('deadhook', False), ('hook', True)]" && $(kd "d['said']") == *done* ]] \
-  || kfail "K17c: Change...'s dialog (the line, every field labelled, hook checked and deadhook not, Save done): $(cat "$WORK/kd.json")"
+   && $(kd "sorted(map(tuple, d['posts']))") == "[('deadhook', False), ('hook', True)]" && $(kd "d['said']") == "done "*"as asked"* ]] \
+  || kfail "K17c: Change...'s dialog (the line, every field labelled, hook checked and deadhook not, Save 'done ... as asked'): $(cat "$WORK/kd.json")"
 [[ $(klive schedule_id) == "$KID" && $(klive "post_channels") == "{hook}" && $(klive channel) == mail && $(klive "recipients[1]") == post@pgvigil.test && $(nlog) == "$L5" ]] \
   || kfail "K17c: a Save with nothing changed: schedule $(klive schedule_id) (was $KID), post_channels $(klive "post_channels"), $(( $(nlog) - L5 )) log row(s) written"
 kok "K17c: Change...'s dialog on the kept mail: the line names the post, every field labelled, the hook box checked and deadhook's not; its Save with nothing changed answered done and wrote nothing"
@@ -728,8 +736,8 @@ kok "K18b: a turn due yesterday and mailed today (mail $SEND3) posted once under
 
 # ---- K19: a failed post is alerted ------------------------------------------------------------------------------------------
 KROW=$KBAD
-c=$(postj reportmail '{"op":"daily_drop"}'); [[ $c == 200 && $(nlive) == 0 ]] || kfail "K19: the drop: $c $(cat "$WORK/body")"
-c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"mail","post":["deadhook"]}')
+c=$(postj reportmail '{"op":"daily_drop"}') || true; [[ $c == 200 && $(nlive) == 0 ]] || kfail "K19: the drop: $c $(cat "$WORK/body")"
+c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"mail","post":["deadhook"]}') || true
 [[ $c == 200 && $(klive "post_channels") == "{deadhook}" && $(klive schedule_id) != "$KID" ]] || kfail "K19: the keep with post [deadhook]: $c $(cat "$WORK/body")"
 KID=$(klive schedule_id)
 SEND=$(kturn "$KID" q) || kfail "K19: no serve queued the turn in 3 minutes"
@@ -748,6 +756,7 @@ q "update pgvigil.report_mail_schedules set route = '#/summary' where schedule_i
 SEND4=$(kturn "$KID" q '2 days') || kfail "K19b: no serve queued the turn in 3 minutes"
 kwaitsent "$SEND4" || kfail "K19b: mail $SEND4 not answered in 3 minutes"
 q "update pgvigil.report_mail_schedules set route = '#/checks?w=24h' where schedule_id = $KID" >/dev/null 2>&1 || kfail "K19b: the kept row's route could not be put back"
+[[ $(klive route) == '#/checks?w=24h' ]] || kfail "K19b: the kept row's route after the put-back is '$(klive route)', not '#/checks?w=24h'"
 [[ $(q "select outcome || ' ' || route from pgvigil.report_mail_sends where send_id = $SEND4") == "sent #/summary" \
    && $(q "select (post is null and post_taken_at is null and post_error like 'the drawn page sent no counts%')::text from pgvigil.report_mail_sends where send_id = $SEND4") == true ]] \
   || kfail "K19b: mail $SEND4 as the server wrote it: $(q "select outcome, route, post is null, post_error, coalesce(error, render_error) from pgvigil.report_mail_sends where send_id = $SEND4")"
@@ -758,22 +767,22 @@ kok "K19b: a turn whose page drew no counts (the kept row's route set to the Sum
 KROW=$KBAD
 KKEEP='"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"mail"'
 L6=$(nlog)
-c=$(postj reportmail "{$KKEEP}")
+c=$(postj reportmail "{$KKEEP}") || true
 [[ $c == 200 && $(jget "d['outcome']") == done && $(klive schedule_id) == "$KID" && $(klive "post_channels") == "{deadhook}" && $(nlog) == "$L6" ]] \
   || kfail "K19c: a keep with no post field (a page loaded before the upgrade): $c $(cat "$WORK/body"); post_channels $(klive "post_channels"), $(( $(nlog) - L6 )) log row(s) written"
-c=$(postj reportmail "{$KKEEP,\"post\":[\"hook\"]}")
+c=$(postj reportmail "{$KKEEP,\"post\":[\"hook\"]}") || true
 [[ $c == 200 && $(klive "post_channels") == "{hook}" ]] || kfail "K19c: the keep with post [hook]: $c $(cat "$WORK/body"); post_channels $(klive "post_channels")"
 L7=$(nlog)
-c=$(postj reportmail "{$KKEEP,\"post\":[\"hook\",\"deadhook\"]}")
+c=$(postj reportmail "{$KKEEP,\"post\":[\"hook\",\"deadhook\"]}") || true
 [[ $c == 200 && $(jget "d['detail']") == *changed* && $(klive "post_channels") == "{deadhook,hook}" && $(nlog) == $((L7 + 1)) ]] \
   || kfail "K19c: one more post channel is a change: $c $(cat "$WORK/body"); post_channels $(klive "post_channels"), $(( $(nlog) - L7 )) log row(s) written"
 # deadhook as a channel the sender no longer records (no sender runs inside this row); put back after
 q "update pgvigil.alert_channels set is_configured = false where name = 'deadhook'" >/dev/null || kfail "K19c: deadhook could not be marked as no longer recorded"
 kdrive change '#/checks?w=24h' 'post@pgvigil.test' > "$WORK/kd.json" || kfail "K19c: Change...: $(cat "$WORK/kd.json")"
-[[ $(kd "d['note']") == *"deadhook is no longer a recorded webhook channel: Save drops it"* && $(kd "sorted(map(tuple, d['posts']))") == "[('hook', True)]" && $(kd "d['said']") == *done* \
+[[ $(kd "d['note']") == *"deadhook is no longer a recorded webhook channel: Save drops it"* && $(kd "sorted(map(tuple, d['posts']))") == "[('hook', True)]" && $(kd "d['said']") == "done "*changed* \
    && $(klive "post_channels") == "{hook}" ]] || kfail "K19c: the dialog with a kept channel that is gone: $(cat "$WORK/kd.json"); post_channels $(klive "post_channels")"
 q "update pgvigil.alert_channels set is_configured = true where name = 'deadhook'" >/dev/null || kfail "K19c: deadhook could not be put back"
-c=$(postj reportmail "{$KKEEP,\"post\":[]}")
+c=$(postj reportmail "{$KKEEP,\"post\":[]}") || true
 [[ $c == 200 && $(klive schedule_id) == "$KID" && $(klive "post_channels") == "-" ]] || kfail "K19c: the keep with post []: $c $(cat "$WORK/body"); post_channels $(klive "post_channels")"
 kok "K19c: a keep with no post field left {deadhook} and wrote nothing; post [hook] then [hook, deadhook] was a change; the dialog named the kept channel that is gone and its Save dropped it; post [] cleared the list"
 
@@ -781,10 +790,10 @@ kok "K19c: a keep with no post field left {deadhook} and wrote nothing; post [ho
 KROW=$KBAD
 KVUSER=proofview; KVPW=$(openssl rand -hex 12)
 PGVIGIL_PASSWORD=$KVPW "$BIN" user add -config "$CFG" -role viewer $KVUSER >/dev/null 2>&1 || kfail "K21: user add -role viewer"
-login "$WORK/jarv" "$KVUSER" "$KVPW"
+login "$WORK/jarv" "$KVUSER" "$KVPW" || kfail "K21: the viewer's login"
 L4=$(nlog); N4=$(nlive)
 [[ $(kget "$U" "$WORK/jarv") == 200 && $(jget "d['daily']['writable']") == False && $(jget "d['daily']['reason']") == *"changing a report mail schedule needs the admin role: $KVUSER is a viewer"* ]] || kfail "K21: a viewer's part=daily: $(cat "$WORK/body")"
-c=$(code -b "$WORK/jarv" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["v@pgvigil.test"],"channel":"mail"}' "$U/api/reportmail")
+c=$(code -b "$WORK/jarv" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["v@pgvigil.test"],"channel":"mail"}' "$U/api/reportmail") || true
 [[ $c == 403 && $(jget "d['error']") == *"changing a report mail schedule needs the admin role: $KVUSER is a viewer"* && $(nlog) == "$L4" && $(nlive) == "$N4" ]] || kfail "K21: a viewer's daily_keep: $c $(cat "$WORK/body")"
 kok "K21: a viewer's Daily checks mail is read only with the role's words (part=daily writable false; daily_keep 403); nothing kept"
 
