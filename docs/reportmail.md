@@ -129,11 +129,11 @@ that day once more); a post that fails, and a sent mail whose page sent no count
 (`post_error`) and alerted on every channel as `daily checks post failed`, the mail itself having gone. A `post:`
 channel added to `alerts:` together with the block waits, like `channel:`, until the sender has recorded it (tried
 again each minute). In an enabled block, a `post:` name that is not a webhook channel of the same file's `alerts:`
-stops `pgvigil serve` at its start (`reports.daily_checks: post: <name> is not a webhook channel of alerts:`); an entry that cannot be a
-channel's name at all - a webhook's URL pasted where its channel's name belongs - is refused by its place (`post:
-entry 1 of the list is not a webhook channel of alerts:`) and never printed, so the URL reaches neither the log nor
-`pgvigil report`. The page's dialog offers only the webhook channels the sender records; a kept channel the sender
-no longer records has no box there, and the dialog says that its Save drops it.
+stops `pgvigil serve` at its start (`reports.daily_checks: post: <name> is not a webhook channel of alerts:`); an
+entry that cannot be a channel's name at all - a webhook's URL pasted where its channel's name belongs - is refused
+by its place (`post: entry 1 of the list is not a webhook channel of alerts:`) and never printed, so the URL reaches
+neither the log nor `pgvigil report`. The page's dialog offers only the webhook channels the sender records; a kept
+channel the sender no longer records has no box there, and the dialog says that its Save drops it.
 
 ## How the mail equals the window
 
