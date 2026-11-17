@@ -14,7 +14,7 @@ import (
 // Uptime reads pg_threshold(instance, 'uptime') (the instance's own, a tag's, the root's) and DBA Dash's defaults,
 // critical under 12 hours since the start and warning under 48, until one is set; Memory Dump reads
 // pg_threshold(instance, 'crash') the same way (DBA Dash's 48 / 168 hours, 0117).
-const sqlMSSQLSummaryCells = `
+var sqlMSSQLSummaryCells = `
 WITH inst AS (
   SELECT instance_id, name FROM pgvigil.instances WHERE engine = 'sqlserver' AND is_active
 ), grp(key, collections) AS (
@@ -29,7 +29,7 @@ WITH inst AS (
          ('qs', ARRAY['mssql_querystore']), ('audit', ARRAY['mssql_audit']),
          ('checkdb', ARRAY['mssql_checks']), ('logspace', ARRAY['mssql_checks']), ('corruption', ARRAY['mssql_checks']),
          ('alerts', ARRAY['mssql_checks']), ('identity', ARRAY['mssql_identity']), ('elasticpool', ARRAY['mssql_pool']),
-         ('custom', ARRAY['mssql_custom'])
+         ('custom', ARRAY['mssql_custom']), ('servicebroker', ARRAY['mssql_service_broker'])
 ), runs AS (
   -- the last run of each of the group's collections (collection_dates keeps one row per collection): old = older
   -- than three of its intervals, the rule of the daily check 'collection stale' ($1 the intervals, $2 the age for
@@ -64,7 +64,7 @@ WITH inst AS (
               WHEN key = 'custom' AND failed = 0 AND NOT EXISTS (
                 SELECT 1 FROM pgvigil.custom_checks cc WHERE cc.instance_id = runs.instance_id AND cc.is_present
                    AND cc.snapshot_at >= now() - make_interval(secs => greatest(2 * cc.every_secs, 300))) THEN 'n/a'
-              WHEN fresh > 0 THEN 'ok' WHEN old > 0 THEN 'stale' WHEN failed > 0 THEN 'failed' WHEN skipped > 0 OR key IN ('elasticpool', 'custom') THEN 'n/a' ELSE 'never' END AS state
+              WHEN fresh > 0 THEN 'ok' WHEN old > 0 THEN 'stale' WHEN failed > 0 THEN 'failed' WHEN skipped > 0 OR key IN ('elasticpool', 'custom', 'servicebroker') THEN 'n/a' ELSE 'never' END AS state
     FROM runs
 ), f AS (
   SELECT instance_id, severity, setting, value, detail,
@@ -251,6 +251,15 @@ WITH inst AS (
     FROM st LEFT JOIN pgvigil.custom_findings cf ON cf.instance_id = st.instance_id
    WHERE st.key = 'custom'
    GROUP BY st.instance_id
+  UNION ALL
+  -- DBA Dash's Service Broker (control audit D5; Summary_Upd.sql L193-196: ServiceBrokerInstanceInfo's status): D4 a's
+  -- instance status (sqlBrokerInstance at DBA Dash's root-default thresholds) - the worst of the queues, databases,
+  -- endpoint and errors, its issues the detail; N/A with nothing to report. The collection is off by default (DBA Dash's
+  -- too), so one never run is 'n/a' above.
+  SELECT i.instance_id, 'servicebroker', true, (b.service_broker_status = 1)::int, (b.service_broker_status = 2)::int,
+         CASE WHEN b.service_broker_status = 3 THEN 'N/A' END,
+         CASE WHEN b.issues IS NULL THEN '{}'::text[] ELSE string_to_array(b.issues, '; ') END, NULL::timestamptz
+    FROM inst i CROSS JOIN LATERAL (` + strings.ReplaceAll(sqlBrokerInstance, "$1", "i.instance_id") + `) b
 )
 SELECT c.instance_id AS "instance_id@inst", c.key, st.state, c.sampled, coalesce(c.critical, 0) AS critical, coalesce(c.warning, 0) AS warning,
        c.value, c.detail AS "detail@fsummary", st.read_at, st.err, c.since
