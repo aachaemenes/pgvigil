@@ -140,6 +140,23 @@
 //   G-chart           a chart's menu unchanged (ui.ts showMenu: Copy image ... Export Excel): green on both sides
 //   G-big             a 10,000-row grid's menu opens (.tm-menu); its open time said
 //   G-themes          (PGVIGIL_MENU_SHOTS) the menu and the transpose shot light and dark, the menu's background differs
+//   P  the parity rows of P01 / P02 / P04 (the lead 11-16 20:48; written 11-16 22:3x before the build, red first on
+//      rel-j16-last 65083820: every P case FAILs there with its own words; PGVIGIL_MENU_ONLY=P runs them alone)
+//   P-chooser         B05, the Columns... panel (DBA Dash's Columns dialog: All, None, Toggle Selected): its buttons hold
+//                     'All', 'None' and 'Toggle selected'; None unticks every column but the grid's first, which stays
+//                     with the words 'a grid keeps one column' (a grid is never drawn with none); All ticks every drawn
+//                     column again; two names picked in the list (a click, then Ctrl+click) and Toggle selected: those
+//                     two columns hidden, pressed again shown; the instances grid's rows carry keys its columns do not
+//                     draw - each is listed after the drawn ones, unticked, marked 'not drawn by this page'; ticked, the
+//                     grid gains a column of that key holding each row's own value (instance_id: the API's ids in the
+//                     grid's order), in the copies too; unticked, it is gone; Reset this grid removes it
+//   P-rowhead         B07, Row Headers > Hide / Show / Show with Row Numbers on the header's and a cell's menu, exactly
+//                     those three, one ticked (Hide on a fresh grid; the single 'Row numbers' item is gone); Show with
+//                     Row Numbers: the CSS counter of G-rownum, ticked on reopening; Show: a row header with no number
+//                     (table.gt-rowhead, no counter); Hide: neither class; kept after a reload
+//   P-freeze          B09, on platform's header: 'Freeze Column' unticked; picked - the columns up to platform frozen
+//                     (table[data-gt-frozen], platform's th sticky), the item ticked on reopening, 'Unfreeze Column'
+//                     offered; Unfreeze Column - nothing frozen, Freeze Column unticked again, no Unfreeze Column item
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1153,6 +1170,89 @@ await guard('G-big', async () => {
     return { ms: Math.round(ms), tm: !!document.querySelector('.tm-menu'), rows: t.getAttribute('aria-rowcount') ?? t.dataset.rows ?? '' }; })()`);
   await gmClose(); await closeDialogs();
   check('G-big', !!t && t.tm, t ? `the menu on a 10,000-row grid opened in ${t.ms} ms (${t.tm ? '.tm-menu' : 'no .tm-menu'}; rows ${t.rows})` : 'the grid did not draw');
+});
+
+// ---- P: the parity rows of P01 / P02 / P04 (red first on rel-j16-last 65083820) ------------------------------------------
+const gmTicks = () => ev(`[...document.querySelectorAll('.tm-menu')].map(m => [...m.querySelectorAll(':scope > button')].map(b => { const c = b.cloneNode(true);
+  c.querySelectorAll('.off-reason, .tm-arrow, .tm-check').forEach(x => x.remove()); return { label: c.textContent.replace(/▸$/, '').trim(), ticked: b.getAttribute('aria-checked') === 'true' }; }))`);
+const PANEL = `document.querySelector('.gt-panel')`;
+const pButtons = () => ev(`[...(${PANEL}?.querySelectorAll('button') ?? [])].map(b => b.textContent.trim())`);
+const pPress = label => ev(`(() => { const b = [...(${PANEL}?.querySelectorAll('button') ?? [])].find(x => x.textContent.trim() === ${JSON.stringify(label)}); if (!b || b.getAttribute('aria-disabled') === 'true') return false; b.click(); return true; })()`);
+const pList = () => ev(`[...(${PANEL}?.querySelectorAll('.gt-col') ?? [])].map(r => ({ name: (r.querySelector('label:first-child')?.textContent ?? '').trim(), ticked: !!r.querySelector('label:first-child input')?.checked, undrawn: r.hasAttribute('data-gt-undrawn'), words: r.textContent.replace(/\\s+/g, ' ').trim() }))`);
+const pTick = name => ev(`(() => { const r = [...(${PANEL}?.querySelectorAll('.gt-col') ?? [])].find(x => (x.querySelector('label:first-child')?.textContent ?? '').trim() === ${JSON.stringify(name)}); const i = r?.querySelector('label:first-child input'); if (!i) return false; i.click(); return true; })()`);
+const pName = (name, mods = {}) => ev(`(() => { const r = [...(${PANEL}?.querySelectorAll('.gt-col') ?? [])].find(x => (x.querySelector('label:first-child')?.textContent ?? '').trim() === ${JSON.stringify(name)}); const n = r?.querySelector('.gt-col-name'); if (!n) return false; n.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ...${JSON.stringify(mods)} })); return true; })()`);
+const thOf = async label => `${GT}.querySelectorAll('thead tr:first-child th')[${await ev(gIx(label))}]`;
+
+await guard('P-chooser', async () => {
+  await gFresh();
+  const heads0 = await gHeads();
+  await gmOpen(await thOf('sessions')); const opened = await gmPick('Columns...'); await sleep(300);
+  const btns = await pButtons(), list0 = await pList();
+  const none = await pPress('None'); await sleep(200);
+  const headsNone = await gHeads(), wordsNone = await ev(`${PANEL}?.textContent.includes('a grid keeps one column') ?? false`);
+  const all = await pPress('All'); await sleep(200);
+  const headsAll = await gHeads();
+  const sel = await pName('platform') && await pName('sessions', { ctrlKey: true });
+  const tog1 = await pPress('Toggle selected'); await sleep(200); const headsTog = await gHeads();
+  const tog2 = await pPress('Toggle selected'); await sleep(200); const headsBack = await gHeads();
+  // a key the rows carry and the page does not draw: listed unticked, drawn on a tick with each row's own value
+  const ids = (await api('instances')).rows?.length ?? 0;
+  const und = list0.filter(x => x.undrawn), idRow = und.find(x => x.name === 'instance_id');
+  const ticked = await pTick('instance_id'); await sleep(300);
+  const headsId = await gHeads(), colId = headsId.includes('instance_id') ? await gCol('instance_id') : [];
+  const copyId = headsId.includes('instance_id') ? await gmCopy(gCell('instance_id'), 'Copy', 'Column') : null;
+  await gmOpen(await thOf('sessions')); await gmPick('Columns...'); await sleep(300);
+  const unt = await pTick('instance_id'); await sleep(300); const headsGone = await gHeads();
+  await gmClose(); await gReset();
+  check('P-chooser', opened && ['All', 'None', 'Toggle selected'].every(b => btns.includes(b))
+    && none && headsNone.length === 1 && headsNone[0] === heads0[0] && wordsNone
+    && all && JSON.stringify(headsAll) === JSON.stringify(heads0)
+    && sel && tog1 && !headsTog.includes('platform') && !headsTog.includes('sessions') && headsTog.length === heads0.length - 2
+    && tog2 && JSON.stringify(headsBack) === JSON.stringify(heads0)
+    && !!idRow && !idRow.ticked && /not drawn by this page/.test(idRow.words) && und.every(x => !x.ticked)
+    && ticked && headsId.includes('instance_id') && colId.length === ids && ids > 0 && colId.every(v => /^\d+$/.test(v))
+    && (copyId ?? '').split('\n').filter(Boolean).length === ids + 1
+    && unt && !headsGone.includes('instance_id'),
+    `the panel's buttons ${JSON.stringify(btns)}; None left ${JSON.stringify(headsNone)} (words ${wordsNone}); All ${headsAll.length} of ${heads0.length}; Toggle selected hid platform and sessions ${tog1 && !headsTog.includes('platform') && !headsTog.includes('sessions')}, then showed them ${tog2 && JSON.stringify(headsBack) === JSON.stringify(heads0)}; undrawn keys listed ${JSON.stringify(und.map(x => x.name)).slice(0, 200)}; instance_id ticked: ${colId.length} of ${ids} cells, in Copy > Column ${(copyId ?? '').split('\n').filter(Boolean).length} lines; unticked gone ${unt && !headsGone.includes('instance_id')}`);
+});
+
+await guard('P-rowhead', async () => {
+  await gFresh();
+  const subH = await gmSub(await thOf('sessions'), 'Row Headers'), subC = await gmSub(gCell('sessions'), 'Row Headers');
+  const want = ['Hide', 'Show', 'Show with Row Numbers'];
+  const ticks = async () => { await gmOpen(gCell('sessions')); const okk = await gmPick('Row Headers'); const lv = okk ? await gmTicks() : []; await gmClose(); return (lv[1] ?? []).filter(x => x.ticked).map(x => x.label); };
+  const look = () => ev(`(() => { const t = ${GT}, tr = ${gRows}[0]; if (!t || !tr) return null; const xs = [tr, ...tr.children];
+    return { rownum: t.classList.contains('gt-rownum'), rowhead: t.classList.contains('gt-rowhead'), counter: xs.some(x => /counter\\(/.test(getComputedStyle(x, '::before').content)) }; })()`);
+  const top = ((await gmOpen(gCell('sessions')))[0] ?? []).map(x => x.label); await gmClose();
+  const t0 = await ticks(), l0 = await look();
+  await gmOpen(gCell('sessions')); const p1 = await gmPick('Row Headers', 'Show with Row Numbers'); await sleep(300); const t1 = await ticks(), l1 = await look();
+  await gmOpen(gCell('sessions')); const p2 = await gmPick('Row Headers', 'Show'); await sleep(300); const t2 = await ticks(), l2 = await look();
+  await send('Page.reload'); await sleep(1500); await go('#/instances'); const l2b = await look();
+  await gmOpen(gCell('sessions')); const p3 = await gmPick('Row Headers', 'Hide'); await sleep(300); const t3 = await ticks(), l3 = await look();
+  await gReset();
+  check('P-rowhead', JSON.stringify(subH) === JSON.stringify(want) && JSON.stringify(subC) === JSON.stringify(want) && !top.includes('Row numbers')
+    && JSON.stringify(t0) === '["Hide"]' && !!l0 && !l0.rownum && !l0.rowhead
+    && p1 && JSON.stringify(t1) === '["Show with Row Numbers"]' && !!l1 && l1.counter
+    && p2 && JSON.stringify(t2) === '["Show"]' && !!l2 && l2.rowhead && !l2.counter && !!l2b && l2b.rowhead && !l2b.counter
+    && p3 && JSON.stringify(t3) === '["Hide"]' && !!l3 && !l3.rownum && !l3.rowhead && !l3.counter,
+    `Row Headers on the header ${JSON.stringify(subH)}, on a cell ${JSON.stringify(subC)}; 'Row numbers' still at the top ${top.includes('Row numbers')}; ticked fresh ${JSON.stringify(t0)}; Show with Row Numbers ${JSON.stringify(t1)} ${JSON.stringify(l1)}; Show ${JSON.stringify(t2)} ${JSON.stringify(l2)}, after a reload ${JSON.stringify(l2b)}; Hide ${JSON.stringify(t3)} ${JSON.stringify(l3)}`);
+});
+
+await guard('P-freeze', async () => {
+  await gFresh();
+  const th = await thOf('platform');
+  const item = async label => { const lv = await (async () => { await gmOpen(th); return gmTicks(); })(); await gmClose(); return (lv[0] ?? []).find(x => x.label === label) ?? null; };
+  const frozen = () => ev(`(() => { const t = ${GT}, h = ${th}; return { on: !!t?.hasAttribute('data-gt-frozen'), sticky: !!h && getComputedStyle(h).position === 'sticky' && getComputedStyle(h).left !== 'auto' }; })()`);
+  const f0 = await item('Freeze Column'), u0 = await item('Unfreeze Column'), s0 = await frozen();
+  await gmOpen(th); const p1 = await gmPick('Freeze Column'); await sleep(300);
+  const f1 = await item('Freeze Column'), u1 = await item('Unfreeze Column'), s1 = await frozen();
+  await gmOpen(th); const p2 = await gmPick('Unfreeze Column'); await sleep(300);
+  const f2 = await item('Freeze Column'), u2 = await item('Unfreeze Column'), s2 = await frozen();
+  await gReset();
+  check('P-freeze', !!f0 && !f0.ticked && !u0 && !!s0 && !s0.on
+    && p1 && !!f1 && f1.ticked && !!u1 && !!s1 && s1.on && s1.sticky
+    && p2 && !!f2 && !f2.ticked && !u2 && !!s2 && !s2.on,
+    `platform's header: Freeze Column ${JSON.stringify(f0)}, Unfreeze Column ${JSON.stringify(u0)}, frozen ${JSON.stringify(s0)}; after Freeze Column ${JSON.stringify(f1)} / ${JSON.stringify(u1)} / ${JSON.stringify(s1)}; after Unfreeze Column ${JSON.stringify(f2)} / ${JSON.stringify(u2)} / ${JSON.stringify(s2)}`);
 });
 
 if (shots) await guard('G-themes', async () => {
