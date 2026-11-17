@@ -27,6 +27,9 @@ import (
 //	              history metrics (sqlMSSQLProcHistory)
 //	  compare, compare_windows   with compare=prev|day|week: PerformanceMonitor's compare of the window against
 //	              the same span earlier, and the two windows' reads (sqlMSSQLProcCompare)
+//	  func_state  the mssql_funcstats collection's last run
+//	  functions   the scalar functions that ran without inlining, as procs, with the inlineability mark (sqlMSSQLFuncs)
+//	  triggers    the triggers, as procs, with the scope of a DDL or logon trigger (sqlMSSQLTriggers)
 //
 // The extremes (0342): min_ / max_cpu_ms, _duration_ms, _logical_reads, _physical_reads, _logical_writes and _spills -
 // the smallest and the largest single execution the server kept for the plans that ran in the window, each since
@@ -286,10 +289,102 @@ func dbFilter(r *http.Request) (any, error) {
 	return n, nil
 }
 
-const sqlMSSQLFuncs = `SELECT $1::int AS database_id, $2::timestamptz AS f, $3::timestamptz AS t, $4::int AS db WHERE false`
-const sqlMSSQLTriggers = sqlMSSQLFuncs
+// The functions and the triggers (0343, the collection mssql_funcstats): the procedures' grid shape over
+// mssql_func_sample, one kind each, the busiest CPU first; the per-minute figures over the seconds the functions'
+// own reads cover (mssql_func_read). $1 instance, $2 and $3 the window, $4 the database's id (NULL = every database).
+// The names: as procDBNames, from the functions' and triggers' reads.
+const funcDBNames = `
+  SELECT DISTINCT ON (s.database_id) s.database_id, coalesce(s.database_name, 'database ' || s.database_id) AS database
+    FROM pgvigil.mssql_func_sample s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+   ORDER BY s.database_id, (s.database_name IS NULL), s.snapshot_at DESC`
 
-// procsParts: the tab's parts that every read asks for (database: db=, nil = every database).
+// funcCover and funcAgg / funcCols: what the two parts share - the covered seconds, the sums and the extremes per
+// object, and their columns as the procedures' part returns them (spills apart: the function view has none).
+const funcCover = `cover AS (
+  SELECT coalesce(sum(r.interval_secs), 0)::float8 AS secs FROM pgvigil.mssql_func_read r
+   WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
+)`
+
+const funcAgg = `s.database_id, s.object_id,
+         max(s.schema_name) AS schema_name, max(s.object_name) AS object_name, max(s.type_desc) AS type_desc,
+         sum(s.executions)::bigint AS executions, sum(s.cpu_us)::bigint AS cpu_us, sum(s.duration_us)::bigint AS duration_us,
+         sum(s.logical_reads)::bigint AS logical_reads, sum(s.physical_reads)::bigint AS physical_reads,
+         sum(s.logical_writes)::bigint AS logical_writes, count(*) AS intervals, max(s.snapshot_at) AS last_seen,
+         max(s.executions * 60.0 / nullif(s.interval_secs, 0)) AS max_executions_min,
+         min(s.min_cpu_us) AS min_cpu_us, max(s.max_cpu_us) AS max_cpu_us,
+         min(s.min_duration_us) AS min_duration_us, max(s.max_duration_us) AS max_duration_us,
+         min(s.min_logical_reads) AS min_logical_reads, max(s.max_logical_reads) AS max_logical_reads,
+         min(s.min_physical_reads) AS min_physical_reads, max(s.max_physical_reads) AS max_physical_reads,
+         min(s.min_logical_writes) AS min_logical_writes, max(s.max_logical_writes) AS max_logical_writes`
+
+const funcCols = `p.database_id, p.object_id, n.database, p.schema_name, coalesce(p.object_name, 'object ' || p.object_id) AS object_name,
+       p.object_name IS NOT NULL AS named, p.type_desc, p.executions,
+       round((p.executions * 60 / nullif(cover.secs, 0))::numeric, 2) AS executions_min,
+       round(p.max_executions_min::numeric, 2) AS max_executions_min,
+       round(p.duration_us / 1000.0, 1) AS duration_ms,
+       round((p.duration_us / 1000.0 / nullif(cover.secs, 0))::numeric, 3) AS duration_ms_sec,
+       round(p.duration_us / 1000.0 / nullif(p.executions, 0), 3) AS avg_duration_ms,
+       round(p.cpu_us / 1000.0, 1) AS cpu_ms,
+       round((p.cpu_us / 1000.0 / nullif(cover.secs, 0))::numeric, 3) AS cpu_ms_sec,
+       round(p.cpu_us / 1000.0 / nullif(p.executions, 0), 3) AS avg_cpu_ms,
+       p.logical_reads, round(p.logical_reads::numeric / nullif(p.executions, 0), 1) AS avg_logical_reads,
+       p.physical_reads, round(p.physical_reads::numeric / nullif(p.executions, 0), 1) AS avg_physical_reads,
+       p.logical_writes, round(p.logical_writes::numeric / nullif(p.executions, 0), 1) AS avg_logical_writes,
+       p.intervals, p.last_seen,
+       round(p.min_cpu_us / 1000.0, 3) AS min_cpu_ms, round(p.max_cpu_us / 1000.0, 3) AS max_cpu_ms,
+       round(p.min_duration_us / 1000.0, 3) AS min_duration_ms, round(p.max_duration_us / 1000.0, 3) AS max_duration_ms,
+       p.min_logical_reads, p.max_logical_reads, p.min_physical_reads, p.max_physical_reads,
+       p.min_logical_writes, p.max_logical_writes`
+
+// sqlMSSQLFuncs: the scalar functions that ran without inlining (the server lists no table-valued function and no
+// scalar function it inlined), with the mark from sys.sql_modules as last read (mssql_func_inline): no row, or a
+// figure not read = 'not read' (an earlier version than 2019, a module the login cannot see, a failed read);
+// is_inlineable 0 = 'not inlineable' (the definition's constructs); is_inlineable 1 and inline_type 0 = 'inlining
+// off' (INLINE = OFF on an inlineable function); both 1 = no mark (it ran without inlining for the call's own
+// reason: a hint, the database's setting or compatibility level, the form of the call). inline_read_at: when that
+// read was taken, by the server's clock.
+const sqlMSSQLFuncs = `
+WITH dbn AS (` + funcDBNames + `), ` + funcCover + `, p AS (
+  SELECT ` + funcAgg + `
+    FROM pgvigil.mssql_func_sample s
+   WHERE s.instance_id = $1 AND s.kind = 'function' AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ($4::int IS NULL OR s.database_id = $4)
+   GROUP BY s.database_id, s.object_id
+)
+SELECT ` + funcCols + `,
+       CASE WHEN i.is_inlineable IS NULL OR (i.is_inlineable AND i.inline_type IS NULL) THEN 'not read'
+            WHEN NOT i.is_inlineable THEN 'not inlineable'
+            WHEN NOT i.inline_type THEN 'inlining off'
+            ELSE '' END AS inline_mark,
+       i.read_at AS inline_read_at
+  FROM p JOIN dbn n ON n.database_id = p.database_id CROSS JOIN cover
+  LEFT JOIN pgvigil.mssql_func_inline i ON i.instance_id = $1 AND i.database_id = p.database_id AND i.object_id = p.object_id
+ ORDER BY p.cpu_us DESC, n.database, p.object_name NULLS LAST, p.object_id
+ LIMIT 2000`
+
+// sqlMSSQLTriggers: the triggers, with the spills as the procedures' (total_spills over the reads that had the
+// figure; none = NULL) and the scope of a DDL or logon trigger ('server' or 'database', named from its catalog;
+// NULL for a DML trigger).
+const sqlMSSQLTriggers = `
+WITH dbn AS (` + funcDBNames + `), ` + funcCover + `, p AS (
+  SELECT ` + funcAgg + `,
+         max(s.trigger_scope) AS trigger_scope,
+         sum(s.spills)::bigint AS spills, count(s.spills) AS spill_reads,
+         sum(s.executions) FILTER (WHERE s.spills IS NOT NULL) AS spill_executions,
+         min(s.min_spills) AS min_spills, max(s.max_spills) AS max_spills
+    FROM pgvigil.mssql_func_sample s
+   WHERE s.instance_id = $1 AND s.kind = 'trigger' AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ($4::int IS NULL OR s.database_id = $4)
+   GROUP BY s.database_id, s.object_id
+)
+SELECT ` + funcCols + `, p.trigger_scope,
+       p.spills, round(p.spills::numeric / nullif(p.spill_executions, 0), 1) AS avg_spills, p.spill_reads,
+       p.min_spills, p.max_spills
+  FROM p JOIN dbn n ON n.database_id = p.database_id CROSS JOIN cover
+ ORDER BY p.cpu_us DESC, n.database, p.object_name NULLS LAST, p.object_id
+ LIMIT 2000`
+
+// procsParts: the tab's parts that every read asks for (database: db=, nil = every database). The functions'
+// collection state is a part of its own: the page reads the procedures' state as the first row of 'state'.
 func procsParts(id int, from, to time.Time, database any) []part {
 	return []part{
 		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_procstats"}}},
@@ -298,6 +393,9 @@ func procsParts(id int, from, to time.Time, database any) []part {
 		{"totals", sqlMSSQLProcTotals, []any{id, from, to, database}},
 		{"procs", sqlMSSQLProcs, []any{id, from, to, database}},
 		{"series", sqlMSSQLProcSeries, []any{id, from, to, database, procStep(to.Sub(from).Seconds())}},
+		{"func_state", sqlMssqlRunningState, []any{id, []string{"mssql_funcstats"}}},
+		{"functions", sqlMSSQLFuncs, []any{id, from, to, database}},
+		{"triggers", sqlMSSQLTriggers, []any{id, from, to, database}},
 	}
 }
 
