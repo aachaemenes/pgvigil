@@ -1218,6 +1218,8 @@ func (confcheckCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 	}
 
 	out = append(out, confDatabaseRows(ctx, conn, info)...)
+	// the database snapshots (P25 row 2b, 0392)
+	out = append(out, confSnapshotRows(ctx, conn, info, perf, noState)...)
 	out = append(out, confLinkedRows(ctx, conn)...)
 	return out, nil
 }
@@ -1263,6 +1265,55 @@ func numErrorLogsRows(platform string, kept int64, set bool, files int64, filesR
 		return []collect.Row{confPart("errorlog", false, "not read: NumErrorLogs is not set and the host's platform is not known (on Windows the default of 6 applies)")}
 	}
 	return []collect.Row{confPart("errorlog", false, "not read: errorlog.numerrorlogs is not set in mssql.conf, and SQL Server on "+platform+" shows no count without it")}
+}
+
+// snapshotsSQL: the instance's database snapshots (sys.databases with a source_database_id; P25 row 2b, DBA Dash's
+// Snapshot Summary) - name, source database, create date as UTC text and, with size, their sparse files' size on disk
+// and count (sys.dm_io_virtual_file_stats: size_on_disk_bytes is the bytes a snapshot uses on disk; it asks VIEW SERVER
+// STATE, VIEW SERVER PERFORMANCE STATE from SQL Server 2022 - Microsoft Learn's page for the function, read
+// 2026-11-17), else NULL for both.
+func snapshotsSQL(size bool) string {
+	sz, files := "CAST(NULL AS bigint)", "CAST(NULL AS int)"
+	if size {
+		sz = "(SELECT SUM(CAST(v.size_on_disk_bytes AS bigint)) FROM sys.dm_io_virtual_file_stats(s.database_id, NULL) v)"
+		files = "(SELECT COUNT(*) FROM sys.dm_io_virtual_file_stats(s.database_id, NULL) v)"
+	}
+	return `SELECT CAST(s.name AS nvarchar(256)) AS snapshot_name, CAST(src.name AS nvarchar(256)) AS source_database,
+  ` + utcText("s.create_date") + ` AS created_utc, ` + files + ` AS files, ` + sz + ` AS size_on_disk_bytes
+FROM sys.databases s LEFT JOIN sys.databases src ON src.database_id = s.source_database_id
+WHERE s.source_database_id IS NOT NULL
+ORDER BY s.name`
+}
+
+// snapshotRows: the snapshots as 0392's 'db_snapshot' rows; sizeNote says why the size was not read ("" = it was).
+func snapshotRows(read []collect.Row, sizeNote string) []collect.Row {
+	out := make([]collect.Row, 0, len(read))
+	for _, r := range read {
+		row := collect.Row{"kind": "db_snapshot", "snapshot_name": r["snapshot_name"], "source_database": r["source_database"],
+			"created_utc": r["created_utc"], "files": r["files"], "size_on_disk_bytes": r["size_on_disk_bytes"], "size_note": nil}
+		if sizeNote != "" {
+			row["size_note"] = sizeNote
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// confSnapshotRows lists the database snapshots (none on Azure SQL Database: one database is the instance there); a
+// failed listing is one 'snapshots_unread' row (0392's import then leaves the stored ones as they were).
+func confSnapshotRows(ctx context.Context, conn *sql.Conn, info Info, perf bool, noState string) []collect.Row {
+	if info.Kind == KindAzureDB {
+		return nil
+	}
+	read, err := QueryRows(ctx, conn, snapshotsSQL(perf))
+	if err != nil {
+		return []collect.Row{{"kind": "snapshots_unread", "note": "not read: " + err.Error()}}
+	}
+	note := ""
+	if !perf {
+		note = noState
+	}
+	return snapshotRows(read, note)
 }
 
 // confDatabaseRows reads every database's row and, where the login can enter, its database-scoped configuration: the
