@@ -36,7 +36,8 @@
 #      'inlining off', f_inl '' (inlineable and on: it ran without inlining for the call's hint), each equal to sa's
 #      sys.sql_modules flags; dbo.f_d2 in a second database where the monitoring login has no user (and no CONNECT
 #      ANY DATABASE): its calls stored (2), its mark 'not read', the run 'partial' with a note naming that database
-#      (a part not read, never 'error': the figures of every function and trigger stored).
+#      (a part not read, never 'error': the figures of every function and trigger stored). (Corrected after run 1,
+#      where f_d2 read f_off's mark: object ids repeat across databases, so each mark is found by database and id.)
 #  FS4. The page (scripts/func-stats-page.mjs, a headless Chromium, light and dark): the Procedures tab shows
 #      'Functions (scalar, run without inlining)' with its line about the table-valued and inlined functions, an
 #      'inlining' column holding the four forms, no spilled-pages column; 'Triggers' with a 'scope' column ('database',
@@ -264,13 +265,15 @@ echo "FS2: OK"
 
 echo "--- FS3. the marks against sa's sys.sql_modules"
 sq "SELECT o.name + '|' + CAST(m.is_inlineable AS varchar(1)) + '|' + CAST(m.inline_type AS varchar(1)) FROM sys.sql_modules m JOIN sys.objects o ON o.object_id = m.object_id WHERE o.name IN ('f_off', 'f_now', 'f_inl') ORDER BY o.name" "$D1" | sed 's/^/  sa: /'
-mark() { jq -r --arg o "$1" '[.[] | select((.object_id | tostring) == $o) | .inline_mark // "NULL"] | first // "no row"' <<<"$FN"; }
+# mark <object id> <database id>: object ids repeat across databases (run 1: f_d2 read f_off's mark by its id alone)
+mark() { jq -r --arg o "$1" --arg d "$2" '[.[] | select((.object_id | tostring) == $o and (.database_id | tostring) == $d) | .inline_mark // "NULL"] | first // "no row"' <<<"$FN"; }
 for pair in "f_now:not inlineable" "f_off:inlining off" "f_inl:"; do
-  f=${pair%%:*}; want=${pair#*:}; got=$(mark "${OID[$f]}")
+  f=${pair%%:*}; want=${pair#*:}; got=$(mark "${OID[$f]}" "$DB1")
   echo "  $f: '$got'"
   [ "$got" = "$want" ] || fail "FS3: $f's mark is '$got', want '$want'"
 done
-got=$(mark "${OID[f_d2]}"); rise=$(( ${A[f_d2]} - ${B[f_d2]} )); st=$(ST function "$DB2" "${OID[f_d2]}")
+echo "  the object ids: f_d2 ${OID[f_d2]} in database $DB2, f_off ${OID[f_off]} in database $DB1"
+got=$(mark "${OID[f_d2]}" "$DB2"); rise=$(( ${A[f_d2]} - ${B[f_d2]} )); st=$(ST function "$DB2" "${OID[f_d2]}")
 echo "  f_d2 in $D2 (the login has no user there): '$got', sa's rise $rise, stored $st"
 [ "$got" = "not read" ] && [ "$rise" = 2 ] && [ "$st" = 2 ] || fail "FS3: f_d2 - mark '$got' (want 'not read'), rise $rise, stored $st (want 2)"
 NOTE=$(q "select status || '|' || coalesce(note, '') from pgvigil.collection_dates where instance_id=$iid and collection='mssql_funcstats'")
