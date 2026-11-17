@@ -65,11 +65,12 @@ export async function get<T = Table>(path: string, params: Record<string, string
 }
 
 // post carries the X-Pgvigil header: a cross-site form cannot set it, so the session cookie alone never acts.
-export async function post<T = unknown>(path: string, data: unknown = {}): Promise<T> {
+// signal: a caller that can stop the request (a custom report's Cancel: the server's context ends and its statement with it)
+export async function post<T = unknown>(path: string, data: unknown = {}, signal?: AbortSignal): Promise<T> {
   const res = await fetch('/api/' + path, {
     method: 'POST', credentials: 'same-origin',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
-    body: JSON.stringify(data),
+    body: JSON.stringify(data), signal,
   });
   const b = await body(res);
   if (!res.ok) throw new Error((b as { error?: string })?.error ?? res.statusText);

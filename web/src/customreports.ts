@@ -433,6 +433,10 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
 
   const inputs = def.params.map(p => paramInput(p, q));
   const runBtn = el('button', { type: 'button' }, 'Run');
+  // Cancel (DBA Dash L89): stops the run's request; the server's context ends and the statement with it on either engine
+  const cancelBtn = el('button', { type: 'button', disabled: '' }, 'Cancel') as HTMLButtonElement;
+  let running: AbortController | null = null;
+  cancelBtn.addEventListener('click', () => { running?.abort(); });
   // off with the page's own words: the server's door, or (an instance report) no active instance of its engine to run on
   const noInst = def.engine !== 'store' && !mine.length && !gone;
   const runWhy = !d.state.enabled ? (d.state.reason || 'Running a report is off on this server.')
@@ -444,7 +448,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   const storeTextRun = def.engine === 'store' && d.state.store_text ? el('p', { class: 'meta said' }, d.state.store_text) : null;
   const editBtn = el('a', { href: `#/customreports?edit=${def.report_id}${tagQ(ctx) ? '&' + tagQ(ctx) : ''}` }, 'Edit this report');
   const form = el('div', { class: 'toolbar' }, el('label', {}, 'Run on ', target), instBox, tagBox,
-    ...def.params.map((p, i) => el('label', {}, `${p.label || p.name} `, inputs[i])), runBtn, editBtn);
+    ...def.params.map((p, i) => el('label', {}, `${p.label || p.name} `, inputs[i])), runBtn, cancelBtn, editBtn);
   sec.append(form);
   if (folderTag) sec.append(el('p', { class: 'meta' }, `Opened from ${folderWords(folderTag)}: a run from here goes to its instances`
     + (runTag ? '.' : ', one at a time (the folder is no tag a run can name).')));
@@ -455,22 +459,36 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   const out = el('div', {});
   sec.append(status, out);
 
+  // hh:mm:ss of a run's time (the status strip's timer, DBA Dash L90)
+  const clock = (ms: number) => { const s = Math.floor(ms / 1000), p = (n: number) => String(n).padStart(2, '0'); return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`; };
   const run = async () => {
-    status.textContent = 'Running...';
+    // a required parameter left empty: no run, the words and a way to it (DBA Dash L92)
+    const empty = def.params.findIndex((p, i) => p.required && inputs[i].value.trim() === '');
+    if (empty >= 0) {
+      const go = el('button', { type: 'button', class: 'link' }, 'Set Parameters');
+      go.addEventListener('click', () => inputs[empty].focus());
+      status.replaceChildren('Parameters are required to run the report. ', go);
+      return;
+    }
+    const t0 = Date.now();
+    status.textContent = `Running ${clock(0)}`;
+    const tick = setInterval(() => { status.textContent = `Running ${clock(Date.now() - t0)}`; }, 1000);
     offControl(runBtn, 'running', status);
+    running = new AbortController(); cancelBtn.disabled = false;
     const w = window_(ctx);
     const params: Record<string, string> = {};
     def.params.forEach((p, i) => { params[p.name] = inputs[i].value; });
     try {
       const r = await post<{ runs: InstanceRun[]; ran_at: string }>('customreports/run', {
         report_id: def.report_id, target: target.value, instance_id: Number(instSel.value), tag: tagSel.value, from: w.from, to: w.to, params,
-      });
+      }, running.signal);
       out.replaceChildren(resultView(r.runs, def, def.name));
-      status.textContent = `Ran at ${fmtTime(r.ran_at)}.`;
+      status.textContent = `Completed in ${clock(Date.now() - t0)} (ran at ${fmtTime(r.ran_at)}).`;
     } catch (e) {
-      out.replaceChildren(errorBox(e));
-      status.textContent = '';
+      if (running?.signal.aborted) { status.textContent = `Cancelled after ${clock(Date.now() - t0)}: the statement was stopped on the server.`; }
+      else { out.replaceChildren(errorBox(e)); status.textContent = ''; }
     } finally {
+      clearInterval(tick); running = null; cancelBtn.disabled = true;
       offControl(runBtn, runWhy || null, runWhy ? runOff : status);
     }
   };
