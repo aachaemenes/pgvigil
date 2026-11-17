@@ -176,15 +176,22 @@ SELECT s.snapshot_at, s.interval_secs, s.executions, s.spills, round(s.cpu_us / 
 // Darling Data LLC): Duration (ms/s) = its duration over the seconds the step's reads cover, Executions (per second)
 // likewise, Avg Duration (ms) = the first over the second (its duration per execution), Avg CPU (ms) = its CPU per
 // execution. A step whose reads hold no run of it reads 0 per second and no averages.
-const sqlMSSQLProcHistory = `
+//
+// Control audit E5: DBA Dash's object chart's fifteen measures beside them (ObjectExecutionLineChart.cs L46-62: CPU and
+// duration in seconds, total and per execution, and per second of the reads; executions per minute, the largest of one
+// read, the count; the reads and writes, total and per execution), and the step $6 seconds counted from $7 (seconds
+// from the Unix epoch: 0 for the page's own step, 1900-01-01 for one of DBA Dash's Date Groupings - step=, as
+// dbo.DateGroupingMins counts; procHistoryStep).
+var sqlMSSQLProcHistory = `
 WITH st AS (
-  SELECT to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $6) * $6) AS step, sum(r.interval_secs)::float8 AS secs, count(*) AS reads
+  SELECT ` + procHistoryBucket("r.snapshot_at") + ` AS step, sum(r.interval_secs)::float8 AS secs, count(*) AS reads
     FROM pgvigil.mssql_proc_read r
    WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
    GROUP BY 1
 ), p AS (
-  SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $6) * $6) AS step, sum(s.executions) AS e,
-         sum(s.cpu_us) AS c, sum(s.duration_us) AS d
+  SELECT ` + procHistoryBucket("s.snapshot_at") + ` AS step, sum(s.executions) AS e,
+         sum(s.cpu_us) AS c, sum(s.duration_us) AS d, sum(s.logical_reads) AS lr, sum(s.physical_reads) AS pr,
+         sum(s.logical_writes) AS lw, max(s.executions * 60.0 / nullif(s.interval_secs, 0)) AS mx
     FROM pgvigil.mssql_proc_sample s
    WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND s.database_id = $4 AND s.object_id = $5
    GROUP BY 1
@@ -193,9 +200,41 @@ SELECT st.step AS snapshot_at, st.reads, coalesce(p.e, 0)::bigint AS executions,
        round((coalesce(p.d, 0) / 1000.0 / nullif(st.secs, 0))::numeric, 3) AS duration_ms_s,
        round((coalesce(p.e, 0) / nullif(st.secs, 0))::numeric, 4) AS executions_s,
        round(p.d / 1000.0 / nullif(p.e, 0), 3) AS avg_duration_ms,
-       round(p.c / 1000.0 / nullif(p.e, 0), 3) AS avg_cpu_ms
+       round(p.c / 1000.0 / nullif(p.e, 0), 3) AS avg_cpu_ms,
+       coalesce(p.e, 0)::bigint AS execution_count,
+       round(coalesce(p.c, 0) / 1000000.0, 6) AS total_cpu_sec, round(p.c / 1000000.0 / nullif(p.e, 0), 6) AS avg_cpu_sec,
+       round((coalesce(p.c, 0) / 1000.0 / nullif(st.secs, 0))::numeric, 3) AS cpu_ms_sec,
+       round((coalesce(p.e, 0) * 60.0 / nullif(st.secs, 0))::numeric, 3) AS executions_min, round(p.mx, 3) AS max_executions_min,
+       round(coalesce(p.d, 0) / 1000000.0, 6) AS total_duration_sec, round(p.d / 1000000.0 / nullif(p.e, 0), 6) AS avg_duration_sec,
+       round((coalesce(p.d, 0) / 1000.0 / nullif(st.secs, 0))::numeric, 3) AS duration_ms_sec,
+       coalesce(p.lr, 0)::bigint AS total_logical_reads, round(p.lr::numeric / nullif(p.e, 0), 2) AS avg_logical_reads,
+       coalesce(p.pr, 0)::bigint AS total_physical_reads, round(p.pr::numeric / nullif(p.e, 0), 2) AS avg_physical_reads,
+       coalesce(p.lw, 0)::bigint AS total_writes, round(p.lw::numeric / nullif(p.e, 0), 2) AS avg_writes
   FROM st LEFT JOIN p ON p.step = st.step
  ORDER BY 1`
+
+// procHistoryBucket: the start of the $6-second step a time falls in, counted from $7 (seconds from the Unix epoch)
+func procHistoryBucket(col string) string {
+	return `to_timestamp(floor((extract(epoch FROM ` + col + `) - $7::bigint) / $6::bigint) * $6::bigint + $7::bigint)`
+}
+
+// procHistorySteps: DBA Dash's Date Groupings in minutes (DateHelper.cs DateGroups; its None, the 15-second rows, is not
+// one: pgvigil stores reads)
+var procHistorySteps = map[int]bool{1: true, 2: true, 5: true, 10: true, 15: true, 30: true, 60: true, 120: true, 240: true, 360: true, 720: true,
+	1440: true, 2880: true, 10080: true, 20160: true}
+
+// procHistoryStep reads step= for part=history: absent = the page's own step (procStep) counted from the Unix epoch;
+// one of DBA Dash's groupings = that many minutes counted from 1900-01-01 (dbo.DateGroupingMins); any other = an error
+func procHistoryStep(v string, window time.Duration) (secs int, base int64, err error) {
+	if v == "" {
+		return procStep(window.Seconds()), 0, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || !procHistorySteps[n] {
+		return 0, 0, errors.New("step must be one of 1, 2, 5, 10, 15, 30, 60, 120, 240, 360, 720, 1440, 2880, 10080, 20160 (minutes)")
+	}
+	return n * 60, time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC).Unix(), nil
+}
 
 // sqlMSSQLFuncIntervals / sqlMSSQLFuncHistory: the two reads of one function or trigger (OBJ, the object page's Object
 // Execution) - the procedure's reads over 0343's statistics (an object id is unique in its database, so the kind needs
@@ -585,8 +624,13 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("kind must be procedure, function or trigger"))
 			return
 		}
+		step, base, err := procHistoryStep(q.Get("step"), to.Sub(from))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
 		parts = append(parts, part{"intervals", intervals, []any{id, from, to, dbID, obj}},
-			part{"history", history, []any{planEach, id, from, to, dbID, obj, procStep(to.Sub(from).Seconds())}})
+			part{"history", history, []any{planEach, id, from, to, dbID, obj, step, base}})
 	}
 	// the object page's Schema History (OBJ, q_mssql_object.go): its stored changes, when asked
 	if q.Get("part") == "object_schema" {

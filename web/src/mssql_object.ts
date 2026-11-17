@@ -11,6 +11,7 @@ import { lineChart } from './chart';
 import { hashParam, hrefWith } from './dbinfo';
 import { Ctx, window_ } from './router';
 import { compareCell } from './schema';
+import { chartChoice, ChartChoice, chartToolbar, groupStep, layout, Measure, measureCharts } from './azure_charts';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 
 export const mssqlObjectTab = 'mssqlobject';
@@ -90,12 +91,44 @@ const procsPart = (ctx: Ctx, args: { part: string } & Record<string, string | nu
   get<Record<string, Table | null>>('mssql/procs', { instance: ctx.instance, ...window_(ctx), ...args }).then(d => rowsOf(d[args.part]));
 const ms = (v: unknown) => v == null ? '' : fmtNum(v);
 
-// objexecTab: DBA Dash's Object Execution of the object (E5) - its kind's statistics by its ids: the range's steps
-// (duration ms/sec and executions per second) and its reads, newest first
+// DBA Dash's object chart's measures in its order and words, on its three axes, Avg CPU, Executions/min and Avg
+// Duration shown by default (ObjectExecutionLineChart.cs L46-62; control audit E5) - part=history's columns
+export const objMeasures: Measure[] = [
+  { key: 'avg_cpu_sec', label: 'Avg CPU (sec)', axis: 'Primary', shown: true },
+  { key: 'total_cpu_sec', label: 'Total CPU (sec)', axis: 'Primary' },
+  { key: 'cpu_ms_sec', label: 'CPU (ms/sec)', axis: 'Primary' },
+  { key: 'executions_min', label: 'Executions/min', axis: 'Executions', shown: true },
+  { key: 'max_executions_min', label: 'Max Executions/min', axis: 'Executions' },
+  { key: 'execution_count', label: 'Execution Count', axis: 'Executions' },
+  { key: 'avg_duration_sec', label: 'Avg Duration (sec)', axis: 'Primary', shown: true },
+  { key: 'total_duration_sec', label: 'Total Duration (sec)', axis: 'Primary' },
+  { key: 'duration_ms_sec', label: 'Duration (ms/sec)', axis: 'Primary' },
+  { key: 'avg_logical_reads', label: 'Avg Logical Reads', axis: 'Pages' },
+  { key: 'total_logical_reads', label: 'Total Logical Reads', axis: 'Pages' },
+  { key: 'avg_physical_reads', label: 'Avg Physical Reads', axis: 'Pages' },
+  { key: 'total_physical_reads', label: 'Total Physical Reads', axis: 'Pages' },
+  { key: 'avg_writes', label: 'Avg Writes', axis: 'Pages' },
+  { key: 'total_writes', label: 'Total Writes', axis: 'Pages' },
+];
+
+// objStep: a Date Grouping's minutes for part=history's step= (auto: none - the page's own step)
+const objStep = (g: string): number | null => g === 'minute' ? 1 : g === 'hour' ? 60 : g === 'day' ? 1440 : groupStep(g);
+
+// objexecTab: DBA Dash's Object Execution of the object (E5) - its kind's statistics by its ids: the range's steps on
+// DBA Dash's chart (its measures and Date Grouping: the toolbar, kept for the page) and its reads, newest first
 async function objexecTab(ctx: Ctx, o: Row | undefined): Promise<HTMLElement> {
   if (!o || o.object_id == null) return el('p', { class: 'empty' }, 'No execution statistics of this object in the range: no read of the procedure, function and trigger statistics held it.');
   const ids = { db_id: Number(o.database_id), object: String(o.object_id), kind: String(o.kind ?? 'procedure') };
-  const [history, intervals] = await Promise.all([procsPart(ctx, { part: 'history', ...ids }), procsPart(ctx, { part: 'intervals', ...ids })]);
+  const charts = el('div');
+  let seq = 0;
+  const draw = async (c: ChartChoice) => {
+    const mine = ++seq, step = objStep(c.grouping);
+    try {
+      const history = await procsPart(ctx, { part: 'history', ...ids, ...(step ? { step } : {}) });
+      if (mine === seq) charts.replaceChildren(layout(el('div', {}, ...measureCharts(history, objMeasures, c, 'Object Execution')), c.columns));
+    } catch (e) { if (mine === seq) charts.replaceChildren(errorBox(e)); }
+  };
+  const [intervals] = await Promise.all([procsPart(ctx, { part: 'intervals', ...ids }), draw(chartChoice('mssqlobject'))]);
   const cols: Col[] = [
     { key: 'snapshot_at', label: 'read', fmt: fmtTime }, { key: 'interval_secs', label: 'seconds', num: true, fmt: ms },
     { key: 'executions', num: true, fmt: ms }, { key: 'duration_ms', label: 'duration (ms)', num: true, fmt: ms },
@@ -103,8 +136,7 @@ async function objexecTab(ctx: Ctx, o: Row | undefined): Promise<HTMLElement> {
     { key: 'avg_cpu_ms', label: 'avg CPU (ms)', num: true, fmt: ms }, { key: 'logical_reads', label: 'logical reads', num: true, fmt: ms },
     { key: 'physical_reads', label: 'physical reads', num: true, fmt: ms }, { key: 'logical_writes', label: 'writes', num: true, fmt: ms },
   ];
-  return el('section', {},
-    lineChart('Duration (ms/sec) and executions per second', history, [{ key: 'duration_ms_s', label: 'duration ms/sec' }, { key: 'executions_s', label: 'executions/sec' }], v => fmtNum(v)),
+  return el('section', {}, chartToolbar('mssqlobject', c => void draw(c), objMeasures), charts,
     el('h3', {}, 'Its reads'), grid(intervals, cols, 'No read held it in the range.'));
 }
 

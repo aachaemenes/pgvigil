@@ -14,7 +14,12 @@ export interface ChartChoice { grouping: Grouping; columns: number; measures?: s
 
 // a chart measure: its column in the reads, DBA Dash's words, its axis, whether DBA Dash shows it by default, and why it
 // is not offered yet (unread: a measure pgvigil does not store yet - its row named)
-export interface Measure { key: string; label: string; axis: 'Percent' | 'DTU'; shown?: true; unread?: string }
+export interface Measure { key: string; label: string; axis: string; shown?: true; unread?: string }
+
+// each axis's chart, in drawing order: its words in the title and its values' unit - the Azure charts' Percent and DTU,
+// the object chart's Primary, Executions and Pages (DBA Dash's ObjectExecutionLineChart axes; control audit E5)
+const axes: [string, string, string][] = [['Percent', '% of the limit', ' %'], ['DTU', 'DTU', ''], ['Primary', 'CPU and duration', ''],
+  ['Executions', 'executions', ''], ['Pages', 'pages', '']];
 
 // DBA Dash's Azure DB chart's measures in its order and words (AzureDBResourceStats.cs DBColumns L72-93; control audit A2)
 export const dbMeasures: Measure[] = [
@@ -49,13 +54,12 @@ export function chosenMeasures(c: ChartChoice, list: Measure[]): Measure[] {
   return list.filter(m => on.has(m.key) && !m.unread);
 }
 
-// measureCharts: one chart per axis of the chosen measures (DBA Dash's Percent and DTU axes), oldest first
+// measureCharts: one chart per axis of the chosen measures (axes: DBA Dash's axes), oldest first
 export function measureCharts(rows: Row[], list: Measure[], c: ChartChoice, title: string): HTMLElement[] {
   const chosen = chosenMeasures(c, list);
   if (!chosen.length) return [el('p', { class: 'meta' }, 'No measure chosen: the toolbar\'s Columns picks them.')];
-  return (['Percent', 'DTU'] as const).map(axis => chosen.filter(m => m.axis === axis)).filter(ms => ms.length)
-    .map(ms => lineChart(ms[0].axis === 'Percent' ? `${title} (% of the limit)` : `${title} (DTU)`, rows,
-      ms.map(m => ({ key: m.key, label: m.label })), v => fmtNum(v) + (ms[0].axis === 'Percent' ? ' %' : '')));
+  return axes.map(([axis, words, unit]) => ({ ms: chosen.filter(m => m.axis === axis), words, unit })).filter(x => x.ms.length)
+    .map(x => lineChart(`${title} (${x.words})`, rows, x.ms.map(m => ({ key: m.key, label: m.label })), v => fmtNum(v) + x.unit));
 }
 
 // DBA Dash's Date Grouping list in its order and words (DBADashGUI/DateHelper.cs DateGroups; control audit A1) after
