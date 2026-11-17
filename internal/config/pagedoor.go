@@ -37,6 +37,12 @@ type Doors struct {
 	// web.MetricsOff. What it opens: server names, engines, platforms, versions, every figure (tags and database names
 	// when metrics.tags / metrics.databases are on), to everyone who reads that Prometheus and its remote_write targets.
 	PrometheusMetrics bool `yaml:"prometheus_metrics"`
+	// SaveTable turns on Save Table's From Data Table / From Grid (task 7b, a write door): the grid's rows written as a
+	// new table into a monitored instance through its actions login, into that login's own schema pgvigil_saved, never
+	// over an existing table, audited. Off by default; it also needs save_table in the instance's actions: list, an admin
+	// at the page, and the schema (docs/export.md). What it opens: a CREATE TABLE and its rows on the servers whose
+	// actions: list names it, by any admin of the UI.
+	SaveTable bool `yaml:"save_table"`
 }
 
 // PageReadsOff is the refusal while the switch is off.

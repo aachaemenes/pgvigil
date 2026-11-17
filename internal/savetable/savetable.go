@@ -1,14 +1,26 @@
 // Package savetable holds the checks of Save Table's write door (task 7b): the identifiers, the one quoted form of
-// the target, the system targets a table is never written into, and the column types with their conversions. The
-// route (internal/web/savetable.go) runs them before any connection is opened.
-//
-// RED STUB: every body below answers as if nothing were checked; task 7b's build replaces each one. The rows in
-// savetable_test.go fail on it, each in its own words.
+// the target, the system targets a table is never written into, the column kinds with their conversions, the body's
+// limits and the gates from the instance's door on. The route (internal/web/savetable.go) holds the HTTP side, the
+// connections and the writes; everything here runs without a server, so each gate has its unit row.
 package savetable
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"math/big"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf16"
+
+	"github.com/aachaemenes/pgvigil/internal/actions"
+	"github.com/aachaemenes/pgvigil/internal/mssqlread"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // The two engines, as pgvigil.instances.engine names them.
@@ -25,21 +37,85 @@ type Target struct {
 	Database, Schema, Table string
 }
 
+// Display is the target as the words name it (unquoted, dotted).
+func (t Target) Display() string { return t.Database + "." + t.Schema + "." + t.Table }
+
 // CheckName refuses an identifier with words naming the field and the reason; nil = it is quoted, never refused for
-// its characters.
-func CheckName(engine, field, name string) error { return nil }
+// its characters. A control character, an invisible format character (zero-width spaces, direction overrides, the
+// byte-order mark) and the line and paragraph separators are refused: they would make the audit's name read as
+// another (review-29 N2). PostgreSQL counts 63 bytes in UTF-8, SQL Server 128 UTF-16 code units (review-29 N1).
+func CheckName(engine, field, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s: the name is empty", field)
+	}
+	for _, r := range name {
+		switch {
+		case unicode.Is(unicode.Cc, r):
+			return fmt.Errorf("%s: the name holds a control character (U+%04X)", field, r)
+		case unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029':
+			return fmt.Errorf("%s: the name holds an invisible character (U+%04X): it would read as another name", field, r)
+		}
+	}
+	switch engine {
+	case Postgres:
+		if n := len(name); n > 63 {
+			return fmt.Errorf("%s: the name is %d bytes: PostgreSQL allows 63", field, n)
+		}
+	case SQLServer:
+		if n := len(utf16.Encode([]rune(name))); n > 128 {
+			return fmt.Errorf("%s: the name is %d UTF-16 units: SQL Server allows 128", field, n)
+		}
+		if field == "table" && strings.HasPrefix(name, "#") {
+			return errors.New("table: a name starting with # is a temporary table in tempdb that vanishes when the connection closes")
+		}
+	default:
+		return fmt.Errorf("%s: unknown engine %q", field, engine)
+	}
+	return nil
+}
 
 // CheckColumns refuses an empty column list, a repeated name (case-insensitively on SQL Server) and any name
 // CheckName refuses.
-func CheckColumns(engine string, names []string) error { return nil }
+func CheckColumns(engine string, names []string) error {
+	if len(names) == 0 {
+		return errors.New("the grid has no column to write")
+	}
+	seen := map[string]int{}
+	for i, n := range names {
+		field := fmt.Sprintf("column %d", i+1)
+		if err := CheckName(engine, field, n); err != nil {
+			return err
+		}
+		k := n
+		if engine == SQLServer {
+			k = strings.ToLower(n)
+		}
+		if j, ok := seen[k]; ok {
+			return fmt.Errorf("%s: %q names column %d twice (SQL Server's names are case-insensitive)", field, n, j)
+		}
+		seen[k] = i + 1
+	}
+	return nil
+}
 
-// QuoteIdent quotes one name: PostgreSQL in double quotes with '"' doubled, SQL Server in brackets with ']' doubled.
-func QuoteIdent(engine, name string) string { return name }
+// QuoteIdent quotes one name: PostgreSQL in double quotes with '"' doubled (pgx's Identifier, quote_ident's rule),
+// SQL Server in brackets with ']' doubled (QUOTENAME's rule, mssqlread.QuoteName).
+func QuoteIdent(engine, name string) string {
+	if engine == SQLServer {
+		return mssqlread.QuoteName(name)
+	}
+	return pgx.Identifier{name}.Sanitize()
+}
 
 // Quoted is the ONE quoted form of the target, used everywhere - the CREATE, the bulk copy and the existence read
-// (bound, never spliced): PostgreSQL "schema"."table" (the connection names the database), SQL Server
-// [database].[schema].[table].
-func Quoted(engine string, t Target) string { return "" }
+// (bound, never spliced): PostgreSQL "schema"."table" (the connection names the database; pgx's CopyFrom takes the
+// same pgx.Identifier), SQL Server [database].[schema].[table] (go-mssqldb's CopyIn splits it only outside brackets).
+func Quoted(engine string, t Target) string {
+	if engine == SQLServer {
+		return QuoteIdent(engine, t.Database) + "." + QuoteIdent(engine, t.Schema) + "." + QuoteIdent(engine, t.Table)
+	}
+	return pgx.Identifier{t.Schema, t.Table}.Sanitize()
+}
 
 // Database is what the monitoring read knows of one database.
 type Database struct {
@@ -49,15 +125,164 @@ type Database struct {
 	IsDistributor bool // SQL Server is_distributor
 }
 
-// RefuseDatabase is the words that refuse a system or template database as a target, or "" when it may take a table.
-func RefuseDatabase(engine string, d Database) string { return "" }
+// RefuseDatabase is the words that refuse a system or template database as a target, or "" when it may take a table
+// (review-29 S2: model and template1 copy a table into every database made later).
+func RefuseDatabase(engine string, d Database) string {
+	switch engine {
+	case SQLServer:
+		if d.ID >= 1 && d.ID <= 4 {
+			return fmt.Sprintf("the database %s is a system database: pgvigil never writes a table there", d.Name)
+		}
+		for _, s := range []string{"master", "tempdb", "model", "msdb"} {
+			if strings.EqualFold(d.Name, s) {
+				return fmt.Sprintf("the database %s is a system database: pgvigil never writes a table there", d.Name)
+			}
+		}
+		if d.IsDistributor {
+			return fmt.Sprintf("the database %s is a replication distribution database: pgvigil never writes a table there", d.Name)
+		}
+		if strings.EqualFold(d.Name, "rdsadmin") {
+			return fmt.Sprintf("the database %s is Amazon RDS's own: pgvigil never writes a table there", d.Name)
+		}
+	case Postgres:
+		if d.IsTemplate || d.Name == "template0" || d.Name == "template1" {
+			return fmt.Sprintf("the database %s is a template: every database made from it later would copy the table", d.Name)
+		}
+		switch d.Name {
+		case "cloudsqladmin", "rdsadmin", "azure_maintenance", "azure_sys":
+			return fmt.Sprintf("the database %s is the cloud provider's own: pgvigil never writes a table there", d.Name)
+		}
+	}
+	return ""
+}
+
+// kinds: the browser's closed list (gridwriters.ts sqlType's choices, 'day' among them: review-29 N3) and each
+// engine's type for it.
+var kinds = map[string][2]string{
+	"int":  {"bigint", "BIGINT"},
+	"dec":  {"numeric", "DECIMAL(38,10)"},
+	"time": {"timestamptz", "DATETIMEOFFSET"},
+	"day":  {"date", "DATE"},
+	"text": {"text", "NVARCHAR(MAX)"},
+	"bool": {"boolean", "BIT"},
+}
 
 // ColumnType is the engine's type for one of the browser's closed list of kinds (int, dec, time, day, text, bool).
-func ColumnType(engine, kind string) (string, error) { return "", nil }
+func ColumnType(engine, kind string) (string, error) {
+	t, ok := kinds[kind]
+	if !ok {
+		return "", fmt.Errorf("the kind %q is not one of int, dec, time, day, text, bool", kind)
+	}
+	if engine == SQLServer {
+		return t[1], nil
+	}
+	return t[0], nil
+}
+
+// decimalText is a JSON number's exact decimal text (an exponent written out) and its count of decimal places.
+func decimalText(s string) (string, int, bool) {
+	r, ok := new(big.Rat).SetString(s)
+	if !ok {
+		return "", 0, false
+	}
+	places, ten := 0, big.NewRat(10, 1)
+	for x := new(big.Rat).Set(r); !x.IsInt(); x.Mul(x, ten) {
+		if places++; places > 1000 {
+			return "", 0, false
+		}
+	}
+	return r.FloatString(places), places, true
+}
 
 // Convert turns one decoded JSON cell (a json.Number, a string, a bool or nil) into the value the driver binds for
-// kind. Its error names the row and the column, never the value (any logged-in user reads the audit).
-func Convert(engine, kind string, row int, column string, v any) (any, error) { return v, nil }
+// kind. Its error names the row and the column, never the value (any logged-in user reads the audit: review-29 S3).
+// A NUL in a text is dropped (one rule for both engines: PostgreSQL's text cannot hold one), as the export does.
+func Convert(engine, kind string, row int, column string, v any) (any, error) {
+	bad := func(why string) error {
+		return fmt.Errorf("row %d, column %s: %s; nothing was written", row, column, why)
+	}
+	if v == nil {
+		return nil, nil
+	}
+	switch kind {
+	case "int":
+		n, ok := v.(json.Number)
+		if !ok {
+			return nil, bad("the value is not a whole number")
+		}
+		i, err := strconv.ParseInt(string(n), 10, 64)
+		if err != nil {
+			return nil, bad("the value is not a whole number within bigint")
+		}
+		return i, nil
+	case "dec":
+		n, ok := v.(json.Number)
+		if !ok {
+			return nil, bad("the value is not a number")
+		}
+		text, places, ok := decimalText(string(n))
+		if !ok {
+			return nil, bad("the value is not a number")
+		}
+		if engine == SQLServer {
+			// DECIMAL(38,10): 10 places and 28 digits before the point - more is refused, never rounded (review-29 N5)
+			if places > 10 {
+				return nil, bad("the number has more than 10 decimal places (DECIMAL(38,10) would round it)")
+			}
+			if whole := strings.TrimLeft(strings.SplitN(strings.TrimPrefix(text, "-"), ".", 2)[0], "0"); len(whole) > 28 {
+				return nil, bad("the number has more than 28 digits before the point (DECIMAL(38,10))")
+			}
+			return text, nil // go-mssqldb's bulk copy takes a DECIMAL as its text
+		}
+		var num pgtype.Numeric
+		if err := num.Scan(text); err != nil {
+			return nil, bad("the value is not a number")
+		}
+		return num, nil
+	case "time":
+		s, ok := v.(string)
+		if !ok {
+			return nil, bad("the value is not a time")
+		}
+		t, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			return nil, bad("the value is not a time with its offset (RFC 3339)")
+		}
+		return t, nil
+	case "day":
+		s, ok := v.(string)
+		if !ok {
+			return nil, bad("the value is not a date")
+		}
+		t, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			return nil, bad("the value is not a date (YYYY-MM-DD)")
+		}
+		return t, nil
+	case "text":
+		switch x := v.(type) {
+		case string:
+			return strings.ReplaceAll(x, "\x00", ""), nil
+		case json.Number:
+			return string(x), nil // a text column's number, written as its text (gridwriters.ts sqlScript)
+		}
+		return nil, bad("the value is not text")
+	case "bool":
+		if b, ok := v.(bool); ok {
+			return b, nil
+		}
+		return nil, bad("the value is not true or false")
+	}
+	return nil, bad(fmt.Sprintf("the kind %q is not one of int, dec, time, day, text, bool", kind))
+}
+
+// NULs counts the NUL characters Convert drops from a text cell (the answer and the audit say how many).
+func NULs(v any) int {
+	if s, ok := v.(string); ok {
+		return strings.Count(s, "\x00")
+	}
+	return 0
+}
 
 // The off words, the first switch that is off first (the lead 11-17 02:17).
 const (
@@ -77,7 +302,25 @@ type Instance struct {
 }
 
 // OffWords is why Save Table is off on the instance, or "" when the config lets it on (the schema is read at Save).
-func OffWords(on bool, in Instance) string { return "" }
+func OffWords(on bool, in Instance) string {
+	switch {
+	case !on:
+		return OffSwitch
+	case in.Page:
+		return "off: " + actions.PageOff(in.Name)
+	case !in.Allowed:
+		return OffList
+	case !in.Configured:
+		return OffNoDSN
+	case !in.Resolved:
+		return fmt.Sprintf("off: instance %s's actions_dsn has not resolved (an unset variable or an unreadable file)", in.Name)
+	}
+	return ""
+}
+
+// Confirm is the text the user types to save: the target's instance and database (review-29 S7: a confirmation names
+// the target, never the user's own new text).
+func Confirm(instance, database string) string { return instance + "/" + database }
 
 // Col is one column of the body: its name and its kind from the closed list.
 type Col struct {
@@ -102,9 +345,89 @@ type Limits struct{ Rows, Cells int }
 // DefaultLimits: 100,000 rows and 2,000,000 cells.
 var DefaultLimits = Limits{Rows: 100000, Cells: 2000000}
 
+// MaxCols is each engine's column cap.
+func MaxCols(engine string) int {
+	if engine == SQLServer {
+		return 1024
+	}
+	return 1600
+}
+
 // Decode reads a body with UseNumber, refusing - before the rest is read - more rows or cells than lim allows, more
-// columns than the engine allows (SQL Server 1,024, PostgreSQL 1,600) or a row whose length is not the columns'.
-func Decode(r io.Reader, engine string, lim Limits) (Body, error) { return Body{}, nil }
+// columns than the engine allows (SQL Server 1,024, PostgreSQL 1,600) or a row whose length is not the columns'. The
+// columns come before the rows (the page sends them so); an unknown field is refused.
+func Decode(r io.Reader, engine string, lim Limits) (Body, error) {
+	var b Body
+	bad := func(err error) (Body, error) { return Body{}, fmt.Errorf("body: %w", err) }
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return bad(errors.New("not a JSON object"))
+	}
+	cells, haveCols := 0, false
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return bad(err)
+		}
+		key, _ := t.(string)
+		switch key {
+		case "instance_id":
+			err = dec.Decode(&b.InstanceID)
+		case "database":
+			err = dec.Decode(&b.Database)
+		case "table":
+			err = dec.Decode(&b.Table)
+		case "from":
+			err = dec.Decode(&b.From)
+		case "confirm":
+			err = dec.Decode(&b.Confirm)
+		case "cols":
+			if err = dec.Decode(&b.Cols); err == nil && len(b.Cols) > MaxCols(engine) {
+				name := "PostgreSQL"
+				if engine == SQLServer {
+					name = "SQL Server"
+				}
+				return bad(fmt.Errorf("%d columns: %s allows %d", len(b.Cols), name, MaxCols(engine)))
+			}
+			haveCols = true
+		case "rows":
+			if !haveCols {
+				return bad(errors.New("the columns must come before the rows"))
+			}
+			if t, err := dec.Token(); err != nil || t != json.Delim('[') {
+				return bad(errors.New("rows is not a list"))
+			}
+			b.Rows = [][]any{}
+			for dec.More() {
+				if len(b.Rows) >= lim.Rows {
+					return bad(fmt.Errorf("the grid is over %d rows: Script Data Table writes it as a file", lim.Rows))
+				}
+				var row []any
+				if err := dec.Decode(&row); err != nil {
+					return bad(fmt.Errorf("row %d: %w", len(b.Rows)+1, err))
+				}
+				if len(row) != len(b.Cols) {
+					return bad(fmt.Errorf("row %d holds %d values for %d columns", len(b.Rows)+1, len(row), len(b.Cols)))
+				}
+				if cells += len(row); cells > lim.Cells {
+					return bad(fmt.Errorf("the grid is over %d cells: Script Data Table writes it as a file", lim.Cells))
+				}
+				b.Rows = append(b.Rows, row)
+			}
+			_, err = dec.Token() // the rows' closing bracket
+		default:
+			return bad(fmt.Errorf("an unknown field %q", key))
+		}
+		if err != nil {
+			return bad(err)
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return bad(err)
+	}
+	return b, nil
+}
 
 // Conn is one login's connection on the chosen database: the monitoring login's, or the writing (actions) login's
 // save-only connection (review-29 S9).
@@ -130,7 +453,104 @@ type Verdict struct {
 
 // Check runs the gates from the instance's door on, in the design's order (5 the list and the login, 6 the typed
 // confirmation '<instance>/<database>', 7 the identifiers, the database and the kinds, 8 the login checks and the
-// schema on the writing connection, 9 the table's existence). open is called only once gates 5-7 pass.
+// schema on the writing connection, 9 the table's existence). open is called only once gates 5-7 pass. Every
+// refusal here writes an audit row (review-29 N8); the gates before it (the header, the role, the switch, the body,
+// the instance lookup) write none, as every existing action.
 func Check(ctx context.Context, in Instance, dbs []Database, b Body, open func(ctx context.Context) (mon, act Conn, err error)) Verdict {
-	return Verdict{}
+	refuse := func(w string) Verdict { return Verdict{Outcome: "refused", Words: w, Row: true} }
+	fail := func(w string) Verdict { return Verdict{Outcome: "failed", Words: w, Row: true} }
+	// 5. the instance's list and its actions login
+	if w := OffWords(true, in); w != "" {
+		return refuse(w)
+	}
+	// 6. the typed confirmation names the target
+	if want := Confirm(in.Name, b.Database); strings.TrimSpace(b.Confirm) != want {
+		return refuse(fmt.Sprintf("the typed confirmation is not %s: nothing was written", want))
+	}
+	// 7. the database, the identifiers and the kinds
+	var db *Database
+	for i := range dbs {
+		if dbs[i].Name == b.Database {
+			db = &dbs[i]
+			break
+		}
+	}
+	if db == nil {
+		return refuse(fmt.Sprintf("database: %s is not a database of instance %s as its last read lists them", b.Database, in.Name))
+	}
+	if w := RefuseDatabase(in.Engine, *db); w != "" {
+		return refuse(w)
+	}
+	if err := CheckName(in.Engine, "database", b.Database); err != nil {
+		return refuse(err.Error())
+	}
+	if err := CheckName(in.Engine, "table", b.Table); err != nil {
+		return refuse(err.Error())
+	}
+	names := make([]string, len(b.Cols))
+	for i, c := range b.Cols {
+		names[i] = c.Name
+	}
+	if err := CheckColumns(in.Engine, names); err != nil {
+		return refuse(err.Error())
+	}
+	for i, c := range b.Cols {
+		if _, err := ColumnType(in.Engine, c.Type); err != nil {
+			return refuse(fmt.Sprintf("column %d (%s): %v", i+1, c.Name, err))
+		}
+	}
+	t := Target{Database: b.Database, Schema: Schema, Table: b.Table}
+	quoted := Quoted(in.Engine, t)
+	// 8. the two logins on the chosen database: one server, a login of its own, no superuser; the schema its own
+	mon, act, err := open(ctx)
+	if err != nil {
+		return fail(fmt.Sprintf("the actions login could not connect to %s: %v; nothing was written", b.Database, err))
+	}
+	monServer, err := mon.Server(ctx)
+	if err != nil {
+		return fail(fmt.Sprintf("the server check failed: %v; nothing was written", err))
+	}
+	actServer, err := act.Server(ctx)
+	if err != nil {
+		return fail(fmt.Sprintf("the actions login's server check failed: %v; nothing was written", err))
+	}
+	if monServer != actServer {
+		return refuse(fmt.Sprintf("actions_dsn reaches another server than the instance's dsn (%s vs %s): nothing was written", actServer, monServer))
+	}
+	monLogin, _, err := mon.Login(ctx)
+	if err != nil {
+		return fail(fmt.Sprintf("the login check failed: %v; nothing was written", err))
+	}
+	actLogin, super, err := act.Login(ctx)
+	if err != nil {
+		return fail(fmt.Sprintf("the actions login's own check failed: %v; nothing was written", err))
+	}
+	if actLogin == monLogin || in.Engine == SQLServer && strings.EqualFold(actLogin, monLogin) {
+		return refuse(fmt.Sprintf("actions_dsn connects as the read login (%s): the actions login must be a login of its own", actLogin))
+	}
+	if super {
+		if in.Engine == SQLServer {
+			return refuse(fmt.Sprintf("the actions login %s is sysadmin or holds CONTROL SERVER: pgvigil refuses it", actLogin))
+		}
+		return refuse(fmt.Sprintf("the actions login %s is a superuser: pgvigil refuses it", actLogin))
+	}
+	exists, owned, err := act.Schema(ctx)
+	if err != nil {
+		return fail(fmt.Sprintf("the schema check failed: %v; nothing was written", err))
+	}
+	if !exists {
+		return refuse(OffSchema)
+	}
+	if !owned {
+		return refuse(fmt.Sprintf("off: the schema pgvigil_saved in %s is owned by another login: pgvigil writes only into the door login's own schema (docs/export.md has the two lines that make it)", b.Database))
+	}
+	// 9. never an overwrite
+	there, err := act.Exists(ctx, quoted)
+	if err != nil {
+		return fail(fmt.Sprintf("the existence read failed: %v; nothing was written", err))
+	}
+	if there {
+		return refuse(fmt.Sprintf("the table %s exists: pgvigil never overwrites a table", t.Display()))
+	}
+	return Verdict{Row: true, Target: quoted}
 }

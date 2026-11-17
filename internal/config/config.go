@@ -154,7 +154,9 @@ type Instance struct {
 	ActionsDSNRaw string `yaml:"actions_dsn"`
 	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop, job_enable, job_disable,
 	// plan_evict, verify_backup; on PostgreSQL job_stop and job_start (task 161: Stop a pg_cron / pgAgent run, pgAgent's
-	// Run now), job_enable and job_disable (B9c: pgAgent's jobenabled, pg_cron's active). An action not named here is off even with
+	// Run now), job_enable and job_disable (B9c: pgAgent's jobenabled, pg_cron's active); on both save_table (task 7b:
+	// Save Table's From items write a table into the door login's own schema pgvigil_saved, with doors: save_table on
+	// too). An action not named here is off even with
 	// an actions_dsn; empty (the default) = nothing. PostgreSQL's cancel and terminate need no list: its actions_dsn
 	// alone turns them on.
 	Actions []string `yaml:"actions"`
@@ -792,9 +794,9 @@ func (c *Config) Validate() error {
 			seenPG := map[string]bool{}
 			for _, a := range in.Actions {
 				switch a {
-				case "job_stop", "job_start", "job_enable", "job_disable":
+				case "job_stop", "job_start", "job_enable", "job_disable", "save_table":
 				default:
-					return fmt.Errorf("instance %q: unknown action %q in actions: (a PostgreSQL instance's are job_stop, job_start, job_enable and job_disable; its cancel and terminate are on with its actions_dsn)", in.Name, a)
+					return fmt.Errorf("instance %q: unknown action %q in actions: (a PostgreSQL instance's are save_table, job_stop, job_start, job_enable and job_disable; its cancel and terminate are on with its actions_dsn)", in.Name, a)
 				}
 				if seenPG[a] {
 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)
@@ -803,6 +805,12 @@ func (c *Config) Validate() error {
 			}
 			if len(in.Actions) > 0 && strings.TrimSpace(in.ActionsDSNRaw) == "" {
 				return fmt.Errorf("instance %q: actions: names %s but the instance has no actions_dsn", in.Name, strings.Join(in.Actions, ", "))
+			}
+			// Save Table writes a table as the actions login (task 7b, review-29 B1): never the read login. Only where
+			// actions: names save_table, so a config that loads today keeps loading; serve's run-time check compares the
+			// two logins the server reports.
+			if a, d := strings.TrimSpace(in.ActionsDSNRaw), strings.TrimSpace(in.DSNRaw); seenPG["save_table"] && a == d {
+				return fmt.Errorf("instance %q: actions_dsn is the instance's dsn and actions: names save_table: the actions login must be a login of its own, never the read login", in.Name)
 			}
 			if in.Histogram || in.IndexFragmentation || strings.TrimSpace(in.StatsDSNRaw) != "" {
 				return fmt.Errorf("instance %q: histogram, stats_dsn and index_fragmentation are SQL Server's", in.Name)
@@ -828,9 +836,9 @@ func (c *Config) Validate() error {
 			seen := map[string]bool{}
 			for _, a := range in.Actions {
 				switch a {
-				case "kill", "job_start", "job_stop", "job_enable", "job_disable", "plan_evict", "verify_backup":
+				case "kill", "job_start", "job_stop", "job_enable", "job_disable", "plan_evict", "verify_backup", "save_table":
 				default:
-					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, job_enable, job_disable, plan_evict, verify_backup)", in.Name, a)
+					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, job_enable, job_disable, plan_evict, verify_backup, save_table)", in.Name, a)
 				}
 				if seen[a] {
 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)

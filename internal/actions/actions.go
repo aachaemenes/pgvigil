@@ -66,6 +66,9 @@ type Door struct {
 	Configured bool
 	// Page: an instance added in Admin > Instances (serve's page door: its read login only, never an action)
 	Page bool
+	// Allow is the instance's actions: list (job_stop, job_start, job_enable, job_disable, save_table); cancel and
+	// terminate need none (task 7b, review-29 N9: save_table is its first entry that is not a job action)
+	Allow []string
 }
 
 // Off is the reason a door cannot act, or "" when it can.
@@ -93,7 +96,8 @@ func DoorsFromConfig(cfg *config.Config) map[string]Door {
 		if in.Engine == config.EngineSQLServer {
 			continue // its door is internal/mssql's (kill, job_start, job_stop, job_enable, job_disable)
 		}
-		m[in.Name] = Door{Monitor: in.DSN(), Secret: in.SecretRef(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != ""}
+		m[in.Name] = Door{Monitor: in.DSN(), Secret: in.SecretRef(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != "",
+			Allow: in.Actions}
 	}
 	return m
 }
