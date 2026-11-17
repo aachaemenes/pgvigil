@@ -9,6 +9,7 @@ import { mssqlFilesView } from './mssql_storage';
 import { mssqlQueryStoreView } from './mssql_querystore';
 import { dbSpaceView } from './drives';
 import { mssqlPlanCacheView } from './mssql_plancache';
+import { mssqlSlow } from './mssql_xe';
 import { get, rowsOf, Table } from './api';
 import { badge, el, grid } from './ui';
 
@@ -65,6 +66,10 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
       // DBA Dash's Query Stats (sys.dm_exec_query_stats per database and query hash) = the instance's Plan cache page
       // fixed on this database
       body = await mssqlPlanCacheView(ctx, db);
+      break;
+    case 'slow':
+      // the instance's Slow queries read with db= (/api/mssql/xe: the events that ran in this database)
+      body = await mssqlSlow(ctx);
       break;
     case 'dboptions':
       body = await dbOptions(ctx, db);

@@ -30,8 +30,10 @@ const findingCols: Col[] = [
   { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime },
 ];
 
+// on a SQL Server database's page (mssql_db.ts, P25) the slow queries are that database's (db=)
 async function load(ctx: Ctx, part?: XEParts, win = window_(ctx)): Promise<XE> {
-  return get<XE>('mssql/xe', { instance: ctx.instance, ...win, part });
+  const db = ctx.tab === 'mssqldb' ? new URLSearchParams(location.hash.split('?')[1] ?? '').get('db') ?? undefined : undefined;
+  return get<XE>('mssql/xe', { instance: ctx.instance, ...win, part, db });
 }
 
 // The findings of the tab's own checks (the instance's other findings are on the Findings page).

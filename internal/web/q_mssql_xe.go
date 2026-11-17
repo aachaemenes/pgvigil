@@ -112,6 +112,7 @@ SELECT e.shape_key, max(e.shape) AS "shape@shape", max(e.object_name) AS "object
        max(e.event_at) AS last_at
   FROM pgvigil.mssql_slow_events e
  WHERE e.instance_id = $1 AND e.event_at > $2 AND e.event_at <= $3 AND e.event_name IN ('rpc_completed', 'sql_batch_completed')
+   AND ($4::text = '' OR e.database_name = $4::text)
  GROUP BY e.shape_key
  ORDER BY sum(e.duration_ms) DESC NULLS LAST
  LIMIT 200`
@@ -126,7 +127,7 @@ WITH b AS (
   SELECT to_timestamp(floor(extract(epoch FROM e.event_at) / $4)::bigint * $4::bigint) AS snapshot_at, count(*) AS events,
          round(max(e.duration_ms), 1) AS worst_ms, round(sum(e.duration_ms), 1) AS total_ms
     FROM pgvigil.mssql_slow_events e
-   WHERE e.instance_id = $1 AND e.event_at > $2 AND e.event_at <= $3 AND e.event_name IN ('rpc_completed', 'sql_batch_completed')
+   WHERE e.instance_id = $1 AND e.event_at > $2 AND e.event_at <= $3 AND e.event_name IN ('rpc_completed', 'sql_batch_completed') AND ($5::text = '' OR e.database_name = $5::text)
    GROUP BY 1
 )
 SELECT b.snapshot_at, coalesce(e.events, 0) AS events, e.worst_ms, coalesce(e.total_ms, 0) AS total_ms
@@ -188,8 +189,9 @@ func (s *Server) MSSQLXE(w http.ResponseWriter, r *http.Request) {
 		{"blocked", sqlMSSQLXEBlockedHeads, []any{id, from, to}},
 		{"block_findings", sqlMSSQLXEBlockFindings, []any{id, from, to}},
 		{"block_rollup", sqlMSSQLXEBlockRollup, []any{id, from, to}},
-		{"slow_shapes", sqlMSSQLXESlowShapes, []any{id, from, to}},
-		{"slow_series", sqlMSSQLXESlowSeries, []any{id, from, to, step}},
+		// db=: one database's slow queries (P25: the database page's Slow Queries); '' = every database
+		{"slow_shapes", sqlMSSQLXESlowShapes, []any{id, from, to, r.URL.Query().Get("db")}},
+		{"slow_series", sqlMSSQLXESlowSeries, []any{id, from, to, step, r.URL.Query().Get("db")}},
 		{"attentions", sqlMSSQLXEAttentions, []any{id, from, to}},
 		{"ag_events", sqlMSSQLXEAGEvents, []any{id, from, to}},
 	})
