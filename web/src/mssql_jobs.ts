@@ -485,15 +485,15 @@ const stepCols: Col[] = [
 ];
 
 const runningCols: Col[] = [
-  { key: 'name', label: 'job' }, { key: 'running_since', label: 'started', fmt: fmtTime },
-  { key: 'running_s', label: 'running for (at the read)', num: true, fmt: fmtSecs },
-  { key: 'avg_duration_s', label: 'average of its good runs', num: true, fmt: fmtSecs },
+  { key: 'name', label: 'job' }, { key: 'running_since', label: 'started', fmt: fmtTime, title: 'When the job\'s current run began, as SQL Server Agent records it' },
+  { key: 'running_s', label: 'running for (at the read)', num: true, fmt: fmtSecs, title: 'How long the run had been going at pgvigil\'s read' },
+  { key: 'avg_duration_s', label: 'average of its good runs', num: true, fmt: fmtSecs, title: 'The average length of the job\'s successful runs over the last 31 days' },
   // task 177 D14: PerformanceMonitor's Running Jobs columns (the 95th percentile of the good runs, the run so far
   // against the average)
   { key: 'p95_duration_s', label: 'p95 of its good runs', num: true, fmt: fmtSecs },
   { key: 'pct_of_avg', label: '% of average', num: true, fmt: v => v == null ? '' : `${fmtNum(v)} %` },
   { key: 'good_runs', label: 'good runs (31 days)', num: true },
-  { key: 'running_after_step', label: 'last step finished', num: true },
+  { key: 'running_after_step', label: 'last step finished', num: true, title: 'The id of the last step this run finished; 0 while none has' },
 ];
 
 export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {

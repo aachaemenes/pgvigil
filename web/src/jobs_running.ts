@@ -369,11 +369,11 @@ export async function jobsRunningPanel(ctx: Ctx, stopNote?: HTMLElement): Promis
     const running = rowsOf(st.running);
     const cols: Col[] = [
       { key: 'job_name', label: 'job' }, { key: 'scheduler' }, { key: 'run_id', label: 'run', num: true },
-      { key: 'start_time', label: 'started', fmt: fmtTime },
-      { key: 'running_secs', label: 'running for', num: true, fmt: (v, r) => r.over_average === true ? badge(fmtSecs(v), 'warn') : fmtSecs(v), cls: (v, r) => v == null || r.over_average === true ? '' : r.over_average === false ? 'status ok' : 'status none' },
-      { key: 'avg_secs', label: 'average', num: true, fmt: (v, r) => v == null ? 'no successful run in 30 days' : `${fmtSecs(v)} (${fmtNum(r.ok_runs)} runs)` },
+      { key: 'start_time', label: 'started', fmt: fmtTime, title: 'When this run began' },
+      { key: 'running_secs', label: 'running for', num: true, title: 'How long the run had been going at the read; amber once it is past its average', fmt: (v, r) => r.over_average === true ? badge(fmtSecs(v), 'warn') : fmtSecs(v), cls: (v, r) => v == null || r.over_average === true ? '' : r.over_average === false ? 'status ok' : 'status none' },
+      { key: 'avg_secs', label: 'average', num: true, title: 'The average length of the job\'s successful runs over the last 30 days, with how many there were', fmt: (v, r) => v == null ? 'no successful run in 30 days' : `${fmtSecs(v)} (${fmtNum(r.ok_runs)} runs)` },
       {
-        key: 'estimated_end', label: 'estimated end', fmt: (v, r) => {
+        key: 'estimated_end', label: 'estimated end', title: 'When the run would end if it took its average; marked passed once that time has gone', fmt: (v, r) => {
           if (v == null) return '-';
           const shown = Date.parse(String(v)) < Date.now() ? `${fmtTime(v)} (passed)` : fmtTime(v);
           return r.over_average === true ? badge(shown, 'warn') : shown;
@@ -381,7 +381,7 @@ export async function jobsRunningPanel(ctx: Ctx, stopNote?: HTMLElement): Promis
         // as 'running for': past its average a warning, within it OK, no average (or no estimate) N/A
         cls: (v, r) => r.over_average === true ? '' : v != null && r.over_average === false ? 'status ok' : 'status none',
       },
-      { key: 'current_step', label: 'current step', fmt: (v, r) => v == null ? (r.scheduler === 'pgagent' ? '-' : 'no steps') : `${text(v)} (since ${fmtTime(r.current_step_start)})` },
+      { key: 'current_step', label: 'current step', title: 'The pgAgent step the run is on, and since when (a pg_cron job has no steps)', fmt: (v, r) => v == null ? (r.scheduler === 'pgagent' ? '-' : 'no steps') : `${text(v)} (since ${fmtTime(r.current_step_start)})` },
       { key: 'job_pid', label: 'pid', num: true }, { key: 'datname', label: 'db' }, { key: 'run_as', label: 'run as' },
       { key: 'excluded_by', label: 'checks', fmt: v => v == null ? '' : badge('left out', '') },
       {
