@@ -61,6 +61,68 @@ type reportView struct {
 	Layout *reportLayout `json:"layout,omitempty"`
 	// Links: a column's cells as links (DBA Dash's Add Link, L120, L125-L128)
 	Links []reportLink `json:"links,omitempty"`
+	// Charts: a result set drawn as a chart (DBA Dash's Add Chart, L130-L135; web/src/crchart.ts); SystemCharts: the
+	// instance's own charts shown beside the report (Add System Chart / Save System Chart State, L131)
+	Charts       []reportChart `json:"charts,omitempty"`
+	SystemCharts []string      `json:"system_charts,omitempty"` // cpu | waits | io | blocking
+}
+
+type reportChart struct {
+	Type    string   `json:"type"` // StackedArea | StackedColumn | Column | Line | Pie | Scatter
+	Set     int      `json:"set"`
+	X       string   `json:"x"`
+	Metrics []string `json:"metrics"`
+	Series  string   `json:"series,omitempty"`
+	Title   string   `json:"title,omitempty"`
+	XRange  bool     `json:"x_range,omitempty"`
+	Overlay *struct {
+		Set    int    `json:"set"`
+		Metric string `json:"metric"`
+	} `json:"overlay,omitempty"`
+	HiddenWhen string `json:"hidden_when,omitempty"` // a parameter's name: the chart hidden while it holds a value
+}
+
+var (
+	chartTypes   = map[string]bool{"StackedArea": true, "StackedColumn": true, "Column": true, "Line": true, "Pie": true, "Scatter": true}
+	systemCharts = map[string]bool{"cpu": true, "waits": true, "io": true, "blocking": true}
+)
+
+// validCharts checks a view's charts and system charts
+func validCharts(cs []reportChart, sys []string) error {
+	if len(cs) > 20 || len(sys) > 4 {
+		return errors.New("charts: at most 20 charts and the 4 system charts")
+	}
+	col := func(s string) bool { return len(s) <= 128 && !strings.ContainsRune(s, 0) }
+	for i, c := range cs {
+		n := i + 1
+		switch {
+		case !chartTypes[c.Type]:
+			return fmt.Errorf("chart %d: its type is StackedArea, StackedColumn, Column, Line, Pie or Scatter", n)
+		case c.Set < 0 || c.Set > 49 || strings.TrimSpace(c.X) == "" || !col(c.X) || !col(c.Series):
+			return fmt.Errorf("chart %d names its result set (0 to 49) and its X column (1 to 128 characters)", n)
+		case len(c.Metrics) == 0 || len(c.Metrics) > 10:
+			return fmt.Errorf("chart %d has 1 to 10 metric columns", n)
+		case len([]rune(c.Title)) > 200 || strings.IndexFunc(c.Title, unicode.IsControl) >= 0:
+			return fmt.Errorf("chart %d: a title is at most 200 characters, no control characters", n)
+		case c.HiddenWhen != "" && !reportParamName.MatchString(c.HiddenWhen):
+			return fmt.Errorf("chart %d: hidden_when names a parameter", n)
+		case c.Overlay != nil && (c.Overlay.Set < 0 || c.Overlay.Set > 49 || strings.TrimSpace(c.Overlay.Metric) == "" || !col(c.Overlay.Metric)):
+			return fmt.Errorf("chart %d: an overlay names a result set and its metric column", n)
+		}
+		for _, m := range c.Metrics {
+			if strings.TrimSpace(m) == "" || !col(m) {
+				return fmt.Errorf("chart %d: a metric is a column's name (1 to 128 characters)", n)
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for _, s := range sys {
+		if !systemCharts[s] || seen[s] {
+			return fmt.Errorf("system_charts: %q is not cpu, waits, io or blocking (each once)", s)
+		}
+		seen[s] = true
+	}
+	return nil
 }
 
 // reportLink: on a result set's column, a URL (the target column's value, http or https only), a text opened in the
@@ -127,6 +189,10 @@ type reportLayout struct {
 	Sets    []reportSetLayout `json:"sets,omitempty"`
 	GridOff bool              `json:"grid_off,omitempty"`
 	Heights map[string]int    `json:"heights,omitempty"` // a result set's number (0 = the first) -> its height in px
+	// the charts' layout (rows, columns, auto) and place beside the grids (top, bottom, left, right): DBA Dash L132
+	ChartLayout   string `json:"chart_layout,omitempty"`
+	ChartLocation string `json:"chart_location,omitempty"`
+	ChartsOff     bool   `json:"charts_off,omitempty"`
 }
 
 type reportSetLayout struct {
@@ -352,11 +418,20 @@ func validView(v *reportView) error {
 				return errors.New("layout: a height is a result set's number (0 to 49) and 100 to 4000 px")
 			}
 		}
-		if len(x.Sets) == 0 && !x.GridOff && len(x.Heights) == 0 {
+		switch {
+		case x.ChartLayout != "" && x.ChartLayout != "rows" && x.ChartLayout != "columns" && x.ChartLayout != "auto":
+			return errors.New("layout: chart_layout is rows, columns or auto")
+		case x.ChartLocation != "" && x.ChartLocation != "top" && x.ChartLocation != "bottom" && x.ChartLocation != "left" && x.ChartLocation != "right":
+			return errors.New("layout: chart_location is top, bottom, left or right")
+		}
+		if len(x.Sets) == 0 && !x.GridOff && len(x.Heights) == 0 && x.ChartLayout == "" && x.ChartLocation == "" && !x.ChartsOff {
 			v.Layout = nil // nothing saved
 		}
 	}
 	if err := validLinks(v.Links); err != nil {
+		return err
+	}
+	if err := validCharts(v.Charts, v.SystemCharts); err != nil {
 		return err
 	}
 	switch {

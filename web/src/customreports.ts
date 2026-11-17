@@ -12,10 +12,11 @@ import { reloadTree } from './tree';
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
 import { fleetWideNote, folderWords, inTagScope, tagWords, writtenTag } from './fleet';
-import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, gridModel, GridMenuAsk, MenuLine, offControl } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, gridModel, GridMenuAsk, MenuLine, offControl, showMenu } from './ui';
 import { Can, markNeed, routeWhy } from './needs';
 import { gridFiltered, gridHidden, gridMenu, resetGrid, setGridDefault } from './gridtools';
 import { firstChars, openViewer } from './sqlview';
+import { CHART_TYPES, ChartDef, ChartSet, ChartType, chartTypeNames, drawChart } from './crchart';
 import { instanceTabs, mssqlInstanceTabs } from './router';
 
 // picker: how the run's form offers the value (DBA Dash's Pickers, L95) - a list, a text box (Enter runs) or a query's
@@ -36,6 +37,8 @@ export interface ReportDef {
   url?: string; url_label?: string;             // a link under the description (L107)
   layout?: SavedLayout;                         // Save Layout: every viewer's default (L109, L208)
   links?: Link[];                               // a column's cells as links (Add Link, L120, L125-L128)
+  charts?: ChartDef[];                          // a result set as a chart (Add Chart, L130-L135)
+  system_charts?: string[];                     // the instance's own charts beside it (L131): cpu, waits, io, blocking
 }
 // a link on a result set's column: url / text use the target column's value (the column itself when none); drill opens
 // another report with its parameters from the row (map: its parameter -> this row's column); tree opens the row's
@@ -44,7 +47,7 @@ export interface Link { set?: number; column: string; kind: 'url' | 'text' | 'dr
   report_id?: number; map?: Record<string, string>; open?: 'new' | 'same' | 'panel'; instance_column?: string; database_column?: string; tab?: string }
 // LinkCtx: what a report page gives setGrid for its links (the drill-down's address and its panel)
 export interface LinkCtx { links: Link[]; drillHref: (l: Link, from: Record<string, string>) => string; panel: (l: Link, from: Record<string, string>) => void; range: () => string }
-export interface SavedLayout { sets?: { set: number; hidden?: string[] }[]; grid_off?: boolean; heights?: Record<string, number> }
+export interface SavedLayout { sets?: { set: number; hidden?: string[] }[]; grid_off?: boolean; heights?: Record<string, number>; chart_layout?: string; chart_location?: string; charts_off?: boolean }
 export interface SetView { set: number; name?: string; in_all?: boolean }
 export interface Visibility { engines?: string[]; tags?: string[]; include?: string[]; exclude?: string[] }
 // matches: whether an instance meets a report's visibility rules (the server's visibleOn, internal/web/q_customreports_view.go)
@@ -271,7 +274,7 @@ export function resultView(runs: InstanceRun[], def?: Pick<ReportDef, 'columns' 
 // ---- reading the definitions ------------------------------------------------------------------------------------
 
 // viewOf: 0372's view column as the definition's own keys (an empty view, '{}': none of them - the report as before)
-type ViewKeys = Pick<ReportDef, 'visibility' | 'access' | 'status_from_messages' | 'collections' | 'sets' | 'pair' | 'url' | 'url_label' | 'layout' | 'links'>;
+type ViewKeys = Pick<ReportDef, 'visibility' | 'access' | 'status_from_messages' | 'collections' | 'sets' | 'pair' | 'url' | 'url_label' | 'layout' | 'links' | 'charts' | 'system_charts'>;
 function viewOf(v: unknown): ViewKeys {
   const o = v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
   const out: ViewKeys = {};
@@ -285,6 +288,8 @@ function viewOf(v: unknown): ViewKeys {
   if (typeof o.url === 'string' && o.url) { out.url = o.url; if (typeof o.url_label === 'string' && o.url_label) out.url_label = o.url_label; }
   if (o.layout && typeof o.layout === 'object' && !Array.isArray(o.layout)) out.layout = o.layout as SavedLayout;
   if (Array.isArray(o.links) && o.links.length) out.links = (o.links as Link[]).filter(x => x && typeof x.column === 'string');
+  if (Array.isArray(o.charts) && o.charts.length) out.charts = (o.charts as ChartDef[]).filter(x => x && CHART_TYPES.includes(x.type) && Array.isArray(x.metrics));
+  if (Array.isArray(o.system_charts) && o.system_charts.length) out.system_charts = o.system_charts.map(String);
   return out;
 }
 
@@ -416,6 +421,65 @@ function linkDialog(columns: string[], column: string, set: number, cur?: Link):
     document.body.append(dlg);
     dlg.showModal();
     kind.focus();
+  });
+}
+
+// chartDialog: Add Chart / Configure (DBA Dash L130, L133, L135) - the type, the result set, the X column, the metric
+// columns, the column that splits them into series, the title, the X bound to the page's time window, an overlay (another
+// set's metric as a line), the parameter that hides the chart while it holds a value; null = cancelled
+export function chartDialog(columns: string[], params: string[], cur?: ChartDef): Promise<ChartDef | null> {
+  return new Promise(done => {
+    const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const list = el('datalist', { id: 'cr-chart-cols' }, ...columns.map(c => el('option', { value: c })));
+    const text = (label: string, v = '', size = '18') => el('input', { type: 'text', 'aria-label': label, value: v, size, list: 'cr-chart-cols' }) as HTMLInputElement;
+    const type = sel('Chart type', Object.fromEntries(CHART_TYPES.map(t => [t, chartTypeNames[t]])), cur?.type ?? 'Line');
+    const set = el('input', { type: 'text', 'aria-label': 'Result set (1 = the first)', value: String((cur?.set ?? 0) + 1), size: '3', inputmode: 'numeric' }) as HTMLInputElement;
+    const x = text('X column', cur?.x ?? columns[0] ?? ''), metrics = text('Metric columns (comma-separated)', (cur?.metrics ?? []).join(', '), '30');
+    const series = text('Series column (empty = one series per metric)', cur?.series ?? ''), title = text('Title (empty = the metrics by X)', cur?.title ?? '', '30');
+    const xr = check('Bind the X axis to the time range', cur?.x_range);
+    const oSet = el('input', { type: 'text', 'aria-label': 'Overlay result set (empty = none)', value: cur?.overlay ? String(cur.overlay.set + 1) : '', size: '3' }) as HTMLInputElement;
+    const oMetric = text('Overlay metric column', cur?.overlay?.metric ?? '');
+    const hide = sel('Hidden while this parameter holds a value', Object.fromEntries([['', '(never hidden)'], ...params.map(p => [p, p])]), cur?.hidden_when ?? '');
+    const said = el('p', { class: 'meta', role: 'alert' });
+    const form = el('form', { method: 'dialog' }, el('h3', {}, cur ? 'Configure the chart' : 'Add Chart'), list,
+      el('div', { class: 'toolbar' }, el('label', {}, 'Chart type ', type), el('label', {}, 'Result set ', set), el('label', {}, 'X ', x)),
+      el('div', { class: 'toolbar' }, el('label', {}, 'Metrics ', metrics), el('label', {}, 'Series ', series)),
+      el('div', { class: 'toolbar' }, el('label', {}, 'Title ', title), el('label', {}, xr, ' X bound to the time range')),
+      el('div', { class: 'toolbar' }, el('label', {}, 'Overlay: result set ', oSet), el('label', {}, 'metric ', oMetric)),
+      el('div', { class: 'toolbar' }, el('label', {}, 'Hidden while ', hide)), said,
+      el('div', { class: 'toolbar' }, el('button', { type: 'submit' }, 'Save'), el('button', { type: 'button', class: 'cr-cancel' }, 'Cancel')));
+    const dlg = el('dialog', { class: 'cr-ask', 'aria-label': cur ? 'Configure the chart' : 'Add Chart' }, form) as HTMLDialogElement;
+    let out: ChartDef | null = null;
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const ms = metrics.value.split(',').map(m => m.trim()).filter(Boolean), n = Number(set.value || 1) - 1, on = Number(oSet.value) - 1;
+      if (!x.value.trim() || !ms.length || !Number.isInteger(n) || n < 0) { said.textContent = 'A chart needs its X column, a metric and its result set (1 or more).'; return; }
+      out = { type: type.value as ChartType, set: n, x: x.value.trim(), metrics: ms, series: series.value.trim() || undefined, title: title.value.trim() || undefined,
+        x_range: xr.checked || undefined, overlay: oSet.value.trim() && Number.isInteger(on) && on >= 0 && oMetric.value.trim() ? { set: on, metric: oMetric.value.trim() } : undefined,
+        hidden_when: hide.value || undefined };
+      dlg.close();
+    });
+    form.querySelector('.cr-cancel')!.addEventListener('click', () => dlg.close());
+    dlg.addEventListener('close', () => { dlg.remove(); if (back?.isConnected) back.focus(); done(out); });
+    document.body.append(dlg);
+    dlg.showModal();
+    type.focus();
+  });
+}
+
+// confirmDialog: a yes / no in words (Delete All Charts); true = the action confirmed
+function confirmDialog(words: string, yes: string): Promise<boolean> {
+  return new Promise(done => {
+    const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    let ok = false;
+    const y = el('button', { type: 'button' }, yes), n = el('button', { type: 'button' }, 'Cancel');
+    const dlg = el('dialog', { class: 'cr-ask', 'aria-label': yes }, el('p', {}, words), el('div', { class: 'toolbar' }, y, n)) as HTMLDialogElement;
+    y.addEventListener('click', () => { ok = true; dlg.close(); });
+    n.addEventListener('click', () => dlg.close());
+    dlg.addEventListener('close', () => { dlg.remove(); if (back?.isConnected) back.focus(); done(ok); });
+    document.body.append(dlg);
+    dlg.showModal();
+    n.focus();
   });
 }
 
@@ -740,9 +804,8 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   const selBox = el('label', {}, 'Select Results ', selRes);
   const restoreBtn = el('button', { type: 'button' }, 'Restore Default View');
   const gridBtn = el('button', { type: 'button', 'aria-pressed': 'false' }, 'Toggle Grid');
-  // Toggle Charts: the report's charts (task 10) - off with its reason while it has none
-  const chartsBtn = el('button', { type: 'button' }, 'Toggle Charts');
-  offControl(chartsBtn, 'the report has no chart');
+  // Toggle Charts: the charts' panel shown or not (off with its reason while the report has none)
+  const chartsBtn = el('button', { type: 'button', 'aria-pressed': 'false' }, 'Toggle Charts');
   const fitBox = el('input', { type: 'checkbox' }) as HTMLInputElement;
   const fitLabel = el('label', {}, fitBox, ' Fit to one screen');
   const scriptBtn = el('button', { type: 'button' }, 'Script Report');
@@ -885,6 +948,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
     selBox.hidden = n < 2; fitLabel.hidden = n < 2;
     apply();
     layState();
+    drawCharts();
   };
   // saveWith: a change made on the page, saved with the report; the page drawn again from the saved definition
   const saveWith = async (patch: Partial<ReportDef>, said: string) => {
@@ -903,8 +967,9 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
       if (hidden.length) sets.push({ set: Number(b.dataset.set), hidden });
     }
     const hs = Object.fromEntries([...heights].filter(([k]) => k.startsWith('0:')).map(([k, v]) => [k.slice(2), v]));
-    const layout: SavedLayout = { sets: sets.length ? sets : undefined, grid_off: gridOff || undefined, heights: Object.keys(hs).length ? hs : undefined };
-    void saveWith({ layout: layout.sets || layout.grid_off || layout.heights ? layout : undefined }, 'The layout is saved with the report: every viewer opens it so (a viewer\'s own choices drawn over it).');
+    const layout: SavedLayout = { sets: sets.length ? sets : undefined, grid_off: gridOff || undefined, heights: Object.keys(hs).length ? hs : undefined,
+      chart_layout: chartLayout !== 'auto' ? chartLayout : undefined, chart_location: chartLoc !== 'top' ? chartLoc : undefined, charts_off: chartsOff || undefined };
+    void saveWith({ layout: Object.values(layout).some(v => v !== undefined) ? layout : undefined }, 'The layout is saved with the report: every viewer opens it so (a viewer\'s own choices drawn over it).');
   });
   resetLayBtn.addEventListener('click', () => {
     for (const t of out.querySelectorAll<HTMLTableElement>('table.grid')) resetGrid(t);
@@ -986,7 +1051,112 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   });
   const onResize = () => { if (!out.isConnected) { window.removeEventListener('resize', onResize); return; } if (fit) apply(); };
   window.addEventListener('resize', onResize);
-  sec.append(viewBar, status, out, child);
+  // ---- the charts (DBA Dash L130-L135): the report's own (a result set drawn, crchart.ts) and the instance's system
+  // charts, in a panel whose layout (rows, columns, auto) and place (top, bottom, left, right) the page chooses
+  let chartLayout = def.layout?.chart_layout ?? 'auto', chartLoc = def.layout?.chart_location ?? 'top', chartsOff = !!def.layout?.charts_off;
+  let sysOn: string[] = [...(def.system_charts ?? [])];
+  const chartsBox = el('div', { class: 'cr-charts' }), body = el('div', { class: 'cr-body' }, chartsBox, out);
+  const layoutSel = sel('Chart Layout', { auto: 'auto', rows: 'one per row', columns: 'side by side' }, chartLayout);
+  const locSel = sel('Chart Location', { top: 'above the grids', bottom: 'under the grids', left: 'left of the grids', right: 'right of the grids' }, chartLoc);
+  const addChartBtn = el('button', { type: 'button' }, 'Add Chart'), delChartsBtn = el('button', { type: 'button' }, 'Delete All Charts');
+  const sysBtn = el('button', { type: 'button' }, 'Add System Chart'), sysSaveBtn = el('button', { type: 'button' }, 'Save System Chart State');
+  const chartBar = el('div', { class: 'toolbar cr-chart-bar' }, addChartBtn, sysBtn, sysSaveBtn, el('label', {}, 'Chart Layout ', layoutSel), el('label', {}, 'Chart Location ', locSel), delChartsBtn);
+  const sysNames: Record<string, string> = { cpu: 'CPU', waits: 'Waits', io: 'IO', blocking: 'Blocking' };
+  const sysInstance = () => target.value === 'instance' && Number(instSel.value) > 0 ? Number(instSel.value) : 0;
+  const placeCharts = () => {
+    chartsBox.dataset.layout = chartLayout; chartsBox.dataset.location = chartLoc; body.dataset.location = chartLoc;
+    const any = !!def.charts?.length || sysOn.length > 0;
+    chartsBox.hidden = chartsOff || !any;
+    offControl(chartsBtn, any ? null : 'the report has no chart');
+    chartsBtn.setAttribute('aria-pressed', String(!chartsOff && any));
+    offControl(delChartsBtn, renameWhy ? 'Deleting the charts saves the report: ' + renameWhy : def.charts?.length ? null : 'the report has no chart');
+    offControl(addChartBtn, renameWhy ? 'Adding a chart saves the report: ' + renameWhy : lastRuns ? null : 'run the report first: a chart is drawn from its result sets');
+    offControl(sysBtn, sysInstance() ? null : 'a system chart is one instance\'s: run the report on one instance');
+    offControl(sysSaveBtn, renameWhy ? 'Saving the system charts saves the report: ' + renameWhy : null);
+  };
+  // a point clicked: the drill-down of the report's link on the chart's metric (else its X) column, from that row
+  const pointDrill = (c: ChartDef, sets: ChartSet[]) => (row: number) => {
+    const set = sets[c.set], cols = [...c.metrics, c.x].map(x => x.toLowerCase());
+    const l = def.links?.find(x => (x.set ?? 0) === c.set && x.kind === 'drill' && cols.includes(x.column.toLowerCase()));
+    if (!l || !set) return;
+    const at = (col: string) => { const k = set.columns.findIndex(x => x.toLowerCase() === col.toLowerCase()); const v = k < 0 ? null : set.rows[row]?.[k]; return v == null ? '' : String(v); };
+    const from = Object.fromEntries(Object.entries(l.map ?? {}).map(([p, col]) => [p, at(col)]));
+    if (l.open === 'panel') linkCtx.panel(l, from);
+    else if (l.open === 'same') location.hash = linkCtx.drillHref(l, from);
+    else window.open(linkCtx.drillHref(l, from), '_blank', 'noopener');
+  };
+  // the system charts: the instance's Performance series (GET /api/performance) - CPU, the waits, the IO, the blocked
+  // sessions - each drawn as a line over the time range
+  let sysSeq = 0;
+  const drawSystem = async (into: HTMLElement[]) => {
+    const inst = sysInstance(), my = ++sysSeq;
+    if (!sysOn.length) return;
+    if (!inst) { into.forEach(b => b.replaceWith(el('p', { class: 'meta' }, 'The system charts are one instance\'s: run the report on one instance.'))); return; }
+    let d: Record<string, Table | null>;
+    try { d = await get<Record<string, Table | null>>('performance', { instance: inst, ...window_(ctx) }); }
+    catch (e) { into.forEach(b => b.replaceChildren(errorBox(e))); return; }
+    if (my !== sysSeq) return;
+    sysOn.forEach((k, i) => {
+      const part = k === 'blocking' ? d.sessions : d[k];
+      const t = part ? { columns: part.columns, rows: part.rows as unknown[][] } : { columns: [], rows: [] };
+      const nums = t.columns.filter((c, j) => c !== 'snapshot_at' && t.rows.some(r => r[j] != null && !isNaN(Number(r[j]))) && (k !== 'blocking' || /block/i.test(c)));
+      const txt = t.columns.find((c, j) => c !== 'snapshot_at' && !nums.includes(c) && t.rows.some(r => typeof r[j] === 'string' && isNaN(Number(r[j]))));
+      const box = nums.length ? drawChart({ type: 'Line', set: 0, x: 'snapshot_at', metrics: nums.slice(0, 4), series: txt, title: `${sysNames[k]} (the instance's own)`, x_range: true }, [t], { window: { from: Date.parse(window_(ctx).from), to: Date.parse(window_(ctx).to) } })
+        : el('figure', { class: 'cr-chart' }, el('figcaption', {}, sysNames[k]), el('p', { class: 'meta' }, `No ${sysNames[k]} read for this instance in the range.`));
+      box.dataset.type = 'system:' + k;
+      into[i]?.replaceWith(box);
+    });
+  };
+  const drawCharts = () => {
+    placeCharts();
+    const run = lastRuns?.find(r => r.sets.length);
+    const sets: ChartSet[] = run ? run.sets.map(x => ({ columns: x.columns, rows: x.rows })) : [];
+    const w = window_(ctx), win = { from: Date.parse(w.from), to: Date.parse(w.to) };
+    const hidden = (c: ChartDef) => !!c.hidden_when && def.params.some((p, i) => p.name === c.hidden_when && inputs[i].value.trim() !== '');
+    const own = (def.charts ?? []).map((c, i) => { if (hidden(c)) return null; const b = drawChart(c, sets, { window: win, onPoint: pointDrill(c, sets) }); b.dataset.index = String(i); return b; }).filter((b): b is HTMLElement => !!b);
+    const sysBoxes = sysOn.map(k => { const b = el('figure', { class: 'cr-chart' }, el('figcaption', {}, sysNames[k] + ': reading...')); b.dataset.type = 'system:' + k; return b; });
+    chartsBox.replaceChildren(...own, ...sysBoxes);
+    if (run && run.instance !== 'store' && (lastRuns?.length ?? 0) > 1) chartsBox.append(el('p', { class: 'meta' }, `The charts draw ${run.instance}'s result sets (the first instance of the run).`));
+    void drawSystem(sysBoxes);
+  };
+  layoutSel.addEventListener('change', () => { chartLayout = layoutSel.value; placeCharts(); });
+  locSel.addEventListener('change', () => { chartLoc = locSel.value; placeCharts(); });
+  chartsBtn.addEventListener('click', () => { chartsOff = !chartsOff; placeCharts(); });
+  addChartBtn.addEventListener('click', () => {
+    const run = lastRuns?.find(r => r.sets.length);
+    void chartDialog(run?.sets[0]?.columns ?? [], def.params.map(p => p.name)).then(c => { if (c) void saveWith({ charts: [...(def.charts ?? []), c] }, 'The chart is saved with the report.'); });
+  });
+  delChartsBtn.addEventListener('click', () => {
+    void confirmDialog(`Delete the report's ${def.charts?.length ?? 0} chart(s)? The report is saved without them.`, 'Delete all charts').then(ok => { if (ok) void saveWith({ charts: undefined }, 'The charts are deleted (saved with the report).'); });
+  });
+  sysBtn.addEventListener('click', () => {
+    const r = sysBtn.getBoundingClientRect();
+    showMenu(r.left, r.bottom, Object.entries(sysNames).filter(([k]) => !sysOn.includes(k)).map(([k, v]) => [v, () => { sysOn = [...sysOn, k]; drawCharts(); }] as [string, () => void]), sysBtn);
+  });
+  sysSaveBtn.addEventListener('click', () => { void saveWith({ system_charts: sysOn.length ? [...sysOn] : undefined }, 'The system charts are saved with the report.'); });
+  // a chart's own menu (DBA Dash L133): Configure, Move Up, Move Down, Delete - each saved with the report
+  chartsBox.addEventListener('contextmenu', e => {
+    const box = (e.target as Element).closest<HTMLElement>('.cr-chart');
+    if (!box) return;
+    e.preventDefault();
+    const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (box.dataset.type?.startsWith('system:')) {
+      const k = box.dataset.type.slice(7);
+      showMenu(e.clientX, e.clientY, [['Remove (Save System Chart State keeps it so)', () => { sysOn = sysOn.filter(x => x !== k); drawCharts(); }]], back);
+      return;
+    }
+    const i = Number(box.dataset.index), list = def.charts ?? [];
+    const moved = (j: number) => { const a = [...list]; [a[i], a[j]] = [a[j], a[i]]; return a; };
+    const no = renameWhy ? () => { status.textContent = 'Not saved: changing a chart saves the report: ' + renameWhy; } : null;
+    showMenu(e.clientX, e.clientY, [
+      ['Configure', no ?? (() => { const run = lastRuns?.find(r => r.sets.length); void chartDialog(run?.sets[list[i].set]?.columns ?? [], def.params.map(p => p.name), list[i]).then(c => { if (c) void saveWith({ charts: list.map((x, j) => j === i ? c : x) }, 'The chart is saved with the report.'); }); })],
+      ['Move Up', no ?? (() => { if (i > 0) void saveWith({ charts: moved(i - 1) }, 'The chart moved up (saved with the report).'); })],
+      ['Move Down', no ?? (() => { if (i < list.length - 1) void saveWith({ charts: moved(i + 1) }, 'The chart moved down (saved with the report).'); })],
+      ['Delete', no ?? (() => { void saveWith({ charts: list.filter((_, j) => j !== i).length ? list.filter((_, j) => j !== i) : undefined }, 'The chart is deleted (saved with the report).'); })],
+    ], back);
+  });
+  placeCharts();
+  sec.append(viewBar, chartBar, status, body, child);
 
   // a query picker's values: its query run on the report's target (POST .../run with 'picker'), audited as a run; the
   // first column the value, the second (when there is one) the words; a list that cannot be read says so in its options
@@ -1065,7 +1235,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
       inputs[i].addEventListener('keydown', e => { if ((e as KeyboardEvent).key === 'Enter') { e.preventDefault(); void run(); } });
     } else inputs[i].addEventListener('change', () => { mark(i); if (!runWhy) void run(); });
   });
-  const retarget = () => { trigWords(); void loadPickers(); };
+  const retarget = () => { trigWords(); void loadPickers(); if (sysOn.length) drawCharts(); else placeCharts(); };
   for (const x of [target, instSel, tagSel]) x.addEventListener('change', retarget);
   await loadPickers();
   // a repository report runs on open (DBA Dash's custom reports run when opened); an instance report on the button,
@@ -1243,6 +1413,19 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
     el('div', { class: 'toolbar' }, el('label', {}, 'Switch to report ', pairId), el('label', {}, 'Switch button words ', pairLabel)),
     el('p', { class: 'meta' }, 'The switch button opens the other report on the same target with the parameters both reports declare; Back returns. '
       + (def.sets?.length ? 'The result sets\' names are kept as they are (Rename on the report\'s page).' : ''))));
+  // the charts (DBA Dash L130): each drawn from a result set; Add Chart here or on the report's page after a run
+  let charts: ChartDef[] = [...(def.charts ?? [])];
+  const chartList = el('ul', { class: 'cr-chart-list' });
+  const listCharts = () => chartList.replaceChildren(...(charts.length ? charts.map((c, i) => {
+    const rm = el('button', { type: 'button', class: 'link' }, 'Remove');
+    rm.addEventListener('click', () => { charts = charts.filter((_, j) => j !== i); listCharts(); });
+    return el('li', {}, `${chartTypeNames[c.type]}: ${c.title || `${c.metrics.join(', ')} by ${c.x}`} (result set ${c.set + 1}) `, rm);
+  }) : [el('li', { class: 'meta' }, 'No chart.')]));
+  const addChart = el('button', { type: 'button' }, 'Add Chart');
+  addChart.addEventListener('click', () => { void chartDialog([], params.read().map(p => p.name).filter(Boolean)).then(c => { if (c) { charts = [...charts, c]; listCharts(); } }); });
+  listCharts();
+  sec.append(el('fieldset', {}, el('legend', {}, 'Charts'), chartList, addChart,
+    def.system_charts?.length ? el('p', { class: 'meta' }, `System charts kept: ${def.system_charts.join(', ')} (Add System Chart on the report's page).`) : ''));
 
   const msg = el('p', { class: 'meta', role: 'status' });
   const save = markNeed(el('button', { type: 'button' }, 'Save'), 'customreports');
@@ -1256,6 +1439,7 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
       status_from_messages: fromMsgs.checked || undefined,
       collections: colls.value.split(',').map(c => c.trim()).filter(Boolean),
       sets: def.sets,   // named on the report's page: kept as they are
+      charts: charts.length ? charts : undefined, system_charts: def.system_charts, layout: def.layout, links: def.links,
       url: urlIn.value.trim() || undefined, url_label: urlLabel.value.trim() || undefined,
       pair: pairId.value.trim() ? { report_id: Number(pairId.value), label: pairLabel.value.trim() } : undefined,
     };

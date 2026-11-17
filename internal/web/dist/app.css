@@ -169,6 +169,22 @@ button.link.silence-btn:disabled, button.link.silence-btn[aria-disabled="true"] 
 .cr-set-sep { flex: 0 0 auto; height: var(--sp-2); cursor: row-resize; background: var(--line); border-radius: var(--r-xs); }
 .cr-set-sep:focus-visible { outline: var(--focus-w) solid var(--accent); }
 dialog.cr-ask { background: var(--surface-card); color: var(--text); border: var(--bw) solid var(--line); border-radius: var(--r-md); }
+/* a custom report's charts (parity set 3, L130-L135): their panel beside the grids, its layout and place the page's */
+.cr-body { display: flex; flex-direction: column; gap: var(--sp-3); }
+.cr-body[data-location="bottom"] { flex-direction: column-reverse; }
+.cr-body[data-location="left"] { flex-direction: row; align-items: flex-start; }
+.cr-body[data-location="right"] { flex-direction: row-reverse; align-items: flex-start; }
+.cr-body[data-location="left"] > .cr-charts, .cr-body[data-location="right"] > .cr-charts { flex: 0 0 40%; }
+.cr-body > div:last-child { flex: 1 1 auto; min-width: 0; }
+.cr-charts { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); }
+.cr-charts[data-layout="rows"] { grid-template-columns: 1fr; }
+.cr-charts[data-layout="columns"] { grid-auto-flow: column; grid-auto-columns: minmax(18rem, 1fr); grid-template-columns: none; overflow-x: auto; }
+.cr-chart { margin: 0; padding: var(--sp-2); background: var(--surface-card); border: var(--bw) solid var(--line); border-radius: var(--r-md); }
+.cr-chart figcaption { font-weight: var(--fw-strong); margin-bottom: var(--sp-1); }
+.cr-svg { width: 100%; height: auto; display: block; }
+.cr-svg .cr-axis { stroke: var(--line-strong); }
+.cr-svg .cr-tick { fill: var(--text-muted); font-size: 11px; }
+.cr-svg [data-row] { cursor: pointer; }
 @media (forced-colors: active) { button:disabled, button[aria-disabled="true"] { color: GrayText !important; border-color: GrayText !important; opacity: 1 !important; } }  /* important: a more specific off colour (button.link, .grid td.status, .silence-btn) is no system colour, so forced colours would turn it back to ButtonText */
 .range { display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; position: relative; }
 .range .custom { display: inline-flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
