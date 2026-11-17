@@ -254,7 +254,40 @@ func funcInline(ctx context.Context, conn *sql.Conn, info Info, rows []collect.R
 // inlineUnasked names, in one note, the databases whose functions ran but which the databases' list did not offer
 // (quoted: online and the login can enter them): their functions' marks read 'not read', and the note says where.
 func inlineUnasked(rows []collect.Row, ids []int64, quoted map[int64]string) []collect.Row {
-	return nil
+	const shown = 10
+	var names []string
+	left := 0
+	for _, id := range ids {
+		if _, ok := quoted[id]; ok {
+			continue
+		}
+		if len(names) == shown {
+			left++
+			continue
+		}
+		names = append(names, databaseLabel(rows, id))
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	list := strings.Join(names, ", ")
+	if left > 0 {
+		list += fmt.Sprintf(" and %d more", left)
+	}
+	return []collect.Row{{"kind": "collector_error", "source": "sys.sql_modules",
+		"message": "the inlineability of the scalar functions of " + list + " was not read (not online, or the login cannot enter the database: CONNECT ANY DATABASE, or a user there): the page says 'not read' for them"}}
+}
+
+// databaseLabel is a database's name as the read gave it (DB_NAME), else its id.
+func databaseLabel(rows []collect.Row, id int64) string {
+	for _, r := range rows {
+		if db, _ := r["database_id"].(int64); db == id {
+			if n, _ := r["database_name"].(string); n != "" {
+				return n
+			}
+		}
+	}
+	return fmt.Sprintf("database id %d", id)
 }
 
 // idNames reads an object id and name list into a map.
