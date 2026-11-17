@@ -389,14 +389,16 @@ func TestReportZip(t *testing.T) {
 // and never the value - a mistyped address or an application contact's channel name is in no file of the report.
 func TestReportDailyChecksCheckLine(t *testing.T) {
 	dir := t.TempDir()
-	for i, c := range []struct{ to, channel, want, leak string }{
+	for i, c := range []struct{ to, channel, post, want, leak string }{
 		// the channel of row 0 is no plain word: a masked value is taken out of the check line as a whole word
-		{"[LeakAddr9zq]", "relay7q", "reports.daily_checks: to: address 1 of the list", "LeakAddr9zq"},
-		{"[dba@example.org]", "contact-Leak7chq", "reports.daily_checks: channel names an application contact", "Leak7chq"},
+		{"[LeakAddr9zq]", "relay7q", "", "reports.daily_checks: to: address 1 of the list", "LeakAddr9zq"},
+		{"[dba@example.org]", "contact-Leak7chq", "", "reports.daily_checks: channel names an application contact", "Leak7chq"},
+		// B20-4 (review-26 go2 S2): a webhook's URL pasted where its channel's name belongs is named by its place
+		{"[dba@example.org]", "relay7q", "    post: [https://hooks.example/T0/LeakHook9zq]\n", "reports.daily_checks: post: entry 1 of the list is not a webhook channel of alerts:", "LeakHook9zq"},
 	} {
 		cfg := filepath.Join(dir, fmt.Sprintf("daily%d.yaml", i))
 		text := "repository:\n  dsn: \"host=127.0.0.1 port=1 user=u_daily dbname=d_daily\"\nreports:\n  daily_checks:\n    enabled: true\n" +
-			"    at: \"07:00\"\n    tz: UTC\n    to: " + c.to + "\n    as: alice\n    channel: " + c.channel + "\n"
+			"    at: \"07:00\"\n    tz: UTC\n    to: " + c.to + "\n    as: alice\n    channel: " + c.channel + "\n" + c.post
 		if err := os.WriteFile(cfg, []byte(text), 0o600); err != nil {
 			t.Fatal(err)
 		}
