@@ -204,7 +204,10 @@ INSERT INTO #pl_epr VALUES
 	// check reads the login's own membership (sys.server_role_members, which a login may see for itself)
 	var hasRole int
 	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM sys.server_principals WHERE name = N'##MS_DatabaseManager##' AND type = 'R'").Scan(&hasRole); err != nil || hasRole == 0 {
-		t.Logf("no ##MS_DatabaseManager## on this server (%d, %v: before SQL Server 2022): the server-role row not run", hasRole, err)
+		// review t11-10 NIT 8: a visible skip, not a log line
+		t.Run("server role", func(t *testing.T) {
+			t.Skipf("no ##MS_DatabaseManager## on this server (%d, %v: before SQL Server 2022): the server-role row not run", hasRole, err)
+		})
 	} else {
 		dm, dpw := fmt.Sprintf("pgv_dm_%d", time.Now().UnixNano()%1000000), pw()
 		exec(fmt.Sprintf("CREATE LOGIN [%s] WITH PASSWORD = N'%s', CHECK_POLICY = OFF; ALTER SERVER ROLE [##MS_DatabaseManager##] ADD MEMBER [%s];", dm, dpw, dm))

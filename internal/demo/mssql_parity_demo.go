@@ -172,6 +172,10 @@ func (g *Gen) azureXERows(t time.Time) []Row {
 			out = append(out, r)
 		}
 	}
+	// every capture's state, as xe.go sends it (review t11-10 SHOULD 3): no session of the other three on this database
+	for _, c := range []string{"deadlocks", "blocked", "attention"} {
+		out = append(out, Row{"kind": "state", "capture": c, "state": "not installed", "source": "product"})
+	}
 	return out
 }
 

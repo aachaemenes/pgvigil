@@ -56,6 +56,8 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
   search.addEventListener('input', () => {
     clearTimeout(timer);
     timer = window.setTimeout(() => {
+      // review t11-10 NIT 7: a page left within the 300 ms keeps its own address
+      if (!sec.isConnected) return;
       const [path, qs] = location.hash.split('?'), hq = new URLSearchParams(qs ?? ''), v = search.value.trim();
       if (v) hq.set('oesearch', v); else hq.delete('oesearch');
       history.replaceState(null, '', `${location.pathname}${location.search}${path}?${hq}`);

@@ -494,6 +494,12 @@ func objKind(grid, kind string) string {
 	if !ok {
 		panic("objKind: the " + kind + " read does not end with LIMIT 2000")
 	}
+	// review t11-10 NIT 6: its own ORDER BY goes with its LIMIT (the outer order and cut are the list's)
+	i := strings.LastIndex(body, "\n ORDER BY ")
+	if i < 0 {
+		panic("objKind: the " + kind + " read does not end with an ORDER BY line before its LIMIT")
+	}
+	body = body[:i]
 	return `SELECT * FROM (` + body + `) g
  WHERE ($5::text[] IS NULL OR '` + kind + `' = ANY ($5::text[]) OR ` + objType("g", kind) + ` = ANY ($5::text[]))
    AND ($6::text = '' OR strpos(lower(coalesce(g.schema_name, '') || '.' || g.object_name), lower($6::text)) > 0)

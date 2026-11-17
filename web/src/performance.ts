@@ -128,7 +128,8 @@ function execStatsStrip(ctx: Ctx, link: string, db?: string): HTMLElement {
       if (mine !== seq) return;
       // one line per object by its ids, its label the server's one name for it; the objects outside the top summed
       // into '{Other}' (ids -1), DBA Dash's Include Other
-      const rows = rowsOf(d.execstats), key = (r: Row) => `${String(r.database_id)}:${String(r.object_id)}`;
+      // review t11-10 NIT 5: the key carries the line's kind (a procedure and a function reusing one object id in the window)
+      const rows = rowsOf(d.execstats), key = (r: Row) => `${String(r.line_kind)}:${String(r.database_id)}:${String(r.object_id)}`;
       const series = new Map<string, string>();
       for (const r of rows) if (!series.has(key(r))) series.set(key(r), Number(r.object_id) === -1 ? '{Other}' : String(r.object));
       // the strip's own steps, as the server returns them (every covered step, each object 0 where it did not run)
@@ -139,10 +140,14 @@ function execStatsStrip(ctx: Ctx, link: string, db?: string): HTMLElement {
         by.get(t)![key(r)] = r.value;
       }
       const pts = [...by.keys()].sort((a, b) => a - b).map(t => by.get(t)!);
+      // review t11-10 NIT 4: two lines with one name (a database or an object dropped and made again) get their ids
+      const seen = new Map<string, number>();
+      for (const n of series.values()) seen.set(n, (seen.get(n) ?? 0) + 1);
+      const labelOf = (id: string, name: string) => (seen.get(name) ?? 0) > 1 ? `${name} (${id})` : name;
       const title = `Execution Stats: ${label} (${unit}), the top ${tSel.value} objects${other.checked ? ' and the others' : ''}${db ? ` of ${db}` : ''}`;
       body.replaceChildren(rows.length
-        ? titled(lineChart('Execution Stats', pts, [...series].map(([id, name]) => ({ key: id, label: name })), v => `${fmtNum(v)} ${unit}`), title, link)
-        : emptyChart(title, link, esEmpty(rowsOf(d.execstats_state))));
+        ? titled(lineChart('Execution Stats', pts, [...series].map(([id, name]) => ({ key: id, label: labelOf(id, name) })), v => `${fmtNum(v)} ${unit}`), title, link)
+        : emptyChart(title, link, esEmpty(rowsOf(d.execstats_state), window_(ctx).from)));
     } catch (e) {
       if (mine === seq) body.replaceChildren(errorBox(e));
     }
@@ -157,11 +162,14 @@ function execStatsStrip(ctx: Ctx, link: string, db?: string): HTMLElement {
 
 // esEmpty: the strip's empty words from its two collections' state (collection_dates): one not run on this
 // instance, or its last run not ok, is named with its note; both ok = nothing ran in the range
-function esEmpty(state: Row[]): string {
+function esEmpty(state: Row[], from: string): string {
   const said = (['mssql_procstats', 'mssql_funcstats'] as const).map(c => {
     const r = state.find(x => x.collection === c);
     if (!r) return `the ${c} collection has not run on this instance (it reads every five minutes and needs VIEW SERVER STATE)`;
-    return r.status !== 'ok' ? `the ${c} collection's last run: ${String(r.status)}${r.note ? ' (' + String(r.note) + ')' : ''}` : '';
+    if (r.status !== 'ok') return `the ${c} collection's last run: ${String(r.status)}${r.note ? ' (' + String(r.note) + ')' : ''}`;
+    // review t11-10 SHOULD 1: an ok run that is older than the window read nothing in it
+    return r.snapshot_at != null && new Date(String(r.snapshot_at)).getTime() < new Date(from).getTime()
+      ? `the ${c} collection's last read was ${fmt(new Date(String(r.snapshot_at)))}, before this window` : '';
   }).filter(Boolean);
   return said.length
     ? `No procedure, function or trigger figure in this window: ${said.join('; ')}.`

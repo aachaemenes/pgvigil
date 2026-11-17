@@ -310,22 +310,23 @@ WITH x AS (
    WHERE t.object_id IS NOT NULL OR $8::bool
    GROUP BY 1, 2, 3, 4
 ), lines AS (
-  SELECT t.k, t.database_id, t.object_id, t.name FROM top t
+  SELECT t.k, t.database_id, t.object_id, t.name, t.k AS line_kind FROM top t
   UNION ALL
-  SELECT kk.k, -1, -1, '{Other}' FROM (VALUES ('p'::text), ('f')) kk(k)
+  SELECT kk.k, -1, -1, '{Other}', 'o' FROM (VALUES ('p'::text), ('f')) kk(k)
    WHERE $8::bool AND EXISTS (SELECT 1 FROM o WHERE NOT EXISTS (
            SELECT 1 FROM top t WHERE t.k = o.k AND t.database_id = o.database_id AND t.object_id = o.object_id))
 ), r AS (
-  SELECT c.step, l.database_id, l.object_id, l.name, c.secs, coalesce(w.d, 0) AS d, coalesce(w.c, 0) AS c, coalesce(w.e, 0) AS e,
+  SELECT c.step, l.line_kind, l.database_id, l.object_id, l.name, c.secs, coalesce(w.d, 0) AS d, coalesce(w.c, 0) AS c, coalesce(w.e, 0) AS e,
          coalesce(w.lr, 0) AS lr, coalesce(w.pr, 0) AS pr, coalesce(w.lw, 0) AS lw, w.mx
     FROM lines l
     JOIN cover c ON c.k = l.k AND c.secs > 0
     LEFT JOIN w ON w.k = l.k AND w.step = c.step AND w.database_id = l.database_id AND w.object_id = l.object_id
 )
 SELECT r.step AS snapshot_at, r.database_id, r.object_id, r.name AS object,
-       round((` + execStatsValue + `)::numeric, 6) AS value, round((` + execStatsValue + `)::numeric, 3) AS per_sec
+       round((` + execStatsValue + `)::numeric, 6) AS value, round((` + execStatsValue + `)::numeric, 3) AS per_sec,
+       r.line_kind AS line_kind
   FROM r
- GROUP BY r.step, r.database_id, r.object_id, r.name
+ GROUP BY r.step, r.line_kind, r.database_id, r.object_id, r.name
  ORDER BY 1, (r.object_id = -1), 4, 2, 3`
 
 // execStatsRank: an object's rank over the window (alias o: its raw sums): DBA Dash's measure over the window, a rate

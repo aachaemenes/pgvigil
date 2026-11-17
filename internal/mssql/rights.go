@@ -136,7 +136,7 @@ var Rights = []Right{
 	// which asks dbmanager there (Microsoft Learn) - a role that also creates and drops databases, so an opt-in (desk
 	// Q176 = a): its block is printed commented out, and the read in master says whether it is held (this read runs in
 	// the database, which cannot see master's roles)
-	{Key: "azure_dbmanager_pool_history", Name: "dbmanager in the logical server's master (an opt-in: Pool history only)",
+	{Key: "azure_dbmanager_pool_history", Name: "dbmanager in the logical server's master, or the server role ##MS_DatabaseManager## (an opt-in: Pool history only)",
 		For:   "Pool history: the elastic pool's DTU and storage limits over time, from master's sys.elastic_pool_resource_stats (14 days kept there)",
 		Check: "CAST(NULL AS int)",
 		// the statement as every row has one; the script prints the OptIn block, which carries it commented out

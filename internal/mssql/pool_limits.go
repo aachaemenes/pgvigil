@@ -94,7 +94,8 @@ SELECT CONVERT(varchar(27), MIN(start_time), 126) AS valid_from, CONVERT(varchar
 // noRightWords: the skip's words when the login is in neither dbmanager nor ##MS_DatabaseManager## (the opt-in not taken)
 const noRightWords = "Pool history is not read: the login is not a member of dbmanager in the logical server's master, nor of the " +
 	"server role ##MS_DatabaseManager## - an opt-in, since either lets the login create and drop databases on this logical server, " +
-	"which can cost money (the rights page's commented-out block gives it)"
+	"which can cost money (the rights page's commented-out block gives it); a membership through an Entra group is not seen (only the " +
+	"login's own, until the Azure lab proves sys.login_token there)"
 
 // noMasterWords: the skip's words when the login could not sign in to master
 func noMasterWords(err error) string {
