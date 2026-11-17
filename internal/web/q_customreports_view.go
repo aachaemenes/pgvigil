@@ -12,9 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	mssql "github.com/microsoft/go-mssqldb"
@@ -44,6 +46,25 @@ type reportView struct {
 	// Collections: the collections the report's data comes from, which its Trigger Collection button names (DBA Dash's
 	// Associate Collection, L98)
 	Collections []string `json:"collections,omitempty"`
+	// Sets: a result set's own name and whether 'All' in Select Results shows it (DBA Dash's CustomReportResults,
+	// L102 / L110); a set not named here is 'result set <n>' and shown under All
+	Sets []reportSetView `json:"sets,omitempty"`
+	// Pair: the report the switch button opens, carrying the parameters both declare (DBA Dash's SwitchTo, L106)
+	Pair *reportPair `json:"pair,omitempty"`
+	// URL and URLLabel: a link under the description (DBA Dash's URL label, L107)
+	URL      string `json:"url,omitempty"`
+	URLLabel string `json:"url_label,omitempty"`
+}
+
+type reportSetView struct {
+	Set   int    `json:"set"`
+	Name  string `json:"name,omitempty"`
+	InAll *bool  `json:"in_all,omitempty"` // nil = shown under All
+}
+
+type reportPair struct {
+	ReportID int64  `json:"report_id"`
+	Label    string `json:"label"`
 }
 
 // reportPicker is a parameter's picker (DBA Dash's Pickers, L95): a list of values (a select), a text box (Enter
@@ -193,6 +214,52 @@ func validView(v *reportView) error {
 		if roleRank(a) < 0 {
 			return fmt.Errorf("access: %q is not a role (viewer, operator, admin)", a)
 		}
+	}
+	if len(v.Sets) > 50 {
+		return errors.New("sets: at most 50 result sets are named")
+	}
+	seen := map[int]bool{}
+	kept := v.Sets[:0]
+	for _, x := range v.Sets {
+		switch {
+		case x.Set < 0 || x.Set > 49:
+			return fmt.Errorf("sets: %d is not a result set's number (0 to 49)", x.Set)
+		case seen[x.Set]:
+			return fmt.Errorf("sets: result set %d is named twice", x.Set+1)
+		case len([]rune(x.Name)) > 200 || strings.IndexFunc(x.Name, unicode.IsControl) >= 0:
+			return fmt.Errorf("sets: result set %d's name is at most 200 characters, no control characters", x.Set+1)
+		}
+		seen[x.Set] = true
+		x.Name = strings.TrimSpace(x.Name)
+		if x.InAll != nil && *x.InAll {
+			x.InAll = nil
+		}
+		if x.Name != "" || x.InAll != nil {
+			kept = append(kept, x) // an entry that says nothing is not stored
+		}
+	}
+	v.Sets = kept
+	if len(v.Sets) == 0 {
+		v.Sets = nil
+	}
+	if x := v.Pair; x != nil {
+		x.Label = strings.TrimSpace(x.Label)
+		if x.ReportID <= 0 || x.Label == "" || len([]rune(x.Label)) > 60 || strings.IndexFunc(x.Label, unicode.IsControl) >= 0 {
+			return errors.New("pair: the paired report's id and the switch button's words (1 to 60 characters)")
+		}
+	}
+	v.URL, v.URLLabel = strings.TrimSpace(v.URL), strings.TrimSpace(v.URLLabel)
+	if v.URL != "" {
+		u, err := url.Parse(v.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || len(v.URL) > 2000 {
+			return errors.New("url: an http or https address of at most 2000 characters")
+		}
+	}
+	switch {
+	case v.URLLabel != "" && v.URL == "":
+		return errors.New("url_label: a URL label needs its url")
+	case len([]rune(v.URLLabel)) > 200 || strings.IndexFunc(v.URLLabel, unicode.IsControl) >= 0:
+		return errors.New("url_label: at most 200 characters, no control characters")
 	}
 	return nil
 }

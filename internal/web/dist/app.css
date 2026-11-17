@@ -161,6 +161,14 @@ button.link.silence-btn:disabled, button.link.silence-btn[aria-disabled="true"] 
 .off-reason { color: var(--text-muted); font-size: var(--fs-sm); }
 /* a custom report's picker away from its parameter's default (DBA Dash draws it bold) */
 .not-default { font-weight: var(--fw-strong); }
+/* a custom report's result sets (parity set 3, L112-L115): each in a box that its bottom edge resizes */
+.cr-set { display: flex; flex-direction: column; margin: 0 0 var(--sp-3); }
+.cr-set > .cr-set-grid { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.cr-set-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: var(--sp-2) 0; }
+.cr-set-bar h4 { margin: 0; font-size: var(--fs-md); font-weight: var(--fw-strong); }
+.cr-set-sep { flex: 0 0 auto; height: var(--sp-2); cursor: row-resize; background: var(--line); border-radius: var(--r-xs); }
+.cr-set-sep:focus-visible { outline: var(--focus-w) solid var(--accent); }
+dialog.cr-ask { background: var(--surface-card); color: var(--text); border: var(--bw) solid var(--line); border-radius: var(--r-md); }
 @media (forced-colors: active) { button:disabled, button[aria-disabled="true"] { color: GrayText !important; border-color: GrayText !important; opacity: 1 !important; } }  /* important: a more specific off colour (button.link, .grid td.status, .silence-btn) is no system colour, so forced colours would turn it back to ButtonText */
 .range { display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; position: relative; }
 .range .custom { display: inline-flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }

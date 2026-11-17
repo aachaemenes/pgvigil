@@ -553,6 +553,14 @@ async function copyBoth(h: string, plain: string): Promise<boolean> {
 const filterable = (t: HTMLTableElement) => !!t.querySelector(':scope > thead > tr.filters');
 const filterInputs = (t: HTMLTableElement) => [...t.querySelectorAll<HTMLInputElement>(':scope > thead > tr.filters input')];
 const filtered = (t: HTMLTableElement) => filterInputs(t).some(i => i.value.trim() !== '');
+// gridFiltered: whether a filter is set on the grid (a custom report's per-set Clear Filter is marked while one is)
+export const gridFiltered = filtered;
+// resetGrid: the grid as first drawn - its kept choices forgotten (nothing hidden, frozen or barred, no row numbers)
+// and its filters cleared (a custom report's Restore Default View, parity set 3, L103)
+export function resetGrid(t: HTMLTableElement) {
+  save(t, { hidden: [], frozen: 0, bars: {} });
+  filterInputs(t).forEach((i, k) => { if (i.value) setFilter(t, k, ''); });
+}
 function setFilter(t: HTMLTableElement, j: number, v: string) {
   const row = t.querySelector<HTMLTableRowElement>(':scope > thead > tr.filters'), inp = filterInputs(t)[j];
   if (!row || !inp) return;

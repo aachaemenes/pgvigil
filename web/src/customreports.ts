@@ -14,6 +14,8 @@ import { Ctx, window_ } from './router';
 import { fleetWideNote, folderWords, inTagScope, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
 import { Can, markNeed, routeWhy } from './needs';
+import { gridFiltered, gridMenu, resetGrid } from './gridtools';
+import { openViewer } from './sqlview';
 
 // picker: how the run's form offers the value (DBA Dash's Pickers, L95) - a list, a text box (Enter runs) or a query's
 // values (its first column the value, its second the words); menu = on the run's toolbar first
@@ -27,7 +29,11 @@ export interface ReportDef {
   visibility?: Visibility; access?: string[];   // 0372's view: who sees it, which roles open it (a list: Q160 is open)
   status_from_messages?: boolean;               // the run's own NOTICE / PRINT messages as its status (L90)
   collections?: string[];                       // the collections its data comes from (Associate Collection, L98)
+  sets?: SetView[];                             // a result set's name and whether All shows it (L102, L110)
+  pair?: { report_id: number; label: string };  // the switch button's report and words (L106)
+  url?: string; url_label?: string;             // a link under the description (L107)
 }
+export interface SetView { set: number; name?: string; in_all?: boolean }
 export interface Visibility { engines?: string[]; tags?: string[]; include?: string[]; exclude?: string[] }
 // matches: whether an instance meets a report's visibility rules (the server's visibleOn, internal/web/q_customreports_view.go)
 export function matches(v: Visibility | undefined, i: { name: string; engine: string; tags: string[] }): boolean {
@@ -206,7 +212,7 @@ export function resultView(runs: InstanceRun[], def?: Pick<ReportDef, 'columns' 
 // ---- reading the definitions ------------------------------------------------------------------------------------
 
 // viewOf: 0372's view column as the definition's own keys (an empty view, '{}': none of them - the report as before)
-type ViewKeys = Pick<ReportDef, 'visibility' | 'access' | 'status_from_messages' | 'collections'>;
+type ViewKeys = Pick<ReportDef, 'visibility' | 'access' | 'status_from_messages' | 'collections' | 'sets' | 'pair' | 'url' | 'url_label'>;
 function viewOf(v: unknown): ViewKeys {
   const o = v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
   const out: ViewKeys = {};
@@ -214,7 +220,46 @@ function viewOf(v: unknown): ViewKeys {
   if (Array.isArray(o.access) && o.access.length) out.access = o.access.map(String);
   if (o.status_from_messages === true) out.status_from_messages = true;
   if (Array.isArray(o.collections) && o.collections.length) out.collections = o.collections.map(String);
+  if (Array.isArray(o.sets) && o.sets.length) out.sets = (o.sets as SetView[]).filter(x => x && Number.isInteger(x.set));
+  const pr = o.pair as { report_id?: unknown; label?: unknown } | undefined;
+  if (pr && typeof pr === 'object' && Number(pr.report_id) > 0) out.pair = { report_id: Number(pr.report_id), label: String(pr.label ?? '') };
+  if (typeof o.url === 'string' && o.url) { out.url = o.url; if (typeof o.url_label === 'string' && o.url_label) out.url_label = o.url_label; }
   return out;
+}
+
+// saveDef writes a report's whole definition back (a change made on its own page: a result set's name, its layout);
+// the definition's version moves on, so the next save from this page is not refused as another user's
+async function saveDef(def: ReportDef): Promise<void> {
+  const r = await post<{ version?: number }>('customreports', { ...def, op: 'edit' });
+  if (typeof r.version === 'number') def.version = r.version;
+}
+
+// askText: one line of text in a dialog (Rename and the column items of the result sets); null = cancelled
+export function askText(heading: string, label: string, value: string): Promise<string | null> {
+  return new Promise(done => {
+    const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const input = el('input', { type: 'text', 'aria-label': label, value, size: '40' }) as HTMLInputElement;
+    const ok = el('button', { type: 'submit' }, 'OK'), cancel = el('button', { type: 'button' }, 'Cancel');
+    const form = el('form', { method: 'dialog' }, el('h3', {}, heading), el('p', {}, el('label', {}, label + ' ', input)), el('div', { class: 'toolbar' }, ok, cancel));
+    const dlg = el('dialog', { class: 'cr-ask', 'aria-label': heading }, form) as HTMLDialogElement;
+    let out: string | null = null;
+    form.addEventListener('submit', e => { e.preventDefault(); out = input.value; dlg.close(); });
+    cancel.addEventListener('click', () => dlg.close());
+    dlg.addEventListener('close', () => { dlg.remove(); if (back?.isConnected) back.focus(); done(out); });
+    document.body.append(dlg);
+    dlg.showModal();
+    input.select();
+  });
+}
+
+// scriptOf: Script Report (DBA Dash L111) - the report's SQL, then its whole definition as POST /api/customreports
+// takes it ('op': 'add' makes it again); its visibility rules name this server's own instances and are left out, as DBA
+// Dash's script leaves the tag and instance visibility out
+export function scriptOf(d: ReportDef): string {
+  const { report_id: _id, version: _v, visibility: _vis, ...rest } = d;
+  return `-- Script Report: ${d.name}\n-- its ${d.kind === 'procedure' ? 'procedure' : 'SQL'}, then its definition as POST /api/customreports takes it ('op': 'add' makes it again;\n`
+    + `-- the visibility rules name this server's own instances and are left out)\n\n${d.kind === 'procedure' ? 'procedure ' + d.body : d.body}\n\n`
+    + JSON.stringify({ op: 'add', ...rest }, null, 2) + '\n';
 }
 function defOf(r: Row): ReportDef {
   const arr = <T>(v: unknown): T[] => Array.isArray(v) ? v as T[] : [];
@@ -426,6 +471,8 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
     def.folder ? ' / ' + def.folder.split('/').join(' / ') : '', ` - runs on ${engineName[def.engine] ?? def.engine}, version ${def.version}`);
   sec.append(crumbs);
   if (def.description) sec.append(el('p', {}, def.description));
+  // the URL label (DBA Dash L107): the report's own link, in a new tab
+  if (def.url) sec.append(el('p', {}, el('a', { href: def.url, target: '_blank', rel: 'noopener noreferrer' }, def.url_label || def.url)));
 
   // the target: the store runs about one instance, a tag's or every active one; an instance report on one instance or a tag's.
   // Under a tag folder (TAGALL) the instance picker lists the folder's instances and the tag picker its tag alone, the
@@ -492,8 +539,19 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
     trigOff.textContent = w;
     offControl(trigBtn, w, trigOff);
   };
+  // the switch button (DBA Dash L106): opens the paired report on the same target with the parameters both declare
+  // (their values carried by name in the address; the pair fills only its own); Back returns here
+  const pairBtn = def.pair ? el('button', { type: 'button' }, def.pair.label || 'Switch report') : null;
+  pairBtn?.addEventListener('click', () => {
+    const qq: Record<string, string> = { report: String(def.pair!.report_id) };
+    def.params.forEach((p, i) => { if (inputs[i].value !== '') qq['p.' + p.name] = inputs[i].value; });
+    if (target.value === 'instance' && instSel.value) qq.i = instSel.value;
+    else if (target.value === 'tag' && tagSel.value) qq.tag = tagSel.value;
+    if (lastRuns) qq.run = '1';
+    go(qq);
+  });
   const form = el('div', { class: 'toolbar' }, el('label', {}, 'Run on ', target), instBox, tagBox,
-    ...order.map(i => labels[i]), runBtn, cancelBtn, ...(trigBtn ? [trigBtn] : []), editBtn);
+    ...order.map(i => labels[i]), runBtn, cancelBtn, ...(trigBtn ? [trigBtn] : []), ...(pairBtn ? [pairBtn] : []), editBtn);
   sec.append(form);
   if (trigBtn) { sec.append(trigOff); trigWords(); }
   if (folderTag) sec.append(el('p', { class: 'meta' }, `Opened from ${folderWords(folderTag)}: a run from here goes to its instances`
@@ -503,7 +561,137 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   if (def.engine === 'store' && !mine.length) sec.append(el('p', { class: 'empty' }, folderTag ? `No active instance in ${folderWords(folderTag)}.` : 'No active instance: a run reads none.'));
   const status = el('p', { class: 'meta', role: 'status' });
   const out = el('div', {});
-  sec.append(status, out);
+
+  // ---- the result sets (DBA Dash L102-L115): Select Results, Restore Default View, Toggle Grid / Charts, Fit to one
+  // screen, Script Report; with several sets each in a box with its toolbar and a bottom edge that resizes it
+  let lastRuns: InstanceRun[] | null = null;
+  let only = '', maxed: HTMLElement | null = null, gridOff = false, fit = false;
+  const heights = new Map<string, number>();
+  const setName = (i: number) => def.sets?.find(x => x.set === i)?.name || `result set ${i + 1}`;
+  const inAll = (i: number) => def.sets?.find(x => x.set === i)?.in_all !== false;
+  const selRes = el('select', { 'aria-label': 'Select Results' }) as HTMLSelectElement;
+  const selBox = el('label', {}, 'Select Results ', selRes);
+  const restoreBtn = el('button', { type: 'button' }, 'Restore Default View');
+  const gridBtn = el('button', { type: 'button', 'aria-pressed': 'false' }, 'Toggle Grid');
+  // Toggle Charts: the report's charts (task 10) - off with its reason while it has none
+  const chartsBtn = el('button', { type: 'button' }, 'Toggle Charts');
+  offControl(chartsBtn, 'the report has no chart');
+  const fitBox = el('input', { type: 'checkbox' }) as HTMLInputElement;
+  const fitLabel = el('label', {}, fitBox, ' Fit to one screen');
+  const scriptBtn = el('button', { type: 'button' }, 'Script Report');
+  scriptBtn.addEventListener('click', () => openViewer(`Script Report: ${def.name}`, scriptOf(def)));
+  const viewBar = el('div', { class: 'toolbar cr-view-bar' }, selBox, restoreBtn, gridBtn, chartsBtn, fitLabel, scriptBtn);
+  // Rename saves the report: an admin's (B24f), with the server's own reason first
+  const renameWhy = !d.state.enabled ? (d.state.reason || 'saving is off on this server') : (routeWhy('customreports', d.state.can) ?? '');
+  const apply = () => {
+    const boxes = [...out.querySelectorAll<HTMLElement>('.cr-set')];
+    for (const b of boxes) {
+      const i = Number(b.dataset.set);
+      b.hidden = maxed ? b !== maxed : !(only ? setName(i) === only : inAll(i));
+      const g = b.querySelector<HTMLElement>('.cr-set-grid');
+      if (g) g.hidden = gridOff;
+      const mx = b.querySelector<HTMLElement>('.cr-set-max');
+      if (mx) { mx.textContent = maxed === b ? 'Show All Sets' : 'Maximize'; mx.setAttribute('aria-pressed', String(maxed === b)); }
+    }
+    const shown = boxes.filter(b => !b.hidden && b.querySelector('.cr-set-sep'));
+    // fit: the shown sets share one screen (100 px each at least); else each keeps the height it was dragged to
+    const each = Math.max(100, Math.floor((window.innerHeight - 160) / Math.max(1, shown.length)));
+    for (const b of boxes) {
+      const h = fit && shown.length > 1 && !b.hidden ? each : heights.get(b.dataset.key ?? '');
+      b.style.height = h ? `${h}px` : '';
+      b.querySelector('.cr-set-sep')?.setAttribute('aria-valuenow', String(Math.round(h ?? b.getBoundingClientRect().height)));
+    }
+    gridBtn.setAttribute('aria-pressed', String(gridOff));
+  };
+  // a set's box: one set draws as before (its grid); several get the toolbar (Maximize, the name, Columns, Copy, Clear
+  // Filter - marked while a filter is on -, Rename) and the separator under it
+  const setBox = (run: InstanceRun, ri: number, s: ResultSet, i: number): HTMLElement => {
+    const several = run.sets.length > 1;
+    const b = el('div', { class: 'cr-set' });
+    b.dataset.set = String(i); b.dataset.key = `${ri}:${i}`;
+    const g = el('div', { class: 'cr-set-grid' }, setGrid(s, i, def.columns, def.rules));
+    const t = () => g.querySelector<HTMLTableElement>('table.grid');
+    if (several) {
+      const act = (label: string, sub?: string) => (back: HTMLElement) => {
+        const tt = t(); if (!tt) return;
+        const m = gridMenu(tt, null, null, back).find(x => x.label === label);
+        const x = sub ? m?.sub?.find(y => y.label === sub) : m;
+        x?.act?.();
+      };
+      const btn = (label: string, f: (b: HTMLElement) => void, cls = '') => { const x = el('button', { type: 'button', class: cls }, label); x.addEventListener('click', () => f(x)); return x; };
+      const mx = btn('Maximize', () => { maxed = maxed === b ? null : b; apply(); }, 'cr-set-max');
+      const clr = btn('Clear Filter', x => { act('Clear filters')(x); mark(); });
+      const mark = () => { const tt = t(); clr.classList.toggle('not-default', !!tt && gridFiltered(tt)); };
+      g.addEventListener('input', () => setTimeout(mark, 0));
+      const ren = btn('Rename', () => { void renameSet(i); });
+      if (renameWhy) offControl(ren, 'Renaming a result set saves the report: ' + renameWhy);
+      b.append(el('div', { class: 'cr-set-bar' }, mx, el('h4', { class: 'cr-set-name' }, setName(i)), btn('Columns', act('Columns...')), btn('Copy', act('Copy', 'Grid')), clr, ren));
+    }
+    if (s.truncated) b.append(el('p', { class: 'meta' }, `Cut at ${fmtNum(s.rows.length)} rows (the report's row cap, or the run's 24 MB).`));
+    b.append(g);
+    if (several) {
+      // the bottom edge (DBA Dash L115): dragged, or moved by the arrow keys, 100 px at least
+      const sep = el('div', { class: 'cr-set-sep', role: 'separator', tabindex: '0', 'aria-orientation': 'horizontal', 'aria-label': `Resize ${setName(i)}`,
+        'aria-valuemin': '100', 'aria-valuemax': '4000' });
+      const setH = (h: number) => { const v = Math.max(100, Math.min(4000, Math.round(h))); heights.set(b.dataset.key!, v); b.style.height = `${v}px`; sep.setAttribute('aria-valuenow', String(v)); };
+      sep.addEventListener('keydown', e => {
+        const k = (e as KeyboardEvent).key, now = b.getBoundingClientRect().height;
+        if (k === 'ArrowDown' || k === 'ArrowUp') { e.preventDefault(); setH(now + (k === 'ArrowDown' ? 20 : -20)); }
+      });
+      sep.addEventListener('pointerdown', e => {
+        const y0 = e.clientY, h0 = b.getBoundingClientRect().height;
+        sep.setPointerCapture(e.pointerId);
+        const move = (m: PointerEvent) => setH(h0 + m.clientY - y0);
+        const up = () => { sep.removeEventListener('pointermove', move); sep.removeEventListener('pointerup', up); };
+        sep.addEventListener('pointermove', move); sep.addEventListener('pointerup', up);
+      });
+      b.append(sep);
+    }
+    return b;
+  };
+  const draw = () => {
+    if (!lastRuns) return;
+    const runs = lastRuns, box = el('section', { class: 'report-result' });
+    for (const [ri, run] of runs.entries()) {
+      const many = runs.length > 1 || run.instance !== 'store';
+      const plain = run.outcome === 'refused' || !!run.declined;
+      box.append(el('h3', {}, many ? `${def.name}: ${run.instance}` : def.name), el('p', { class: 'meta' }, badge(run.declined ? 'declined' : run.outcome, run.outcome === 'done' ? 'ok' : plain ? 'warn' : 'crit'),
+        ` ${fmtNum(run.rows)} rows in ${fmtNum(run.duration_ms)} ms${run.sets.length > 1 ? `, ${run.sets.length} result sets` : ''}`));
+      if (run.error) box.append(plain ? el('p', { class: 'meta refused', role: 'note' }, run.error) : errorBox(run.error));
+      if (run.sets.length) box.append(el('div', { class: 'cr-sets' }, ...run.sets.map((s, i) => setBox(run, ri, s, i))));
+      else if (run.outcome === 'done') box.append(el('p', { class: 'empty' }, 'The run returned no result set.'));
+    }
+    out.replaceChildren(box);
+    // Select Results: All and each set's name, with several sets only
+    const n = Math.max(0, ...runs.map(r => r.sets.length));
+    const names = [...new Set(Array.from({ length: n }, (_, i) => setName(i)))];
+    selRes.replaceChildren(el('option', { value: '' }, 'All'), ...names.map(x => el('option', { value: x }, x)));
+    if (!names.includes(only)) only = '';
+    selRes.value = only;
+    selBox.hidden = n < 2; fitLabel.hidden = n < 2;
+    apply();
+  };
+  const renameSet = async (i: number) => {
+    const now = setName(i), v = await askText(`Rename ${now}`, 'Result set name', now);
+    if (v == null) return;
+    const keep = def.sets ?? [], cur = keep.find(x => x.set === i);
+    const sets = [...keep.filter(x => x.set !== i), { ...cur, set: i, name: v.trim() || undefined }].sort((a, b) => a.set - b.set);
+    const was = def.sets;
+    def.sets = sets;
+    try { await saveDef(def); if (only === now) only = setName(i); draw(); status.textContent = `Result set ${i + 1} is named '${setName(i)}' (saved with the report).`; }
+    catch (e) { def.sets = was; status.textContent = 'Not renamed: ' + (e instanceof Error ? e.message : String(e)); }
+  };
+  selRes.addEventListener('change', () => { only = selRes.value; maxed = null; apply(); });
+  gridBtn.addEventListener('click', () => { gridOff = !gridOff; apply(); });
+  fitBox.addEventListener('change', () => { fit = fitBox.checked; apply(); });
+  restoreBtn.addEventListener('click', () => {
+    for (const t of out.querySelectorAll<HTMLTableElement>('table.grid')) resetGrid(t);
+    only = ''; maxed = null; gridOff = false; fit = false; fitBox.checked = false; heights.clear();
+    draw();
+  });
+  const onResize = () => { if (!out.isConnected) { window.removeEventListener('resize', onResize); return; } if (fit) apply(); };
+  window.addEventListener('resize', onResize);
+  sec.append(viewBar, status, out);
 
   // a query picker's values: its query run on the report's target (POST .../run with 'picker'), audited as a run; the
   // first column the value, the second (when there is one) the words; a list that cannot be read says so in its options
@@ -555,7 +743,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
     try {
       const r = await post<{ runs: InstanceRun[]; ran_at: string }>('customreports/run', { ...runBody(), params }, ctl.signal);
       if (my !== seq) return;
-      out.replaceChildren(resultView(r.runs, def, def.name));
+      lastRuns = r.runs; draw();
       // the report's own messages in place of 'Completed' (DBA Dash's ShowInfoMessages), per instance when several ran
       const said = def.status_from_messages ? r.runs.filter(x => x.messages?.length).map(x => (r.runs.length > 1 ? x.instance + ': ' : '') + x.messages!.join(' / ')) : [];
       status.textContent = said.length ? `${said.join('; ')} (completed in ${clock(Date.now() - t0)}, ran at ${fmtTime(r.ran_at)})`
@@ -750,6 +938,16 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
   sec.append(el('fieldset', {}, el('legend', {}, 'The run'),
     el('p', {}, el('label', {}, fromMsgs, ' Status from messages: the run\'s own RAISE NOTICE / INFO (PostgreSQL) or PRINT and RAISERROR (SQL Server) messages are its status in place of \'Completed\'')),
     el('p', {}, el('label', {}, 'Associate Collection (the collections the report\'s data comes from, comma-separated; its Trigger Collection button names them) ', colls))));
+  // the page's link (DBA Dash's URL label, L107) and the switch button to a paired report (L106)
+  const urlIn = inp('URL (http or https; opens in a new tab)', def.url, { size: '50', placeholder: 'https://wiki.example/runbook' });
+  const urlLabel = inp('URL label (empty = the URL itself)', def.url_label, { size: '30' });
+  const pairId = inp('Switch to report (its number)', def.pair?.report_id, { size: '6', inputmode: 'numeric' });
+  const pairLabel = inp('Switch button words', def.pair?.label, { size: '20', placeholder: 'Charts' });
+  sec.append(el('fieldset', {}, el('legend', {}, 'The page'),
+    el('div', { class: 'toolbar' }, el('label', {}, 'URL ', urlIn), el('label', {}, 'URL label ', urlLabel)),
+    el('div', { class: 'toolbar' }, el('label', {}, 'Switch to report ', pairId), el('label', {}, 'Switch button words ', pairLabel)),
+    el('p', { class: 'meta' }, 'The switch button opens the other report on the same target with the parameters both reports declare; Back returns. '
+      + (def.sets?.length ? 'The result sets\' names are kept as they are (Rename on the report\'s page).' : ''))));
 
   const msg = el('p', { class: 'meta', role: 'status' });
   const save = markNeed(el('button', { type: 'button' }, 'Save'), 'customreports');
@@ -762,6 +960,9 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
       visibility: readVis(), access: roles.filter(b => b.c.checked).map(b => b.k),
       status_from_messages: fromMsgs.checked || undefined,
       collections: colls.value.split(',').map(c => c.trim()).filter(Boolean),
+      sets: def.sets,   // named on the report's page: kept as they are
+      url: urlIn.value.trim() || undefined, url_label: urlLabel.value.trim() || undefined,
+      pair: pairId.value.trim() ? { report_id: Number(pairId.value), label: pairLabel.value.trim() } : undefined,
     };
     try {
       const r = await post<{ detail: string; report_id: number }>('customreports', out);
