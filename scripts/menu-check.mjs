@@ -268,9 +268,11 @@
 //   H-drill           (L21) a drill that is not a link still opens a new tab: on the fleet's Running page a
 //                     Ctrl+click on a row's plain cell leaves the page where it is and asks for a new tab on the
 //                     row's own link (window.open, heard by a stub), a plain click moves there; on DB Space a MIDDLE
-//                     click on a doughnut slice that links asks for a new tab on its link and leaves the page. Red:
-//                     the Ctrl+click moves the page; the middle click asks for nothing.
-//   H-logsfilter      (L57, COVERED: expected ok on the base) the Logs page's message column: the cell menu has
+//                     click on a doughnut slice that links asks for ONE new tab on its link and leaves the page. Red:
+//                     the Ctrl+click moves the page. (relgm-red1 07:20: the base's slice already opened one tab - the
+//                     slice half is a pin; 535a0cfe added a second listener: two tabs, red until it goes.)
+//   H-logsfilter      (L57, COVERED: expected ok on the base) demo-rds-orders01's Logs page (erp01's has no message
+//                     cell on the demo: moved 07:2x after relgm-red1), its message column: the cell menu has
 //                     'Exclude value: ...' and All filters has 'Not like'
 //   E-details         (L146) an error box (the Statements page with its read answered 500 'E-details marker ...' by a
 //                     stub of fetch): the message the p.error it is today (every other proof reads it), inside a box
@@ -1770,12 +1772,15 @@ await guard('H-drill', async () => {
   const h2 = await hashNow();
   const hadSlice = await ev(`(() => { const x = ${slice}; if (!x) return false; x.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 })); return true; })()`); await sleep(500);
   const h3 = await hashNow(), o2 = await opened();
-  check('H-drill', !!hadRow && link !== '' && h1 === h0 && o1.some(u => u.endsWith(link)) && plainMoved && !!hadSlice && to !== '' && h3 === h2 && o2.some(u => u.endsWith(to)),
+  // EXACTLY one new tab for the slice (relgm-red1: the base already opened one; 535a0cfe's second listener opened two)
+  check('H-drill', !!hadRow && link !== '' && h1 === h0 && o1.some(u => u.endsWith(link)) && plainMoved && !!hadSlice && to !== '' && h3 === h2 && o2.filter(u => u.endsWith(to)).length === 1,
     `Running: ${hadRow ? `Ctrl+click on a row's plain cell: the page ${h1 === h0 ? 'stayed' : 'moved to ' + h1}, new tabs asked [${o1.join(', ')}] (the row's link ${link}), a plain click ${plainMoved ? 'moved' : 'did not move'}` : 'no row with its link on the demo'}; DB Space: ${hadSlice ? `a middle click on a slice: the page ${h3 === h2 ? 'stayed' : 'moved to ' + h3}, new tabs asked [${o2.join(', ')}] (the slice's link ${to})` : 'no linked slice on the demo'}`);
 });
 
 await guard('H-logsfilter', async () => {
-  await go(`#/logs?i=${erpId}`); await sleep(800);
+  // demo-rds-orders01: an instance the demo gives server log lines (fleet.go Logs: true); erp01's Logs page drew no message
+  // cell (relgm-red1, 11-17 07:20: that half proved nothing)
+  await go(`#/logs?i=${idOf('demo-rds-orders01')}`); await sleep(1500);
   const t = `[...document.querySelectorAll('main table.grid')].find(x => [...x.querySelectorAll('thead tr:first-child th')].some(h => /message/.test(h.textContent)))`;
   const td = `(() => { const t = ${t}; if (!t) return null; const j = [...t.querySelectorAll('thead tr:first-child th')].findIndex(h => /message/.test(h.textContent)); return [...t.querySelectorAll('tbody tr')].map(tr => tr.children[j]).find(c => c && c.textContent.trim() !== ''); })()`;
   const L = await gmOpen(td); await gmClose();
