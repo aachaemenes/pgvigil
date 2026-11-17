@@ -1,6 +1,6 @@
-# SQL Server: properties, procedures, index locks
+# SQL Server: properties, procedures, index locks, Service Broker
 
-Four collections of the [SQL Server engine](sqlserver.md) and the tabs they feed, and two additions to pages that were already there (the fleet's Running queries and an instance's Waits). Nothing is installed on the monitored server and nothing is written there.
+Five collections of the [SQL Server engine](sqlserver.md) and the tabs they feed, and two additions to pages that were already there (the fleet's Running queries and an instance's Waits). Nothing is installed on the monitored server and nothing is written there.
 
 | collection | every | what | the login needs |
 |---|---|---|---|
@@ -8,8 +8,9 @@ Four collections of the [SQL Server engine](sqlserver.md) and the tabs they feed
 | `mssql_procstats` | 5 min | what each stored procedure did between two reads | `VIEW SERVER STATE` (2022: `VIEW SERVER PERFORMANCE STATE` should be enough; not proven); names of another database's procedures: `CONNECT ANY DATABASE` and `VIEW ANY DEFINITION` |
 | `mssql_funcstats` | 5 min | what each scalar function run without inlining and each trigger did between two reads; hourly, whether each scalar function can be inlined | as `mssql_procstats`; the inlineability: a database the login can enter (SQL Server 2019 on) |
 | `mssql_indexlocks` | 5 min | where sessions waited for locks, per index, and lock escalations | as `mssql_procstats`; names: a database the login can enter |
+| `mssql_service_broker` | 5 min | each user database's Service Broker queues (settings, depth, readers, the oldest message ready), its transmission queue and conversations, the instance's broker endpoint and the Broker counters | `VIEW SERVER STATE` (2022: `VIEW SERVER PERFORMANCE STATE`; the endpoint `VIEW SERVER SECURITY STATE`); a database the login can enter; the oldest message: `SELECT` on the queue |
 
-None of the four runs on Azure SQL Database; there the Properties page shows the tier's rows of `mssql_azuredb_governance` ([cloud](sqlserver-cloud.md#resource-use-and-the-tier)).
+None of the five runs on Azure SQL Database; there the Properties page shows the tier's rows of `mssql_azuredb_governance` ([cloud](sqlserver-cloud.md#resource-use-and-the-tier)).
 
 To name procedures and indexes in every database, the monitoring login takes one more grant than [the base login](sqlserver.md#the-login):
 
@@ -75,6 +76,17 @@ The tab's database filter lists every database where a procedure, a function or 
 - The names (schema, table, index, type) are read from each database's own catalog, for the 500 objects per database with the most lock wait. A database the login cannot enter leaves `object <id>` and `index <id>` on the page.
 - The list is cut at the 20,000 rowsets with the most lock wait. After a cut read, a rowset new to the list sets its counters and gives nothing, so a cut never invents a wait.
 - Not collected: the page latch and page IO latch counters of the same view (a latch is not a lock; the Waits tab has `PAGELATCH` and `PAGEIOLATCH`), the engine's own catalog tables (object ids 1 to 100: nothing a DBA can index or change), and memory-optimized tables, which the view does not list.
+
+## Service Broker (`mssql_service_broker`)
+
+DBA Dash's database **Service Broker** tab, the database page's last tab. Every 5 minutes the collection visits each user database with the broker on (`sys.databases.is_broker_enabled`) that the login may enter - never an availability group secondary, whose queues are the primary's - at most 200 a run (the rest named on the tab with why), and reads:
+
+- **Queues:** each user queue of `sys.service_queues` - receive and enqueue on or off (receive off is how a poison message leaves a queue: the tab marks it), retention, activation and its procedure (marked when the procedure no longer exists), the readers running (`sys.dm_broker_activated_tasks`) and the queue monitor (`sys.dm_broker_queue_monitors`). The depth is the queue's internal table's rows (`sys.internal_tables` type 201 and `sys.partitions`), never a count of the queue; the oldest message ready to receive is read from the queue itself, up to 100,000 messages a queue and 1,000,000 a run, smallest queues first. A queue with RETENTION also keeps received messages in its internal table, so its depth is the count of that read, or "not read". SqlDependency's `SqlQueryNotificationService-<guid>` queues come and go with each listener: one row per schema.
+- **Transmission queue:** its 50 largest groups by target service and status, the count and the oldest message (an empty status: not sent yet).
+- **Conversations:** the endpoints counted by state; over 1,000,000 one total.
+- **Once a run:** the endpoint (`sys.service_broker_endpoints` with its port and its connections) and the Broker Statistics / Broker Activation counters; the tab charts their rate per second between two reads (none across a restart).
+
+A part the login may not read is left out and the rest still comes. Two differences from DBA Dash: its collection is off until turned on, pgvigil's is on (the database cap and the scan limits bound its cost); and DBA Dash shows the tab only on a database with the broker, pgvigil keeps it and says so when there is nothing to show. Not on Azure SQL Database (no Service Broker between databases there).
 
 ## Running queries at the root: memory grants and tempdb waits
 

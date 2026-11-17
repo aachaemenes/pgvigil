@@ -143,4 +143,7 @@
 --    as-last-read tables with the instance (ON DELETE CASCADE); (c) no grant line: apply_roles makes
 --    import_mssql_service_broker the collector's door with every import_ function; (d) web/src/fleet.ts's
 --    'Service Broker: pgvigil does not read it yet' cell (map row 73's evidence, L86 / L96) becomes the read's - its
---    owner's line.
+--    owner's line; (e) scripts/proof-mssql-rds.sh's collection list (RDSLIST ca1e4aa2's B list, not on this branch)
+--    gains mssql_service_broker - ok on RDS [inferred: Amazon RDS for SQL Server runs Service Broker within an instance;
+--    its endpoints are not supported - the endpoint part then reads none; NOT PROVEN until the next RDS lab] - and
+--    mssql_pool_limits, skipped by its Kind gate ('elastic pools are Azure SQL Database's').
