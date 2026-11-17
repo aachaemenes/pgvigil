@@ -571,19 +571,31 @@ var ErrCommitUnknown = errors.New("the commit's outcome is unknown")
 // RefusedName stands in the audit row and the log for a name CheckName refused (review-31 part A2 SF3).
 const RefusedName = "(a refused name)"
 
-// AuditNames is the database and the target as the audit row and the log carry them.
-// RED STUB (review-31 part A2's rows): the names as the body gave them.
+// AuditNames is the database and the target as the audit row and the log carry them: a name only once CheckName
+// passed it, RefusedName otherwise - a NUL would fail the row's jsonb (no audit row at all), an invisible character
+// would read as another name, an unbounded one would be written three times (review-31 part A2 SF3, part A1 S6).
 func AuditNames(engine string, b Body) (datname, target string) {
-	return b.Database, Target{Database: b.Database, Schema: Schema, Table: b.Table}.Display()
+	datname, target = RefusedName, RefusedName
+	if CheckName(engine, "database", b.Database) != nil {
+		return datname, target
+	}
+	datname = b.Database
+	if CheckName(engine, "table", b.Table) == nil {
+		target = Target{Database: b.Database, Schema: Schema, Table: b.Table}.Display()
+	}
+	return datname, target
 }
 
-// WriteWords is the end row's outcome, its words and the rows written, from what Write answered.
-// RED STUB (review-31 part A2's rows): the route's words as they were.
+// WriteWords is the end row's outcome, its words and the rows written, from what Write answered. An error of the
+// commit itself (ErrCommitUnknown) never says 'nothing was kept': the server may have committed before the connection
+// was cut, and the next attempt would then be refused as 'exists' (review-31 part A2 NIT 8).
 func WriteWords(t Target, n int64, nuls int, err error) (outcome, detail string, rows int64) {
 	outcome, detail = "done", fmt.Sprintf("Saved %d rows to %s", n, t.Display())
 	switch {
 	case errors.Is(err, ErrExists):
 		return "refused", fmt.Sprintf("the table %s exists: pgvigil never overwrites a table", t.Display()), 0
+	case errors.Is(err, ErrCommitUnknown):
+		return "failed", fmt.Sprintf("the save of %s did not end cleanly - %v: the server may have kept the table; look for it before saving again", t.Display(), err), 0
 	case err != nil:
 		return "failed", fmt.Sprintf("the save of %s failed, nothing was kept (the transaction rolled back): %v", t.Display(), err), 0
 	case nuls > 0:
@@ -636,6 +648,16 @@ func ConvertRows(engine string, cols []Col, rows [][]any) ([][]any, int, error) 
 	return out, nuls, nil
 }
 
+// quotedCut is a server's own name for the words: its first n characters, quoted, every character that does not print
+// escaped (a trigger's name is whatever its maker chose).
+func quotedCut(s string, n int) string {
+	r := []rune(s)
+	if len(r) > n {
+		return strconv.Quote(string(r[:n])) + "..."
+	}
+	return strconv.Quote(s)
+}
+
 // Verdict is Check's answer: Outcome "" = every gate passed (write the started row, then the table); else
 // "refused" or "failed" with its words. Row says whether the attempt writes an audit row.
 type Verdict struct {
@@ -658,14 +680,15 @@ func Check(ctx context.Context, in Instance, dbs []Database, b Body, open func(c
 	if w := OffWords(true, in); w != "" {
 		return refuse(w)
 	}
-	// 6. the typed confirmation names the target
+	// 6. the typed confirmation names the target - the database's name checked first, so these words never carry a
+	// refused name raw (review-31 part A2 SF3: a NUL, an invisible character, megabytes of name)
+	if err := CheckName(in.Engine, "database", b.Database); err != nil {
+		return refuse(err.Error())
+	}
 	if want := Confirm(in.Name, b.Database); strings.TrimSpace(b.Confirm) != want {
 		return refuse(fmt.Sprintf("the typed confirmation is not %s: nothing was written", want))
 	}
 	// 7. the identifiers first (a refused name never reaches the words raw: review-31 S6), the database, the kinds
-	if err := CheckName(in.Engine, "database", b.Database); err != nil {
-		return refuse(err.Error())
-	}
 	if err := CheckName(in.Engine, "table", b.Table); err != nil {
 		return refuse(err.Error())
 	}
@@ -732,6 +755,25 @@ func Check(ctx context.Context, in Instance, dbs []Database, b Body, open func(c
 			return refuse(fmt.Sprintf("the actions login %s is sysadmin or holds CONTROL SERVER: pgvigil refuses it", actLogin))
 		}
 		return refuse(fmt.Sprintf("the actions login %s is a superuser: pgvigil refuses it", actLogin))
+	}
+	// what the database IS, read on the WRITING connection at the save: the store's last read may be stale, and it
+	// never says whether a database is a distributor's (review-31 part A2 SF4, part A1 S4)
+	place, err := act.Place(ctx)
+	if err != nil {
+		return fail(fmt.Sprintf("the database check on the writing connection failed: %v; nothing was written", err))
+	}
+	if w := RefuseDatabase(in.Engine, Database{Name: b.Database, ID: place.DB.ID, IsTemplate: place.DB.IsTemplate, IsDistributor: place.DB.IsDistributor}); w != "" {
+		return refuse(w)
+	}
+	if place.Owner {
+		return refuse(fmt.Sprintf("the actions login %s owns the database %s or is a member of db_owner there: pgvigil refuses it (the door login owns the schema pgvigil_saved and nothing else)", actLogin, b.Database))
+	}
+	if n := len(place.Triggers); n > 0 {
+		more := ""
+		if n > 1 {
+			more = fmt.Sprintf(" and %d more", n-1)
+		}
+		return refuse(fmt.Sprintf("off: the database %s holds an enabled DDL trigger (%s%s): it would run as the actions login on the door's CREATE TABLE, so pgvigil writes no table there", b.Database, quotedCut(place.Triggers[0], 60), more))
 	}
 	exists, owned, err := act.Schema(ctx)
 	if err != nil {

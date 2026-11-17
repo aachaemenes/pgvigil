@@ -358,16 +358,25 @@ Table writes every row the page gave the grid with the page's own columns and th
 column the chooser merely offers, a key starting `_` or one the page holds back.
 
 The dialog names the instance, offers its databases (never a system or template database: master, model, msdb,
-tempdb, a distribution database, rdsadmin; template0, template1 and any template, cloudsqladmin, rdsadmin,
-azure_maintenance, azure_sys), shows the schema, takes the table name (DBA Dash's default, the local time as
+tempdb, rdsadmin; template0, template1 and any template, cloudsqladmin, rdsadmin, azure_maintenance, azure_sys; a
+replication distribution database may be offered, since the store does not record which one is, and is refused at the
+save), shows the schema, takes the table name (DBA Dash's default, the local time as
 yyyyMMddHHmmss) and asks for `<instance>/<database>` typed to save.
 
 What the server checks, in order, before anything is written: the role; the switch; one save at a time in serve
 (another is refused with words, never queued); the body (at most 32 MiB, 100,000 rows, 2,000,000 cells, 1,600 columns on
 PostgreSQL and 1,024 on SQL Server); the actions log writable; the instance's list and login; the typed confirmation;
-the names; the values; then, on the chosen database, that the actions login reaches the same server as the read login,
-is a login of its own and not a superuser, sysadmin or CONTROL SERVER holder, and owns `pgvigil_saved`; then that the
-table does not exist.
+the names (the database's first, so no refused name is ever repeated in an answer); the values; then, on the chosen
+database, that the actions login reaches the same server as the read login, is a login of its own and not a superuser,
+sysadmin or CONTROL SERVER holder; that the database, as the writing connection itself reads it at that moment, is no
+system, template or replication distribution database (the store's last read may be older); #SF1DOCS#and that the login owns
+`pgvigil_saved`; then that the table does not exist.
+
+On PostgreSQL the save's own connection runs read-write whatever the role's `default_transaction_read_only` says, and
+with `search_path = pg_catalog` (set for the connection and again inside the write's transaction): a database whose
+owner set its search path ahead of `pg_catalog` cannot make the door create a column of a type of his, or answer its
+checks. Point `actions_dsn` at the server itself: a pooler that drops a connection's startup settings leaves the checks
+before the write on the database's own search path.
 
 - The names: the table and every column name are quoted as identifiers (PostgreSQL in double quotes with `"` doubled,
   SQL Server in brackets with `]` doubled), never refused for a quote, a bracket, a dot or a semicolon; refused with
@@ -379,10 +388,15 @@ table does not exist.
   SQL text. A value that does not fit its kind refuses the whole grid naming its row and column, never the value; on SQL
   Server a number with more than 10 decimal places or 28 digits before the point is refused, never rounded. A NUL
   character in a text is dropped and counted in the answer.
-- The table is created and loaded in one transaction: any error leaves no table.
+- The table is created and loaded in one transaction: any error leaves no table. One case is said as it is: when the
+  connection is cut or the time runs out while the commit itself is on its way, the server may have kept the table -
+  the answer says the outcome is unknown and to look before saving again.
+- The upload of the grid has the save's own time and no more; one that stalls is ended with words, since a save in
+  progress holds every other save off.
 
 Every attempt from the instance's list on is in the store's actions log (pgvigil.actions_log, action save_table): a 'started' row before
 the write and its end - done (the rows written), refused or failed with the words. A serve that stops between the
-commit and the end row leaves the started row alone. Refusals before that (the role, the switch, the body, a page
+commit and the end row leaves the started row alone. A name the checks refused is never written into the log: its
+row says `(a refused name)`. Refusals before that (the role, the switch, the body, a page
 instance) are answered with words and serve's log line, as every action's.
 

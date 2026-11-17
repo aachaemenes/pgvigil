@@ -22,14 +22,14 @@ type pgSave struct{ c *pgx.Conn }
 // Server: the postmaster's start as seconds since the epoch, so two logins' session time zones never differ it.
 func (p pgSave) Server(ctx context.Context) (string, error) {
 	var s string
-	err := p.c.QueryRow(ctx, `SELECT extract(epoch FROM pg_postmaster_start_time())::text`).Scan(&s)
+	err := p.c.QueryRow(ctx, `SELECT extract(epoch FROM pg_catalog.pg_postmaster_start_time())::pg_catalog.text`).Scan(&s)
 	return s, err
 }
 
 func (p pgSave) Login(ctx context.Context) (string, bool, error) {
 	var name string
 	var super bool
-	err := p.c.QueryRow(ctx, `SELECT r.rolname, r.rolsuper FROM pg_roles r WHERE r.rolname = current_user`).Scan(&name, &super)
+	err := p.c.QueryRow(ctx, `SELECT r.rolname, r.rolsuper FROM pg_catalog.pg_roles r WHERE r.rolname = current_user`).Scan(&name, &super)
 	return name, super, err
 }
 
@@ -37,8 +37,8 @@ func (p pgSave) Login(ctx context.Context) (string, bool, error) {
 // of is not its own: the lead 11-17 02:17, 'owned by the door login').
 func (p pgSave) Schema(ctx context.Context) (bool, bool, error) {
 	var owned bool
-	err := p.c.QueryRow(ctx, `SELECT n.nspowner = (SELECT oid FROM pg_roles WHERE rolname = current_user)
-	                            FROM pg_namespace n WHERE n.nspname = $1`, savetable.Schema).Scan(&owned)
+	err := p.c.QueryRow(ctx, `SELECT n.nspowner = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user)
+	                            FROM pg_catalog.pg_namespace n WHERE n.nspname = $1`, savetable.Schema).Scan(&owned)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, false, nil
 	}
@@ -48,12 +48,18 @@ func (p pgSave) Schema(ctx context.Context) (bool, bool, error) {
 // Exists: the one quoted form, bound (review-29 S1).
 func (p pgSave) Exists(ctx context.Context, quoted string) (bool, error) {
 	var there bool
-	err := p.c.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, quoted).Scan(&there)
+	err := p.c.QueryRow(ctx, `SELECT pg_catalog.to_regclass($1) IS NOT NULL`, quoted).Scan(&there)
 	return there, err
 }
 
-// Place: RED STUB (review-31 part A2's rows) - nothing read.
-func (p pgSave) Place(context.Context) (savetable.Place, error) { return savetable.Place{}, nil }
+// Place: whether the database this connection is in is a template NOW (review-31 part A2 SF4: the store's last read
+// may be older than an ALTER DATABASE ... IS_TEMPLATE). The database owner role and the DDL triggers of SQL Server's
+// Place have no read here; PostgreSQL's event triggers are not read.
+func (p pgSave) Place(ctx context.Context) (savetable.Place, error) {
+	var pl savetable.Place
+	err := p.c.QueryRow(ctx, `SELECT d.datistemplate FROM pg_catalog.pg_database d WHERE d.datname = pg_catalog.current_database()`).Scan(&pl.DB.IsTemplate)
+	return pl, err
+}
 
 // Write: CREATE TABLE, then CopyFrom into it, one transaction; rolled back on any error.
 func (p pgSave) Write(ctx context.Context, t savetable.Target, cols []savetable.Col, rows [][]any) (int64, error) {
@@ -66,6 +72,11 @@ func (p pgSave) Write(ctx context.Context, t savetable.Target, cols []savetable.
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	// again inside the transaction: a pooler in front of actions_dsn may drop the connection's startup settings, and
+	// the CREATE TABLE's types must resolve in pg_catalog whatever the database's own search_path says (SF2)
+	if _, err := tx.Exec(ctx, `SET LOCAL search_path = pg_catalog`); err != nil {
+		return 0, err
+	}
 	if _, err := tx.Exec(ctx, create); err != nil {
 		if pe := (*pgconn.PgError)(nil); errors.As(err, &pe) && (pe.Code == "42P07" || pe.Code == "42710") {
 			return 0, savetable.ErrExists
@@ -80,7 +91,15 @@ func (p pgSave) Write(ctx context.Context, t savetable.Target, cols []savetable.
 	if err != nil {
 		return 0, err
 	}
-	return n, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		// the server answered the commit with an error, or with ROLLBACK: nothing was kept. Anything else (the
+		// connection cut, the deadline passed in the round trip) leaves the outcome unknown (review-31 part A2 NIT 8)
+		if pe := (*pgconn.PgError)(nil); errors.As(err, &pe) || errors.Is(err, pgx.ErrTxCommitRollback) {
+			return 0, err
+		}
+		return 0, fmt.Errorf("%w: %v", savetable.ErrCommitUnknown, err)
+	}
+	return n, nil
 }
 
 // SaveConns opens the two connections Save Table checks on and writes through: the monitoring login (as every action
@@ -109,7 +128,13 @@ func (d Door) SaveConns(ctx context.Context, database string, budget time.Durati
 	rp["statement_timeout"] = strconv.FormatInt(budget.Milliseconds(), 10)
 	rp["lock_timeout"] = "2000"
 	rp["idle_in_transaction_session_timeout"] = "30000"
-	delete(rp, "default_transaction_read_only")
+	// the save runs read-write whatever the role's or the DSN's default says (review-31 part A2 NIT 5: ALTER ROLE ...
+	// SET default_transaction_read_only = on is a reasonable hardening of the cancel / terminate login)
+	rp["default_transaction_read_only"] = "off"
+	// pg_catalog alone: the database's own search_path (ALTER DATABASE ... SET search_path = public, pg_catalog) would
+	// let its owner plant public.text, public.to_regclass or a public.pg_roles that this login then runs or trusts
+	// (review-31 part A2 SF2). The target is always schema-qualified; the column types then resolve in pg_catalog.
+	rp["search_path"] = "pg_catalog"
 	a, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
 		_ = m.Close(ctx)

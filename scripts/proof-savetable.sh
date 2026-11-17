@@ -39,6 +39,19 @@
 #  J4. why the schema is the door login's own (review-29 B2), on SQL Server: with CREATE TABLE and ALTER on dbo the
 #     actions login drops dbo.victim; with only its own schema it cannot (Msg 3701) and creates
 #     pgvigil_saved.j4 (sa restores the state between the two).
+#  K. review-31 part A2's rows (after G, so G's counts stand):
+#   K1 (SF3) a body whose database holds a NUL: 409 'control character' and ONE audit row with datname and target
+#      '(a refused name)' (before the fix: 500 and no row); a table name holding U+202E: 409 'invisible character',
+#      the row's target '(a refused name)', its datname the database.
+#   K2 (SF2) a database whose OWNER (no superuser) set search_path = public, pg_catalog and planted a domain
+#      public.text whose check runs a function of his: the save is done and the new column is pg_catalog.text (before
+#      the fix: failed, the owner's function ran as the actions login).
+#   K3 (NIT 5) with ALTER ROLE <actions login> SET default_transaction_read_only = on a save is still done.
+#   K4 (SF1) SQL Server: a database whose db_owner member made a DDL trigger on CREATE_TABLE: the save is refused, the
+#      trigger named, the trigger's log empty and no table made.
+#   K5 (SF4) SQL Server: a distribution database with the schema and the grant in place: refused 'replication
+#      distribution database', no table made - or 'NOT PROVEN K5' when the container cannot be made a distributor.
+#   K6 (NIT 6) SQL Server: an actions login in db_owner of the target: refused naming db_owner.
 #  NOT PROVEN HERE: J5 (a save over serve's 75 s WriteTimeout: the route moves its deadline as AppImport does);
 #  'another server' (one PostgreSQL and one SQL Server only: the unit rows hold it); Azure SQL Database, RDS.
 # The last line 'proof-savetable: <n> FAIL' (0 = every row ok); rc 1 when any failed.
@@ -46,17 +59,17 @@ set -uo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_ADMIN_DSN:?a superuser keyword DSN without dbname}"
 SUF=$RANDOM
-REPO=pgv_st_repo_$SUF; TDB=pgv_st_t_$SUF; NOS=pgv_st_nos_$SUF; OTH=pgv_st_oth_$SUF; TPL=pgv_st_tpl_$SUF
-MON=pgv_st_mon_$SUF; ACT=pgv_st_act_$SUF
+REPO=pgv_st_repo_$SUF; TDB=pgv_st_t_$SUF; NOS=pgv_st_nos_$SUF; OTH=pgv_st_oth_$SUF; TPL=pgv_st_tpl_$SUF; SPD=pgv_st_sp_$SUF
+MON=pgv_st_mon_$SUF; ACT=pgv_st_act_$SUF; OWN=pgv_st_own_$SUF
 pw() { printf 'Pv9%s' "$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 PPW=$(pw); MSPW=$(pw); UPW=$(pw)
 W=$(mktemp -d); CT=savetable-mssql-$SUF; SRV=; SRV2=; FAILS=0
 cleanup() {
   [[ -n $SRV ]] && kill "$SRV" 2>/dev/null; [[ -n $SRV2 ]] && kill "$SRV2" 2>/dev/null
   docker rm -fv "$CT" >/dev/null 2>&1
-  for d in $REPO $TDB $NOS $OTH; do psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $d with (force)" >/dev/null 2>&1; done
+  for d in $REPO $TDB $NOS $OTH $SPD; do psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $d with (force)" >/dev/null 2>&1; done
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "alter database $TPL is_template false" -c "drop database if exists $TPL with (force)" >/dev/null 2>&1
-  for r in $MON $ACT; do psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists $r" >/dev/null 2>&1; done
+  for r in $MON $ACT $OWN; do psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists $r" >/dev/null 2>&1; done
   rm -rf "$W"
 }
 trap cleanup EXIT
@@ -78,10 +91,12 @@ msdsn() { echo "sqlserver://$1:$2@127.0.0.1:$MSPORT?database=master&encrypt=true
 sq "CREATE LOGIN msmon WITH PASSWORD = '$MSPW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO msmon;
     CREATE LOGIN msact WITH PASSWORD = '$MSPW', CHECK_POLICY = OFF;
     CREATE LOGIN mssys WITH PASSWORD = '$MSPW', CHECK_POLICY = OFF; ALTER SERVER ROLE sysadmin ADD MEMBER mssys;
+    CREATE LOGIN msown WITH PASSWORD = '$MSPW', CHECK_POLICY = OFF;
     CREATE DATABASE SaveDB; CREATE DATABASE NoSchemaDB;" >/dev/null || die "SQL Server logins and databases"
 sq "CREATE USER msact FOR LOGIN msact; GRANT CREATE TABLE TO msact;
     EXEC ('CREATE SCHEMA pgvigil_saved AUTHORIZATION msact');
-    CREATE TABLE dbo.Customers (a int); CREATE TABLE pgvigil_saved.Customers (a int);" SaveDB >/dev/null || die "SaveDB"
+    CREATE TABLE dbo.Customers (a int); CREATE TABLE pgvigil_saved.Customers (a int);
+    CREATE USER msown FOR LOGIN msown; ALTER ROLE db_owner ADD MEMBER msown;" SaveDB >/dev/null || die "SaveDB"
 sq "CREATE USER msact FOR LOGIN msact; GRANT CREATE TABLE TO msact;" NoSchemaDB >/dev/null || die "NoSchemaDB"
 
 # ---- PostgreSQL: the store, the targets, the logins ------------------------------------------------------------------
@@ -93,9 +108,9 @@ adm "create schema pgvigil_saved authorization $MON" "$OTH" >/dev/null || die "t
 HOST=$(adm "select coalesce(host(inet_server_addr()), '127.0.0.1')"); PORT5=$(adm "select current_setting('port')")
 pgdsn() { echo "host=$HOST port=$PORT5 user=$1 password=$PPW dbname=$TDB sslmode=disable"; }
 export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$REPO"
-export PGS_MON PGS_MON2 PGS_ACT PGS_SUP MSS_MON MSS_ACT MSS_SYS
+export PGS_MON PGS_MON2 PGS_ACT PGS_SUP MSS_MON MSS_ACT MSS_SYS MSS_OWN
 PGS_MON=$(pgdsn "$MON"); PGS_MON2=$PGS_MON; PGS_ACT=$(pgdsn "$ACT"); PGS_SUP="$PGVIGIL_ADMIN_DSN dbname=$TDB"
-MSS_MON=$(msdsn msmon "$MSPW"); MSS_ACT=$(msdsn msact "$MSPW"); MSS_SYS=$(msdsn mssys "$MSPW")
+MSS_MON=$(msdsn msmon "$MSPW"); MSS_ACT=$(msdsn msact "$MSPW"); MSS_SYS=$(msdsn mssys "$MSPW"); MSS_OWN=$(msdsn msown "$MSPW")
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 cat > "$W/on.yaml" <<EOF
 repository:
@@ -109,12 +124,13 @@ instances:
   - {name: pg-super-$SUF, dsn: "env:PGS_MON", actions_dsn: "env:PGS_SUP", actions: [save_table]}
   - {name: ms-save-$SUF, engine: sqlserver, dsn: "env:MSS_MON", actions_dsn: "env:MSS_ACT", actions: [save_table]}
   - {name: ms-sys-$SUF, engine: sqlserver, dsn: "env:MSS_MON", actions_dsn: "env:MSS_SYS", actions: [save_table]}
+  - {name: ms-own-$SUF, engine: sqlserver, dsn: "env:MSS_MON", actions_dsn: "env:MSS_OWN", actions: [save_table]}
 EOF
 sed '/^doors:/,/^  save_table:/d' "$W/on.yaml" > "$W/off.yaml"
 "$BIN" migrate -config "$W/on.yaml" > "$W/migrate.log" 2>&1 || die "migrate: $(tail -3 "$W/migrate.log")"
 id_of() { q "select pgvigil.ensure_instance('$1', 'onprem', '16.0', 160000, false, '{}', '$2')"; }
 for n in pg-save pg-nolist pg-same pg-super; do declare "ID_${n//-/_}=$(id_of "$n-$SUF" postgres)"; done
-for n in ms-save ms-sys; do declare "ID_${n//-/_}=$(id_of "$n-$SUF" sqlserver)"; done
+for n in ms-save ms-sys ms-own; do declare "ID_${n//-/_}=$(id_of "$n-$SUF" sqlserver)"; done
 for id in $ID_pg_save $ID_pg_nolist $ID_pg_same $ID_pg_super; do
   q "insert into pgvigil.databases (instance_id, dbid, datname, snapshot_at, is_template, first_seen, is_present)
      values ($id, 1, '$TDB', now(), false, now(), true), ($id, 2, '$NOS', now(), false, now(), true),
@@ -122,7 +138,7 @@ for id in $ID_pg_save $ID_pg_nolist $ID_pg_same $ID_pg_super; do
             ($id, 5, '$TPL', now(), true, now(), true)" >/dev/null
 done
 SAVEID=$(sq "SELECT DB_ID('SaveDB')"); NOSID=$(sq "SELECT DB_ID('NoSchemaDB')")
-for id in $ID_ms_save $ID_ms_sys; do
+for id in $ID_ms_save $ID_ms_sys $ID_ms_own; do
   q "insert into pgvigil.mssql_database_option (instance_id, database_name, database_id, snapshot_at, is_present)
      values ($id, 'SaveDB', $SAVEID, now(), true), ($id, 'NoSchemaDB', $NOSID, now(), true), ($id, 'master', 1, now(), true)" >/dev/null
 done
@@ -276,6 +292,54 @@ b=$(docker exec -e SQLCMDPASSWORD="$MSPW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S
 c=$(docker exec -e SQLCMDPASSWORD="$MSPW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U msact -C -b -d SaveDB -Q "CREATE TABLE pgvigil_saved.j4 (i int)" 2>&1; echo "rc=$?")
 [[ $a == *"rc=0" && $b == *3701* && $c == *"rc=0" ]] && ok "J4: with ALTER on dbo the actions login dropped dbo.victim; with its own schema only it cannot (3701) and creates pgvigil_saved.j4" \
   || bad "J4: with ALTER '$a'; without '$(echo "$b" | tail -2 | tr '\n' ' ')'; own schema '$c'"
+
+# ---- K: review-31 part A2's rows (after G: its counts stand) -------------------------------------------------------------
+last() { q "select coalesce(datname, '') || '|' || coalesce(target, '') || '|' || outcome from pgvigil.actions_log where action = 'save_table' order by action_id desc limit 1"; }
+kref() {   # kref <label> <instance id> <body file> <words>: 409 with the words and ONE more audit row
+  local r0 c; r0=$(rows); c=$(post stadmin "$P1" "$2" "$3")
+  [[ $c == 409 && $(said) == *"$4"* && $(rows) == $((r0 + 1)) ]] && ok "$1: $(said)" || bad "$1: $c $(said); rows $r0 -> $(rows)"
+}
+# K1 (SF3): a refused name never reaches the audit row raw, and its refusal still writes its row
+mk k1a.json "$ID_pg_save" "$TDB" k1a "x" 'b["database"] = "app\x00x"; b["rows"] = b["rows"][:3]'
+kref "K1: a NUL in the database's name" "$ID_pg_save" k1a.json "control character"
+[[ $(last) == "(a refused name)|(a refused name)|refused" ]] && ok "K1: its audit row names no name: $(last)" || bad "K1: the audit row: $(last)"
+mk k1b.json "$ID_pg_save" "$TDB" k1b "pg-save-$SUF/$TDB" 'b["table"] = "a‮b"; b["rows"] = b["rows"][:3]'
+kref "K1: U+202E in the table's name" "$ID_pg_save" k1b.json "invisible character"
+[[ $(last) == "$TDB|(a refused name)|refused" ]] && ok "K1: its audit row: the database, no table name" || bad "K1: the audit row: $(last)"
+# K2 (SF2): the database's owner (no superuser) sets its search_path and plants public.text
+adm "create role $OWN login password '$PPW'" >/dev/null && adm "create database $SPD owner $OWN" >/dev/null || bad "K2 setup: the owner and his database"
+psql "host=$HOST port=$PORT5 user=$OWN password=$PPW dbname=$SPD sslmode=disable" -XAtq -v ON_ERROR_STOP=1 \
+  -c "alter database $SPD set search_path = public, pg_catalog" \
+  -c "create function public.f(v pg_catalog.text) returns boolean language sql as \$\$ select current_user <> '$ACT' \$\$" \
+  -c "create domain public.text as pg_catalog.text check (public.f(value))" > "$W/k2.log" 2>&1 || bad "K2 setup: the owner's search_path and domain: $(tail -2 "$W/k2.log")"
+adm "create schema pgvigil_saved authorization $ACT" "$SPD" >/dev/null || bad "K2 setup: the schema"
+q "insert into pgvigil.databases (instance_id, dbid, datname, snapshot_at, is_template, first_seen, is_present) values ($ID_pg_save, 6, '$SPD', now(), false, now(), true)" >/dev/null
+mk k2.json "$ID_pg_save" "$SPD" k2 "pg-save-$SUF/$SPD" 'b["cols"] = [{"name": "t", "type": "text"}]; b["rows"] = [["one"], ["two"]]'
+c=$(post stadmin "$P1" "$ID_pg_save" k2.json)
+k=$(adm "select (a.atttypid = 'pg_catalog.text'::pg_catalog.regtype)::pg_catalog.text || ',' || (select count(*) from pgvigil_saved.k2) from pg_catalog.pg_attribute a where a.attrelid = 'pgvigil_saved.k2'::pg_catalog.regclass and a.attnum = 1" "$SPD" 2>&1)
+[[ $c == 200 && $(said) == "Saved 2 rows to $SPD.pgvigil_saved.k2" && $k == "true,2" ]] && ok "K2: the owner's search_path and public.text: $(said); the column is pg_catalog.text" || bad "K2: $c $(said); the column and rows '$k'"
+# K3 (NIT 5): the role's own read-only default
+adm "alter role $ACT set default_transaction_read_only = on" >/dev/null
+mk k3.json "$ID_pg_save" "$TDB" k3 "pg-save-$SUF/$TDB" 'b["rows"] = b["rows"][:2]'
+c=$(post stadmin "$P1" "$ID_pg_save" k3.json)
+[[ $c == 200 && $(said) == "Saved 2 rows to $TDB.pgvigil_saved.k3" ]] && ok "K3: the role's default_transaction_read_only = on: $(said)" || bad "K3: $c $(said)"
+adm "alter role $ACT reset default_transaction_read_only" >/dev/null
+# K4 (SF1): a database DDL trigger of a db_owner member
+#K4#
+# K5 (SF4): a distribution database
+sq "DECLARE @s sysname = CAST(SERVERPROPERTY('ServerName') AS sysname); EXEC sp_adddistributor @distributor = @s, @password = N'$MSPW'; EXEC sp_adddistributiondb @database = N'distribution';" > "$W/k5.log" 2>&1
+if [[ $(sq "SELECT CAST(is_distributor AS int) FROM sys.databases WHERE name = 'distribution'" 2>/dev/null) == 1 ]]; then
+  sq "CREATE USER msact FOR LOGIN msact; GRANT CREATE TABLE TO msact; EXEC ('CREATE SCHEMA pgvigil_saved AUTHORIZATION msact');" distribution >/dev/null || bad "K5 setup: the schema in distribution"
+  q "insert into pgvigil.mssql_database_option (instance_id, database_name, database_id, snapshot_at, is_present) values ($ID_ms_save, 'distribution', $(sq "SELECT DB_ID('distribution')"), now(), true)" >/dev/null
+  mk k5.json "$ID_ms_save" distribution k5 "ms-save-$SUF/distribution" "$small"
+  kref "K5: a distribution database" "$ID_ms_save" k5.json "replication distribution database"
+  [[ $(sq "SELECT COUNT(*) FROM sys.tables WHERE schema_id = SCHEMA_ID('pgvigil_saved')" distribution) == 0 ]] && ok "K5: no table in distribution's pgvigil_saved" || bad "K5: a table was made in distribution"
+else
+  echo "NOT PROVEN K5: the container did not become a distributor ($(tail -2 "$W/k5.log" | tr '\n' ' ' | cut -c1-200)): the unit row TestCheckReadsThePlace holds the refusal"
+fi
+# K6 (NIT 6): an actions login in db_owner of the target
+mk k6.json "$ID_ms_own" SaveDB k6 "ms-own-$SUF/SaveDB" "$small"
+kref "K6: an actions login in db_owner" "$ID_ms_own" k6.json "db_owner"
 
 echo "proof-savetable: $FAILS FAIL"
 exit $(( FAILS > 0 ))

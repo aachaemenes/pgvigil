@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"sync"
@@ -182,7 +183,8 @@ func (s *Server) SaveTable(w http.ResponseWriter, r *http.Request) {
 	// review-29 S4: the deadline first, as AppImport (q_app_import.go); a writer that cannot move it keeps the save
 	// inside serve's 75 s
 	budget := saveTableBudget
-	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(budget + 30*time.Second)); err != nil {
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Now().Add(budget + 30*time.Second)); err != nil {
 		budget = 60 * time.Second
 	}
 	if off := s.saveOff(); off != "" {
@@ -212,8 +214,17 @@ func (s *Server) SaveTable(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
 	}
+	// the upload has the save's budget and no more: serve has no read timeout, and a stalled upload would hold the
+	// serve-wide lock until TCP gives up (review-31 part A2 NIT 7). The deadline is lifted once the body is read, so
+	// it never ends the request's context during the write.
+	_ = rc.SetReadDeadline(time.Now().Add(budget))
 	b, err := savetable.Decode(http.MaxBytesReader(w, r.Body, saveTableBodyMax), engine, savetable.DefaultLimits)
+	_ = rc.SetReadDeadline(time.Time{})
 	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			writeErr(w, http.StatusRequestTimeout, fmt.Errorf("the grid's upload did not finish in %s: nothing was written", budget))
+			return
+		}
 		if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
 			writeErr(w, http.StatusRequestEntityTooLarge, errors.New("the grid is over 32 MiB: Script Data Table writes it as a file"))
 			return
@@ -265,8 +276,10 @@ func (s *Server) SaveTable(w http.ResponseWriter, r *http.Request) {
 	if b.From == "data" {
 		from = "From Data Table"
 	}
+	// the names as the audit row and the log may carry them: only once CheckName passed them (review-31 part A2 SF3)
+	datname, target := savetable.AuditNames(engine, b)
 	row := map[string]any{"instance_name": name, "ui_user": user, "client": clientIP(r), "action": "save_table",
-		"reason": "Save Table: " + from, "datname": b.Database, "target": t.Display()}
+		"reason": "Save Table: " + from, "datname": datname, "target": target}
 	audit := func(outcome, detail string) error {
 		row["at"], row["outcome"], row["detail"] = time.Now(), outcome, detail
 		p, err := json.Marshal([]any{row})
@@ -274,7 +287,7 @@ func (s *Server) SaveTable(w http.ResponseWriter, r *http.Request) {
 			_, err = s.actions.audit.Exec(context.WithoutCancel(ctx), `SELECT pgvigil.import_save_table_log($1, now(), $2::jsonb)`, id, string(p))
 		}
 		if err != nil {
-			s.log.Error("save table: the audit row was not written", "instance", name, "target", t.Display(), "user", user,
+			s.log.Error("save table: the audit row was not written", "instance", name, "target", target, "user", user,
 				"outcome", outcome, "detail", detail, "err", err)
 		}
 		return err
@@ -287,7 +300,7 @@ func (s *Server) SaveTable(w http.ResponseWriter, r *http.Request) {
 		case "failed":
 			code = http.StatusBadGateway
 		}
-		s.log.Info("save table: attempt", "instance", name, "target", t.Display(), "user", user, "outcome", outcome, "detail", detail)
+		s.log.Info("save table: attempt", "instance", name, "target", target, "user", user, "outcome", outcome, "detail", detail)
 		writeJSONNoStore(w, code, map[string]any{"outcome": outcome, "detail": detail, "rows": n})
 	}
 	if v.Outcome != "" {
@@ -303,15 +316,7 @@ func (s *Server) SaveTable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n, err := act.Write(ctx, t, b.Cols, v.Rows)
-	outcome, detail := "done", fmt.Sprintf("Saved %d rows to %s", n, t.Display())
-	switch {
-	case errors.Is(err, savetable.ErrExists):
-		outcome, detail, n = "refused", fmt.Sprintf("the table %s exists: pgvigil never overwrites a table", t.Display()), 0
-	case err != nil:
-		outcome, detail, n = "failed", fmt.Sprintf("the save of %s failed, nothing was kept (the transaction rolled back): %v", t.Display(), err), 0
-	case v.NULs > 0:
-		detail += fmt.Sprintf("; %d NUL character(s) dropped from text cells", v.NULs)
-	}
+	outcome, detail, n := savetable.WriteWords(t, n, v.NULs, err)
 	if err := audit(outcome, detail); err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("%s: %s; its audit row could not be written (the started row stands): %v", outcome, detail, err))
 		return
