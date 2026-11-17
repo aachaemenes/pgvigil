@@ -661,12 +661,12 @@ export async function mssqlLogShippingView(ctx: Ctx): Promise<HTMLElement> {
     keys = rowsOf(d.thresholds);
     summaryRows = rowsOf(d.summary);
     const sumCols: Col[] = [
-      { key: 'instance', label: 'Instance', fmt: (v, r) => instLink(ctx, tab, r.instance_id, v) },
-      { key: 'primary_instances', label: 'Primary Instance' },
+      { key: 'instance', label: 'Instance', title: 'The instance the log shipped databases are restored on; the link opens its own log shipping page', fmt: (v, r) => instLink(ctx, tab, r.instance_id, v) },
+      { key: 'primary_instances', label: 'Primary Instance', title: 'The instance (or instances) its log shipped databases come from' },
       { key: 'status', label: 'Status', fmt: v => statusWord[String(v)] ?? String(v ?? ''), cls: stCls },
       { key: 'log_shipped_dbs', label: 'Log Shipped DBs', num: true }, { key: 'warning_count', label: 'Warning', num: true },
-      { key: 'critical_count', label: 'Critical', num: true }, { key: 'missing_count', label: 'Missing', num: true },
-      { key: 'new_database_count', label: 'New DBs', num: true },
+      { key: 'critical_count', label: 'Critical', num: true }, { key: 'missing_count', label: 'Missing', num: true, title: 'Log shipping copies the primary sends toward this instance that no database here restores (N/A ones not counted)' },
+      { key: 'new_database_count', label: 'New DBs', num: true, title: 'Databases younger than the thresholds\' new-database hours (24 by default): N/A, not judged, until then' },
       { key: 'max_total_time_behind_min', label: 'Max Total Time Behind', num: true, fmt: mins }, { key: 'min_total_time_behind_min', label: 'Min Total Time Behind', num: true, fmt: mins },
       { key: 'avg_total_time_behind_min', label: 'Avg Total Time Behind', num: true, fmt: mins },
       { key: 'max_latency_of_last_min', label: 'Max Latency of Last', num: true, fmt: mins }, { key: 'min_latency_of_last_min', label: 'Min Latency of Last', num: true, fmt: mins },
@@ -676,32 +676,32 @@ export async function mssqlLogShippingView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'snapshot_age_min', label: 'Snapshot Age', num: true, fmt: mins, cls: (_, r) => stCls(r.collection_status) },
       { key: 'backup_date_of_oldest_file', label: 'Backup Date of Oldest File', fmt: fmtTime }, { key: 'backup_date_of_newest_file', label: 'Backup Date of Newest File', fmt: fmtTime },
       { key: 'restore_date_of_oldest_file', label: 'Restore Date of Oldest File', fmt: fmtTime }, { key: 'restore_date_of_newest_file', label: 'Restore Date of Newest File', fmt: fmtTime },
-      { key: 'instance_level_threshold', label: 'Configure', fmt: (v, r) => {
+      { key: 'instance_level_threshold', label: 'Configure', title: 'Set this instance\'s own log shipping thresholds (bold when it has its own)', fmt: (v, r) => {
         const n = configure({ level: 'instance', instance_id: Number(r.instance_id), where: `the instance ${String(r.instance)}` }, curOf(r));
         if (v === true) n.style.fontWeight = 'bold';   // either key has the instance's own threshold
         return n;
       } },
     ];
     const detCols: Col[] = [
-      { key: 'instance', label: 'Instance' },
+      { key: 'instance', label: 'Instance', title: 'The instance the database is restored on' },
       { key: 'database_name', label: 'Database', fmt: v => {   // pgvigil's own: a click narrows the panel below to this database
         const b = el('button', { type: 'button', class: 'link', 'aria-label': `Show log shipping's jobs and messages for ${String(v ?? '')}` }, String(v ?? ''));
         b.addEventListener('click', () => { dbPick.value = pickFor(String(v ?? '')); drawPanel(); dbPick.focus(); });
         return b;
       } },
-      { key: 'primary_server', label: 'Primary Instance' },
+      { key: 'primary_server', label: 'Primary Instance', title: 'The instance the database\'s log backups come from' },
       { key: 'status', label: 'Status', fmt: (v, r) => (statusWord[String(v)] ?? String(v ?? '')) + (r.is_missing === true ? ' (Missing)' : r.is_new_database === true ? ' (New Database)' : ''), cls: stCls },
-      { key: 'excluded_by', label: 'Excluded By' },
+      { key: 'excluded_by', label: 'Excluded By', title: 'The exclusion pattern that took the database out of the checks; empty when none did' },
       { key: 'last_log_restore_at', label: 'Restore Date', fmt: fmtTime }, { key: 'last_log_backup_start_at', label: 'Backup Start Date', fmt: fmtTime },
       { key: 'total_time_behind_min', label: 'Total Time Behind', num: true, fmt: mins }, { key: 'latency_of_last_min', label: 'Latency of Last', num: true, fmt: mins },
       { key: 'time_since_last_min', label: 'Time Since Last', num: true, fmt: mins },
       { key: 'snapshot_age_min', label: 'Snapshot Age', num: true, fmt: mins, cls: (_, r) => stCls(r.snapshot_age_status) },
       { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime },
       { key: 'last_file', label: 'Last File', fmt: v => v == null ? '' : String(v).split(/[\\/]/).pop() ?? '' },
-      { key: 'created_at', label: 'Create Date', fmt: fmtTime },
+      { key: 'created_at', label: 'Create Date', fmt: fmtTime, title: 'When the database was created, as the server it is on records it' },
       { key: 'database_age_s', label: 'Database Age', num: true, fmt: v => v == null ? '' : ddDuration(v) },
       { key: 'threshold_level', label: 'Threshold Level', fmt: (v, r) => v === 'default' || v == null ? 'Root' : v === 'tag' ? `Tag ${String(r.threshold_tag)}` : String(v)[0].toUpperCase() + String(v).slice(1) },
-      { key: 'kind', label: 'Configure', fmt: (v, r) => {
+      { key: 'kind', label: 'Configure', title: 'Set this database\'s own log shipping thresholds - a restored database only (bold when it has its own)', fmt: (v, r) => {
         if (v !== 'restore') return '';
         const n = configure({ level: 'database', instance_id: Number(r.instance_id), datname: String(r.database_name), where: `the database ${String(r.database_name)} on ${String(r.instance)}` }, curOf(r));
         if (r.threshold_level === 'database' || r.latency_level === 'database') n.style.fontWeight = 'bold';   // DBA Dash: ThresholdConfiguredLevel = 'Database'
