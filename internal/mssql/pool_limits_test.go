@@ -105,10 +105,16 @@ func TestPoolLimitsCollector(t *testing.T) {
 	if _, err := c.Run(context.Background(), nil, Info{}); err == nil {
 		t.Error("Run alone: no error")
 	}
-	for _, w := range []string{"dbmanager", "opt-in", "create and drop databases", "cost money", "commented-out block"} {
+	for _, w := range []string{"dbmanager", "##MS_DatabaseManager##", "opt-in", "create and drop databases", "cost money", "commented-out block"} {
 		if !strings.Contains(noRightWords, w) {
 			t.Errorf("the no-right words do not say %q: %s", w, noRightWords)
 		}
+	}
+	// the server role read by the login's own membership in master; IS_SRVROLEMEMBER is not supported there (Microsoft
+	// Learn, Azure SQL Database's server roles: 'IS_SRVROLEMEMBER() isn't supported in the master database')
+	if !strings.Contains(poolLimitsRightSQL, "##MS_DatabaseManager##") || !strings.Contains(poolLimitsRightSQL, "sys.server_role_members") ||
+		!strings.Contains(poolLimitsRightSQL, "sys.sql_logins") || strings.Contains(poolLimitsRightSQL, "IS_SRVROLEMEMBER") {
+		t.Errorf("the right's read does not take the server role by sys.server_role_members (sys.sql_logins for a SQL login): %s", poolLimitsRightSQL)
 	}
 	long := noMasterWords(errors.New(strings.Repeat("x", 500)))
 	if !strings.Contains(long, "master") || !strings.Contains(long, "contained database user") || len(long) > 450 {
@@ -191,6 +197,35 @@ INSERT INTO #pl_epr VALUES
 	_, err = poolLimitsCollector{}.RunInstance(ctx, conn, Info{Kind: KindAzureDB, ServiceObjective: "ElasticPool", PoolTag: "pool1", ServerName: "srv1"}, in)
 	if !errors.Is(err, collect.ErrSkip) || !strings.Contains(err.Error(), "not a member of dbmanager") {
 		t.Errorf("a plain login: %v, want the skip without dbmanager", err)
+	}
+	// the lead's 13:08 (a), from the Pool lab's L4 (2026-11-17: a login holding ##MS_DatabaseManager## alone read the
+	// view, 37 rows as the admin's): a member of that server role holds the right. SQL Server 2022 has the role too
+	// (Microsoft Learn's server-roles page); IS_SRVROLEMEMBER is not supported in Azure SQL Database's master, so the
+	// check reads the login's own membership (sys.server_role_members, which a login may see for itself)
+	var hasRole int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM sys.server_principals WHERE name = N'##MS_DatabaseManager##' AND type = 'R'").Scan(&hasRole); err != nil || hasRole == 0 {
+		t.Logf("no ##MS_DatabaseManager## on this server (%d, %v: before SQL Server 2022): the server-role row not run", hasRole, err)
+	} else {
+		dm, dpw := fmt.Sprintf("pgv_dm_%d", time.Now().UnixNano()%1000000), pw()
+		exec(fmt.Sprintf("CREATE LOGIN [%s] WITH PASSWORD = N'%s', CHECK_POLICY = OFF; ALTER SERVER ROLE [##MS_DatabaseManager##] ADD MEMBER [%s];", dm, dpw, dm))
+		t.Cleanup(func() { _, _ = conn.ExecContext(context.Background(), fmt.Sprintf("DROP LOGIN [%s];", dm)) })
+		du := *u
+		du.User = url.UserPassword(dm, dpw)
+		dmDSN, err := masterDSN(du.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PGVIGIL_POOL_LIMITS_DM_DSN", dmDSN)
+		ddb, dmc, err := openMaster(ctx, config.Instance{Name: "pl-dm", Engine: config.EngineSQLServer, DSNRaw: "env:PGVIGIL_POOL_LIMITS_DM_DSN"})
+		if err != nil {
+			t.Fatalf("openMaster as a ##MS_DatabaseManager## member: %v", err)
+		}
+		r, err := QueryRows(ctx, dmc, poolLimitsRightSQL)
+		_ = dmc.Close()
+		_ = ddb.Close()
+		if v, _ := asInt(firstValue(r, "has_right")); err != nil || v != 1 {
+			t.Errorf("the right as a ##MS_DatabaseManager## member: %v %v, want 1", r, err)
+		}
 	}
 	// a contained database user: no way into master - RunInstance skips with the no-master words; the server's setting
 	// is put back as it was (review t11-1 NIT 8)

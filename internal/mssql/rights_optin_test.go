@@ -56,6 +56,10 @@ func TestRightsPoolHistoryOptIn(t *testing.T) {
 	if !strings.Contains(opt.OptIn, "ALTER ROLE dbmanager ADD MEMBER") || !strings.Contains(opt.OptIn, "master") {
 		t.Errorf("the block gives no dbmanager in master: %s", opt.OptIn)
 	}
+	// the lead's 13:08 (a): the server role beside dbmanager, in the same words, commented out like every line
+	if !strings.Contains(opt.OptIn, "-- or: ALTER SERVER ROLE ##MS_DatabaseManager## ADD MEMBER") || !strings.Contains(opt.OptIn, "ALTER SERVER ROLE ##MS_DatabaseManager## DROP MEMBER") {
+		t.Errorf("the block does not give ##MS_DatabaseManager## beside dbmanager: %s", opt.OptIn)
+	}
 	// review t11-1 SHOULD 2: a contained database user has no login for FROM LOGIN, and an Entra identity is made FROM
 	// EXTERNAL PROVIDER - the block says both in comment lines
 	if !strings.Contains(opt.OptIn, "contained database user") || !strings.Contains(opt.OptIn, "FROM EXTERNAL PROVIDER") {
