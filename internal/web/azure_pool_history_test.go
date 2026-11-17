@@ -41,7 +41,7 @@ func TestAzurePoolHistoryOnAStore(t *testing.T) {
 	server := fmt.Sprintf("srvp-%d", sfx)
 	ids := map[string]int{}
 	var all []int
-	for _, n := range []string{"a", "b", "c"} {
+	for _, n := range []string{"a", "b", "c", "d"} {
 		var id int
 		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'azuresqldb', '12.0', 120000, false, ARRAY[$2]::text[], 'sqlserver')`,
 			fmt.Sprintf("azph-%s-%d", n, sfx), tag).Scan(&id); err != nil {
@@ -63,8 +63,8 @@ func TestAzurePoolHistoryOnAStore(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(time.Minute)
 	h := func(n int) time.Time { return now.Add(time.Duration(n) * time.Hour) }
-	exec(`INSERT INTO pgvigil.mssql_pool_member (instance_id, server, pool, seen_at) VALUES ($1, $4, 'pool1', $5), ($2, $4, 'pool1', $5), ($3, $4, 'pool2', $5)`,
-		ids["a"], ids["b"], ids["c"], server, now)
+	exec(`INSERT INTO pgvigil.mssql_pool_member (instance_id, server, pool, seen_at) VALUES ($1, $4, 'pool1', $5), ($2, $4, 'pool1', $5), ($3, $4, 'pool2', $5),
+	      ($6, $4, 'pool3', $5)`, ids["a"], ids["b"], ids["c"], server, now, ids["d"])
 	// a and b keep their copies of pool1's periods (b first read an hour later: its first period starts later), the
 	// CPU limit changed once on its own (informational: no change of the pool's limits)
 	for _, x := range []struct {
@@ -76,6 +76,10 @@ func TestAzurePoolHistoryOnAStore(t *testing.T) {
 			x.id, server, h(x.first), h(-100), h(-50), h(-1))
 	}
 	exec(`INSERT INTO pgvigil.mssql_pool_limit_read (instance_id, server, pool, read_at, state) VALUES ($1, $2, 'pool1', $3, 'read')`, ids["a"], server, h(-1))
+	// d read pool3 until 30 hours ago; its runs since are skipped (dbmanager taken away: review t11-1 SHOULD 1)
+	exec(`INSERT INTO pgvigil.mssql_pool_limit_read (instance_id, server, pool, read_at, state) VALUES ($1, $2, 'pool3', $3, 'read')`, ids["d"], server, h(-30))
+	exec(`INSERT INTO pgvigil.collection_dates (instance_id, collection, snapshot_at, status, note) VALUES ($1, 'mssql_pool_limits', $2, 'skipped', $3)`,
+		ids["d"], h(-1), "Pool history is not read: the login is not a member of dbmanager in the logical server's master - an opt-in")
 	// c's read was skipped: no dbmanager
 	exec(`INSERT INTO pgvigil.collection_dates (instance_id, collection, snapshot_at, status, note) VALUES ($1, 'mssql_pool_limits', $2, 'skipped', $3)`,
 		ids["c"], h(-1), "Pool history is not read: the login is not a member of dbmanager in the logical server's master - an opt-in")
@@ -140,6 +144,10 @@ func TestAzurePoolHistoryOnAStore(t *testing.T) {
 	}
 	if p2 := state["pool2"]; p2 == nil || p2["last_read"] != nil || !strings.Contains(fmt.Sprint(p2["skip_note"]), "dbmanager") {
 		t.Errorf("pool2's state %v: want no read and the skip's words", p2)
+	}
+	// pool3: read until 30 hours ago, skipped since - no current read, the read's time and the skip's words
+	if p3 := state["pool3"]; p3 == nil || p3["last_read"] != nil || p3["read_until"] == nil || !strings.Contains(fmt.Sprint(p3["skip_note"]), "dbmanager") {
+		t.Errorf("pool3's state %v: want no current read, read_until its old read, and the skip's words", p3)
 	}
 	// the node: pool2 of the server - no change, its state alone
 	n := call(url.Values{"server": {server}, "pool": {"pool2"}})

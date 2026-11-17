@@ -55,6 +55,11 @@ func TestRightsPoolHistoryOptIn(t *testing.T) {
 	if !strings.Contains(opt.OptIn, "ALTER ROLE dbmanager ADD MEMBER") || !strings.Contains(opt.OptIn, "master") {
 		t.Errorf("the block gives no dbmanager in master: %s", opt.OptIn)
 	}
+	// review t11-1 SHOULD 2: a contained database user has no login for FROM LOGIN, and an Entra identity is made FROM
+	// EXTERNAL PROVIDER - the block says both in comment lines
+	if !strings.Contains(opt.OptIn, "contained database user") || !strings.Contains(opt.OptIn, "FROM EXTERNAL PROVIDER") {
+		t.Errorf("the block says nothing of a contained user or an Entra identity: %s", opt.OptIn)
+	}
 	id := rightsIdentity{login: "pgv_monitor", quoted: "[pgv_monitor]", literal: "N'pgv_monitor'", server: "srv1", user: "[pgv_monitor]", ownLogin: true}
 	st := optInState(*opt, id)
 	if st.State != opt.Null || !strings.Contains(st.Grant, "[pgv_monitor]") || strings.Contains(st.Grant, "{login}") {
@@ -64,6 +69,10 @@ func TestRightsPoolHistoryOptIn(t *testing.T) {
 	read := RightsRead{Login: "pgv_monitor", Server: "srv1", Platform: "azuresqldb", Rights: []RightState{st}, OptIns: 1}
 	read.guard(id, Info{Kind: KindAzureDB, ServiceObjective: "ElasticPool"})
 	script := read.Script("2026-11-17 09:50")
+	// review t11-1 NIT 6: nothing missing, only the opt-in: the head says so, never that the login lacks rights
+	if strings.Contains(script, "lacks") || !strings.Contains(script, "opt-in") {
+		t.Errorf("the script's head with only the opt-in block: %q", strings.SplitN(script, "\n", 3)[:2])
+	}
 	if read.Missing != 0 || !strings.Contains(script, "pgvigil did not run it") || !strings.Contains(script, "ALTER ROLE dbmanager ADD MEMBER [pgv_monitor]") {
 		t.Errorf("the script with the opt-in alone:\n%s", script)
 	}

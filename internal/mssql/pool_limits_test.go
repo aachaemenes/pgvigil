@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -223,5 +224,14 @@ INSERT INTO #pl_epr VALUES
 	}
 	if d := time.Since(start); d > masterConnectCap+5*time.Second {
 		t.Errorf("the refused master took %v, over the %v cap", d, masterConnectCap)
+	}
+}
+
+// TestNoMasterWordsCutOnARune (review t11-1 NIT 7): the driver's words are cut at 200 on a character, never inside one -
+// a cut UTF-8 sequence makes PostgreSQL refuse the skip's note, and the skip is not written.
+func TestNoMasterWordsCutOnARune(t *testing.T) {
+	w := noMasterWords(errors.New(strings.Repeat("\u20ac", 100))) // 300 bytes of a 3-byte character
+	if !utf8.ValidString(w) {
+		t.Errorf("noMasterWords cut inside a character: %q", w[len(w)-12:])
 	}
 }
