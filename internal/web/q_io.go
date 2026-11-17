@@ -79,6 +79,21 @@ HAVING coalesce(sum(reads), 0) + coalesce(sum(writes), 0) + coalesce(sum(extends
  ORDER BY coalesce(sum(read_bytes), 0) + coalesce(sum(write_bytes), 0) DESC, reads DESC NULLS LAST
  LIMIT 100`
 
+// sqlIOSummary is PerformanceMonitor's I/O Summary (map-pm-web.tsv:245; PG_IO_SUMMARY_STATS): pg_stat_io over the
+// window - its reads and read time, the backend type / object / context that spent the most read time, and whether any
+// write counter is tracked (Aurora's backends write no data file: its write columns are empty, not 0) - with the
+// combinations counted
+const sqlIOSummary = `
+WITH k AS (
+  SELECT backend_type, object, context, sum(reads) AS reads, sum(read_time) AS read_time, bool_or(writes IS NOT NULL) AS writes_tracked
+    FROM pgvigil.iostats_rate($1, $2, $3, make_interval(secs => $4))
+   WHERE NOT reset
+   GROUP BY backend_type, object, context)
+SELECT sum(reads) AS reads, round(sum(read_time)::numeric, 1) AS read_time_ms,
+       (SELECT backend_type || ' / ' || object || ' / ' || context FROM k WHERE read_time > 0 ORDER BY read_time DESC LIMIT 1) AS busiest,
+       bool_or(writes_tracked) AS write_counters_tracked, count(*) AS combinations
+  FROM k`
+
 // sqlIODBTime is pg_stat_database's block read and write time (track_io_timing) per snapshot: milliseconds spent
 // reading or writing per wall-clock second, and the time per block read.
 const sqlIODBTime = `
@@ -234,6 +249,7 @@ func (s *Server) IO(w http.ResponseWriter, r *http.Request) {
 		{"platform", sqlIOPlatform, []any{id, from, to, ioBucket(from, to, 300)}},
 		{"pgio", sqlIOStats, []any{id, from, to, io}},
 		{"pgio_by", sqlIOByKind, []any{id, from, to, io}},
+		{"pgio_sum", sqlIOSummary, []any{id, from, to, io}},
 		{"dbtime", sqlIODBTime, []any{id, from, to, db}},
 		{"checkpoints", sqlIOCheckpoints, []any{id, from, to, db}},
 		{"checkpoint_totals", sqlIOCheckpointTotals, []any{id, from, to, db}},

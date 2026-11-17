@@ -6,7 +6,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
-type Parts = 'state' | 'checks' | 'running' | 'tables' | 'wraparound' | 'holders' | 'history';
+type Parts = 'state' | 'checks' | 'running' | 'tables' | 'wraparound' | 'headroom' | 'holders' | 'history';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
@@ -120,6 +120,41 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'never_vacuumed', label: 'never vacuumed', num: true },
     { key: 'tables_at', label: 'tables read', fmt: v => v == null ? 'not read' : fmtTime(v) },
   ], 'No wraparound read yet: vacuum_tables runs hourly.'));
+
+  // PerformanceMonitor's 'Where the Thresholds Are' (map-pm-web.tsv:237): the four points the percentages below mean
+  // something against, PostgreSQL's own - the failsafe at this server's vacuum_failsafe_age, the warnings and the stop
+  // 40 and 3 million XIDs before the wrap (PostgreSQL 14 and later; 13: 11 and 1 million), the forced vacuum at
+  // autovacuum_freeze_max_age; each a share of the 2^31 the wrap is
+  const WRAP = 2147483648, w0 = wrap[0] ?? {};
+  const failsafe = Number(w0.failsafe_age) > 0 ? Number(w0.failsafe_age) : null, fmax = Number(w0.freeze_max_age) > 0 ? Number(w0.freeze_max_age) : null;
+  const share = (n: number, d = 1) => (100 * n / WRAP).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) + ' %';
+  sec.append(el('h3', {}, 'Where the thresholds are'),
+    el('p', { class: 'meta' }, 'PostgreSQL\'s own, not pgvigil\'s: each as a share of the way to the wrap (the % to wraparound column below), the forced vacuum of autovacuum_freeze_max_age (the % to emergency vacuum column).'),
+    el('div', { class: 'tiles' },
+      tile('failsafe engages', failsafe == null ? 'not read' : share(failsafe), '', { sub: failsafe == null ? 'vacuum_failsafe_age (PostgreSQL 14 and later) not read' : `vacuum_failsafe_age ${fmtNum(failsafe)}: vacuum drops its cost limit and index cleanup` }),
+      tile('server warns', share(WRAP - 40e6), '', { sub: '40 million XIDs before the wrap (PostgreSQL 13: 11 million)' }),
+      tile('writes stop', share(WRAP - 3e6, 2), '', { sub: '3 million XIDs before the wrap: no new XID, reads go on (PostgreSQL 13: 1 million)' }),
+      tile('forced vacuum', '100 %', '', { sub: fmax == null ? 'of autovacuum_freeze_max_age (not read)' : `of autovacuum_freeze_max_age ${fmtNum(fmax)} (${share(fmax)} of the way to the wrap)` })));
+  // PerformanceMonitor's 'Per-Database Headroom' (map-pm-web.tsv:238): XIDs and MultiXacts side by side, never one
+  // worst-of (they wrap apart, their remedies differ); the peak age over the page's window, and whether freezing keeps up
+  const yesNo = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
+  const pct2 = (v: unknown) => v == null ? '' : Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' %';
+  sec.append(el('h3', {}, 'Per-database headroom'),
+    el('p', { class: 'meta' }, 'Left: the XIDs or MultiXacts before the server stops assigning them. Keeping up: the age now is below its peak in the window (freezing took age back at least once); no = it only climbed.'),
+    grid(rowsOf(d.headroom), [
+      { key: 'datname', label: 'database' },
+      { key: 'xid_age', label: 'xid age', num: true },
+      { key: 'xids_left', label: 'XIDs left', num: true },
+      { key: 'pct_wrap', label: '% to wraparound', num: true, fmt: pct2, cls: v => v == null ? '' : Number(v) >= 74.5 ? 'crit' : Number(v) >= 50 ? 'warn' : 'status ok' },
+      { key: 'pct_emergency', label: '% to emergency vacuum', num: true, fmt: pct, cls: v => v == null ? '' : Number(v) > 100 ? 'warn' : 'status ok' },
+      { key: 'peak_age', label: 'peak age', num: true },
+      { key: 'keeping_up', label: 'keeping up', fmt: yesNo, cls: v => v === false ? 'warn' : v ? 'status ok' : '' },
+      { key: 'mxid_age', label: 'MultiXact age', num: true },
+      { key: 'mxids_left', label: 'MultiXacts left', num: true },
+      { key: 'pct_mx_wrap', label: '% to MultiXact wraparound', num: true, fmt: pct2 },
+      { key: 'pct_mx_emergency', label: '% to MultiXact emergency', num: true, fmt: pct, cls: v => v == null ? '' : Number(v) > 100 ? 'warn' : 'status ok' },
+      { key: 'allow_conn', label: 'connectable', fmt: yesNo },
+    ], 'No wraparound read yet: vacuum_tables runs hourly.'));
 
   sec.append(el('h3', {}, 'Oldest xmin holders'),
     el('p', { class: 'meta' }, 'What keeps vacuum from removing dead rows: sessions (the latest activity sample), replication slots, prepared transactions, standbys with hot_standby_feedback.'),

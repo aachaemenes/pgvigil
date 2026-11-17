@@ -53,6 +53,29 @@ SELECT w.datname, w.allow_conn, w.xid_age, w.xid_freeze_pct, w.mxid_age, w.mxid_
  WHERE w.instance_id = $1
  ORDER BY w.xid_age DESC NULLS LAST, w.datname`
 
+// sqlVacuumHeadroom is PerformanceMonitor's Per-Database Headroom (map-pm-web.tsv:238; server-tabs.js
+// PG_WRAPAROUND_COLUMNS): per database the XIDs and the MultiXacts left before the server stops assigning them (2^31
+// less PostgreSQL 14's 3 million stop margin, as its collector's ladder), the share of the way to the wrap and to the
+// forced (emergency) vacuum, the window's peak xid age from the size history (database_sizes, the page's own window)
+// and whether freezing keeps up - the age now below that peak (PerformanceMonitor's rule; equal = only climbing).
+const sqlVacuumHeadroom = `
+SELECT w.datname, w.xid_age,
+       greatest(0, 2147483648 - 3000000 - w.xid_age) AS xids_left,
+       round(100.0 * w.xid_age / 2147483648, 2) AS pct_wrap,
+       w.xid_freeze_pct AS pct_emergency,
+       greatest(w.xid_age, p.peak) AS peak_age,
+       CASE WHEN p.peak IS NULL OR w.xid_age IS NULL THEN NULL ELSE w.xid_age < p.peak END AS keeping_up,
+       w.mxid_age, greatest(0, 2147483648 - 3000000 - w.mxid_age) AS mxids_left,
+       round(100.0 * w.mxid_age / 2147483648, 2) AS pct_mx_wrap,
+       w.mxid_freeze_pct AS pct_mx_emergency, w.allow_conn, w.snapshot_at
+  FROM pgvigil.vacuum_wraparound w
+  LEFT JOIN (SELECT s.datname, max(s.xid_age) AS peak
+               FROM pgvigil.database_sizes s
+              WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+              GROUP BY s.datname) p ON p.datname = w.datname
+ WHERE w.instance_id = $1
+ ORDER BY greatest(w.xid_age, coalesce(w.mxid_age, 0)) DESC NULLS LAST, w.datname`
+
 const sqlVacuumHolders = `
 SELECT h.holder AS "holder@holder", h.name, h.datname, h.xmin_age, h.catalog_xmin_age, h.active, h.since, h.detail AS "detail@holderdetail", h.snapshot_at
   FROM pgvigil.vacuum_xmin_holders h
@@ -75,6 +98,7 @@ func (s *Server) Vacuum(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	pageFrom := from // the page's own window: the headroom's peak age (the history below reads at least a week)
 	if week := to.Add(-7 * 24 * time.Hour); week.Before(from) {
 		from = week
 	}
@@ -84,6 +108,7 @@ func (s *Server) Vacuum(w http.ResponseWriter, r *http.Request) {
 		{"running", sqlVacuumRunning, []any{id}},
 		{"tables", sqlVacuumTables, []any{id}},
 		{"wraparound", sqlVacuumWraparound, []any{id}},
+		{"headroom", sqlVacuumHeadroom, []any{id, pageFrom, to}},
 		{"holders", sqlVacuumHolders, []any{id}},
 		{"history", sqlVacuumHistory, []any{id, from, to}},
 	})

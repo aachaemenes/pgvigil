@@ -92,7 +92,7 @@ const findingCols: Col[] = [
   { key: 'at', label: 'when', fmt: fmtTime },
 ];
 
-type IOReply = Record<'state' | 'platform_latest' | 'platform' | 'pgio' | 'pgio_by' | 'dbtime' | 'checkpoints' | 'checkpoint_totals'
+type IOReply = Record<'state' | 'platform_latest' | 'platform' | 'pgio' | 'pgio_by' | 'pgio_sum' | 'dbtime' | 'checkpoints' | 'checkpoint_totals'
   | 'checkpoint_causes' | 'checkpoint_log' | 'statements' | 'findings', Table | null>;
 
 // ---- checkpoints from the server log (parity3 task 126; pgBadger's Checkpoints tab, PMM 13) -------------------------
@@ -276,6 +276,18 @@ export async function ioView(instance: number, win: Window, label = ''): Promise
   if (ver && ver < 160000) {
     sec.append(el('p', { class: 'empty' }, 'pg_stat_io exists from PostgreSQL 16; this server reports none.'));
   } else {
+    // PerformanceMonitor's I/O Summary (map-pm-web.tsv:245): the window's reads and read time, the busiest backend type /
+    // object / context by read time, whether any write counter is tracked (Aurora: none - storage writes the data files)
+    const sum = rowsOf(d.pgio_sum)[0] ?? {};
+    const tracked = sum.write_counters_tracked;
+    sec.append(el('h3', {}, 'I/O summary'),
+      el('p', { class: 'meta' }, `pg_stat_io over the window, each counter differenced across it (${fmtNum(sum.combinations ?? 0)} backend type / object / context combinations).`),
+      el('div', { class: 'tiles' },
+        tile('reads', fmtNum(sum.reads ?? 0)),
+        tile('read time', sum.read_time_ms == null ? 'not read' : ms(Number(sum.read_time_ms)), '', { sub: timing ? undefined : 'track_io_timing is off: 0 until it is on' }),
+        tile('busiest', sum.busiest == null ? 'none in the window' : String(sum.busiest), '', { sub: 'by read time' }),
+        tile('write counters tracked', tracked == null ? 'not read' : tracked ? 'yes' : 'no', '', { sub: tracked === false ? 'the write columns are empty: on Aurora storage writes the data files' : undefined })),
+      el('h3', {}, 'pg_stat_io over time'));
     sec.append(el('div', { class: 'charts' },
       lineChart('IO bytes / s', pgio, [{ key: 'read_bytes_s', label: 'read' }, { key: 'write_bytes_s', label: 'write' }, { key: 'extend_bytes_s', label: 'extend' }], bytesS),
       lineChart('IOs / s', pgio, [{ key: 'reads_s', label: 'reads' }, { key: 'writes_s', label: 'writes' }, { key: 'evictions_s', label: 'evictions' }]),
