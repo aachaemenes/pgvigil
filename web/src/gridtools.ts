@@ -695,6 +695,14 @@ function gridOf(t: HTMLTableElement, sel: boolean): Grid {
   const s = sel ? shown(t) : (() => { const g = readGrid(t); return { cols: g.cols, rows: g.rows, num: heads(t).filter(h => !h.hasAttribute('data-gt-hidden')).map(h => h.classList.contains('num')) }; })();
   return { ...s, sample: t.closest('[data-sample]')?.getAttribute('data-sample') ?? undefined };
 }
+// copyGrid: Copy > Grid's copy of a grid - the tab-separated words and the HTML table in the screen's colours - for a
+// page's own Copy button (the Summary toolbar's Copy, task PGRID D20); the rows copied, or null when the clipboard
+// refused
+export async function copyGrid(t: HTMLTableElement): Promise<number | null> {
+  const x = gridOf(t, false);
+  const ok = await copyBoth((x.sample ? `<p>${html(x.sample)}</p>` : '') + toHtml(x), (x.sample ? x.sample + '\n' : '') + tsv(x));
+  return ok ? x.rows.length : null;
+}
 // copyBoth: HTML with the colours and its plain words on the clipboard (copyByEvent where ClipboardItem is refused)
 async function copyBoth(h: string, plain: string): Promise<boolean> {
   try {

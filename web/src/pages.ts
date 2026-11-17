@@ -32,6 +32,7 @@ import { trendCol } from './stmt_trend';
 import { readStmtGroups, stmtGroupsSection, totalWithShare } from './stmt_filter';
 import { customReportView } from './custom';
 import { whatIsThis } from './sqlview';
+import { copyGrid } from './gridtools';
 import { logsGroupedView } from './logs_grouped';
 import type { AttentionBox } from './export';
 import { openDumpDialog, openUptimeDialog, summaryCellAction } from './uptimedialog';
@@ -656,6 +657,15 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   });
   const view = vc.button;
   const options = tbButton('Options', true);
+  // DBA Dash's Copy drop-down (D20, task PGRID): each grid as its own Copy > Grid copies it (the words and the HTML with
+  // the fills); the Test Summary also while View hides its pane; what was copied said beside the toolbar
+  const copyBtn = tbButton('Copy', true), copySaid = el('span', { class: 'meta', role: 'status' });
+  const copyOne = (box: HTMLElement, what: string) => {
+    const t = box.querySelector<HTMLTableElement>('table.grid');
+    if (!t) { copySaid.textContent = `Nothing to copy: the ${what} has no rows.`; return; }
+    void copyGrid(t).then(n => { copySaid.textContent = n === null ? 'Not copied: the browser refused the clipboard' : `Copied the ${what}: ${n} rows`; });
+  };
+  copyBtn.addEventListener('click', () => showMenu(...below(copyBtn), [['Copy Summary', () => copyOne(lower, 'Summary')], ['Copy Test Summary', () => copyOne(upper, 'Test Summary')]], copyBtn));
   const sub = (items: [string, () => void][]) => () => showMenu(...below(options, 24, 8), items, options);
   options.addEventListener('click', () => showMenu(...below(options), [
     // DBA Dash's 'Memory Dumps' acts on PostgreSQL's crash restarts too: a scope with no SQL Server says it in those words
@@ -672,7 +682,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   drawStrip(); drawUpper(); drawLower();
   return el('section', { class: 'fleet-summary' }, el('h2', {}, 'Summary' + scopeLabel(ctx)),
     el('div', { class: 'toolbar summary-toolbar', style: 'display:flex;flex-wrap:wrap;gap:.4rem;align-items:center' },
-      refresh, view, options, clear, clearNote, el('label', {}, 'Sort ', sortSel), filterBar, refreshTime),
+      refresh, view, options, copyBtn, clear, clearNote, el('label', {}, 'Sort ', sortSel), filterBar, copySaid, refreshTime),
     vc.notes,
     note,
     tiles,
