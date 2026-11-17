@@ -20,6 +20,8 @@ const LIMIT = 2000;   // the grid's rows, as the API cuts them
 const num3 = (v: unknown) => v == null ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
 // a total in milliseconds, shown as seconds
 const secs = (v: unknown) => v == null ? '' : num3(Math.round(Number(v)) / 1000);
+// a figure the server may not have: "not read" for a NULL, never a 0
+const nr = (f: (v: unknown) => string) => (v: unknown) => v == null ? 'not read' : f(v);
 
 export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, `Procedures (${rangeLabel(ctx)})`));
@@ -29,6 +31,7 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
   // the filter is a database of THIS instance: remembered per instance, by the database's id
   const store = `pgvigil.mssql.procs.db.${String(ctx.instance)}`;
   let database = (() => { try { return sessionStorage.getItem(store) ?? ''; } catch { return ''; } })();
+  let extremes = (() => { try { return sessionStorage.getItem(`${store}.extremes`) === '1'; } catch { return false; } })();
   const sel = el('select', { 'aria-label': 'Database' }, el('option', { value: '' }, 'every database'));
   const body = el('div'), drill = el('div');
   let strip: HTMLElement | null = null;
@@ -141,6 +144,16 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
       // PerformanceMonitor's 'I/O and spills' (D10, 0126): total_spills, SQL Server 2016 SP2 / 2017 CU3 on
       { key: 'spills', label: 'Total spilled pages', num: true, fmt: (v, r) => v == null ? 'not read' : Number(r.spill_reads) < Number(r.intervals) ? `${fmtNum(v)} (${fmtNum(r.spill_reads)} of ${fmtNum(r.intervals)} reads)` : fmtNum(v) },
       { key: 'avg_spills', label: 'Avg spilled pages', num: true, fmt: v => v == null ? '' : fmtNum(v) },
+      // the Extremes group (0342), off until its box is ticked: the smallest and the largest single execution the
+      // server kept for the plans that ran in the range, each since the plan was cached
+      ...(extremes ? [
+        { key: 'min_cpu_ms', label: 'min CPU (ms)', num: true, fmt: nr(num3) }, { key: 'max_cpu_ms', label: 'max CPU (ms)', num: true, fmt: nr(num3) },
+        { key: 'min_duration_ms', label: 'min duration (ms)', num: true, fmt: nr(num3) }, { key: 'max_duration_ms', label: 'max duration (ms)', num: true, fmt: nr(num3) },
+        { key: 'min_logical_reads', label: 'min logical reads', num: true, fmt: nr(fmtNum) }, { key: 'max_logical_reads', label: 'max logical reads', num: true, fmt: nr(fmtNum) },
+        { key: 'min_physical_reads', label: 'min physical reads', num: true, fmt: nr(fmtNum) }, { key: 'max_physical_reads', label: 'max physical reads', num: true, fmt: nr(fmtNum) },
+        { key: 'min_logical_writes', label: 'min writes', num: true, fmt: nr(fmtNum) }, { key: 'max_logical_writes', label: 'max writes', num: true, fmt: nr(fmtNum) },
+        { key: 'min_spills', label: 'min spilled pages', num: true, fmt: nr(fmtNum) }, { key: 'max_spills', label: 'max spilled pages', num: true, fmt: nr(fmtNum) },
+      ] as Col[] : []),
       { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
     ];
     const cut = procs.length >= LIMIT;
@@ -158,7 +171,8 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
         + `(${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))}). A name opens that procedure read by read. `
         + 'Max executions /min is the procedure\'s busiest single read. '
         + '"object <id>": the name was not read (the procedure is gone, the read gave up on a lock, or the login may not see it). '
-        + 'Spilled pages: "not read" where the server has no total_spills (before SQL Server 2016 SP2 and 2017 CU3) or the reads came before pgvigil stored it.'),
+        + 'Spilled pages: "not read" where the server has no total_spills (before SQL Server 2016 SP2 and 2017 CU3) or the reads came before pgvigil stored it. '
+        + (extremes ? 'Extremes: the smallest and the largest single execution the server kept for the plans that ran in the range, each since the plan was cached, not the range\'s own; "not read" as the spilled pages.' : '')),
       pstrip, said, gbox,
       compareSection(ctx, 'procs', { db: database || undefined }));
     body.replaceChildren(...out);
@@ -169,7 +183,14 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
     try { sessionStorage.setItem(store, database); } catch { /* private window */ }
     void draw();
   });
-  sec.append(el('div', { class: 'toolbar' }, el('label', {}, 'Database ', sel)), body, drill);
+  const exBox = el('input', { type: 'checkbox' }) as HTMLInputElement;
+  exBox.checked = extremes;
+  exBox.addEventListener('change', () => {
+    extremes = exBox.checked;
+    try { sessionStorage.setItem(`${store}.extremes`, extremes ? '1' : ''); } catch { /* private window */ }
+    void draw();
+  });
+  sec.append(el('div', { class: 'toolbar' }, el('label', {}, 'Database ', sel), el('label', {}, exBox, ' Extremes')), body, drill);
   await draw();
   return sec;
 }
