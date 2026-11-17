@@ -16,8 +16,12 @@
 -- started before it (master no longer holds its start) is continued by the read's first period when their limits are
 -- the same - it only ends later - and else ends where that period starts. The same read twice stores nothing twice.
 --
+--   mssql_pool_findings        (Alerts row 30, F34) DBA Dash's ElasticPoolSpace rule in its default form: one finding a
+--                              pool over its allocated storage threshold
+--
 -- THE JOIN-FILE RULE: 0395 sorts after the join file and creates only its own objects. Its lines for the join are in
--- scripts/PARITY-S3-join-lines.sql: both tables under the instance scope's policy (the join's scope tests name them).
+-- scripts/PARITY-S3-join-lines.sql: both tables under the instance scope's policy (the join's scope tests name them);
+-- the findings union reads mssql_pool_findings (line 9 (d)).
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_pool_limit_history (
   instance_id       int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -106,3 +110,24 @@ BEGIN
        SET valid_to = EXCLUDED.valid_to, dtu_limit = EXCLUDED.dtu_limit, storage_limit_mb = EXCLUDED.storage_limit_mb, cpu_limit = EXCLUDED.cpu_limit;
   END LOOP;
 END $$;
+
+-- mssql_pool_findings (Alerts row 30, refwalk-s3's F34; the lead's 11-17 13:42): DBA Dash's ElasticPoolSpace rule in its
+-- default form (ElasticPoolSpaceRule.cs L11-21: Use Critical Status on, Space Measure Allocated, no threshold of its
+-- own) - an elastic pool whose newest minute's allocated storage is over the pool's warning or critical threshold
+-- (0128's mssql_pool_storage_status: DBA Dash's AzureDBElasticPoolStorageStatus over mssql_pool_thresholds, by default
+-- 0.8 / 0.9), ONE finding a pool, on the database instance that read that minute (a pool is read through each of its
+-- databases; a finding on each would say one thing several times). A pool with no minute in 5 minutes (N/A) or under
+-- its warning threshold has none. The rule's own threshold and its Used measure are not offered: a named difference.
+CREATE OR REPLACE VIEW pgvigil.mssql_pool_findings AS
+SELECT DISTINCT ON (ps.server, ps.pool)
+       pm.instance_id, lower(ps.status) AS severity,
+       'an elastic pool allocated over its storage threshold'::text AS check_name,
+       'pool ' || ps.pool || ' on ' || ps.server AS object, ps.minute AS at,
+       format('%s %% of the pool''s maximum data size allocated at %s UTC; warning over %s %%, critical over %s %% (DBA Dash''s Elastic Pool Storage, pgvigil.mssql_pool_thresholds)',
+              trim_scale(round(ps.allocated_storage_percent, 1)), to_char(ps.minute AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'),
+              trim_scale(ps.warning * 100), coalesce(trim_scale(ps.critical * 100)::text, 'none')) AS detail
+  FROM (SELECT DISTINCT mb.instance_id FROM pgvigil.mssql_pool_member mb) i
+  CROSS JOIN LATERAL pgvigil.mssql_pool_storage_status(i.instance_id) ps
+  JOIN pgvigil.mssql_pool_minute pm ON pm.server = ps.server AND pm.pool = ps.pool AND pm.snapshot_at = ps.minute
+ WHERE ps.status IN ('Warning', 'Critical')
+ ORDER BY ps.server, ps.pool, pm.instance_id;

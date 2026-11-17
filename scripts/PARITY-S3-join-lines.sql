@@ -117,7 +117,11 @@
 --    database of its scope; the join's TestEveryInstanceTableHasScope names them); (b) purge: the rows go with the
 --    instance (ON DELETE CASCADE); the history is kept as the other limit histories are (0145's governance history) -
 --    no time cut; (c) no grant line: apply_roles makes import_mssql_pool_limits the collector's door with every
---    import_ function.
+--    import_ function; (d) the findings union (0300's findings function, beside its 'mssql_storage' arm at L477) gains
+--          UNION ALL
+--          SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_pool', at FROM pgvigil.mssql_pool_findings
+--    (Alerts row 30, F34: DBA Dash's ElasticPoolSpace rule in its default form; the view reads instance-scoped tables
+--    only, so the union's scope applies as to its other arms; a named check: one finding a pool, none at OK or N/A).
 
 -- 10. web/src/chart.ts (not this branch's file: visual-s1's WAITSPERF work owns it): DBA Dash's resource chart toolbar
 --    (sweep L135) has Chart Options - Smooth lines and Points. This branch's toolbar (web/src/azure_charts.ts
