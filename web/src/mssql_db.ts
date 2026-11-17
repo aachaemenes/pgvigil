@@ -6,6 +6,7 @@ import { Ctx } from './router';
 import { hashParam, hrefWith } from './dbinfo';
 import { performanceView } from './performance';
 import { mssqlFilesView } from './mssql_storage';
+import { mssqlQueryStoreView } from './mssql_querystore';
 import { el } from './ui';
 
 export const mssqlDbTab = 'mssqldb';
@@ -21,6 +22,9 @@ const tabs: [string, string][] = [
 export const mssqlDbLink = (ctx: Ctx, db: string, tab?: string, instance = ctx.instance) =>
   hrefWith(ctx, mssqlDbTab, { db, dbtab: tab }, instance);
 
+// the Query Store page's view for each of DBA Dash's Query Store tabs (mssql_querystore.ts: qs=, qdb= on the hash)
+const qsViews: Record<string, string> = { qs: 'state', topqueries: 'top', forcedplans: 'forced', tuning: 'tuning' };
+
 export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
   const db = hashParam('db');
   if (!db) return el('section', {}, el('h2', {}, 'Database'), el('p', { class: 'empty' }, 'No database named (db=).'));
@@ -28,7 +32,7 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
   const tab = tabs.some(([k]) => k === asked) ? asked! : 'performance';
   const fg = hashParam('fg');
   const strip = el('nav', { class: 'subtabs', 'aria-label': `${db}'s pages` }, ...tabs.map(([k, label]) =>
-    el('a', { href: hrefWith(ctx, mssqlDbTab, { db, dbtab: k }), class: k === tab ? 'on' : '', ...(k === tab ? { 'aria-current': 'page' } : {}) }, label)));
+    el('a', { href: hrefWith(ctx, mssqlDbTab, { db, dbtab: k, ...(qsViews[k] ? { qdb: db, qs: qsViews[k] } : {}) }), class: k === tab ? 'on' : '', ...(k === tab ? { 'aria-current': 'page' } : {}) }, label)));
   const sec = el('section', {}, el('h2', {}, `Database ${db}`), strip);
   let body: HTMLElement;
   switch (tab) {
@@ -39,6 +43,18 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
       // the instance's Database files page reads db= by itself (mssql_storage.ts)
       body = await mssqlFilesView(ctx);
       break;
+    case 'qs': case 'topqueries': case 'forcedplans': case 'tuning': {
+      // the Query Store page reads its database and view from the hash: this tab's own, put there first (a link from
+      // the tree or a range change carries neither)
+      const q = new URLSearchParams(location.hash.split('?')[1] ?? '');
+      if (q.get('qdb') !== db || !q.get('qs')) {
+        q.set('qdb', db);
+        if (!q.get('qs')) q.set('qs', qsViews[tab]);
+        history.replaceState(null, '', `${location.pathname}${location.search}#/${mssqlDbTab}?${q}`);
+      }
+      body = await mssqlQueryStoreView(ctx);
+      break;
+    }
     default:
       body = el('p', { class: 'empty' }, `${tabs.find(([k]) => k === tab)![1]} for ${db}: not on this page yet.`);
   }
