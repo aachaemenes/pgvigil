@@ -88,34 +88,18 @@ func (s *Server) StopVerifies(limit time.Duration) {
 	}
 }
 
-// sqlVerifyEndOf: an end of the 'started' row a - a later row of the same set on the instance with an end's outcome (a
-// 'refused' second click is none) and no other 'started' row of the instance between them (one verify per instance).
-const sqlVerifyEndOf = `SELECT 1 FROM pgvigil.actions_log e
-                    WHERE e.instance_id = a.instance_id AND e.action = 'verify_backup' AND e.target_id = a.target_id
-                      AND e.at >= a.at AND e.action_id <> a.action_id
-                      AND e.outcome IN ('done', 'failed', 'cut by shutdown', 'ended unknown')
-                      AND NOT EXISTS (SELECT 1 FROM pgvigil.actions_log o
-                                       WHERE o.instance_id = a.instance_id AND o.action = 'verify_backup' AND o.outcome = 'started'
-                                         AND o.action_id <> a.action_id AND o.at > a.at AND o.at <= e.at)`
-
-// sqlVerifyOpen: the instances with a 'started' verify and no end of its own. A row whose instance was removed since
-// (instance_id NULL) is left alone: it cannot be imported.
-const sqlVerifyOpen = `
-SELECT DISTINCT a.instance_id FROM pgvigil.actions_log a
- WHERE a.engine = 'sqlserver' AND a.action = 'verify_backup' AND a.outcome = 'started' AND a.instance_id IS NOT NULL
-   AND NOT EXISTS (` + sqlVerifyEndOf + `)`
-
-// sqlVerifySweep writes 'ended unknown' for each 'started' verify of instance $1 with no end of its own - run only
-// while the sweep holds the instance's lock, so no verify is running there (whatever the row's age: the lead's P3.4).
-const sqlVerifySweep = `
-SELECT count(pgvigil.import_mssql_actions_log(a.instance_id, now(), jsonb_build_array(jsonb_build_object(
-         'instance_name', a.instance_name, 'ui_user', a.ui_user, 'client', a.client, 'action', 'verify_backup',
-         'target', a.target, 'target_id', a.target_id, 'reason', a.reason, 'outcome', 'ended unknown',
-         'detail', 'ended unknown: serve stopped (no end was written for the verify started ' || to_char(a.at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC, and no verify holds the instance''s lock)',
-         'statement', a.statement))))
-  FROM pgvigil.actions_log a
- WHERE a.instance_id = $1 AND a.engine = 'sqlserver' AND a.action = 'verify_backup' AND a.outcome = 'started'
-   AND NOT EXISTS (` + sqlVerifyEndOf + `)`
+// The sweep reaches actions_log only through the collector's door (J16-SWEEP): the actions door's audit login is a
+// member of pgvigil_collector, which reads no pgvigil table (0300 apply_roles), so a direct read of actions_log there
+// is 'permission denied' (42501). import_cq_verify_open lists the SQL Server instances with a 'started' verify and no
+// end of its own (an end: a later row of the same set on the instance with an end's outcome - a 'refused' second click
+// is none - and no other 'started' row of the instance between them: one verify per instance; a row whose instance was
+// removed since is left alone); import_cq_verify_sweep(id) writes 'ended unknown' for each such row of one instance and
+// returns how many - run only while the sweep holds the instance's lock, so no verify is running there (whatever the
+// row's age: the lead's P3.4). Both are 0300's, SECURITY DEFINER through apply_roles' import_* rule.
+const (
+	sqlVerifyOpen  = `SELECT pgvigil.import_cq_verify_open()`
+	sqlVerifySweep = `SELECT pgvigil.import_cq_verify_sweep($1)`
+)
 
 // SweepVerifies writes 'ended unknown' for the verifies a stopped serve left without an end row: an instance's rows
 // only while its lock is free (the lock is the truth of a running verify - a killed serve's session, and its lock, are

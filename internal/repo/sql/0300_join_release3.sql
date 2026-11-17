@@ -2464,6 +2464,73 @@ BEGIN
 END $$;
 
 -- ====================================================================================================================
+-- pgvigil.import_cq_verify_open, pgvigil.import_cq_verify_sweep: base none (new in the join file)
+--   #1 the join 0300 --------: J16-SWEEP (the lead's 16:04) - serve's verify sweep (internal/web/actions_verify.go
+--      SweepVerifies, at serve's start and hourly; 301b 462531e9) read pgvigil.actions_log directly on the actions door's
+--      audit pool, whose login is a member of pgvigil_collector, which apply_roles takes every pgvigil table from: 42501
+--      at every start and every hour, and a stopped serve's 'started' verify never ended. Its two reads are the
+--      collector's door here, both named import_* so apply_roles makes them SECURITY DEFINER with search_path pinned and
+--      grants EXECUTE to pgvigil_collector only. The instance's verify lock stays in Go (SweepVerifies takes it on a
+--      session of its own around each instance's sweep). import_cq_verify_sweep is j17's CQ-VERIFY name and signature
+--      (0332, CREATE OR REPLACE ... RETURNS integer): 0332's text replaces this one with its request-id pairing.
+-- ====================================================================================================================
+-- [#1 the join 0300 --------]
+-- import_cq_verify_open: the SQL Server instances with a 'started' verify and no end of its own - an end: a later row
+-- of the same set on the instance with an end's outcome (a 'refused' second click is none) and no other 'started' row
+-- of the instance between them (one verify per instance). A row whose instance was removed since (instance_id NULL) is
+-- left alone: it cannot be imported.
+CREATE OR REPLACE FUNCTION pgvigil.import_cq_verify_open()
+RETURNS SETOF integer LANGUAGE sql STABLE AS $$
+  SELECT DISTINCT a.instance_id FROM pgvigil.actions_log a
+   WHERE a.engine = 'sqlserver' AND a.action = 'verify_backup' AND a.outcome = 'started' AND a.instance_id IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.actions_log e
+                      WHERE e.instance_id = a.instance_id AND e.action = 'verify_backup' AND e.target_id = a.target_id
+                        AND e.at >= a.at AND e.action_id <> a.action_id
+                        AND e.outcome IN ('done', 'failed', 'cut by shutdown', 'ended unknown')
+                        AND NOT EXISTS (SELECT 1 FROM pgvigil.actions_log o
+                                         WHERE o.instance_id = a.instance_id AND o.action = 'verify_backup'
+                                           AND o.outcome = 'started' AND o.action_id <> a.action_id
+                                           AND o.at > a.at AND o.at <= e.at))
+   ORDER BY 1
+$$;
+
+-- import_cq_verify_sweep: for one SQL Server instance, an 'ended unknown' row for each 'started' verify with no end of
+-- its own (import_cq_verify_open's pairing), written through import_mssql_actions_log; how many. The caller holds the
+-- instance's verify lock, so no verify runs there (whatever the row's age).
+CREATE OR REPLACE FUNCTION pgvigil.import_cq_verify_sweep(p_instance_id integer)
+RETURNS integer LANGUAGE plpgsql AS $$
+DECLARE
+  v_rows jsonb;
+BEGIN
+  IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
+    RAISE EXCEPTION 'import_cq_verify_sweep: instance % is not a SQL Server instance', p_instance_id;
+  END IF;
+  SELECT jsonb_agg(jsonb_build_object(
+           'instance_name', a.instance_name, 'ui_user', a.ui_user, 'client', a.client, 'action', 'verify_backup',
+           'target', a.target, 'target_id', a.target_id, 'reason', a.reason, 'outcome', 'ended unknown',
+           'detail', 'ended unknown: serve stopped (no end was written for the verify started '
+                     || to_char(a.at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+                     || ' UTC, and no verify holds the instance''s lock)',
+           'statement', a.statement) ORDER BY a.at, a.action_id)
+    INTO v_rows
+    FROM pgvigil.actions_log a
+   WHERE a.instance_id = p_instance_id AND a.engine = 'sqlserver' AND a.action = 'verify_backup' AND a.outcome = 'started'
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.actions_log e
+                      WHERE e.instance_id = a.instance_id AND e.action = 'verify_backup' AND e.target_id = a.target_id
+                        AND e.at >= a.at AND e.action_id <> a.action_id
+                        AND e.outcome IN ('done', 'failed', 'cut by shutdown', 'ended unknown')
+                        AND NOT EXISTS (SELECT 1 FROM pgvigil.actions_log o
+                                         WHERE o.instance_id = a.instance_id AND o.action = 'verify_backup'
+                                           AND o.outcome = 'started' AND o.action_id <> a.action_id
+                                           AND o.at > a.at AND o.at <= e.at));
+  IF v_rows IS NULL THEN
+    RETURN 0;
+  END IF;
+  PERFORM pgvigil.import_mssql_actions_log(p_instance_id, now(), v_rows);
+  RETURN jsonb_array_length(v_rows);
+END $$;
+
+-- ====================================================================================================================
 -- pgvigil.apply_roles: base 0110_join_release.sql L401
 --   #1 P B2a-N2 8aecbb2b: 8aecbb2b:scripts/azuredb-hour-wiring.patch (0110_join_release.sql hunks, pre blob dc6e79e2)
 --   #2 P 413 7184f8ea: 7184f8ea:scripts/proof-mssql-index-depth-wiring.patch (0110_join_release.sql hunks, pre blob 68128c5)
