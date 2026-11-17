@@ -47,5 +47,5 @@
 --        (an instance_id with its foreign key: the join's TestEveryInstanceTableHasScope names them);
 --    (c) purge: an instance's rows go with the instance (ON DELETE CASCADE); mssql_db_scoped_config_change is kept
 --        as the other configuration histories are (mssql_config_expect's history) - no time cut;
---    (d) apply_roles grants the collector EXECUTE on import_mssql_db_scoped_config as on the other import_ functions
---        and the reader SELECT on both tables (the reader reads them through /api/mssql/checks).
+--    No grant line: apply_roles (0300 L2560-2570) makes every import_ function the collector's door (SECURITY DEFINER,
+--    EXECUTE to pgvigil_collector) on every migrate, import_mssql_db_scoped_config with them.
