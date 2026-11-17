@@ -95,9 +95,12 @@ func TestFuncInlineOnAStore(t *testing.T) {
 		"5 101 true false | 6 200 true false"; got != want {
 		t.Errorf("the inline rows:\n got %s\nwant %s", got, want)
 	}
-	if _, err := s.pool.Exec(s.ctx, `UPDATE pgvigil.mssql_func_state SET snapshot_at = now() - interval '40 days' WHERE instance_id = $1;
-	                                  UPDATE pgvigil.mssql_func_inline SET read_at = now() - interval '40 days' WHERE instance_id = $1`, s.id); err != nil {
-		t.Fatal(err)
+	// one statement an Exec: a statement with parameters is prepared, and a prepared statement holds one command
+	for _, q := range []string{`UPDATE pgvigil.mssql_func_state SET snapshot_at = now() - interval '40 days' WHERE instance_id = $1`,
+		`UPDATE pgvigil.mssql_func_inline SET read_at = now() - interval '40 days' WHERE instance_id = $1`} {
+		if _, err := s.pool.Exec(s.ctx, q, s.id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var n int64
 	if err := s.pool.QueryRow(s.ctx, `SELECT pgvigil.mssql_func_purge(30)`).Scan(&n); err != nil {
