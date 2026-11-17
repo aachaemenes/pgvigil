@@ -99,6 +99,22 @@ for (const theme of ['light', 'dark']) {
     for (const e of seen.empties) console.log(`   empty-state: ${e}`);
   }
 }
+// control audit row X1: on -sql01's Schema tab, each database link opens that database's Snapshot Summary on the SQL
+// Server database page (#/mssqldb ... dbtab=snapshots), none the PostgreSQL drill (#/db); Sales must be among them
+{
+  walked++;
+  await cmd('Page.navigate', { url: U + `#/schema?i=${sql01}` }); await sleep(250); await cmd('Page.reload'); await sleep(250);
+  if (!(await settled())) { failed++; console.log('FAIL schema-dblink: the Schema tab did not render in 15 s'); }
+  else {
+    const l = await ev(`(() => [...document.querySelectorAll('main table a')].map(a => ({ t: a.textContent.trim(), h: a.getAttribute('href') ?? '' }))
+      .filter(x => /^#\\/(db|mssqldb)\\?/.test(x.h)))()`);
+    const bad = l.filter(x => { const q = new URLSearchParams(x.h.split('?')[1] ?? '');
+      return !x.h.startsWith('#/mssqldb?') || q.get('dbtab') !== 'snapshots' || q.get('db') !== x.t; });
+    const sales = l.some(x => x.t === 'Sales');
+    if (bad.length || !sales) failed++;
+    console.log(`${!bad.length && sales ? 'ok  ' : 'FAIL'} schema-dblink: ${l.length} database link(s), Sales ${sales ? 'present' : 'MISSING'}, ${bad.length} not to the Snapshot Summary${bad.length ? ': ' + bad.slice(0, 3).map(x => `${x.t} -> ${x.h}`).join('; ') : ''}`);
+  }
+}
 console.log(`total: ${walked} page(s), ${failed} failed, ${nodes} violation node(s)`);
 ws.close();
 process.exit(failed ? 1 : 0);
