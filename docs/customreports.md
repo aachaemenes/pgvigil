@@ -149,20 +149,23 @@ says where to get it.
 | sp_WhoIsActive | sp_WhoIsActive | <https://github.com/amachanic/sp_whoisactive> |
 | First Responder Kit | sp_Blitz, sp_BlitzFirst, sp_BlitzCache, sp_BlitzIndex, sp_BlitzLock, sp_BlitzWho | <https://github.com/BrentOzarULTD/SQL-Server-First-Responder-Kit> |
 | Darling Data | sp_PressureDetector, sp_QuickieStore, sp_HumanEventsBlockViewer, sp_HealthParser, sp_LogHunter, sp_IndexCleanup | <https://github.com/erikdarlingdata/DarlingData> |
+| SQLStudies | sp_DBPermissions (Kenneth Fisher's; MIT) | <https://github.com/sqlstudent144/SQL-Server-Scripts> |
 | Glenn Berry | SQL Server Diagnostic Queries | <https://glennsqlperformance.com/resources/> |
 
 **Installed community tools** (SQL Server; DBA Dash's Check Versions): each procedure found in the database, its version
 and date as its own text says them (read from the definition around its version line: `@Version = '8.34'`,
-`@version = '3.11'`, `Who Is Active? v2200.20260409`; the procedure is never run), the procedure's own version in
+`@version = '3.11'`, `Who Is Active? v2200.20260409`, `sp_DBPermissions V7.0`; the procedure is never run), the procedure's own version in
 the release pgvigil was tested with, and a word: the tested version, older than tested, newer than tested (not tested by
 pgvigil), version not read, not installed. A kit whose procedures come from different releases (their dates) is said once
 above the grid. Tested: the First Responder Kit 8.34 (2026-07-02; every procedure 8.34), Darling Data's release of
 2026-11-01 (each procedure its own version: sp_PressureDetector and sp_QuickieStore 6.11, sp_HumanEventsBlockViewer 5.11,
-sp_HealthParser and sp_LogHunter 3.11, sp_IndexCleanup 2.11), sp_WhoIsActive 2200.20260409 (2026-04-09).
+sp_HealthParser and sp_LogHunter 3.11, sp_IndexCleanup 2.11), sp_WhoIsActive 2200.20260409 (2026-04-09), sp_DBPermissions V7.0
+(SQL-Server-Scripts at commit 970f2920).
 
 **Print the install script** gives a PowerShell script for the server's DBA: dbatools' `Install-DbaFirstResponderKit`,
 `Install-DbaDarlingData` and `Install-DbaWhoIsActive` for each kit with a procedure missing, older than tested or of no
-readable version, into the database the page looks in (a newer one is left as it is). dbatools fetches each kit's newest
+readable version (sp_DBPermissions has no dbatools installer: its lines download the file at the tested commit, stop
+unless its SHA256 is the one pgvigil was tested with, then run it with `Invoke-DbaQuery` - it installs into master), into the database the page looks in (a newer one is left as it is). dbatools fetches each kit's newest
 release where it runs; to install the tested ones, download their release files and add `-LocalFile`. pgvigil runs none of
 it: nothing is deployed from pgvigil, and the server sends nothing anywhere.
 
