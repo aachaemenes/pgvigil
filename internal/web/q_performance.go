@@ -1,7 +1,9 @@
 package web
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
 )
 
 // The instance Performance page (plan task 108, DBA Dash's Performance tab): GET /api/performance?instance=N[&from=&to=]
@@ -244,6 +246,48 @@ SELECT DISTINCT mf.filegroup
  WHERE mf.instance_id = $1 AND mf.database_name = $2::text AND mf.is_present AND mf.filegroup IS NOT NULL
  ORDER BY 1`
 
+// sqlPerfMSSQLExecStats: DBA Dash's Execution Stats on the SQL Server Performance page (P25 task 5, the sweep's L15):
+// the procedures', functions' and triggers' samples (0084, 0343), the top $6 objects by the measure $5 over the window,
+// each one's measure per second of the step's read time (the longer of the two collections' covered seconds in the
+// step); duration and CPU in ms. $7 one database's name (its page) or empty.
+const sqlPerfMSSQLExecStats = `
+WITH s AS (
+  SELECT x.snapshot_at, x.database_id, x.object_id,
+         coalesce(x.database_name, 'database ' || x.database_id) || '.' || coalesce(x.schema_name, '') || '.' ||
+         coalesce(x.object_name, 'object ' || x.object_id) AS name,
+         CASE $5::text WHEN 'duration' THEN x.duration_us / 1000.0 WHEN 'cpu' THEN x.cpu_us / 1000.0
+                       WHEN 'executions' THEN x.executions WHEN 'logical_reads' THEN x.logical_reads
+                       WHEN 'physical_reads' THEN x.physical_reads ELSE x.logical_writes END::float8 AS v
+    FROM (SELECT p.snapshot_at, p.database_id, p.object_id, p.database_name, p.schema_name, p.object_name, p.duration_us, p.cpu_us,
+                 p.executions, p.logical_reads, p.physical_reads, p.logical_writes
+            FROM pgvigil.mssql_proc_sample p
+           WHERE p.instance_id = $1 AND p.snapshot_at > $2 AND p.snapshot_at <= $3 AND ($7::text = '' OR p.database_name = $7::text)
+          UNION ALL
+          SELECT f.snapshot_at, f.database_id, f.object_id, f.database_name, f.schema_name, f.object_name, f.duration_us, f.cpu_us,
+                 f.executions, f.logical_reads, f.physical_reads, f.logical_writes
+            FROM pgvigil.mssql_func_sample f
+           WHERE f.instance_id = $1 AND f.snapshot_at > $2 AND f.snapshot_at <= $3 AND ($7::text = '' OR f.database_name = $7::text)) x
+), top AS (
+  SELECT s.database_id, s.object_id FROM s GROUP BY 1, 2 ORDER BY sum(s.v) DESC NULLS LAST, max(s.name) LIMIT $6
+), cover AS (
+  SELECT c.step, max(c.secs) AS secs
+    FROM (SELECT to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4) AS step, 'p' AS k, sum(r.interval_secs) AS secs
+            FROM pgvigil.mssql_proc_read r WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3 GROUP BY 1
+          UNION ALL
+          SELECT to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4), 'f', sum(r.interval_secs)
+            FROM pgvigil.mssql_func_read r WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3 GROUP BY 1) c
+   GROUP BY c.step
+)
+SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snapshot_at, max(s.name) AS object,
+       round((sum(s.v) / nullif(max(c.secs), 0))::numeric, 3) AS per_sec
+  FROM s JOIN top USING (database_id, object_id)
+  JOIN cover c ON c.step = to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4)
+ GROUP BY 1, s.database_id, s.object_id
+ ORDER BY 1, 2`
+
+// execStatsMeasures: the Execution Stats strip's measures (DBA Dash's chooser), the default first
+var execStatsMeasures = map[string]bool{"duration": true, "cpu": true, "executions": true, "logical_reads": true, "physical_reads": true, "writes": true}
+
 // Performance is GET /api/performance?instance=N[&from=&to=][&db=<database>[&filegroup=<name>]][&part=...]: one
 // instance's Performance page.
 // A SQL Server database (db=, P25 F101): its IO, its blocking and its file groups; CPU, sessions and waits stay the
@@ -267,6 +311,26 @@ func (s *Server) Performance(w http.ResponseWriter, r *http.Request) {
 	if engine == "sqlserver" {
 		parts = append(parts, part{"cpu", sqlPerfMSSQLCPU, base}, part{"sessions", sqlPerfMSSQLSessions, base},
 			part{"waits", sqlPerfMSSQLWaits, base}, part{"db", sqlMSSQLCounterSeries, base})
+		// the Execution Stats strip: read only when asked (part=execstats), with its measure and top
+		if q := r.URL.Query(); q.Get("part") == "execstats" {
+			measure, top := q.Get("measure"), 5
+			if measure == "" {
+				measure = "duration"
+			}
+			if !execStatsMeasures[measure] {
+				writeErr(w, http.StatusBadRequest, errors.New("measure must be one of duration, cpu, executions, logical_reads, physical_reads, writes"))
+				return
+			}
+			if v := q.Get("top"); v != "" {
+				n, err := strconv.Atoi(v)
+				if err != nil || n < 1 || n > 50 {
+					writeErr(w, http.StatusBadRequest, errors.New("top must be 1 to 50"))
+					return
+				}
+				top = n
+			}
+			parts = append(parts, part{"execstats", sqlPerfMSSQLExecStats, []any{id, from, to, step, measure, top, q.Get("db")}})
+		}
 		if db := r.URL.Query().Get("db"); db != "" {
 			cut := []any{id, from, to, step, db, r.URL.Query().Get("filegroup")}
 			parts = append(parts, part{"io", sqlPerfMSSQLIODB, cut}, part{"blocking", sqlPerfMSSQLBlockingDB, cut[:5]},
