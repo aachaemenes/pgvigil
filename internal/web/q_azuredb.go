@@ -129,6 +129,23 @@ func (s *Server) MSSQLAzureDB(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// sqlAzureScope: sqlPerfScope's instances, each with its logical server and its elastic pool, cut to one logical server
+// ($5; NULL = every server) and one pool of it ($6; NULL = in a pool or not) - P25 task 7's server and pool nodes; a
+// name is matched without case, as Azure names them. A database's server is its pool member row's (the pool read),
+// else the instance's own server name (@@SERVERNAME, mssql_instance), else its governance row's server_name; its pool
+// the member row's, else the governance row's.
+var sqlAzureScope = strings.Replace(sqlPerfScope, "WITH inst AS (", "WITH inst_scope AS (", 1) + `, inst AS (
+  SELECT s.instance_id, s.instance, s.engine, s.platform, x.az_server, x.az_pool
+    FROM inst_scope s
+    LEFT JOIN pgvigil.mssql_pool_member pm ON pm.instance_id = s.instance_id
+    LEFT JOIN pgvigil.mssql_instance mi ON mi.instance_id = s.instance_id
+    LEFT JOIN pgvigil.mssql_azuredb_governance g ON g.instance_id = s.instance_id
+    CROSS JOIN LATERAL (SELECT coalesce(pm.server, nullif(mi.server_name, ''), g.gov->>'server_name') AS az_server,
+                               coalesce(pm.pool, g.pool) AS az_pool) x
+   WHERE ($5::text IS NULL OR upper(x.az_server) = upper($5::text))
+     AND ($6::text IS NULL OR upper(x.az_pool) = upper($6::text))
+)`
+
 // the fleet's Azure SQL Databases over the window (DBA Dash's Azure Summary grid): the tier (its limits from the minutes
 // when the tier is not read: mssql_azuredb_governance needs ##MS_ServerStateReader## on Basic, S0, S1 and in a pool),
 // the window's figures, histograms and hot shares in one GROUP BY over the window's hours and edge minutes, the gaps, and
@@ -136,13 +153,13 @@ func (s *Server) MSSQLAzureDB(w http.ResponseWriter, r *http.Request) {
 // max size, none when a file is unlimited) with the % Max Size status of 0145's arm computed here from the same read:
 // over 90 % critical, over 80 % warning (a strict 'over'), 'stale' when the files were read over 3 hours ago (the
 // findings' window), 'no max size' with an unlimited file. DBA Dash's order: the most unused DTUs first. $1 from,
-// $2 to, $3 'sqlserver', $4 the tag scope (sqlPerfScope's rule).
-var sqlAzureDBFleet = sqlPerfScope + `, w AS (
+// $2 to, $3 'sqlserver', $4 the tag scope (sqlPerfScope's rule), $5 / $6 the node (sqlAzureScope's).
+var sqlAzureDBFleet = sqlAzureScope + `, w AS (
   SELECT a.instance_id, ` + azdbWindowCols + `
     FROM pgvigil.mssql_azuredb_window(ARRAY(SELECT instance_id FROM inst WHERE platform = 'azuresqldb'), $1, $2) a
    GROUP BY a.instance_id
 )
-SELECT inst.instance_id, inst.instance, g.edition, g.service_objective, g.pool,
+SELECT inst.instance_id, inst.instance, inst.az_server AS server, g.edition, g.service_objective, inst.az_pool AS pool,
        coalesce(g.dtu_limit, w.max_dtu_limit) AS dtu_limit, coalesce(g.cpu_limit, w.max_cpu_limit) AS cpu_limit, g.instance_id IS NOT NULL AS tier_read,
        w.samples, w.minutes, w.avg_cpu_percent, w.max_cpu_percent, w.avg_data_io_percent, w.max_data_io_percent, w.avg_log_write_percent,
        w.max_log_write_percent, w.avg_dtu_percent, w.max_dtu_percent, w.avg_dtu, w.max_dtu, w.unused_dtu,
@@ -175,7 +192,7 @@ SELECT inst.instance_id, inst.instance, g.edition, g.service_objective, g.pool,
 // SQL Databases - a governance history period (0145) that follows another - its old and new edition, objective, pool
 // and limits and when it changed, the newest first - every change, not cut by the window (DBA Dash's history lists
 // them all; $1 <= $2 only types the window's parameters so the scope's $3 / $4 keep their places).
-var sqlAzureSLOHistory = sqlPerfScope + `, h AS (
+var sqlAzureSLOHistory = sqlAzureScope + `, h AS (
   SELECT g.instance_id, g.valid_from, g.edition, g.service_objective, g.pool, g.dtu_limit, g.cpu_limit,
          lag(g.edition) OVER w AS old_edition, lag(g.service_objective) OVER w AS old_service_objective,
          lag(g.pool) OVER w AS old_pool, lag(g.dtu_limit) OVER w AS old_dtu_limit, lag(g.cpu_limit) OVER w AS old_cpu_limit,
@@ -194,7 +211,7 @@ SELECT h.instance_id, inst.instance, h.valid_from AS changed_at, h.old_edition, 
 // sqlAzureGovernance: DBA Dash's Azure Resource Governance grid (P25 task 9): each Azure SQL Database of the scope
 // with its tier and its governance row as last read (0145's gov: sys.dm_user_db_resource_governance whole), the
 // viewer's source.
-var sqlAzureGovernance = sqlPerfScope + `
+var sqlAzureGovernance = sqlAzureScope + `
 SELECT g.instance_id, inst.instance, g.edition, g.service_objective, g.pool, g.dtu_limit, g.cpu_limit, g.since, g.snapshot_at,
        g.gov
   FROM pgvigil.mssql_azuredb_governance g JOIN inst ON inst.instance_id = g.instance_id
@@ -209,8 +226,8 @@ func avgW(col string) string {
 // sqlAzurePools: the Azure Summary's Elastic Pool grid (P25 task 8, DBA Dash's): each elastic pool one of the scope's
 // Azure SQL Databases belongs to (mssql_pool_member), once - how many of its databases pgvigil reads in the scope,
 // and over the window its minutes' figures (0128: an average weighs each minute by its samples, a maximum is the
-// largest) and its storage as last read. $1 / $2 the window, $3 / $4 sqlPerfScope's engine and tag.
-var sqlAzurePools = sqlPerfScope + `, mp AS (
+// largest) and its storage as last read. $1 / $2 the window, $3 / $4 sqlPerfScope's engine and tag, $5 / $6 the node.
+var sqlAzurePools = sqlAzureScope + `, mp AS (
   SELECT m.server, m.pool, count(*) AS databases
     FROM pgvigil.mssql_pool_member m JOIN inst ON inst.instance_id = m.instance_id
    GROUP BY 1, 2
@@ -231,20 +248,33 @@ SELECT mp.server, mp.pool, mp.databases, count(w.snapshot_at) AS minutes,
  GROUP BY mp.server, mp.pool, mp.databases
  ORDER BY max(w.avg_edtu_percent) DESC NULLS LAST, max(w.max_cpu_percent) DESC NULLS LAST, mp.server, mp.pool`
 
-// AzureDBSummary is GET /api/azuredb/summary?[from=&to=][&tag=]: the fleet's Azure SQL Databases (DBA Dash's Azure
-// Summary).
+// AzureDBSummary is GET /api/azuredb/summary?[from=&to=][&tag=][&server=[&pool=]]: the fleet's Azure SQL Databases
+// (DBA Dash's Azure Summary), or one logical server's (server=) or one of its elastic pools' (pool=, with its server:
+// a pool's name is its server's) - DBA Dash's server and pool nodes (P25 task 7).
 func (s *Server) AzureDBSummary(w http.ResponseWriter, r *http.Request) {
 	_, from, to, err := params(r, false)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	var tag any
-	if v := r.URL.Query().Get("tag"); v != "" {
+	var tag, server, pool any
+	q := r.URL.Query()
+	if v := q.Get("tag"); v != "" {
 		tag = v
 	}
-	s.multiPart(w, r, []part{{"databases", sqlAzureDBFleet, []any{from, to, "sqlserver", tag}},
-		{"pools", sqlAzurePools, []any{from, to, "sqlserver", tag}},            // P25 task 8: the Elastic Pool grid
-		{"slo_history", sqlAzureSLOHistory, []any{from, to, "sqlserver", tag}}, // P25 task 9
-		{"governance", sqlAzureGovernance, []any{from, to, "sqlserver", tag}}})
+	if v := q.Get("server"); v != "" {
+		server = v
+	}
+	if v := q.Get("pool"); v != "" {
+		if server == nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("pool= needs server=: an elastic pool's name is its logical server's"))
+			return
+		}
+		pool = v
+	}
+	args := []any{from, to, "sqlserver", tag, server, pool}
+	s.multiPart(w, r, []part{{"databases", sqlAzureDBFleet, args},
+		{"pools", sqlAzurePools, args},            // P25 task 8: the Elastic Pool grid
+		{"slo_history", sqlAzureSLOHistory, args}, // P25 task 9
+		{"governance", sqlAzureGovernance, args}})
 }

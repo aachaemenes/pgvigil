@@ -65,8 +65,46 @@
 --    instance, task 6, map row 20), web/src/main.ts (mssqlPages mssqldb: mssqlDbView), web/src/dbinfo.ts (pageKeys
 --    take dbtab and fg; other j17 branches touch dbinfo.ts: 612b6dcb / d946f374 j17's first step, b86d6da1 D481 T5,
 --    980dfae9 / d016f0c5 the info pages' WIRING). TestMSSQLDatabasePageIsWired and TestEveryMSSQLTabHasAPage read
---    those files: they run with the patch applied.
+--    those files: they run with the patch applied. RE-CUT for task 7 (the earlier hunks' lines unchanged): router.ts
+--    rootTabs and pageEngine gain azureserver ('Logical server') and azurepool ('Elastic pool'), SQL Server's, and a
+--    range change keeps their server / pool; main.ts imports azure_nodes.ts and rootPages draws both;
+--    TestAzureNodePagesAreWired reads them.
 -- 7. D481 T5 (b86d6da1: web/src/route.ts owns the address - every read of location.hash is routeHash(), every write
 --    setRoute()): this branch reads and writes the hash directly in mssql_db.ts L94 (the file group's pick), L129-133
 --    (the Query Store tabs' qdb / qs, with history.replaceState) and mssql_xe.ts L35 (the database page's db=); at the
 --    join each becomes routeHash() / setRoute() as D481's rule says.
+
+-- 8. web/src/tree.ts (the lead's file): DBA Dash's AZURE NODE (P25 task 7) - an 'Azure' folder at the root (after the
+--    root's scope folders) and in each top-level tag folder (after its own scope folders), only where the scope holds
+--    an Azure SQL Database (f.instances' platform 'azuresqldb' in the scope); lazy: /api/azuredb/summary?part=databases
+--    [&tag=] gives each database's server (its logical server) and pool. Under it each logical server a folder to
+--    #/azureserver?server=<name>, holding its elastic pools (each a folder to #/azurepool?server=&pool=, its databases
+--    under it) and then its databases in no pool; a database a leaf to its Azure tab. The line:
+--          // azureFolder: DBA Dash's Azure node (P25 task 7): the scope's logical servers, their pools and databases
+--          function azureFolder(ctx: Ctx, key: string, depth: number, tag?: string): HTMLElement {
+--            const scope = { ...ctx, instance: undefined, tag };
+--            const page = (tab: string, extra: Record<string, string>) => hrefWith(scope, tab, extra, undefined);
+--            const here = (tab: string, server: string, pool?: string) => !ctx.instance && ctx.tag === tag && ctx.tab === tab &&
+--              hashParam('server') === server && (pool === undefined || hashParam('pool') === pool);
+--            return folder(key, 'Azure', depth, () => {
+--              const l = loaded(key, async () => rowsOf((await get<Record<'databases', Table | null>>('azuredb/summary',
+--                { part: 'databases', ...(tag ? { tag } : {}) })).databases));
+--              const s = state(l, depth + 1, 'No Azure SQL Database read.');
+--              if (s) return [s];
+--              const db = (r: Row, d: number) => el('div', { style: nodeStyle(d) }, leaf(String(r.instance),
+--                href(ctx, { tab: 'mssqlazure', instance: Number(r.instance_id), tag: undefined }), ctx.instance === Number(r.instance_id) && ctx.tab === 'mssqlazure'));
+--              const servers = [...new Set(l.rows!.filter(r => r.server != null).map(r => String(r.server)))].sort();
+--              return [...servers.map(sv => {
+--                const dbs = l.rows!.filter(r => String(r.server) === sv);
+--                const pools = [...new Set(dbs.filter(r => r.pool != null).map(r => String(r.pool)))].sort();
+--                return folder(`${key}/${sv}`, sv, depth + 1, () => [
+--                  ...pools.map(p => folder(`${key}/${sv}/${p}`, p, depth + 2, () => dbs.filter(r => String(r.pool) === p).map(r => db(r, depth + 3)),
+--                    page('azurepool', { server: sv, pool: p }), here('azurepool', sv, p))),
+--                  ...dbs.filter(r => r.pool == null).map(r => db(r, depth + 2))], page('azureserver', { server: sv }), here('azureserver', sv));
+--              }), ...l.rows!.filter(r => r.server == null).map(r => db(r, depth + 1))];
+--            }, href(scope, { tab: 'azuresummary', instance: undefined, tag }), !ctx.instance && ctx.tag === tag && ctx.tab === 'azuresummary');
+--          }
+--    called as azureFolder(ctx, 'r/azure', 0, rootScope) in draw()'s out list and azureFolder(ctx, `t:${fo.path.replace(/\/$/, '')}/azure`,
+--    1, fo.tag) after a top-level tag folder's scopeFolders. A database whose server is not read yet (no pool member row,
+--    no @@SERVERNAME read, no tier row) sits under the folder itself, never under a made-up server.
+--    The pages' routes are scripts/PARITY-S3-wiring.patch's (line 6, re-cut for task 7).

@@ -6,6 +6,7 @@
 // samples (DBA Dash's average over the view's rows); a maximum is the largest 15-second figure.
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
+import { hrefWith } from './dbinfo';
 import { folderWords, tagWords } from './fleet';
 import { Ctx, href, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtTime, grid } from './ui';
@@ -121,22 +122,38 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
   return sec;
 }
 
-export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
-  const d = await get<{ databases: Table | null; pools: Table | null; slo_history: Table | null; governance: Table | null }>('azuredb/summary', { ...window_(ctx), ...(ctx.tag ? { tag: ctx.tag } : {}) });
+// AzureNode: DBA Dash's logical server or elastic pool node (P25 task 7, azure_nodes.ts) - the summary cut to it
+export interface AzureNode { server: string; pool?: string }
+
+// links to the node pages (azure_nodes.ts): a logical server, an elastic pool of it
+const serverHref = (ctx: Ctx, server: string) => hrefWith(ctx, 'azureserver', { server });
+const poolHref = (ctx: Ctx, server: string, pool: string) => hrefWith(ctx, 'azurepool', { server, pool });
+
+// azureSummaryView: DBA Dash's Azure Summary of the scope, or of one logical server or elastic pool (node: the server and
+// pool nodes' pages, P25 task 7). On a pool's page the section carries one member database's instance in
+// data-member: the pool is read through its databases (pools.ts).
+export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTMLElement> {
+  const d = await get<{ databases: Table | null; pools: Table | null; slo_history: Table | null; governance: Table | null }>('azuredb/summary', { ...window_(ctx),
+    ...(ctx.tag ? { tag: ctx.tag } : {}), ...(node ? { server: node.server, ...(node.pool ? { pool: node.pool } : {}) } : {}) });
   const rows = rowsOf(d.databases);
   // the read lists every Azure SQL Database of the scope (read or not): none = the scope holds none, so no grid of
   // Azure's columns and no word of them, the scope said instead (j15b's wording walk: 'elastic pool' under a
   // PostgreSQL tag)
   // under a tag folder (TAGALL) the read is the folder's: the heading names it, as Performance summary's does
-  const head = 'Azure Summary' + (ctx.tag ? ` - ${tagWords(ctx.tag)}` : '');
+  const head = (node ? (node.pool ? `Elastic pool ${node.pool} on ${node.server}` : `Logical server ${node.server}`) : 'Azure Summary') + (ctx.tag ? ` - ${tagWords(ctx.tag)}` : '');
+  // where the databases are: the node's words, then the tag folder's
+  const at = (node ? (node.pool ? `in the elastic pool ${node.pool} of the logical server ${node.server} ` : `on the logical server ${node.server} `) : '') +
+    (ctx.tag ? `of ${folderWords(ctx.tag)} ` : '');
   if (!rows.length) {
     const where = ctx.tag ? folderWords(ctx.tag) : '';
-    return el('section', {}, el('h2', {}, head), el('p', { class: 'empty' }, ctx.tag
-      ? `${where.charAt(0).toUpperCase()}${where.slice(1)} holds no Azure SQL Database: this summary has nothing to show for it.`
-      : 'pgvigil reads no Azure SQL Database: this summary has nothing to show.'));
+    return el('section', {}, el('h2', {}, head), el('p', { class: 'empty' }, node
+      ? `pgvigil reads no Azure SQL Database ${at}: this page has nothing to show (the names come from the databases' own reads: the pool's member rows, the server's name, the tier).`
+      : ctx.tag
+        ? `${where.charAt(0).toUpperCase()}${where.slice(1)} holds no Azure SQL Database: this summary has nothing to show for it.`
+        : 'pgvigil reads no Azure SQL Database: this summary has nothing to show.'));
   }
   const sec = el('section', {}, el('h2', {}, head),
-    el('p', { class: 'meta' }, `Every Azure SQL Database ${ctx.tag ? `of ${folderWords(ctx.tag)} ` : ''}pgvigil reads, over the window: its resource use as a share of its limit (each average weighs ` +
+    el('p', { class: 'meta' }, `Every Azure SQL Database ${at}pgvigil reads, over the window: its resource use as a share of its limit (each average weighs ` +
       'the minutes by their 15-second samples; a maximum is the largest sample), the share of samples at 70 % and over, and its PRIMARY data files ' +
       'against their max size (DBA Dash\'s % Max Size: warning over 80 %, critical over 90 %; stale when the files were read over 3 hours ago). ' +
       'Sorted as DBA Dash sorts it, the most unused DTUs first. The four histograms are DBA Dash\'s: the window\'s samples in ten 10 % buckets, ' +
@@ -144,7 +161,9 @@ export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
   const name = (v: unknown, r: Row) => el('a', { href: href(ctx, { instance: Number(r.instance_id), tag: undefined, tab: 'mssqlazure' }) }, String(v));
   sec.append(grid(rows, [
     { key: 'instance', label: 'database (instance)', fmt: name }, { key: 'service_objective', label: 'tier', fmt: (v, r) => v == null ? (r.tier_read ? '' : el('span', { class: 'meta' }, 'not read')) : el('a', { href: '#azure-slo', title: 'its changes: Service Objectives below' }, String(v)) },
-    n('dtu_limit', 'DTUs'), n('cpu_limit', 'vCores'), { key: 'pool', label: 'elastic pool' },
+    n('dtu_limit', 'DTUs'), n('cpu_limit', 'vCores'),
+    { key: 'pool', label: 'elastic pool', fmt: (v, r) => v == null ? '' : r.server == null ? String(v) : el('a', { href: poolHref(ctx, String(r.server), String(v)) }, String(v)) },
+    { key: 'server', label: 'logical server', fmt: v => v == null ? '' : el('a', { href: serverHref(ctx, String(v)) }, String(v)) },
     n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct), n('cpu_hot_pct', 'CPU samples at 70 %+', pct),
     n('avg_data_io_percent', 'data IO avg', pct), n('max_data_io_percent', 'data IO max', pct), n('data_hot_pct', 'data IO samples at 70 %+', pct),
     n('avg_log_write_percent', 'log write avg', pct), n('max_log_write_percent', 'log write max', pct), n('log_hot_pct', 'log write samples at 70 %+', pct),
@@ -158,12 +177,15 @@ export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'files_read_at', label: 'files read', fmt: fmtTime },
   ], 'No Azure SQL Database is read in this scope.'));
   // DBA Dash's separate Elastic Pool grid (P25 task 8): each pool of the scope's databases once (/api/azuredb/summary
-  // part=pools); a pool's name opens the Elastic pool page of one of its databases (the pool is read through them)
+  // part=pools); a pool's name opens its pool's page, the server its server's (task 7's nodes)
   const pools = rowsOf(d.pools);
-  const member = (r: Row) => rows.find(x => x.pool === r.pool);
+  if (node?.pool) {
+    const m = rows.find(x => x.pool != null && String(x.pool).toUpperCase() === node.pool!.toUpperCase());
+    if (m) sec.dataset.member = String(m.instance_id);
+  }
   sec.append(el('h3', {}, 'Elastic pools'), grid(pools, [
-    { key: 'pool', label: 'elastic pool', fmt: (v, r) => member(r) ? el('a', { href: href(ctx, { instance: Number(member(r)!.instance_id), tag: undefined, tab: 'mssqlpool' }) }, String(v)) : String(v) },
-    { key: 'server', label: 'logical server' }, n('databases', 'databases read'),
+    { key: 'pool', label: 'elastic pool', fmt: (v, r) => el('a', { href: poolHref(ctx, String(r.server), String(v)) }, String(v)) },
+    { key: 'server', label: 'logical server', fmt: v => el('a', { href: serverHref(ctx, String(v)) }, String(v)) }, n('databases', 'databases read'),
     n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct),
     n('avg_data_io_percent', 'data IO avg', pct), n('max_data_io_percent', 'data IO max', pct),
     n('avg_log_write_percent', 'log write avg', pct), n('max_log_write_percent', 'log write max', pct),
