@@ -820,8 +820,6 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
           hide();
           location.hash = to.replace(/^#/, '');
         });
-        // the middle button, as on the legend's link: a new tab, the page stays
-        arc.addEventListener('auxclick', e => { if ((e as MouseEvent).button === 1) { e.preventDefault(); window.open(to, '_blank'); } });
         arc.addEventListener('auxclick', e => { if ((e as MouseEvent).button === 1) { e.preventDefault(); window.open(to, '_blank'); } });
       } else if (isOther(s)) {
         arc.classList.add('go');
