@@ -308,26 +308,26 @@ export async function mssqlFileIOView(ctx: Ctx): Promise<HTMLElement> {
 
 // tempdbCols: DBA Dash's TempDB grid (37, 66)
 const tempdbCols = (fleet: boolean, ctx: Ctx): Col[] => [
-  ...(fleet ? [{ key: 'instance', fmt: (v: unknown, row: Row) => el('a', { href: href(ctx, { tab: mssqlTempdbTab, instance: Number(row.instance_id) }) }, String(v ?? '')) }] : []),
-  { key: 'data_files', label: '# data files', num: true },
-  { key: 'insufficient_files', label: 'insufficient files', fmt: v => v == null ? 'not weighed' : v ? badge('yes', 'warn') : 'no', cls: v => v == null ? 'status none' : v ? '' : 'status ok' },
-  { key: 'recommended_files', label: 'recommended (minimum)', num: true },
-  { key: 'log_files', label: '# log files', num: true },
-  { key: 'even_size', label: 'even sized', fmt: v => v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
-  { key: 'even_growth', label: 'even growth', fmt: v => v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
-  { key: 'total_mb', label: 'total size (MB)', num: true },
-  { key: 'log_mb', label: 'log (MB)', num: true },
-  { key: 'file_mb', label: 'file size (MB)', num: true },
-  { key: 'max_growth_mb', label: 'max growth (MB)', num: true },
-  { key: 'max_log_growth_mb', label: 'max log growth (MB)', num: true },
-  { key: 'max_growth_pct', label: 'max growth %', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v) + ' %', 'info') : '0' },
-  { key: 'max_log_growth_pct', label: 'max log growth %', num: true },
-  { key: 'volumes', label: 'tempdb volume(s)', wide: true },
-  { key: 'cpu_count', label: 'CPU count', num: true },
-  { key: 'tf1117', label: 'T1117', fmt: yes },
-  { key: 'tf1118', label: 'T1118', fmt: yes },
-  { key: 'flags_required', label: 'trace flags required?', fmt: v => v ? 'yes (before 2016)' : 'no' },
-  { key: 'memopt_metadata', label: 'memory-optimized metadata?', fmt: v => v == null ? 'n/a (before 2019, or Managed Instance)' : v ? 'yes' : 'no' },
+  ...(fleet ? [{ key: 'instance', title: 'The SQL Server instance; the link opens its own TempDB page', fmt: (v: unknown, row: Row) => el('a', { href: href(ctx, { tab: mssqlTempdbTab, instance: Number(row.instance_id) }) }, String(v ?? '')) }] : []),
+  { key: 'data_files', label: '# data files', num: true, title: 'How many data files tempdb has' },
+  { key: 'insufficient_files', label: 'insufficient files', title: 'Yes when tempdb has fewer data files than the recommended minimum', fmt: v => v == null ? 'not weighed' : v ? badge('yes', 'warn') : 'no', cls: v => v == null ? 'status none' : v ? '' : 'status ok' },
+  { key: 'recommended_files', label: 'recommended (minimum)', num: true, title: 'The fewest data files the guidance asks for here: one per logical processor up to eight, then eight' },
+  { key: 'log_files', label: '# log files', num: true, title: 'How many log files tempdb has; one is the expected count' },
+  { key: 'even_size', label: 'even sized', title: 'Yes when every data file is the same size: the server spreads new pages by free space, so a larger file takes more of them', fmt: v => v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
+  { key: 'even_growth', label: 'even growth', title: 'Yes when every data file grows by the same step, so they stay the same size as they grow', fmt: v => v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
+  { key: 'total_mb', label: 'total size (MB)', num: true, title: 'Every tempdb data file together, in MB' },
+  { key: 'log_mb', label: 'log (MB)', num: true, title: 'The size of tempdb\'s log, in MB' },
+  { key: 'file_mb', label: 'file size (MB)', num: true, title: 'The largest data file\'s size, in MB' },
+  { key: 'max_growth_mb', label: 'max growth (MB)', num: true, title: 'The largest fixed growth step among the data files, in MB' },
+  { key: 'max_log_growth_mb', label: 'max log growth (MB)', num: true, title: 'The log\'s fixed growth step, in MB' },
+  { key: 'max_growth_pct', label: 'max growth %', num: true, title: 'The largest growth set as a percent among the data files; 0 when each grows by a fixed size', fmt: v => Number(v) > 0 ? badge(fmtNum(v) + ' %', 'info') : '0' },
+  { key: 'max_log_growth_pct', label: 'max log growth %', num: true, title: 'The log\'s growth when it is set as a percent; 0 when it grows by a fixed size' },
+  { key: 'volumes', label: 'tempdb volume(s)', wide: true, title: 'The drive volumes the data files are on' },
+  { key: 'cpu_count', label: 'CPU count', num: true, title: 'The logical processors the server sees: the recommended minimum follows it up to eight' },
+  { key: 'tf1117', label: 'T1117', fmt: yes, title: 'Trace flag 1117 on: every file of a filegroup grows together - wanted before SQL Server 2016, tempdb\'s own behaviour since' },
+  { key: 'tf1118', label: 'T1118', fmt: yes, title: 'Trace flag 1118 on: new objects get whole extents, never mixed ones - wanted before SQL Server 2016, tempdb\'s own behaviour since' },
+  { key: 'flags_required', label: 'trace flags required?', title: 'Yes before SQL Server 2016, which needs 1117 and 1118 for tempdb; no from 2016 on', fmt: v => v ? 'yes (before 2016)' : 'no' },
+  { key: 'memopt_metadata', label: 'memory-optimized metadata?', title: 'Yes when tempdb keeps its system tables in memory (memory-optimized tempdb metadata, SQL Server 2019 and later)', fmt: v => v == null ? 'n/a (before 2019, or Managed Instance)' : v ? 'yes' : 'no' },
   { key: 'snapshot_at', label: 'read', fmt: fmtTime },
 ];
 
@@ -359,7 +359,7 @@ export async function mssqlTempdbView(ctx: Ctx, keep?: (r: Row) => boolean): Pro
     ]));
   }
   sec.append(el('h3', {}, 'Checks'), checks.length
-    ? grid(checks, [...(fleet ? [{ key: 'instance' }] : []), ...checkCols])
+    ? grid(checks, [...(fleet ? [{ key: 'instance', title: 'The SQL Server instance the check is about' }] : []), ...checkCols])
     : el('p', { class: 'meta' }, 'No tempdb check raised: the data files match the recommended minimum, one size and one growth.'));
   if (!fleet) sec.append(tempdbHolders(rowsOf(d.holders), rowsOf(d.holders_read)[0]));
   return sec;
