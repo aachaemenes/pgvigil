@@ -282,7 +282,7 @@ const deadlocksView: Render = ctx => {
     const mode = v['dl-processes'];
     const by = groupBy.find(g => g[0] === v['dl-group']) ?? groupBy[0];
     const panel = el('div', { class: 'deadlock-panel' });
-    const graphCol: Col = { key: 'graph', label: 'Graph', fmt: (_v, r) => {
+    const graphCol: Col = { key: 'graph', label: 'Graph', title: 'Draws this deadlock\'s graph: its processes, what each held and what each waited for', fmt: (_v, r) => {
       const d = r.dl as Dl;
       const b = el('button', { type: 'button', class: 'link', 'aria-label': `Graph: deadlock #${d.n}, ${fmtTime(d.event_at)}` }, 'Graph');
       b.addEventListener('click', () => { void graphPanel(ctx, d, panel); }); return b; } };
@@ -332,13 +332,13 @@ const deadlocksView: Render = ctx => {
           { key: 'victim_processes', label: 'Victim Processes', num: true }, { key: 'processes', label: 'Processes', num: true },
           { key: 'first_seen', label: 'First Seen', fmt: fmtTime }, { key: 'last_seen', label: 'Last Seen', fmt: fmtTime }], 'No deadlock in this range.')),
         ...section('Deadlocks', grid(dlRows, [{ key: 'n', label: 'Deadlock #', num: true }, instCol(ctx), engCol, { key: 'event_at', label: 'Event Time', fmt: fmtTime }, graphCol,
-          { key: 'victim_procedure', label: 'Victim Procedure' }, { key: 'victim_statement', label: 'Victim Statement', fmt: stmt('Victim statement') },
+          { key: 'victim_procedure', label: 'Victim Procedure', title: 'The procedure the chosen victim was running, when it was inside one' }, { key: 'victim_statement', label: 'Victim Statement', fmt: stmt('Victim statement') },
           { key: 'victim_database', label: 'Victim Database' }, { key: 'victim_app', label: 'Victim Application' }, { key: 'victim_login', label: 'Victim Login' },
           { key: 'victim_host', label: 'Victim Host' }, { key: 'objects', label: 'Objects', wide: true }, { key: 'signature', label: 'Signature' },
           { key: 'processes', label: 'Processes', num: true }, { key: 'victims', label: 'Victims', num: true }, { key: 'survivors', label: 'Survivors', num: true },
           { key: 'sessions', label: 'Sessions', num: true }, { key: 'resources', label: 'Resources', num: true }, { key: 'parallel', label: 'Parallel', fmt: yes }], 'No deadlock in this range.')),
         ...section('Participants', grid(partRows, [{ key: 'n', label: 'Deadlock #', num: true }, instCol(ctx), { key: 'event_at', label: 'Event Time', fmt: fmtTime }, graphCol,
-          { key: 'victim', label: 'Victim', fmt: x => x === true ? badge('victim', 'crit') : '' }, { key: 'database', label: 'Database' }, { key: 'procedure', label: 'Procedure' },
+          { key: 'victim', label: 'Victim', fmt: x => x === true ? badge('victim', 'crit') : '' }, { key: 'database', label: 'Database' }, { key: 'procedure', label: 'Procedure', title: 'The procedure this process was running, when it was inside one' },
           { key: 'statement', label: 'Statement', fmt: stmt('Statement') }, { key: 'application', label: 'Application' }, { key: 'login', label: 'Login' }, { key: 'host', label: 'Host' },
           { key: 'lock_mode', label: 'Lock Mode' }, { key: 'wait_resource', label: 'Wait Resource', wide: true }, { key: 'wait_ms', label: 'Wait Time (ms)', num: true },
           { key: 'log_used', label: 'Log Used', num: true }, { key: 'isolation', label: 'Isolation Level' }, { key: 'transaction', label: 'Transaction' },

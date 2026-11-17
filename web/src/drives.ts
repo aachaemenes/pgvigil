@@ -430,9 +430,9 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
     if (!ctx.instance) {
       const rows: Row[] = rowsOf(d.instances).map((r): Row => ({ ...r, allocated: inUnit(r.allocated_bytes), used: inUnit(r.used_bytes) }));
       const cols: Col[] = [
-        { key: 'instance', label: 'name', fmt: (v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace') }, String(v ?? '')) },
-        { key: 'allocated', label: head('allocated'), num: true, fmt: v => fig(v) },
-        { key: 'used', label: head('used'), num: true, fmt: (v, r) => v == null ? (r.engine === 'postgres' ? 'not read' : '') : fig(v) },
+        { key: 'instance', label: 'name', title: 'The instance; the link opens its own DB Space page, database by database', fmt: (v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace') }, String(v ?? '')) },
+        { key: 'allocated', label: head('allocated'), num: true, fmt: v => fig(v), title: 'The space the instance\'s databases take on disk, in the unit picked' },
+        { key: 'used', label: head('used'), num: true, fmt: (v, r) => v == null ? (r.engine === 'postgres' ? 'not read' : '') : fig(v), title: 'The space used inside those files, in the unit picked, where every file was read; not read for PostgreSQL, whose files hold no unused space to read' },
         { key: 'databases', num: true }, { key: 'engine' },
         { key: 'history', label: 'history', fmt: (_v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace'), 'aria-label': `View the history of ${String(r.instance)}` }, 'View') },
       ];
@@ -450,9 +450,9 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
     const hist = rowsOf(d.history), engine = rowsOf(d.instances)[0]?.engine;
     const cols: Col[] = [
       // the name opens the database, as its slice does (DBA Dash's Name drill)
-      { key: 'database', fmt: (v, r) => { const to = dbSlice(ctx, engine, r); return to ? el('a', { href: to }, String(v ?? '')) : String(v ?? ''); } },
-      { key: 'allocated', label: head('allocated'), num: true, fmt: v => fig(v) },
-      { key: 'used', label: head('used'), num: true, fmt: v => v == null ? (engine === 'postgres' ? 'not read' : '') : fig(v) },
+      { key: 'database', title: engine === 'postgres' ? 'The database; the link opens its own page' : 'The database; the link opens its files', fmt: (v, r) => { const to = dbSlice(ctx, engine, r); return to ? el('a', { href: to }, String(v ?? '')) : String(v ?? ''); } },
+      { key: 'allocated', label: head('allocated'), num: true, fmt: v => fig(v), title: engine === 'postgres' ? 'The database\'s size on disk, in the unit picked' : 'The database\'s data and log files together, in the unit picked' },
+      { key: 'used', label: head('used'), num: true, fmt: v => v == null ? (engine === 'postgres' ? 'not read' : '') : fig(v), title: engine === 'postgres' ? 'Not read: a PostgreSQL database\'s files hold no unused space to read' : 'The space used inside its files, in the unit picked' },
       // a PostgreSQL database has no data and log files of its own to size: those two columns are SQL Server's only
       ...(engine === 'postgres' ? [] : [{ key: 'data', label: head('data'), num: true, fmt: (v: unknown) => fig(v) }, { key: 'log', label: head('log'), num: true, fmt: (v: unknown) => fig(v) }] as Col[]),
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
