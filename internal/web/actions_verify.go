@@ -88,8 +88,8 @@ func (s *Server) StopVerifies(limit time.Duration) {
 	}
 }
 
-// The sweep reaches actions_log only through the collector's door (J16-SWEEP): the actions door's audit login is a
-// member of pgvigil_collector, which reads no pgvigil table (0300 apply_roles), so a direct read of actions_log there
+// The sweep reaches actions_log only through the collector's door: the actions door's audit login is a member of
+// pgvigil_collector, which reads no pgvigil table (0300 apply_roles), so a direct read of actions_log there
 // is 'permission denied' (42501). import_cq_verify_open lists the SQL Server instances with a 'started' verify and no
 // end of its own (an end: a later row of the same set on the instance with an end's outcome - a 'refused' second click
 // is none - and no other 'started' row of the instance between them: one verify per instance; a row whose instance was
