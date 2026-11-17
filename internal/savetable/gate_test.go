@@ -131,6 +131,8 @@ func TestCheckGateOrder(t *testing.T) {
 		if v.Outcome != c.outcome || c.words != "" && !strings.Contains(v.Words, c.words) {
 			t.Errorf("%s: %q %q, want %q holding %q", c.name, v.Outcome, v.Words, c.outcome, c.words)
 		}
+		// v.Row is Check's own flag (true on every path): it shows Check asks for the audit row, not that the route
+		// writes one - E's and K's row counts in proof-savetable.sh prove that (review-31 part B N15)
 		if c.outcome != "" && !v.Row {
 			t.Errorf("%s: a refusal from the door's gates on writes its audit row (Row false)", c.name)
 		}

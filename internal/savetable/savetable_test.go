@@ -93,6 +93,9 @@ func TestQuoteIdent(t *testing.T) {
 
 // review-29 S1: ONE quoted form everywhere. A dotted table name stays one part: CopyIn gets the same bracketed text as
 // the CREATE (go-mssqldb splits its table argument only outside brackets), and pgx's CopyFrom the same identifier.
+// Its SQL Server half reads the name back with this test's own splitter (splitBracketed), a copy of go-mssqldb's rule
+// (v1.11.2 quoter.go L25-63): it cannot fail if the driver splits names otherwise - J1 and C2 of proof-savetable.sh on
+// the box are the real check (review-31 part B N13).
 func TestQuotedIsTheOneForm(t *testing.T) {
 	pg := Target{Database: "app", Schema: Schema, Table: "dbo.Customers"}
 	if got, want := Quoted(Postgres, pg), `"pgvigil_saved"."dbo.Customers"`; got != want {
