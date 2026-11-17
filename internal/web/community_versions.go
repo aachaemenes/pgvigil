@@ -23,6 +23,26 @@ var testedVersions = map[string]struct{ Date, Words, Install string }{
 	"First Responder Kit": {"2026-07-02", "the First Responder Kit 8.34 (2026-07-02)", "Install-DbaFirstResponderKit"},
 	"Darling Data":        {"2026-11-01", "Darling Data's release of 2026-11-01", "Install-DbaDarlingData"},
 	"sp_WhoIsActive":      {"2026-04-09", "sp_WhoIsActive 2200.20260409 (2026-04-09)", "Install-DbaWhoIsActive"},
+	// no dbatools installer: installScript prints dbPermsInstall (the pinned file, its SHA256 checked) for it
+	"SQLStudies": {"", "sp_DBPermissions V7.0 (SQL-Server-Scripts at " + dbPermsCommit[:8] + ")", ""},
+}
+
+// sp_DBPermissions' pin (P25 row 75; DBA Dash 4.24.1's manifest pins the same file): the commit pgvigil was tested
+// with and its file's SHA256, read 2026-11-17
+const (
+	dbPermsCommit = "970f29200339d3c05364016f202d813617675737"
+	dbPermsSHA256 = "d57e18ab7d8e43d82444e2954beca9a6b9b80e79e9dd3ba65d7754d5c04fd7c7"
+)
+
+// dbPermsInstall: the printed lines that install sp_DBPermissions (into master, as its file says): the file at the
+// pinned commit, refused unless its SHA256 is the pin, then run with dbatools' Invoke-DbaQuery
+func dbPermsInstall() string {
+	return "# sp_DBPermissions V7.0 (SQLStudies, MIT): no dbatools installer - the file at the commit pgvigil was tested with, its SHA256 checked first\n" +
+		"$DbPermsUrl = 'https://raw.githubusercontent.com/sqlstudent144/SQL-Server-Scripts/" + dbPermsCommit + "/sp_DBPermissions.sql'\n" +
+		"$DbPermsFile = Join-Path $env:TEMP 'sp_DBPermissions.sql'\n" +
+		"Invoke-WebRequest -Uri $DbPermsUrl -OutFile $DbPermsFile -UseBasicParsing\n" +
+		"if ((Get-FileHash -Algorithm SHA256 -LiteralPath $DbPermsFile).Hash -ne '" + dbPermsSHA256 + "') { throw 'sp_DBPermissions.sql is not the file pgvigil was tested with (its SHA256 differs): nothing installed' }\n" +
+		"Invoke-DbaQuery -SqlInstance $SqlInstance -Database master -File $DbPermsFile\n"
 }
 
 // testedProc: each catalogue procedure's version in its group's tested release, as the release files' own version
@@ -32,13 +52,14 @@ var testedProc = map[string]string{
 	"sp_pressuredetector": "6.11", "sp_quickiestore": "6.11", "sp_humaneventsblockviewer": "5.11", "sp_healthparser": "3.11",
 	"sp_loghunter": "3.11", "sp_indexcleanup": "2.11",
 	"sp_whoisactive": "2200.20260409",
+	"sp_dbpermissions": "7.0",
 }
 
 // testedOf: a procedure's version in the tested release ("" = not a catalogue procedure)
 func testedOf(name string) string { return testedProc[strings.ToLower(name)] }
 
 // the groups in the script's order
-var testedOrder = []string{"First Responder Kit", "Darling Data", "sp_WhoIsActive"}
+var testedOrder = []string{"First Responder Kit", "Darling Data", "sp_WhoIsActive", "SQLStudies"}
 
 // toolVersion is what a procedure's text says of its version ("" = no version line in it, or the text not readable).
 type toolVersion struct{ Version, Date string }
@@ -48,6 +69,8 @@ var (
 	reVerDate = regexp.MustCompile(`(?i)@version_?date\s*=\s*'([0-9]{8})'`)
 	// sp_WhoIsActive's header: 'v2200.20260409' (its date in the version) or the older 'v12.00 (2021-11-10)'
 	reWhoIs = regexp.MustCompile(`Who Is Active\? v([0-9]+)\.([0-9]+)(?: \(([0-9]{4}-[0-9]{2}-[0-9]{2})\))?`)
+	// sp_DBPermissions' header comment: 'sp_DBPermissions V7.0'
+	reDBPerms = regexp.MustCompile(`sp_DBPermissions V([0-9]+\.[0-9]+)`)
 )
 
 // parseVersion reads a version and its date from the windows of a procedure's text.
@@ -61,6 +84,9 @@ func parseVersion(windows ...string) toolVersion {
 			} else {
 				v.Date = m[3]
 			}
+		}
+		if m := reDBPerms.FindStringSubmatch(w); m != nil && v.Version == "" {
+			v.Version = m[1]
 		}
 		if m := reVersion.FindStringSubmatch(w); m != nil && v.Version == "" {
 			v.Version = m[1]
@@ -129,7 +155,7 @@ func readVersions(ctx context.Context, conn *sql.Conn, db string, azure bool, na
 		return "SUBSTRING(m.definition, COALESCE(" + strings.Join(parts, ", ") + ", 0), 120)"
 	}
 	q := `SELECT p.name, ` + win(`%@version = ''[0-9]%`, `%@version=''[0-9]%`) + `, ` + win(`%@version[_]date = ''[0-9]%`, `%@versiondate = ''[0-9]%`, `%@version[_]date=''[0-9]%`, `%@versiondate=''[0-9]%`) + `,
-       ` + win(`%Who Is Active? v[0-9]%`) + `
+       ` + win(`%Who Is Active? v[0-9]%`, `%sp[_]DBPermissions V[0-9]%`) + `
   FROM ` + pre + `sys.procedures AS p JOIN ` + pre + `sys.schemas AS s ON s.schema_id = p.schema_id
   LEFT JOIN ` + pre + `sys.sql_modules AS m ON m.object_id = p.object_id
  WHERE s.name = N'dbo' AND p.name IN (` + strings.Join(names, ", ") + `)`
@@ -243,7 +269,11 @@ func installScript(name, server, db string, tools []toolState) (script string, n
 	fmt.Fprintf(&b, "\n# to install those, download each release's zip and add -LocalFile <the zip> to its line (sp_WhoIsActive also takes its .sql).\n")
 	fmt.Fprintf(&b, "$SqlInstance = %s   # %s in pgvigil\n", psQuote(server), name)
 	for _, g := range testedOrder {
-		if need[g] {
+		switch {
+		case !need[g]:
+		case testedVersions[g].Install == "":
+			b.WriteString(dbPermsInstall())
+		default:
 			fmt.Fprintf(&b, "%s -SqlInstance $SqlInstance -Database %s\n", testedVersions[g].Install, psQuote(db))
 		}
 	}

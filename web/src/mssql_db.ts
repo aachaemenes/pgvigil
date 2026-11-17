@@ -2,7 +2,7 @@
 // strip - Performance first, as DBA Dash opens a database on it - each tab the instance's page cut to this database.
 // #/mssqldb?i=<instance>&db=<database name>[&dbtab=<tab>][&fg=<file group>]. The tree's database node links here
 // (tree.ts, a wiring line of the join).
-import { Ctx, window_ } from './router';
+import { Ctx, href, window_ } from './router';
 import { hashParam, hrefWith } from './dbinfo';
 import { performanceView } from './performance';
 import { mssqlFilesView } from './mssql_storage';
@@ -12,9 +12,11 @@ import { mssqlPlanCacheView } from './mssql_plancache';
 import { mssqlSlow } from './mssql_xe';
 import { objectExecutionSection } from './mssql_objexec';
 import { schemaDbSection } from './schema';
-import { get, Row, rowsOf, Table } from './api';
+import { get, post, Row, rowsOf, Table } from './api';
+import { InstanceRun, resultView } from './customreports';
+import { fleet } from './fleet';
 import { lineChart } from './chart';
-import { badge, el, fmtNum, fmtTime, grid } from './ui';
+import { badge, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 
 export const mssqlDbTab = 'mssqldb';
 
@@ -22,7 +24,7 @@ export const mssqlDbTab = 'mssqldb';
 const tabs: [string, string][] = [
   ['performance', 'Performance'], ['objexec', 'Object Execution'], ['querystats', 'Query Stats'], ['slow', 'Slow Queries'],
   ['files', 'Files'], ['snapshots', 'Snapshot Summary'], ['dbspace', 'DB Space'], ['dbconfig', 'DB Configuration'],
-  ['dboptions', 'DB Options'], ['qs', 'QS'], ['topqueries', 'Top Queries'], ['forcedplans', 'Forced Plans'], ['tuning', 'Tuning Recommendations'], ['servicebroker', 'Service Broker'],
+  ['dboptions', 'DB Options'], ['qs', 'QS'], ['topqueries', 'Top Queries'], ['forcedplans', 'Forced Plans'], ['tuning', 'Tuning Recommendations'], ['servicebroker', 'Service Broker'], ['dbpermissions', 'sp_DBPermissions'],
 ];
 
 // mssqlDbLink: a database of a SQL Server instance, opened on its page (the tab given, else Performance)
@@ -143,6 +145,43 @@ async function serviceBroker(ctx: Ctx, db: string): Promise<HTMLElement> {
     cNames.length ? lineChart('Broker counters (per second)', [...cAt.values()], cNames.map(n => ({ key: n, label: n })), v => fmtNum(v)) : '');
 }
 
+// dbPermissions: DBA Dash's database sp_DBPermissions tab (P25 row 75): Kenneth Fisher's sp_DBPermissions (SQLStudies,
+// MIT) run through the Community tools door with @DBName = the database, its result sets as grids. DBA Dash runs it as
+// the tab opens; here a run is the door's - audited, under its role - so it runs on a click. Words when it is not
+// installed (the Community tools page prints its install script: the pinned file, its SHA256 checked first), on Azure
+// SQL Database (DBA Dash's own list marks it so) and when the door is off.
+async function dbPermissions(ctx: Ctx, db: string): Promise<HTMLElement> {
+  const inst = (await fleet()).instances.find(r => Number(r.instance_id) === ctx.instance);
+  if (inst?.platform === 'azuresqldb') {
+    return el('p', { class: 'empty' }, `sp_DBPermissions does not run on Azure SQL Database (DBA Dash's own list marks it so): ${db} has no tab of it here.`);
+  }
+  const d = await get<{ enabled: boolean; reason?: string; tools: { id: string; installed: boolean | null; state: string }[] }>('community', { instance: ctx.instance, database: 'master' });
+  const tools = el('a', { href: href(ctx, { tab: 'community' }) }, 'Community tools');
+  if (!d.enabled) return el('p', { class: 'empty' }, `The Community tools door is off here${d.reason ? `: ${d.reason}` : ''}.`);
+  const t = d.tools.find(x => x.id === 'sp_DBPermissions');
+  if (!t || t.installed === false) {
+    return el('p', { class: 'empty' }, 'sp_DBPermissions is not installed on this instance (in master): the ', tools,
+      ' page prints its install script - the file at the commit pgvigil was tested with, its SHA256 checked before it runs.');
+  }
+  const res = el('div'), status = el('span', { class: 'meta' });
+  const run = el('button', { type: 'button' }, `Run sp_DBPermissions for ${db}`) as HTMLButtonElement;
+  run.addEventListener('click', async () => {
+    run.disabled = true; status.textContent = 'Running...';
+    try {
+      const r = await post<{ runs?: InstanceRun[]; ran_at?: string }>('community/run', { instance_id: ctx.instance, tool: 'sp_DBPermissions', database: 'master', params: { DBName: db } });
+      if (r.runs) {
+        res.replaceChildren(resultView(r.runs, undefined, 'sp_DBPermissions'));
+        status.textContent = r.ran_at ? `Ran at ${fmtTime(r.ran_at)}.` : '';
+      } else {
+        res.replaceChildren(el('p', { class: 'meta' }, 'Asked of the collector (queue mode): its answer is on the ', tools, ' page.'));
+        status.textContent = '';
+      }
+    } catch (e) { res.replaceChildren(errorBox(e)); status.textContent = ''; } finally { run.disabled = false; }
+  });
+  return el('div', {}, el('p', { class: 'meta' }, `sp_DBPermissions for ${db}: its principals, their role memberships and their permissions, each with the statement that would recreate it. A run is the Community tools door's, audited.`),
+    el('div', { class: 'toolbar' }, run, ' ', status), res);
+}
+
 export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
   const db = hashParam('db');
   if (!db) return el('section', {}, el('h2', {}, 'Database'), el('p', { class: 'empty' }, 'No database named (db=).'));
@@ -201,6 +240,9 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
     }
     case 'servicebroker':
       body = await serviceBroker(ctx, db);
+      break;
+    case 'dbpermissions':
+      body = await dbPermissions(ctx, db);
       break;
     default:
       body = el('p', { class: 'empty' }, `${tabs.find(([k]) => k === tab)![1]} for ${db}: not on this page yet.`);

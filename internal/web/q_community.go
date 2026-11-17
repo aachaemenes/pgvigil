@@ -75,6 +75,7 @@ const (
 	urlFRK         = "https://github.com/BrentOzarULTD/SQL-Server-First-Responder-Kit"
 	urlDarling     = "https://github.com/erikdarlingdata/DarlingData"
 	urlGlenn       = "https://glennsqlperformance.com/resources/"
+	urlSQLStudies  = "https://github.com/sqlstudent144/SQL-Server-Scripts"
 )
 
 func dflt(s string) *string { return &s }
@@ -106,6 +107,9 @@ var communityTools = []communityTool{
 		Description: "The error log searched for the messages that matter, archives included."},
 	{ID: "sp_IndexCleanup", Name: "sp_IndexCleanup", Group: "Darling Data", Engine: "sqlserver", Kind: "proc", URL: urlDarling, Help: "@help",
 		Description: "Unused and duplicate indexes with the script to remove or merge them (shown, never run)."},
+	// P25 row 75 (DBA Dash's database sp_DBPermissions tab; its manifest pins the same file): no @help parameter
+	{ID: "sp_DBPermissions", Name: "sp_DBPermissions", Group: "SQLStudies", Engine: "sqlserver", Kind: "proc", URL: urlSQLStudies,
+		Description: "A database's principals, their role memberships and their permissions, each with the statement that would recreate it (Kenneth Fisher's SQLStudies script)."},
 	{ID: "glenn_berry", Name: "SQL Server Diagnostic Queries", Group: "Glenn Berry", Engine: "sqlserver", Kind: "script", URL: urlGlenn,
 		Description: "Glenn Berry's diagnostic queries from your own copy of his script for the server's version: pick the file, then a query."},
 
