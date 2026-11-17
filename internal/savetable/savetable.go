@@ -539,19 +539,22 @@ type Conn interface {
 	Schema(ctx context.Context) (exists, owned bool, err error)
 	// Exists reads whether the target exists, the quoted form bound as a parameter (review-29 S1)
 	Exists(ctx context.Context, quoted string) (bool, error)
-	// Place reads where this connection is and what a CREATE TABLE there would meet (review-31 part A2)
+	// Place reads where this connection is, as the server has it at the save (review-31 part A2)
 	Place(ctx context.Context) (Place, error)
 }
 
 // Place is what a connection reads of the database it is in, at the save: Check asks the WRITING connection, so the
 // answer is the server's own and not the store's last read (review-31 part A2 SF4, part A1 S4).
 type Place struct {
-	DB       Database // SQL Server: database_id and is_distributor; PostgreSQL: datistemplate (the name is the caller's)
-	Owner    bool     // SQL Server: the login is the database's owner (dbo) or a member of db_owner there
-	Triggers []string // SQL Server: the enabled database-level DDL triggers (they run as the caller on a CREATE TABLE)
+	DB    Database // SQL Server: database_id and is_distributor; PostgreSQL: datistemplate (the name is the caller's)
+	Owner bool     // SQL Server: the login is the database's owner (dbo) or a member of db_owner there
 }
 
-// Writer is the writing login's connection: the checks, then the write - CREATE TABLE (no IF NOT EXISTS: an 'already
+// Writer is the writing login's connection: the checks, then the write. On SQL Server the write runs as the login's own
+// DATABASE USER (EXECUTE AS USER ... WITH NO REVERT, on a connection closed after the save): SQL Server runs a
+// database's DDL trigger as the caller, and inside that switch the caller has its rights in this database and none of
+// the login's on the server (review-31 part A2 SF1: a db_owner's trigger on CREATE_TABLE would otherwise run with the
+// right to end sessions). PostgreSQL has no twin: only a superuser can create an event trigger. The write is CREATE TABLE (no IF NOT EXISTS: an 'already
 // exists' error is the refusal, Exists') and the engine's bulk copy of the converted rows in ONE transaction, rolled
 // back on any error (no half table). It answers the rows written.
 type Writer interface {
@@ -646,16 +649,6 @@ func ConvertRows(engine string, cols []Col, rows [][]any) ([][]any, int, error) 
 		out[i] = o
 	}
 	return out, nuls, nil
-}
-
-// quotedCut is a server's own name for the words: its first n characters, quoted, every character that does not print
-// escaped (a trigger's name is whatever its maker chose).
-func quotedCut(s string, n int) string {
-	r := []rune(s)
-	if len(r) > n {
-		return strconv.Quote(string(r[:n])) + "..."
-	}
-	return strconv.Quote(s)
 }
 
 // Verdict is Check's answer: Outcome "" = every gate passed (write the started row, then the table); else
@@ -767,13 +760,6 @@ func Check(ctx context.Context, in Instance, dbs []Database, b Body, open func(c
 	}
 	if place.Owner {
 		return refuse(fmt.Sprintf("the actions login %s owns the database %s or is a member of db_owner there: pgvigil refuses it (the door login owns the schema pgvigil_saved and nothing else)", actLogin, b.Database))
-	}
-	if n := len(place.Triggers); n > 0 {
-		more := ""
-		if n > 1 {
-			more = fmt.Sprintf(" and %d more", n-1)
-		}
-		return refuse(fmt.Sprintf("off: the database %s holds an enabled DDL trigger (%s%s): it would run as the actions login on the door's CREATE TABLE, so pgvigil writes no table there", b.Database, quotedCut(place.Triggers[0], 60), more))
 	}
 	exists, owned, err := act.Schema(ctx)
 	if err != nil {

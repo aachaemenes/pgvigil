@@ -59,14 +59,34 @@ func (m msSave) Exists(ctx context.Context, quoted string) (bool, error) {
 	return there == 1, err
 }
 
-// Place: RED STUB (review-31 part A2's rows) - nothing read.
-func (m msSave) Place(context.Context) (savetable.Place, error) { return savetable.Place{}, nil }
+// Place: the database this connection is in (USE'd at the open) as the server has it NOW - its id and whether it is
+// a replication distribution database, which the store's last read never says (review-31 part A2 SF4) - and whether
+// this login is the database's owner or in db_owner there (NIT 6: a schema made without AUTHORIZATION by such a login
+// would pass as 'its own', and the door login is to have no rights over dbo).
+func (m msSave) Place(ctx context.Context) (savetable.Place, error) {
+	var pl savetable.Place
+	var dist, owner int
+	err := m.c.QueryRowContext(ctx, `SELECT DB_ID(),
+       ISNULL((SELECT CAST(d.is_distributor AS int) FROM sys.databases d WHERE d.database_id = DB_ID()), 0),
+       CASE WHEN DATABASE_PRINCIPAL_ID() = 1 OR IS_MEMBER('db_owner') = 1 THEN 1 ELSE 0 END`).Scan(&pl.DB.ID, &dist, &owner)
+	pl.DB.IsDistributor, pl.Owner = dist == 1, owner == 1
+	return pl, err
+}
+
+// asOwnUser switches the connection to the login's own user in the current database, never to be reverted (the
+// connection is closed after the save). Sent as a plain batch with no parameter: inside sp_executesql the switch would
+// end with the call. From here on the connection reaches nothing outside the database and holds none of the login's
+// server permissions, so a DDL trigger of the database - run by SQL Server as the caller - holds none either.
+const asOwnUser = `DECLARE @u sysname = USER_NAME(); EXECUTE AS USER = @u WITH NO REVERT;`
 
 // Write: CREATE TABLE, then CopyIn into the same quoted target, one transaction; rolled back on any error.
 func (m msSave) Write(ctx context.Context, t savetable.Target, cols []savetable.Col, rows [][]any) (int64, error) {
 	create, err := savetable.CreateSQL(savetable.SQLServer, t, cols)
 	if err != nil {
 		return 0, err
+	}
+	if _, err := m.c.ExecContext(ctx, asOwnUser); err != nil {
+		return 0, fmt.Errorf("the switch to the actions login's own database user failed: %w", err)
 	}
 	tx, err := m.c.BeginTx(ctx, nil)
 	if err != nil {
@@ -101,7 +121,15 @@ func (m msSave) Write(ctx context.Context, t savetable.Target, cols []savetable.
 	if err != nil {
 		return 0, err
 	}
-	return n, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		// the server answered the commit with an error: nothing was kept. Anything else (the connection cut, the
+		// deadline passed in the round trip) leaves the outcome unknown (review-31 part A2 NIT 8)
+		if me := (mssqldb.Error{}); errors.As(err, &me) {
+			return 0, err
+		}
+		return 0, fmt.Errorf("%w: %v", savetable.ErrCommitUnknown, err)
+	}
+	return n, nil
 }
 
 // SaveConns opens the two connections Save Table checks on and writes through: the read login (as every action

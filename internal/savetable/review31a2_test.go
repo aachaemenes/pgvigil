@@ -70,27 +70,10 @@ func TestCheckReadsThePlace(t *testing.T) {
 	}
 }
 
-// SHOULD-FIX 1: SQL Server runs a database's DDL trigger as the caller, so the door's CREATE TABLE would run a
-// database owner's code as the actions login. A database that holds an enabled one is refused, the trigger named in a
-// quoted, cut form.
-func TestCheckRefusesDDLTriggers(t *testing.T) {
-	in, dbs, b, mon, act := a2Door(SQLServer)
-	act.place.Triggers = []string{"probe"}
-	v := a2Check(in, dbs, b, mon, act)
-	if v.Outcome != "refused" || !strings.Contains(v.Words, `"probe"`) || !strings.Contains(v.Words, "DDL trigger") || !v.Row {
-		t.Errorf("one trigger: %q %q row %v, want refused naming \"probe\" as a DDL trigger, with its audit row", v.Outcome, v.Words, v.Row)
-	}
-	if strings.Contains(strings.Join(act.asked, " "), "Exists") {
-		t.Errorf("one trigger: the existence read ran after the refusal (asked %q)", act.asked)
-	}
-
-	in, dbs, b, mon, act = a2Door(SQLServer)
-	act.place.Triggers = []string{"a‮b" + strings.Repeat("x", 500), "second", "third"}
-	v = a2Check(in, dbs, b, mon, act)
-	if v.Outcome != "refused" || strings.ContainsRune(v.Words, '‮') || len(v.Words) > 400 || !strings.Contains(v.Words, "2 more") {
-		t.Errorf("a hostile name and two more: %q (%d bytes) %q, want refused, no raw U+202E, under 400 bytes, '2 more'", v.Outcome, len(v.Words), v.Words)
-	}
-}
+// SHOULD-FIX 1 has no row here: its first row (a database holding a DDL trigger refused, the rows' commit 8a348c06)
+// went with the read it rested on - the door login cannot be counted on to SEE a database's DDL trigger. The fix is
+// the write running as the login's own database user (internal/mssql/savetable.go), proven on a SQL Server by
+// scripts/proof-savetable.sh's row K4: the trigger runs and finds none of the login's server rights.
 
 // NIT 6: an actions login that is the database's owner or in db_owner there is refused as sysadmin is - the door
 // login has no rights over dbo (review-29 B2), and a schema it made without AUTHORIZATION would pass as 'its own'.

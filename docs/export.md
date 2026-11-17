@@ -369,8 +369,15 @@ PostgreSQL and 1,024 on SQL Server); the actions log writable; the instance's li
 the names (the database's first, so no refused name is ever repeated in an answer); the values; then, on the chosen
 database, that the actions login reaches the same server as the read login, is a login of its own and not a superuser,
 sysadmin or CONTROL SERVER holder; that the database, as the writing connection itself reads it at that moment, is no
-system, template or replication distribution database (the store's last read may be older); #SF1DOCS#and that the login owns
+system, template or replication distribution database (the store's last read may be older); on SQL Server that the
+login is not the database's owner nor in `db_owner` there; and that the login owns
 `pgvigil_saved`; then that the table does not exist.
+
+On SQL Server the write itself runs as the actions login's own user in that database (`EXECUTE AS USER`, never
+reverted, on a connection closed after the save). SQL Server runs a database's DDL trigger as whoever creates the
+table; inside that switch a trigger finds the door's rights in that one database - its schema and CREATE TABLE - and
+none of the login's rights on the server (ending sessions, the jobs in msdb). A trigger that fails makes the save fail
+with the server's words and leaves no table.
 
 On PostgreSQL the save's own connection runs read-write whatever the role's `default_transaction_read_only` says, and
 with `search_path = pg_catalog` (set for the connection and again inside the write's transaction): a database whose

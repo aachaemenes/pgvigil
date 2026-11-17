@@ -47,8 +47,10 @@
 #      public.text whose check runs a function of his: the save is done and the new column is pg_catalog.text (before
 #      the fix: failed, the owner's function ran as the actions login).
 #   K3 (NIT 5) with ALTER ROLE <actions login> SET default_transaction_read_only = on a save is still done.
-#   K4 (SF1) SQL Server: a database whose db_owner member made a DDL trigger on CREATE_TABLE: the save is refused, the
-#      trigger named, the trigger's log empty and no table made.
+#   K4 (SF1) SQL Server: a database whose db_owner member (no sysadmin) made a DDL trigger on CREATE_TABLE that logs
+#      what the caller may do, the actions login holding ALTER ANY CONNECTION as docs/sqlserver-actions.md grants it:
+#      the save is done, the trigger ran ONCE as the actions login's database user and found ALTER ANY CONNECTION = 0
+#      (before the fix: 1 - a database owner's code with the right to end sessions).
 #   K5 (SF4) SQL Server: a distribution database with the schema and the grant in place: refused 'replication
 #      distribution database', no table made - or 'NOT PROVEN K5' when the container cannot be made a distributor.
 #   K6 (NIT 6) SQL Server: an actions login in db_owner of the target: refused naming db_owner.
@@ -325,7 +327,19 @@ c=$(post stadmin "$P1" "$ID_pg_save" k3.json)
 [[ $c == 200 && $(said) == "Saved 2 rows to $TDB.pgvigil_saved.k3" ]] && ok "K3: the role's default_transaction_read_only = on: $(said)" || bad "K3: $c $(said)"
 adm "alter role $ACT reset default_transaction_read_only" >/dev/null
 # K4 (SF1): a database DDL trigger of a db_owner member
-#K4#
+sq "CREATE DATABASE TrigDB; GRANT ALTER ANY CONNECTION TO msact;" >/dev/null || bad "K4 setup: TrigDB"
+sq "CREATE USER msact FOR LOGIN msact; GRANT CREATE TABLE TO msact; EXEC ('CREATE SCHEMA pgvigil_saved AUTHORIZATION msact');
+    CREATE USER msown FOR LOGIN msown; ALTER ROLE db_owner ADD MEMBER msown;
+    CREATE TABLE dbo.probe_log (n int IDENTITY, orig sysname, usr sysname NULL, kill_perm int NULL); GRANT INSERT ON dbo.probe_log TO public;" TrigDB >/dev/null || bad "K4 setup: TrigDB's users"
+# CREATE TRIGGER alone in its batch (sq puts SET NOCOUNT ON first), made by the db_owner member himself
+t=$(docker exec -e SQLCMDPASSWORD="$MSPW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U msown -C -b -d TrigDB -Q "CREATE TRIGGER probe ON DATABASE FOR CREATE_TABLE AS INSERT dbo.probe_log (orig, usr, kill_perm) SELECT ORIGINAL_LOGIN(), USER_NAME(), HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY CONNECTION');" 2>&1; echo "rc=$?")
+[[ $t == *"rc=0" && $(sq "SELECT COUNT(*) FROM sys.triggers WHERE parent_class = 0 AND is_disabled = 0" TrigDB) == 1 ]] || bad "K4 setup: the trigger: $t"
+q "insert into pgvigil.mssql_database_option (instance_id, database_name, database_id, snapshot_at, is_present) values ($ID_ms_save, 'TrigDB', $(sq "SELECT DB_ID('TrigDB')"), now(), true)" >/dev/null
+mk k4.json "$ID_ms_save" TrigDB k4 "ms-save-$SUF/TrigDB" 'b["rows"] = b["rows"][:2]'
+c=$(post stadmin "$P1" "$ID_ms_save" k4.json)
+k=$(sq "SELECT CAST(COUNT(*) AS varchar(9)) + '|' + ISNULL(MIN(orig), '') + '|' + ISNULL(MIN(usr), '') + '|' + ISNULL(CAST(MIN(kill_perm) AS varchar(9)), '') + '|' + CAST((SELECT COUNT(*) FROM pgvigil_saved.k4) AS varchar(9)) FROM dbo.probe_log" TrigDB 2>&1)
+[[ $c == 200 && $(said) == "Saved 2 rows to TrigDB.pgvigil_saved.k4" && $k == "1|msact|msact|0|2" ]] && ok "K4: a db_owner's DDL trigger ran once as the door's database user and found ALTER ANY CONNECTION = 0; $(said)" || bad "K4: $c $(said); the trigger's log (rows|login|user|ALTER ANY CONNECTION|rows saved) '$k'"
+sq "REVOKE ALTER ANY CONNECTION FROM msact;" >/dev/null
 # K5 (SF4): a distribution database
 sq "DECLARE @s sysname = CAST(SERVERPROPERTY('ServerName') AS sysname); EXEC sp_adddistributor @distributor = @s, @password = N'$MSPW'; EXEC sp_adddistributiondb @database = N'distribution';" > "$W/k5.log" 2>&1
 if [[ $(sq "SELECT CAST(is_distributor AS int) FROM sys.databases WHERE name = 'distribution'" 2>/dev/null) == 1 ]]; then
