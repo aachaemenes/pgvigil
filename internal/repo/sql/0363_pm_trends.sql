@@ -7,11 +7,22 @@
 --                                       other definition, 0061:186, is older; no branch re-creates it after 0081): the two
 --                                       columns added to the stats rows' INSERT, nothing else changed. JOIN NOTE: another
 --                                       branch that re-creates import_pgbouncer conflicts here and merges by hand.
---   [the per-table I/O history: 'ASK LEAD: PMROWS TABLE HISTORY' 11-17 02:5x - table_activity (0080) extended, or a
---    table_io of its own as answered 01:58; added to this file once answered]
+--   table_activity.heap_blks_read, heap_blks_hit, idx_blks_read, idx_blks_hit, toast_blks_read, toast_blks_hit
+--                                       NEW bigint columns (the lead 11-17 02:50, PMROWS TABLE HISTORY = (a)): task 127's
+--                                       five-minute table read (0080) now carries pg_statio_user_tables' block counters,
+--                                       cumulative as its other counters; NULL on every read before this file. L46's
+--                                       buffer hit and Most Disk I/O Reads read them; no second per-table history.
+--   import_table_activity               re-made WHOLE from its only text, 0080_tables_conn.sql:38 (16428eb8; no branch
+--                                       re-creates it): the six columns added, nothing else changed. JOIN NOTE as above.
 --
--- Locks: ADD COLUMN IF NOT EXISTS with no default takes ACCESS EXCLUSIVE on pooler_sample and its partitions for a
--- catalog change only (no rewrite); CREATE OR REPLACE FUNCTION locks the function only.
+-- THE NAMED CHECKS of set 2's DONE (the lead 01:58, as read 02:50): table_activity's EXPORT CLASS is its window line in
+-- internal/export/catalog.go, unchanged (the six are numbers: scripts/proof-parquet-census.tsv's row unchanged); its
+-- PURGE is table_activity in purge()'s month-partition list, 0300_join_release3.sql:1220, unchanged (purge() is not
+-- re-made here); the import is import_table_activity, import_-named, so apply_roles (0300:2567) keeps it the
+-- collector's door. Neither new column is text: no carry or audit list changes.
+--
+-- Locks: ADD COLUMN IF NOT EXISTS with no default takes ACCESS EXCLUSIVE on pooler_sample, table_activity and their
+-- partitions for a catalog change only (no rewrite); CREATE OR REPLACE FUNCTION locks the function only.
 
 ALTER TABLE pgvigil.pooler_sample ADD COLUMN IF NOT EXISTS avg_recv bigint;
 ALTER TABLE pgvigil.pooler_sample ADD COLUMN IF NOT EXISTS avg_sent bigint;
@@ -71,4 +82,33 @@ BEGIN
       FROM jsonb_array_elements(p_payload) r
      WHERE r->>'kind' IN ('conns', 'client', 'server');
   END IF;
+END $$;
+
+ALTER TABLE pgvigil.table_activity ADD COLUMN IF NOT EXISTS heap_blks_read bigint;
+ALTER TABLE pgvigil.table_activity ADD COLUMN IF NOT EXISTS heap_blks_hit bigint;
+ALTER TABLE pgvigil.table_activity ADD COLUMN IF NOT EXISTS idx_blks_read bigint;
+ALTER TABLE pgvigil.table_activity ADD COLUMN IF NOT EXISTS idx_blks_hit bigint;
+ALTER TABLE pgvigil.table_activity ADD COLUMN IF NOT EXISTS toast_blks_read bigint;
+ALTER TABLE pgvigil.table_activity ADD COLUMN IF NOT EXISTS toast_blks_hit bigint;
+COMMENT ON COLUMN pgvigil.table_activity.heap_blks_read IS 'pg_statio_user_tables.heap_blks_read, cumulative since the statistics reset; NULL before 0363.';
+
+-- payload: as 0080's - each table row carries the six block counters too
+CREATE OR REPLACE FUNCTION pgvigil.import_table_activity(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  IF jsonb_typeof(p_payload) IS DISTINCT FROM 'array'
+     OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'table') THEN
+    RETURN;
+  END IF;
+  PERFORM pgvigil.ensure_month_partition('table_activity', p_snapshot_at);
+  INSERT INTO pgvigil.table_activity (instance_id, snapshot_at, dbid, relid, datname, schema_name, table_name, seq_scan,
+                                      seq_tup_read, idx_scan, n_tup_ins, n_tup_upd, n_tup_del, n_tup_hot_upd,
+                                      heap_blks_read, heap_blks_hit, idx_blks_read, idx_blks_hit, toast_blks_read, toast_blks_hit)
+  SELECT p_instance_id, p_snapshot_at, (r->>'dbid')::bigint, (r->>'relid')::bigint, r->>'datname', r->>'schema_name',
+         r->>'table_name', (r->>'seq_scan')::bigint, (r->>'seq_tup_read')::bigint, (r->>'idx_scan')::bigint,
+         (r->>'n_tup_ins')::bigint, (r->>'n_tup_upd')::bigint, (r->>'n_tup_del')::bigint, (r->>'n_tup_hot_upd')::bigint,
+         (r->>'heap_blks_read')::bigint, (r->>'heap_blks_hit')::bigint, (r->>'idx_blks_read')::bigint,
+         (r->>'idx_blks_hit')::bigint, (r->>'toast_blks_read')::bigint, (r->>'toast_blks_hit')::bigint
+    FROM (SELECT DISTINCT ON ((r->>'dbid')::bigint, (r->>'relid')::bigint) r
+            FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'table') x;
 END $$;

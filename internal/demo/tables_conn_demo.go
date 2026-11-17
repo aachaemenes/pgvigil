@@ -37,7 +37,10 @@ func (g *Gen) tableActivityRows(t time.Time) []Row {
 			c := func(rate float64) int64 { return int64(mins * rate * k * day) }
 			out = append(out, Row{"kind": "table", "dbid": dbOID(di), "relid": relid, "datname": db, "schema_name": "public",
 				"table_name": td.name, "seq_scan": c(seq), "seq_tup_read": c(seq) * int64(td.base*50), "idx_scan": c(idx),
-				"n_tup_ins": c(ins), "n_tup_upd": c(upd), "n_tup_del": c(del), "n_tup_hot_upd": c(upd) * 8 / 10})
+				"n_tup_ins": c(ins), "n_tup_upd": c(upd), "n_tup_del": c(del), "n_tup_hot_upd": c(upd) * 8 / 10,
+				// the block counters (0363): a scan reads its table's pages, an index read a few; most come from the cache
+				"heap_blks_read": c(seq)*int64(td.base*4) + c(ins)/8, "heap_blks_hit": c(seq)*int64(td.base*46) + c(idx)*3,
+				"idx_blks_read": c(idx) / 40, "idx_blks_hit": c(idx) * 2, "toast_blks_read": int64(0), "toast_blks_hit": int64(0)})
 		}
 	}
 	return out

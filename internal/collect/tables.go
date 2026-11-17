@@ -275,10 +275,12 @@ func tablesReadOther(ctx context.Context, in config.Instance, db, q, qs string) 
 // tableActivityCollector is the five-minute read of the scan and row-change counters of the busiest tables of each
 // database (pgwatch's Tables Overview: the most sequential scans, inserts, updates and deletes over a window). The
 // counters are cumulative since the statistics reset; the repository's table_activity_top takes the read-to-read
-// rises. Only pg_stat_user_tables is read: no size function, no lock taken, so a table under an ACCESS EXCLUSIVE
-// lock is still read. Per database the read keeps the tables that lead any one counter (tableActivityPerDB by
-// each, cumulatively): a table that turned busy late among more than that many busier ones is missed until it
-// climbs into the set, and the window then counts it from its first read.
+// rises. Only pg_stat_user_tables and pg_statio_user_tables are read (since 0363 the six block counters too: L46's
+// buffer hit and Most Disk I/O Reads): no size function, no lock taken, so a table under an ACCESS EXCLUSIVE lock is
+// still read. Per database the read keeps the tables that lead any one counter (tableActivityPerDB by each - the
+// sequential scans, the inserts, updates and deletes, and the heap + index blocks read - cumulatively): a table that
+// turned busy late among more than that many busier ones is missed until it climbs into the set, and the window then
+// counts it from its first read (Table Details says so in words for a table with no read in its window).
 type tableActivityCollector struct{}
 
 func init() { Register(tableActivityCollector{}) }
@@ -302,18 +304,22 @@ func (tableActivityCollector) Run(context.Context, *pgx.Conn, platform.Info) ([]
 const tableActivitySQL = `
 WITH s AS (
   SELECT s.relid, s.schemaname, s.relname, s.seq_scan, s.seq_tup_read, s.idx_scan, s.n_tup_ins, s.n_tup_upd,
-         s.n_tup_del, s.n_tup_hot_upd
+         s.n_tup_del, s.n_tup_hot_upd, io.heap_blks_read, io.heap_blks_hit, io.idx_blks_read, io.idx_blks_hit,
+         io.toast_blks_read, io.toast_blks_hit
     FROM pg_stat_user_tables s
+    LEFT JOIN pg_statio_user_tables io ON io.relid = s.relid
 ), pick AS (
   (SELECT relid FROM s ORDER BY seq_scan DESC NULLS LAST LIMIT %[1]d)
   UNION (SELECT relid FROM s ORDER BY n_tup_ins DESC NULLS LAST LIMIT %[1]d)
   UNION (SELECT relid FROM s ORDER BY n_tup_upd DESC NULLS LAST LIMIT %[1]d)
   UNION (SELECT relid FROM s ORDER BY n_tup_del DESC NULLS LAST LIMIT %[1]d)
+  UNION (SELECT relid FROM s ORDER BY coalesce(heap_blks_read, 0) + coalesce(idx_blks_read, 0) DESC LIMIT %[1]d)
 )
 SELECT 'table' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
        current_database()::text AS datname, s.relid::bigint AS relid, s.schemaname::text AS schema_name,
        s.relname::text AS table_name, s.seq_scan, s.seq_tup_read, s.idx_scan, s.n_tup_ins, s.n_tup_upd, s.n_tup_del,
-       s.n_tup_hot_upd
+       s.n_tup_hot_upd, s.heap_blks_read, s.heap_blks_hit, s.idx_blks_read, s.idx_blks_hit, s.toast_blks_read,
+       s.toast_blks_hit
   FROM s JOIN pick USING (relid)`
 
 // RunInstance reads every database the tables collection reads, the same way (the connected one on conn, each other
