@@ -86,9 +86,10 @@ const noRightWords = "Pool history is not read: the login is not a member of dbm
 
 // noMasterWords: the skip's words when the login could not sign in to master
 func noMasterWords(err error) string {
+	// cut on a character, never inside one (a cut UTF-8 sequence makes PostgreSQL refuse the skip's note)
 	msg := err.Error()
-	if len(msg) > 200 {
-		msg = msg[:200] + "..."
+	if r := []rune(msg); len(r) > 200 {
+		msg = string(r[:200]) + "..."
 	}
 	return "Pool history is not read: the login could not sign in to the logical server's master (a contained database user " +
 		"has no way in; a login in master with ##MS_DatabaseConnector## has): " + msg

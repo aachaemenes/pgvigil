@@ -278,11 +278,14 @@ SELECT DISTINCT p.server, p.pool, p.valid_from AS changed_at, p.old_dtu AS old_d
  LIMIT 2000`
 
 // sqlAzurePoolHistoryState: per elastic pool of the scope's databases, when one of them last read master's view
-// (0395's mssql_pool_limit_read) and, where a database's mssql_pool_limits run was skipped (no dbmanager, no way into
-// master), the newest skip's words - the page's words for a pool with no history.
+// (0395's mssql_pool_limit_read) - counted only from a database whose mssql_pool_limits run still reads (its last run
+// ok or partial, or none logged yet), so a pool whose readers were skipped since (no dbmanager, no way into master) or
+// failed has no current read (review t11-1 SHOULD 1) - its last read before that (read_until) and, where a run was
+// skipped, the newest skip's words: the page's words for such a pool.
 var sqlAzurePoolHistoryState = sqlAzureScope + `
 SELECT inst.az_server AS server, inst.az_pool AS pool,
-       max(rd.read_at) FILTER (WHERE rd.state = 'read') AS last_read,
+       max(rd.read_at) FILTER (WHERE rd.state = 'read' AND (cd.status IS NULL OR cd.status IN ('ok', 'partial'))) AS last_read,
+       max(rd.read_at) FILTER (WHERE rd.state = 'read') AS read_until,
        (array_agg(cd.note ORDER BY cd.snapshot_at DESC) FILTER (WHERE cd.status = 'skipped'))[1] AS skip_note,
        max(cd.snapshot_at) FILTER (WHERE cd.status = 'skipped') AS skipped_at
   FROM inst

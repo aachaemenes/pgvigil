@@ -113,7 +113,8 @@ export function instanceChecks(deps: Deps) {
         try { await navigator.clipboard.writeText(script); deps.say(`The GRANT script for ${name} is on the clipboard (${script.split('\n').length} lines). Nothing was run.`); }
         catch { deps.say('The browser refused the clipboard: select the script and copy it by hand.', true); }
       });
-      kids.push(el('p', { class: 'meta' }, 'The script of the missing rights (nothing in it was run):'), pre, el('div', {}, copy));
+      kids.push(el('p', { class: 'meta' }, missing ? 'The script of the missing rights (nothing in it was run):'
+        : 'Nothing is missing; the script is an opt-in block, every line a comment (nothing in it was run):'), pre, el('div', {}, copy));
     }
     const close = el('button', { type: 'button', class: 'link', 'aria-label': `Close the rights of ${name}` }, 'Close');
     close.addEventListener('click', () => box.replaceChildren());

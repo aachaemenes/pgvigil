@@ -192,7 +192,18 @@ INSERT INTO #pl_epr VALUES
 	if !errors.Is(err, collect.ErrSkip) || !strings.Contains(err.Error(), "not a member of dbmanager") {
 		t.Errorf("a plain login: %v, want the skip without dbmanager", err)
 	}
-	// a contained database user: no way into master - RunInstance skips with the no-master words
+	// a contained database user: no way into master - RunInstance skips with the no-master words; the server's setting
+	// is put back as it was (review t11-1 NIT 8)
+	var oldCDA int
+	if err := conn.QueryRowContext(ctx, "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'contained database authentication'").Scan(&oldCDA); err != nil {
+		t.Logf("contained database authentication not read (%v): the no-master path not run", err)
+		return
+	}
+	defer func() {
+		if _, err := conn.ExecContext(context.Background(), fmt.Sprintf("EXEC sp_configure 'contained database authentication', %d; RECONFIGURE;", oldCDA)); err != nil {
+			t.Errorf("contained database authentication not put back to %d: %v", oldCDA, err)
+		}
+	}()
 	if _, err := conn.ExecContext(ctx, "EXEC sp_configure 'contained database authentication', 1; RECONFIGURE;"); err != nil {
 		t.Logf("contained database authentication not set (%v): the no-master path not run", err)
 		return

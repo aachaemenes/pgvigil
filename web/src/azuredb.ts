@@ -232,7 +232,9 @@ export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTML
         'databases, which can cost money. Its block, commented out, is in the instance\'s rights script (Admin > Instances). That view keeps 14 days; ' +
         'pgvigil keeps what it read. The limits\' shares (CPU, data IO, log write, eDTU, workers, sessions, storage) are above, read through each pooled database.'),
       el('ul', {}, ...unread.map(r => el('li', {}, `${String(r.pool)} on ${String(r.server)}: ` +
-        (r.skip_note ? `${String(r.skip_note)} (${fmtTime(r.skipped_at)})` : 'not read yet - mssql_pool_limits runs hourly on each pooled database')))));
+        (r.read_until != null ? `read until ${fmtTime(r.read_until)}; since then: ` : '') +
+        (r.skip_note ? `${String(r.skip_note)} (${fmtTime(r.skipped_at)})`
+          : r.read_until != null ? 'its runs failed (Collection health names why)' : 'not read yet - mssql_pool_limits runs hourly on each pooled database')))));
     }
   }
   // DBA Dash's Azure Service Objectives and Resource Governance (P25 task 9): each tier change of these databases

@@ -145,6 +145,9 @@ var Rights = []Right{
 		OptIn: "-- OPT-IN, not needed: every line below is a comment; uncomment it only where the login may create and drop databases.\n" +
 			"-- dbmanager lets the login create and drop databases on this logical server, which can cost money.\n" +
 			"-- Only Pool history needs it (the elastic pool's limits over time); pgvigil reads every other figure without it.\n" +
+			"-- It needs a LOGIN in master: a contained database user (CREATE USER ... WITH PASSWORD in the database) has none -\n" +
+			"-- make a login, a user for it in master and in the database, and point the instance's connection string at it.\n" +
+			"-- An Entra identity: CREATE USER [<the identity>] FROM EXTERNAL PROVIDER in master, then the role below.\n" +
 			"-- In the logical server's master database, as the server admin or the Entra admin:\n" +
 			"-- CREATE USER {login} FROM LOGIN {login};\n" +
 			"-- ALTER ROLE dbmanager ADD MEMBER {login};\n" +
@@ -285,7 +288,8 @@ type RightState struct {
 	// State: held, missing, or the words of a right that does not apply here ('not on this server: ...', 'not
 	// installed: ...').
 	State string
-	// Grant is the statement for this login; "" unless the right is missing (and a script may be printed).
+	// Grant is the statement for this login; "" unless the right is missing (and a script may be printed) or an opt-in
+	// (Right.OptIn: its block, every line a comment).
 	Grant string
 	// Databases names the databases the login cannot enter, as QUOTENAME writes them (database_access; the first 20).
 	Databases []string
@@ -523,7 +527,11 @@ func (r RightsRead) Script(at string) string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "-- pgvigil: the rights its monitoring login %s lacks on %s (read %s).\n", r.Login, r.Server, at)
+	if r.Missing == 0 {
+		fmt.Fprintf(&b, "-- pgvigil: nothing is missing for its monitoring login %s on %s (read %s); an opt-in block follows, every line a comment.\n", r.Login, r.Server, at)
+	} else {
+		fmt.Fprintf(&b, "-- pgvigil: the rights its monitoring login %s lacks on %s (read %s).\n", r.Login, r.Server, at)
+	}
 	b.WriteString("-- Run it as an administrator of that server. pgvigil did not run it and never does.\n")
 	for _, s := range r.Rights {
 		if s.Grant == "" {
