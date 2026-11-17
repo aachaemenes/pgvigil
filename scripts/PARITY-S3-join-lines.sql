@@ -24,7 +24,9 @@
 --    carries D421), so it joins after D467: the order D421 -> D467 -> PARSAFE -> the parity rows. It carries no line
 --    D467's own join lines already apply (0343, scripts/D467-join-lines.sql 1-7, scripts/D467-wiring.patch; D421's
 --    likewise). The merge's one conflict: web/src/mssql_plancache.ts, D467's page kept whole and the database page's
---    fix (mssqlPlanCacheView's onlyDb) put back on it.
+--    fix (mssqlPlanCacheView's onlyDb) put back on it. THE ORDER at the join: the merge of this branch, then lines 1,
+--    3, 4 and 5 (tree.ts and import_mssql_confcheck), then scripts/PARITY-S3-wiring.patch (line 6), then line 7 with
+--    D481's route.ts.
 
 -- 3. web/src/tree.ts (the lead's file): the OBJECT NODES under each SQL Server database node of line 1 (DBA Dash's
 --    database node: Tables, Views, Programmability - Stored Procedures, Functions, Triggers - and the other objects).
