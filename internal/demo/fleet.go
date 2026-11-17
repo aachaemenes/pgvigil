@@ -2,8 +2,9 @@
 // generated here and handed to the repository through its import functions only, exactly as the
 // collector hands them, so every view, check and page reads demo data the way it reads real data.
 //
-// The fleet is twelve PostgreSQL instances across on-prem, RDS, Aurora, Azure and Cloud SQL and three SQL Server
-// instances (an availability group's primary and secondary, and a managed instance), with
+// The fleet is twelve PostgreSQL instances across on-prem, RDS, Aurora, Azure and Cloud SQL and five SQL Server
+// instances (an availability group's primary and secondary, a managed instance, and two Azure SQL Databases in one
+// elastic pool), with
 // seven days of history and the conditions a walk-through needs: two blocking chains and an
 // idle-in-transaction head, a pg_stat_statements reset, a daily load curve, a lagging replica and
 // an inactive slot, a failed pg_cron job, a DMS task over its latency threshold with tables in
@@ -80,8 +81,9 @@ var base = []Spec{
 // EngineSQLServer is Spec.Engine of a SQL Server instance (pgvigil.instances.engine).
 const EngineSQLServer = "sqlserver"
 
-// mssqlBase is the three SQL Server instances of the walk-through (mssql_demo.go draws them): sql01 the busy
-// primary of an availability group, sql02 its quiet secondary, sql03 a managed instance without some sources.
+// mssqlBase is the SQL Server instances of the walk-through (mssql_demo.go draws them): sql01 the busy primary of an
+// availability group, sql02 its quiet secondary, sql03 a managed instance without some sources, and two Azure SQL
+// Databases in one elastic pool (mssql_parity_demo.go).
 var mssqlBase = []Spec{
 	{Name: "onprem-sql01", Engine: EngineSQLServer, Platform: "sqlserver", Version: "Microsoft SQL Server 2022 (RTM-CU16) - 16.0.4165.4 (X64)", VersionNum: 160000,
 		Load: 1.4, Addr: "10.20.3.31", Tags: []string{"prod", "sales", "env:prod", "team:sales"}},
@@ -89,13 +91,18 @@ var mssqlBase = []Spec{
 		Replica: true, Load: 0.3, Addr: "10.20.3.32", Tags: []string{"prod", "sales", "env:prod", "team:sales"}},
 	{Name: "azure-sql03", Engine: EngineSQLServer, Platform: "azuresqlmi", Version: "Microsoft SQL Azure (RTM) - 12.0.2000.8", VersionNum: 120000,
 		Load: 0.6, Addr: "10.40.2.21", Tags: []string{"staging", "ledger", "env:staging", "team:finance"}},
+	// two Azure SQL Databases on one logical server in one elastic pool (mssql_parity_demo.go, P25 task 11b)
+	{Name: "azure-sqldb01", Engine: EngineSQLServer, Platform: "azuresqldb", Version: "Microsoft SQL Azure (RTM) - 12.0.2000.8", VersionNum: 120000,
+		Load: 0.9, Addr: "demo-sqlsrv01.database.windows.net", Tags: []string{"prod", "ledger", "env:prod", "team:finance"}},
+	{Name: "azure-sqldb02", Engine: EngineSQLServer, Platform: "azuresqldb", Version: "Microsoft SQL Azure (RTM) - 12.0.2000.8", VersionNum: 120000,
+		Load: 0.5, Addr: "demo-sqlsrv01.database.windows.net", Tags: []string{"prod", "ledger", "env:prod", "team:finance"}},
 }
 
-// FleetSize is the walk-through's fleet: the twelve PostgreSQL instances and the three SQL Server ones.
+// FleetSize is the walk-through's fleet: the twelve PostgreSQL instances and the five SQL Server ones.
 var FleetSize = len(base) + len(mssqlBase)
 
 // Specs returns n instances named with prefix: the twelve PostgreSQL instances of the walk-through first, then
-// the three SQL Server ones, then copies of the twelve (for a scale measurement) numbered from 001, each copy
+// the five SQL Server ones, then copies of the twelve (for a scale measurement) numbered from 001, each copy
 // keeping its template's conditions and pointing its replication pair at the copy of the same round.
 func Specs(prefix string, n int) []Spec {
 	out := make([]Spec, 0, n)

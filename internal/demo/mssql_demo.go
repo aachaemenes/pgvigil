@@ -21,6 +21,9 @@ import (
 
 // mssqlStep is Step for a SQL Server instance: the batches of one snapshot time.
 func (g *Gen) mssqlStep(t time.Time) []Batch {
+	if g.Spec.Platform == demoAzPlatform { // an Azure SQL Database runs its own (mssql_parity_demo.go)
+		return g.azureDBStep(t)
+	}
 	first := g.prev.IsZero()
 	var out []Batch
 	add := func(c string, at time.Time, rows []Row) {
@@ -70,6 +73,7 @@ func (g *Gen) mssqlStep(t time.Time) []Batch {
 	if t.Equal(g.end.Add(-time.Minute)) || !t.Before(g.end) {
 		add("mssql_xe", t, g.mssqlXEDemoRows(t))
 	}
+	out = append(out, g.mssqlParityBatches(t, first)...) // -sql01's database tabs (mssql_parity_demo.go)
 	g.prev = t
 	return out
 }
@@ -164,6 +168,9 @@ func (g *Gen) mssqlStorageRows(t time.Time) []Row {
 
 // mssqlCollections names what a SQL Server instance's collector runs (for the collection log).
 func (g *Gen) mssqlCollections() []string {
+	if g.Spec.Platform == demoAzPlatform {
+		return append([]string(nil), azureDBCollections...)
+	}
 	c := []string{"mssql_instance", "mssql_services", "mssql_requests", "mssql_waits", "mssql_xe", "mssql_storage", "mssql_versionstore", "mssql_ag", "mssql_cpu", "mssql_memory", "mssql_fileio", "mssql_tempdb", "mssql_querystore", "mssql_running_plans"}
 	if g.is("-sql01") || g.is("-sql02") {
 		c = append(c, "mssql_backups")

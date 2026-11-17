@@ -85,7 +85,7 @@ func runPlanXML(sqlHandle, queryHash, planHash string) string {
 func (f *Fleet) RunningPlanInstances() []string {
 	var out []string
 	for _, g := range f.gens {
-		if g.Spec.Engine == EngineSQLServer {
+		if g.Spec.Engine == EngineSQLServer && g.Spec.Platform != demoAzPlatform { // an Azure SQL Database runs none
 			out = append(out, g.Spec.Name)
 		}
 	}

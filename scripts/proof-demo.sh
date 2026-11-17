@@ -333,7 +333,7 @@ else
   [[ -n "$PORT" ]] || { cat "$WORK/pgbin.log" >&2; fail "pgbin: no serving URL logged in ${PGVIGIL_DEMO_WAIT_S:-150} s (PGVIGIL_DEMO_WAIT_S raises the wait on a loaded machine)"; }
   curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null || fail "pgbin: the logged URL $PORT does not answer"; ok "pgbin: -listen 127.0.0.1:0 serves on the logged port $PORT"
   got=$(api instances | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["rows"]))') || { cat "$WORK/pgbin.log" >&2; fail "pgbin serve"; }
-  [[ "$got" == 15 ]] || fail "pgbin instances: $got"; ok "pgbin: 15 instances served"
+  [[ "$got" == 17 ]] || fail "pgbin instances: $got"; ok "pgbin: 17 instances served (twelve PostgreSQL, five SQL Server)"
   id=$(api instances | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["columns"]; print([r[c.index("instance_id")] for r in d["rows"] if r[c.index("name")]=="demo-onprem-erp01"][0])')
   first=$(api "activity?instance=$id" | python3 -c 'import json,sys; print(json.load(sys.stdin)["snapshot_at"])')
   live=""

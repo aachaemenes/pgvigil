@@ -63,18 +63,20 @@ func TestFleet(t *testing.T) {
 	if plat["onprem"] != 3 || plat["rds"] != 2 || plat["aurora"] != 3 || plat["azure"] != 2 || plat["cloudsql"] != 2 {
 		t.Fatalf("platforms: %v", plat)
 	}
-	// the three SQL Server instances follow the twelve; the copies of a scale run follow those
+	// the five SQL Server instances (three servers, then the two Azure SQL Databases of P25 task 11b) follow the
+	// twelve; the copies of a scale run follow those
 	big := Specs("x-", 30)
-	if FleetSize != 15 || big[12].Name != "x-onprem-sql01" || big[13].Name != "x-onprem-sql02" || big[14].Name != "x-azure-sql03" {
-		t.Fatalf("the SQL Server instances: %d, %s %s %s", FleetSize, big[12].Name, big[13].Name, big[14].Name)
+	if FleetSize != 17 || big[12].Name != "x-onprem-sql01" || big[13].Name != "x-onprem-sql02" || big[14].Name != "x-azure-sql03" ||
+		big[15].Name != "x-azure-sqldb01" || big[16].Name != "x-azure-sqldb02" {
+		t.Fatalf("the SQL Server instances: %d, %s %s %s %s %s", FleetSize, big[12].Name, big[13].Name, big[14].Name, big[15].Name, big[16].Name)
 	}
 	for i, s := range big {
-		if (s.Engine == EngineSQLServer) != (i >= 12 && i < 15) {
+		if (s.Engine == EngineSQLServer) != (i >= 12 && i < 17) {
 			t.Fatalf("%s (index %d): engine %q", s.Name, i, s.Engine)
 		}
 	}
-	if big[15].Name != "x-onprem-erp01-001" || big[15].SenderTo != "x-onprem-erp02-001" || big[16].ReceiverOf != "x-onprem-erp01-001" {
-		t.Fatalf("copies: %s %s %s", big[15].Name, big[15].SenderTo, big[16].ReceiverOf)
+	if big[17].Name != "x-onprem-erp01-001" || big[17].SenderTo != "x-onprem-erp02-001" || big[18].ReceiverOf != "x-onprem-erp01-001" {
+		t.Fatalf("copies: %s %s %s", big[17].Name, big[17].SenderTo, big[18].ReceiverOf)
 	}
 }
 
@@ -98,7 +100,7 @@ func TestMSSQLDemo(t *testing.T) {
 			}
 		}
 	}
-	for i, s := range specs[12:] {
+	for i, s := range specs[12:15] { // the three servers (the Azure SQL Databases: TestParityDemo)
 		idx := 12 + i
 		g := NewGen(s, idx, 7, Grid(anchor, 7)[0], anchor)
 		for _, c := range g.Collections() {

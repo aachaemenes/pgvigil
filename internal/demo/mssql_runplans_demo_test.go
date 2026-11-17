@@ -13,7 +13,7 @@ import (
 // demo-data note; sql01's report and sql03's lookup are kept within the seed's days; the collection is in the log list.
 func TestRunningPlansDemo(t *testing.T) {
 	specs := Specs("demo-", FleetSize)
-	for i, s := range specs[12:] {
+	for i, s := range specs[12:15] { // the three servers: an Azure SQL Database runs no mssql_running_plans
 		idx := 12 + i
 		g := NewGen(s, idx, 7, Grid(anchor, 7)[0], anchor)
 		listed := false
