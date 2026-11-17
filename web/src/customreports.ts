@@ -593,8 +593,11 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
 
   const det = el('details', {}, el('summary', {}, 'Definition'));
   det.append(el('pre', { class: 'sql', tabindex: '0' }, def.kind === 'procedure' ? 'procedure ' + def.body : def.body));
+  // a report with a picker shows each parameter's picker too (a report without one: the grid as before)
+  const pickerWords = (v: unknown) => { const x = v as Picker | undefined; return !x ? '' : (x.kind === 'list' ? 'a list: ' + (x.values ?? []).join(', ') : x.kind === 'query' ? 'a query\'s values' : 'a text box') + (x.menu ? ', on the menu bar' : ''); };
   if (def.params.length) det.append(el('h3', {}, 'Parameters'), grid(def.params as unknown as Row[], [
-    { key: 'name' }, { key: 'type', fmt: v => typeNames[String(v)] ?? String(v) }, { key: 'label' }, { key: 'default' }, { key: 'required', fmt: v => v ? 'yes' : '' }]));
+    { key: 'name' }, { key: 'type', fmt: v => typeNames[String(v)] ?? String(v) }, { key: 'label' }, { key: 'default' }, { key: 'required', fmt: v => v ? 'yes' : '' },
+    ...(def.params.some(p => p.picker) ? [{ key: 'picker', fmt: pickerWords } as Col] : [])]));
   if (def.columns.length) det.append(el('h3', {}, 'Column formats'), grid(def.columns as unknown as Row[], [
     { key: 'set', label: 'result set', num: true, fmt: v => String(Number(v) + 1) }, { key: 'column' }, { key: 'label' },
     { key: 'format', fmt: v => formatNames[String(v ?? '')] ?? String(v) }, { key: 'decimals', num: true }, { key: 'hidden', fmt: v => v ? 'hidden' : '' }]));
@@ -675,10 +678,25 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
       + '@instance_ids (the instances the run is about, an int[]). A procedure report is called with the parameters given a value, by name. '
       + 'One statement on PostgreSQL; a batch on SQL Server (no GO lines).'));
 
-  const params = rowsEditor<Param>('Parameters', ['name', 'type', 'label', 'default', 'required'], def.params, (x, n) => {
+  // a parameter's picker (DBA Dash's Edit Pickers, L95): a list (its values one per line), a text box, or a query whose
+  // first column is the value and second the words, run on the report's target; on the menu bar or under the parameters
+  const pickerKinds: Record<string, string> = { '': 'none (a plain field)', list: 'a list', text: 'a text box (Enter runs)', query: 'a query\'s values' };
+  const params = rowsEditor<Param>('Parameters', ['name', 'type', 'label', 'default', 'required', 'picker', 'its values (one per line) or its query', 'menu bar'], def.params, (x, n) => {
     const a = inp(`Parameter ${n} name`, x.name), t = sel(`Parameter ${n} type`, typeNames, x.type ?? 'text'), l = inp(`Parameter ${n} label`, x.label),
-      dv = inp(`Parameter ${n} default`, x.default), rq = check(`Parameter ${n} required`, x.required);
-    return { cells: [a, t, l, dv, rq], read: () => ({ name: a.value.trim(), type: t.value, label: l.value.trim() || undefined, default: dv.value.trim() || undefined, required: rq.checked || undefined }) };
+      dv = inp(`Parameter ${n} default`, x.default), rq = check(`Parameter ${n} required`, x.required),
+      pk = sel(`Parameter ${n} picker`, pickerKinds, x.picker?.kind ?? ''),
+      pv = el('textarea', { 'aria-label': `Parameter ${n} picker values (one per line) or query`, rows: '2', cols: '28', spellcheck: 'false' },
+        x.picker?.kind === 'query' ? x.picker.query ?? '' : (x.picker?.values ?? []).join('\n')) as HTMLTextAreaElement,
+      mb = check(`Parameter ${n} picker on the menu bar`, x.picker?.menu);
+    const picker = (): Picker | undefined => {
+      const k = pk.value as Picker['kind'] | '';
+      if (!k) return undefined;
+      const menu = mb.checked || undefined;
+      if (k === 'list') return { kind: k, values: pv.value.split('\n').map(v => v.trim()).filter((v, i, all) => v !== '' && all.indexOf(v) === i), menu };
+      if (k === 'query') return { kind: k, query: pv.value.trim(), menu };
+      return { kind: k, menu };
+    };
+    return { cells: [a, t, l, dv, rq, pk, pv, mb], read: () => ({ name: a.value.trim(), type: t.value, label: l.value.trim() || undefined, default: dv.value.trim() || undefined, required: rq.checked || undefined, picker: picker() }) };
   }, { type: 'text' });
   const columns = rowsEditor<ColFmt>('Column formats', ['result set', 'column', 'label', 'format', 'decimals', 'hidden'], def.columns, (x, n) => {
     const s = inp(`Format ${n} result set (1 = the first)`, (x.set ?? 0) + 1, { size: '3', inputmode: 'numeric' }), c = inp(`Format ${n} column`, x.column),
@@ -726,6 +744,12 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
   const accField = el('fieldset', {}, el('legend', {}, 'Access (the roles that open and run it; none ticked = every role; an admin always may)'),
     el('p', {}, ...roles.flatMap(b => [el('label', {}, b.c, ' ' + b.l), ' '])));
   sec.append(visField, accField);
+  // the run's own messages as its status (L90) and the collections its data comes from (Associate Collection, L98)
+  const fromMsgs = check('Status from messages', def.status_from_messages);
+  const colls = inp('Associate Collection (comma-separated)', (def.collections ?? []).join(', '), { size: '40', placeholder: 'activity, waits' });
+  sec.append(el('fieldset', {}, el('legend', {}, 'The run'),
+    el('p', {}, el('label', {}, fromMsgs, ' Status from messages: the run\'s own RAISE NOTICE / INFO (PostgreSQL) or PRINT and RAISERROR (SQL Server) messages are its status in place of \'Completed\'')),
+    el('p', {}, el('label', {}, 'Associate Collection (the collections the report\'s data comes from, comma-separated; its Trigger Collection button names them) ', colls))));
 
   const msg = el('p', { class: 'meta', role: 'status' });
   const save = markNeed(el('button', { type: 'button' }, 'Save'), 'customreports');
@@ -736,6 +760,8 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
       engine: engine.value, kind: kind.value, body: body.value, params: params.read(), columns: columns.read(), rules: rules.read(),
       timeout_secs: Number(timeout.value || 30), max_rows: Number(maxRows.value || 5000),
       visibility: readVis(), access: roles.filter(b => b.c.checked).map(b => b.k),
+      status_from_messages: fromMsgs.checked || undefined,
+      collections: colls.value.split(',').map(c => c.trim()).filter(Boolean),
     };
     try {
       const r = await post<{ detail: string; report_id: number }>('customreports', out);

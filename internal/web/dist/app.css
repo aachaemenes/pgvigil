@@ -159,6 +159,8 @@ button:not(.link)[aria-disabled="true"]:hover, .toolbar button:not(.link)[aria-d
 /* the Silence button is muted and bordered when on as well: off, it keeps a dimmed look of its own */
 button.link.silence-btn:disabled, button.link.silence-btn[aria-disabled="true"] { opacity: .6; }
 .off-reason { color: var(--text-muted); font-size: var(--fs-sm); }
+/* a custom report's picker away from its parameter's default (DBA Dash draws it bold) */
+.not-default { font-weight: var(--fw-strong); }
 @media (forced-colors: active) { button:disabled, button[aria-disabled="true"] { color: GrayText !important; border-color: GrayText !important; opacity: 1 !important; } }  /* important: a more specific off colour (button.link, .grid td.status, .silence-btn) is no system colour, so forced colours would turn it back to ButtonText */
 .range { display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; position: relative; }
 .range .custom { display: inline-flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
