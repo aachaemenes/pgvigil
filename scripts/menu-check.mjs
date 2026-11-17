@@ -291,7 +291,8 @@
 //                     (before the next h2 / h3). Batch 4 (07:0x): the root Backups page's SQL Server grids, by instance
 //                     (4 labels) and databases (2) - red on 0072e2f6. Batch 5 (07:0x): TempDB's layout grid on sql01
 //                     (19 labels) and at the root (20, with instance; the root's Checks grid draws instance too) - red on
-//                     b24b74a1.
+//                     b24b74a1. Batch 6 (07:1x): demo-onprem-erp01's Jobs page, its Running now grid (5 labels) - red
+//                     on 66aa081f.
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1837,6 +1838,10 @@ const L20 = [
   // batch 5: TempDB (DBA Dash's TempDBConfigView): an instance's layout row; at the root every instance's, with Instance
   ['mssqltempdb', ['ms'], L20tempdb],
   ['mssqltempdb', ['root'], ['instance', ...L20tempdb]],
+  // batch 6: Running Jobs (DBA Dash's RunningJobsView) on a PostgreSQL instance's Jobs page - the Running now grid is
+  // drawn there even empty; SQL Server's Running now grid (mssql_jobs.ts) is drawn only while a job runs, which on the
+  // demo depends on the clock: titled, no row (NOT PROVEN by a row)
+  ['jobs', ['pg'], ['started', 'running for', 'average', 'estimated end', 'current step'], 'Running now'],
 ];
 const msWord = /SQL Server|\bsys\.|DBCC|T-SQL|default trace|msdb|query hash|plan cache/i;
 const sqlId20 = idOf('demo-onprem-sql01');
