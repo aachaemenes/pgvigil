@@ -7,6 +7,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { ChartChoice, chartChoice, chartToolbar, layout, pickRows } from './azure_charts';
 import { lineChart } from './chart';
+import { mssqlPropertiesTab } from './mssql_properties';
 import { hrefWith } from './dbinfo';
 import { folderWords, tagWords } from './fleet';
 import { Ctx, href, window_ } from './router';
@@ -76,7 +77,11 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
   const limits: Row[] = tier.service_objective == null ? [] : [{
     max_size_mb: tier.max_size_mb, usage_mb: tier.usage_mb, max_sessions: tier.max_sessions, max_workers: tier.max_workers, max_log_rate_mb_s: tier.max_log_rate_mb_s,
   }];
-  sec.append(el('h3', {}, 'The tier\'s limits'), el('p', { class: 'meta' }, 'From sys.dm_user_db_resource_governance as last read; their history is on Properties (Changes).'),
+  sec.append(el('h3', {}, 'The tier\'s limits'), el('p', { class: 'meta' }, 'From sys.dm_user_db_resource_governance as last read (the max size from ',
+    'DATABASEPROPERTYEX). The tier\'s changes (objective, pool, DTU or vCore limit) are on ',
+    el('a', { href: href(ctx, { tab: mssqlPropertiesTab }) }, 'Properties (Changes)'), ' and on the ',
+    el('a', { href: href(ctx, { tab: 'azuresummary', instance: undefined }) }, 'Azure Summary'),
+    ' under Service Objectives (changes); a change of these limits alone is listed on no page.'),
     grid(limits, [
       { key: 'max_size_mb', label: 'max size', fmt: mb }, { key: 'usage_mb', label: 'local storage used', fmt: mb },
       { key: 'max_sessions', label: 'max sessions', fmt: num }, { key: 'max_workers', label: 'max worker threads', fmt: num },
