@@ -135,3 +135,12 @@
 --    ALSO NAMED for the join (a stray found 11-17 while cutting this patch): 7806d311 (P25 F103, task 2) changed
 --    web/src/drives.ts on this branch itself - the DB Space read takes db= on the database page (L411) - outside any
 --    patch; it rides the branch's merge, and the owner's branch meets it there.
+-- 12. 0392 (P25 row 73, Service Broker; the number the lead's 11-17 11:08, freed by row 2b's rework) creates only its
+--    own objects. At the join: (a) mssql_broker_queue, mssql_broker_queue_sample, mssql_broker_transmission,
+--    mssql_broker_conversation, mssql_broker_endpoint and mssql_broker_counter_sample under the instance scope's policy
+--    pgvigil_scope (each row's instance_id; the join's TestEveryInstanceTableHasScope names them); (b) purge: the two
+--    sample tables (monthly partitions) by the instance's retention, as the other samples (the lead's Q2), the
+--    as-last-read tables with the instance (ON DELETE CASCADE); (c) no grant line: apply_roles makes
+--    import_mssql_service_broker the collector's door with every import_ function; (d) web/src/fleet.ts's
+--    'Service Broker: pgvigil does not read it yet' cell (map row 73's evidence, L86 / L96) becomes the read's - its
+--    owner's line.
