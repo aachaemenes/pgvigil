@@ -181,7 +181,8 @@
 //                     offered; Unfreeze Column - nothing frozen, Freeze Column unticked again, no Unfreeze Column item
 //   (the six rows below: this pane's recommendations as the lead answered them, 'PGRID ROW CALLS 2', brief 11-16 22:51 -
 //   the rows changed by that answer 11-17 01:2x: P-editfilter's unchanged Apply and a number column's <>, P-groupby's
-//   drill, P-bars' Warning at / Critical at, P-script's From items absent, the Summary's g_ / m_ keys never offered)
+//   drill, P-bars' Warning at / Critical at, the Summary's g_ / m_ keys never offered; P-script's From items off with
+//   their words, the lead's 'PGRID FROM ITEMS' 11-17 01:26)
 //   P-editfilter      B11, 'Edit Filter...' on a cell's and a header's menu, on the hostile fixture's grid: a dialog
 //                     whose text field holds the grid's filter as one text - one line per column that has a filter,
 //                     '[<the column's name, a ] in it doubled>] <its filter as the filter row holds it>', in the
@@ -231,9 +232,11 @@
 //                     values ticked with Warning at the column's median and Critical at its highest value: red at or
 //                     above the highest, amber at or above the median, else green. Remove All Data Bars: no bar in
 //                     the grid and none after a reload
-//   P-script          B04, 'Save Table' on a cell's and a header's menu, on the default serve exactly 'Script Data
-//                     Table', 'Script Grid' (DBA Dash's order; its From Data Table / From Grid write a table on a
-//                     server and are left out of the menu where they cannot act - never shown dead, the lead 22:51);
+//   P-script          B04, 'Save Table' on a cell's and a header's menu: 'From Data Table', 'From Grid', 'Script Data
+//                     Table', 'Script Grid' (DBA Dash's order); on the default serve the two From items (a table
+//                     written on an instance through its actions door: an admin's opt-in, task 7b - the lead 11-17
+//                     01:26) are OFF with the words 'off: an administrator turns on doors: save_table in
+//                     pgvigil.yaml; the door login needs CREATE in the database' - in the menu, never absent;
 //                     the two Script items open the code viewer
 //                     (dialog.sqlview, its Copy) with CREATE TABLE and INSERT in the dialect of the page's engine: a
 //                     PostgreSQL instance's grid (Statements) pg_temp.pgvigil_grid; a SQL Server instance's (the
@@ -1291,11 +1294,12 @@ const pEnter = async label => { const f = await ev(`(() => { const b = [...(${PA
 // the Summary's Instances grid (pages.ts drawLower names it): its rows carry _worst, _cells, _acked and every key of the
 // instances read
 const ST = `document.querySelector('main table.grid[data-grid-name="Instances"]')`;
-// pNever: a grid's 'never offered' keys as a page declares them (the table's data-gt-never, a JSON array), held on the
-// grid while the page draws it again: this observer answers a new table before the next frame, when the tools draw a
-// grid's kept choices (gridtools.ts installGridTools: requestAnimationFrame)
-const pNever = (t, keys) => ev(`(() => { window.__gtNever?.disconnect(); const v = ${JSON.stringify(JSON.stringify(keys))};
-  const set = () => { const t = ${t}; if (t && t.getAttribute('data-gt-never') !== v) t.setAttribute('data-gt-never', v); };
+// pNever: keys added to a grid's 'never offered' list as a page declares it (the table's data-gt-never, a JSON array;
+// the page's own keys kept), held on the grid while the page draws it again: this observer answers a new table before
+// the next frame, when the tools draw a grid's kept choices (gridtools.ts installGridTools: requestAnimationFrame)
+const pNever = (t, keys) => ev(`(() => { window.__gtNever?.disconnect(); const add = ${JSON.stringify(keys)};
+  const set = () => { const t = ${t}; if (!t) return; let was = []; try { was = JSON.parse(t.getAttribute('data-gt-never') ?? '[]'); } catch { was = []; }
+    if (!Array.isArray(was)) was = []; if (add.every(k => was.includes(k))) return; t.setAttribute('data-gt-never', JSON.stringify([...was, ...add.filter(k => !was.includes(k))])); };
   set(); window.__gtNever = new MutationObserver(set); window.__gtNever.observe(document.body, { childList: true, subtree: true }); return !!${t}; })()`);
 const pNeverOff = () => ev(`(() => { window.__gtNever?.disconnect(); delete window.__gtNever; document.querySelectorAll('[data-gt-never]').forEach(t => t.removeAttribute('data-gt-never')); })()`);
 const pTick = name => ev(`(() => { const r = [...(${PANEL}?.querySelectorAll('.gt-col') ?? [])].find(x => (x.querySelector('label:first-child')?.textContent ?? '').trim() === ${JSON.stringify(name)}); const i = r?.querySelector('label:first-child input'); if (!i) return false; i.click(); return true; })()`);
@@ -1627,13 +1631,14 @@ await guard('P-script', async () => {
   await pNeverOff(); await gmClose();
   const held = ['_worst', '_cells', '_acked', '_live', '_chips', 'engine'].filter(k => namesCol(sum, k));
   const gmCols = sum ? [...new Set((sum.text.split('\n').filter(l => !/^\s*,?\s*\(/.test(l)).join('\n').match(/(?:^|[^A-Za-z0-9_])([gm]_[A-Za-z0-9_]+)/g) ?? []).map(x => x.replace(/^[^gm]/, '')))] : [];
-  const wantSub = ['Script Data Table', 'Script Grid'], subL = lv.map(x => x.label), offs = lv.filter(x => /^From /.test(x.label)).map(x => x.label + ' ' + (x.off ?? 'ON'));
-  check('P-script', okSub && onHead && JSON.stringify(subL) === JSON.stringify(wantSub) && offs.length === 0
+  const wantSub = ['From Data Table', 'From Grid', 'Script Data Table', 'Script Grid'], subL = lv.map(x => x.label), offs = lv.filter(x => /^From /.test(x.label)).map(x => x.off ?? 'ON');
+  const offWords = 'off: an administrator turns on doors: save_table in pgvigil.yaml; the door login needs CREATE in the database';
+  check('P-script', okSub && onHead && JSON.stringify(subL) === JSON.stringify(wantSub) && offs.length === 2 && offs.every(o => o === offWords)
     && dialect(sg) === 'postgres' && sg.copy && /CREATE TEMP TABLE/.test(sg.text) && tuples(sg.text) === shownN && shownN > 0 && shownN < all && !namesCol(sg, 'instance_id')
     && dialect(sd) === 'postgres' && tuples(sd.text) === all && namesCol(sd, 'instance_id')
     && dialect(pg) === 'postgres' && msTab !== '' && dialect(ms) === 'sqlserver'
     && never && !!sum && namesCol(sum, 'instance_id') && held.length === 0 && gmCols.length === 0,
-    `Save Table on a cell ${okSub}, on the header ${onHead}: ${JSON.stringify(subL)}, From items shown ${JSON.stringify(offs)}; Instances filtered to '${first}' (${shownN} of ${all} rows): Script Grid ${dialect(sg)}, ${sg ? tuples(sg.text) : 0} value rows, instance_id ${namesCol(sg, 'instance_id') ? 'named' : 'not named'}, the viewer's Copy ${!!sg?.copy}`
+    `Save Table on a cell ${okSub}, on the header ${onHead}: ${JSON.stringify(subL)}, the From items' words ${JSON.stringify(offs)}; Instances filtered to '${first}' (${shownN} of ${all} rows): Script Grid ${dialect(sg)}, ${sg ? tuples(sg.text) : 0} value rows, instance_id ${namesCol(sg, 'instance_id') ? 'named' : 'not named'}, the viewer's Copy ${!!sg?.copy}`
     + `; Script Data Table ${dialect(sd)}, ${sd ? tuples(sd.text) : 0} value rows, instance_id ${namesCol(sd, 'instance_id') ? 'named' : 'not named'}; a PostgreSQL instance's Statements: ${dialect(pg)}; a SQL Server instance's ${msTab || 'pages (none of the six drew rows)'}: ${dialect(ms)}`
     + `; the Summary's Instances grid with 'engine' never offered (${never}): Script Data Table ${sum ? `names instance_id ${namesCol(sum, 'instance_id')}, held-back columns named ${JSON.stringify(held)}, g_ / m_ columns ${JSON.stringify(gmCols).slice(0, 160)}` : 'not opened'}`);
 });
