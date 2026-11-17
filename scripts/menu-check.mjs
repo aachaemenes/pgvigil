@@ -287,7 +287,9 @@
 //                     'no title: <labels>'. Batch 2 (rows written 11-17 07:0x): sql01's Memory page, the grid under
 //                     'Workload groups and resource pools' alone (20 labels) - red on 0816da3c. A row with a heading is
 //                     named 'H-title <page> (<heading>) <scope>'. Batch 3 (07:0x): sql01's Log Shipping, its Summary
-//                     (5 labels) and Detail (5) grids - red on ccc2a4e9.
+//                     (5 labels) and Detail (5) grids - red on ccc2a4e9. A heading names the FIRST grid after its h3
+//                     (before the next h2 / h3). Batch 4 (07:0x): the root Backups page's SQL Server grids, by instance
+//                     (4 labels) and databases (2) - red on 0072e2f6.
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1823,6 +1825,9 @@ const L20 = [
   // batch 3: Log Shipping (DBA Dash's LogShippingView: its Summary and Detail grids; the panel's grids below reuse 'Instance')
   ['mssqllogshipping', ['ms'], ['Instance', 'Primary Instance', 'Missing', 'New DBs', 'Configure'], 'Summary'],
   ['mssqllogshipping', ['ms'], ['Instance', 'Primary Instance', 'Excluded By', 'Create Date', 'Configure'], 'Detail'],
+  // batch 4: Backups (DBA Dash's BackupsView: its instance summary and its database grid; the root's SQL Server sections)
+  ['backups', ['root'], ['instance', 'oldest full', 'oldest differential', 'oldest log'], 'SQL Server backups by instance'],
+  ['backups', ['root'], ['instance', 'database'], 'SQL Server databases'],
 ];
 const msWord = /SQL Server|\bsys\.|DBCC|T-SQL|default trace|msdb|query hash|plan cache/i;
 const sqlId20 = idOf('demo-onprem-sql01');
@@ -1831,8 +1836,11 @@ for (const [route, scopes, labels, heading] of L20) for (const sc of scopes) {
   await guard(name, async () => {
     await go(`#/${route}${sc === 'pg' ? `?i=${erpId}` : sc === 'ms' ? `?i=${sqlId20}` : ''}`); await sleep(1500);
     // every header cell of the page's grids, drawn or empty: its label and its title
-    const root = heading ? `([...document.querySelectorAll('main h3')].find(h => h.textContent.trim().startsWith(${JSON.stringify(heading)}))?.nextElementSibling ?? null)` : `document.querySelector('main')`;
-    const ths = await ev(`[...(${root}?.querySelectorAll('table.grid > thead > tr:first-child > th, table.grid-empty > thead > tr > th') ?? [])]
+    // a heading: the first grid after that h3, before the next h2 / h3 (a line or a picker may stand between them)
+    const tables = heading ? `(() => { let n = [...document.querySelectorAll('main h3')].find(h => h.textContent.trim().startsWith(${JSON.stringify(heading)}))?.nextElementSibling;
+        for (; n && !/^H[23]$/.test(n.tagName); n = n.nextElementSibling) { if (n.matches('table.grid, table.grid-empty')) return [n]; const t = n.querySelector('table.grid, table.grid-empty'); if (t) return [t]; }
+        return []; })()` : `[...document.querySelectorAll('main table.grid, main table.grid-empty')]`;
+    const ths = await ev(`${tables}.flatMap(t => [...t.querySelectorAll(':scope > thead > tr:first-child > th')])
       .map(h => ({ label: (h.querySelector('.th-label') ?? h).textContent.trim(), title: h.getAttribute('title') ?? '' }))`);
     const missing = labels.filter(l => { const hs = (ths ?? []).filter(h => h.label === l); return hs.length === 0 || hs.some(h => h.title === '' || h.title === l); });
     const absent = labels.filter(l => !(ths ?? []).some(h => h.label === l));
