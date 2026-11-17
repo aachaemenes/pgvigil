@@ -1,7 +1,24 @@
 B20-1's WIRING (the lead's router.ts): the Trend page (reports.ts rp_trend) in the Reports tree of the root, a PostgreSQL
-instance and a SQL Server instance, after Table Size; its label beside the instance tabs' report labels.
+instance and a SQL Server instance, after Table Size; its label beside the instance tabs' report labels. In the same
+commit, scripts/wording-expected.txt's two pg-tag rows of the Reports folder's tab strip ('Extended Properties', 'SQL Login'
+- the strip every Reports page draws, its fix the tab names per engine) name rp_trend among the folder's pages (b20-walk1).
 Apply on rel-b20 (or the join that holds it): git apply -3 scripts/b20-wiring-router.patch
 
+diff --git i/scripts/wording-expected.txt w/scripts/wording-expected.txt
+index 960e45b6..8e2d1d7b 100644
+--- i/scripts/wording-expected.txt
++++ w/scripts/wording-expected.txt
+@@ -124,8 +124,8 @@ must-not | pg-tag | ^alertrules\?tag= | attr | mssql_ | alert_rules.ts:484 (the
+ must | pg-tag | ^mssqltempdb\?tag= | prose | tempdb | mssql_perf.ts:327 (a SQL Server-only page) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
+ must | pg-tag | ^mssqltempdb\?tag= | prose | mssql_ | mssql_perf.ts:327 (a SQL Server-only page) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
+ must | pg-tag | ^rp_props\?tag= | heading | Extended Properties | reports.ts (the heading is rootTabs' name) | the heading per engine (web/src/reports.ts), with router.ts:48's name
+-must | pg-tag | ^(community|customreports|reportmail|rp_actions|rp_dbdeleted|rp_dbnew|rp_deadlocks|rp_dlcharts|rp_failed|rp_finder|rp_flushed|rp_killed|rp_props|rp_pwage|rp_qs|rp_qscharts|rp_recycle|rp_roles|rp_services|rp_tables)\?tag= | tab | Extended Properties | router.ts:48 rootTabs (the Reports group's tab names) | the report's name per engine where the scope holds no SQL Server (web/src/router.ts:48), as the pg-instance rp_ rows
+-must | pg-tag | ^(community|customreports|reportmail|rp_actions|rp_dbdeleted|rp_dbnew|rp_deadlocks|rp_dlcharts|rp_failed|rp_finder|rp_flushed|rp_killed|rp_props|rp_pwage|rp_qs|rp_qscharts|rp_recycle|rp_roles|rp_services|rp_tables)\?tag= | tab | SQL Login | router.ts:48 rootTabs (the Reports group's tab names) | the report's name per engine where the scope holds no SQL Server (web/src/router.ts:48), as the pg-instance rp_ rows
++must | pg-tag | ^(community|customreports|reportmail|rp_actions|rp_dbdeleted|rp_dbnew|rp_deadlocks|rp_dlcharts|rp_failed|rp_finder|rp_flushed|rp_killed|rp_props|rp_pwage|rp_qs|rp_qscharts|rp_recycle|rp_roles|rp_services|rp_tables|rp_trend)\?tag= | tab | Extended Properties | router.ts:48 rootTabs (the Reports group's tab names) | the report's name per engine where the scope holds no SQL Server (web/src/router.ts:48), as the pg-instance rp_ rows
++must | pg-tag | ^(community|customreports|reportmail|rp_actions|rp_dbdeleted|rp_dbnew|rp_deadlocks|rp_dlcharts|rp_failed|rp_finder|rp_flushed|rp_killed|rp_props|rp_pwage|rp_qs|rp_qscharts|rp_recycle|rp_roles|rp_services|rp_tables|rp_trend)\?tag= | tab | SQL Login | router.ts:48 rootTabs (the Reports group's tab names) | the report's name per engine where the scope holds no SQL Server (web/src/router.ts:48), as the pg-instance rp_ rows
+ must | pg-tag | ^rp_deadlocks\?tag= | th | SPID | reports.ts:335 'SPID' | the column 'pid' where the row is PostgreSQL (web/src/reports.ts:335)
+ must | pg-tag | ^rp_flushed\?tag= | heading | Flushed Plans | router.ts:48 rp_flushed (a SQL Server-only report) | rp_flushed out of a PostgreSQL-only scope: the filter by engine at web/src/main.ts:352, the Reports group's tab list with it
+ must | pg-tag | ^rp_roles\?tag= | prose | SQL Login | reports.ts:503 'Type: S SQL login, U Windows login ...; PostgreSQL L ...' | two attributed sentences: 'SQL Server: S a SQL login, U a Windows login, G a Windows group, R a server role.' and 'PostgreSQL: L a login role, R a role that cannot log in.' (web/src/reports.ts:503)
 diff --git i/web/src/router.ts w/web/src/router.ts
 index 162aaddf..23f8dfb8 100644
 --- i/web/src/router.ts
