@@ -572,8 +572,17 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   if [[ ${#INSTALLED[@]} == 3 ]]; then
     [[ $(js "sum(1 for t in d['tools'] if t['kind']=='proc' and t['installed'])") == 13 ]] || fail "M: not every procedure installed: $(js "[t['name'] for t in d['tools'] if t['kind']=='proc' and not t['installed']]")"
   fi
+  # the procedures installed in master are exactly the given kits' own (a fresh container: none with no kit), and the
+  # line says how many, never 'installed' where none are
+  kg=""; for f in "${INSTALLED[@]}"; do case $f in frk-install-all.sql) kg+="First Responder Kit|" ;; darlingdata.sql) kg+="Darling Data|" ;; sp_WhoIsActive.sql) kg+="sp_WhoIsActive|" ;; esac; done
+  mins=$(js "sorted(t['name'] for t in d['tools'] if t['kind']=='proc' and t['installed'])")
+  mwant=$(js "sorted(t['name'] for t in d['tools'] if t['kind']=='proc' and t['group'] in '$kg'.split('|')[:-1])")
+  [[ $mins == "$mwant" ]] || fail "M: the procedures installed in master are not the given kits' own: installed $mins, the kits' $mwant"
+  mn=$(js "sum(1 for t in d['tools'] if t['kind']=='proc' and t['installed'])")
+  if [[ ${#INSTALLED[@]} == 0 ]]; then mw="$mn of 13 procedures installed in master (no community kit given)"
+  else kl=$(printf '%s, ' "${INSTALLED[@]}"); mw="$mn of 13 procedures installed in master, exactly the given kits' (${kl%, })"; fi
   [[ $(getc "community?instance=$MRID&database=tempdb") == 200 && $(js "sum(1 for t in d['tools'] if t['kind']=='proc' and t['installed'] is False and t['url'])") == 13 ]] || fail "M: tempdb: $(cat "$WORK/body")"
-  ok "M: 14 tools on $MSR, the procedures installed in master; none in tempdb, each with its URL"
+  ok "M: 14 tools on $MSR, $mw; none in tempdb, each with its URL"
   # ---- V: each procedure's version against the tested one, read from its own text; the install script printed
   if [[ ${#INSTALLED[@]} == 3 ]]; then
     [[ $(getc "community?instance=$MRID&fresh=1") == 200 ]] || fail "V: GET community: $(cat "$WORK/body")"
