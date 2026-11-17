@@ -534,6 +534,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     full: 'backups', diff: 'backups', log: 'backups', disk: 'drives', jobs: 'jobs', errors: 'collectionhealth', snapshot: 'collectiondates',
     checkdb: 'corruption', corruption: 'corruption', logspace: 'dbfiles', filespace: 'dbfiles', replication: 'pgreplication', custom: 'custom',
     dbstate: 'mssqlrisks', activity: 'running', dms: 'dms', tables: 'tablesize', roles: 'roles', indexes: 'indexes', version: 'versions',
+    elasticpool: 'azuresummary',   // control audit X3: DBA Dash's Elastic Pool Storage test opens the Azure Summary
   };
   // on a scope that holds a SQL Server instance the three HA tests open DBA Dash's HA/DR pages (task 383); a
   // PostgreSQL-only scope keeps Replication on the PostgreSQL page - the same test the column labels use (labelOf)
