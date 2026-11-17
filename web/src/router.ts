@@ -195,9 +195,9 @@ export function groupOf(groups: TabGroup[], tab: string): TabGroup {
   return groups.find(g => g.tabs.includes(t)) ?? groups[0];
 }
 // the drill-down pages of one instance (drill.ts): reached by links, not shown in the tab strip
-export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index', compare: 'Compare', mssqldb: 'Database' };
+export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index', compare: 'Compare' };
 // the tab a drill page belongs to: marked in the strip, and where the tree's link to another instance lands
-export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements', collectionperf: 'collectionhealth', mssqldb: 'dbspace' };
+export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements', collectionperf: 'collectionhealth' };
 
 export function parse(): Ctx {
   const h = location.hash.replace(/^#\/?/, '');
@@ -282,7 +282,7 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   // same page, so a range change stays on the same database, table, job or index
   if (keep && (drillTabs[c.tab] || c.tab === 'dbinfo')) {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
-    for (const k of ['db', 'rel', 'scheduler', 'job', 'idx', 'dbtab', 'fg']) { const v = cur.get(k); if (v) q.set(k, v); }
+    for (const k of ['db', 'rel', 'scheduler', 'job', 'idx']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
   // the Collector errors and SQL Server errors pages' filters stay on their own links: a range change keeps them
   if (keep && (c.tab === 'collectorerrors' || c.tab === 'mssqlerrors')) {

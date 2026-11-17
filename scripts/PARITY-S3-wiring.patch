@@ -1,0 +1,71 @@
+--- a/web/src/main.ts
++++ b/web/src/main.ts
+@@ -60,6 +60,7 @@
+ import { jobsPgView } from './jobs_pg';
+ import { pgDeadlocksView } from './pg_deadlocks';
+ import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
++import { mssqlDbView } from './mssql_db';
+ import { mssqlMaintenanceView } from './mssql_maintenance';
+ import { mssqlRowVersionsView } from './mssql_rowversions';
+ import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
+@@ -118,7 +119,7 @@
+   jobstimeline: jobsTimelineView, custom: customView,
+   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); s.append(await geoReplBlock(c).catch(() => document.createElement('span'))); s.append(await cloudReplicasBlock(c).catch(() => document.createElement('span'))); return s; },
+   mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
+-  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
++  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView, mssqldb: mssqlDbView,
+   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, collectionhealth: collectionHealthView, collectionperf: collectionPerfView,
+   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlazure: mssqlAzureView, mssqlactions: mssqlActionsLogView,
+   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
+--- a/web/src/router.ts
++++ b/web/src/router.ts
+@@ -165,7 +165,7 @@
+   mssql_blocked: 'Blocked reports', mssql_xewaits: 'Waits over the threshold', mssql_xewarnings: 'Query warnings', mssql_xemodules: 'Procedure runs', mssql_xecaptures: 'XE captures', findings: 'Findings', availability: 'Availability', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', mssqlbackups: 'Backups', mssqlrestore: 'Restore chain', mssqljobs: 'Jobs', mssqlmaintenance: 'Maintenance',
+   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlazure: 'Azure', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
+   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
+-  mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlsecurity: 'Security', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
++  mssqlprocs: 'Procedures', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlsecurity: 'Security', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
+   schema: 'Schema',
+   mssqlqueries: 'Queries', custom: 'Custom',
+   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health', mssqlerrors: 'SQL Server errors',
+@@ -181,7 +181,7 @@
+   { key: 'hadr', name: 'HA/DR', tabs: ['mssqlbackups', 'mssqlrestore', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'availability'] },
+   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
+   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'mssqlmaintenance', 'jobstimeline'] },
+-  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool', 'mssqlazure'] },
++  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'rp_qscharts', 'rp_qs', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool', 'mssqlazure'] },
+   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqlerrors', 'mssqltrace', 'mssqlhealth'] },
+   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'customreports', 'community'] },
+ ];
+@@ -195,9 +195,9 @@
+   return groups.find(g => g.tabs.includes(t)) ?? groups[0];
+ }
+ // the drill-down pages of one instance (drill.ts): reached by links, not shown in the tab strip
+-export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index', compare: 'Compare' };
++export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index', compare: 'Compare', mssqldb: 'Database' };
+ // the tab a drill page belongs to: marked in the strip, and where the tree's link to another instance lands
+-export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements', collectionperf: 'collectionhealth' };
++export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements', collectionperf: 'collectionhealth', mssqldb: 'dbspace' };
+ 
+ export function parse(): Ctx {
+   const h = location.hash.replace(/^#\/?/, '');
+@@ -282,7 +282,7 @@
+   // same page, so a range change stays on the same database, table, job or index
+   if (keep && (drillTabs[c.tab] || c.tab === 'dbinfo')) {
+     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+-    for (const k of ['db', 'rel', 'scheduler', 'job', 'idx']) { const v = cur.get(k); if (v) q.set(k, v); }
++    for (const k of ['db', 'rel', 'scheduler', 'job', 'idx', 'dbtab', 'fg']) { const v = cur.get(k); if (v) q.set(k, v); }
+   }
+   // the Collector errors and SQL Server errors pages' filters stay on their own links: a range change keeps them
+   if (keep && (c.tab === 'collectorerrors' || c.tab === 'mssqlerrors')) {
+--- a/web/src/dbinfo.ts
++++ b/web/src/dbinfo.ts
+@@ -17,7 +17,7 @@ export function hashParam(name: string): string | undefined {
+ 
+ // the page parameters of the Database info tab and the drill-down pages: the router keeps them on a link to the same
+ // page (a range change), hrefWith sets only the ones it is given
+-export const pageKeys = ['db', 'rel', 'scheduler', 'job', 'idx'];
++export const pageKeys = ['db', 'rel', 'scheduler', 'job', 'idx', 'dbtab', 'fg'];
+ 
+ // hrefWith is the router's link to a tab (instance, tag and time range kept) plus page parameters of its own.
+ export function hrefWith(ctx: Ctx, tab: string, extra: Record<string, string | number | undefined>, instance = ctx.instance): string {

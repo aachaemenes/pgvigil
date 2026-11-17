@@ -56,3 +56,15 @@
 --    the payload carries the 'db_snapshot' rows or one 'snapshots_unread' row (dboptions.go confSnapshotRows); (b)
 --    mssql_db_snapshot under pgvigil_scope (the join's scope tests name it); (c) purge: the rows go with the instance
 --    (ON DELETE CASCADE); a dropped snapshot's row stays not present, as mssql_files' do. No grant line (line 4).
+
+-- 6. scripts/PARITY-S3-wiring.patch (the lead's 09:0x (a)): the wiring files' hunks, applied by the lead at the join -
+--    web/src/router.ts (drillTabs / drillHome mssqldb; the drill pages' range-change keep list takes dbtab and fg; the
+--    SQL Server instance's Performance folder gains Query Stats Charts and Query Stats - the root's reports cut to the
+--    instance, task 6, map row 20), web/src/main.ts (mssqlPages mssqldb: mssqlDbView), web/src/dbinfo.ts (pageKeys
+--    take dbtab and fg; other j17 branches touch dbinfo.ts: 612b6dcb / d946f374 j17's first step, b86d6da1 D481 T5,
+--    980dfae9 / d016f0c5 the info pages' WIRING). TestMSSQLDatabasePageIsWired and TestEveryMSSQLTabHasAPage read
+--    those files: they run with the patch applied.
+-- 7. D481 T5 (b86d6da1: web/src/route.ts owns the address - every read of location.hash is routeHash(), every write
+--    setRoute()): this branch reads and writes the hash directly in mssql_db.ts L94 (the file group's pick), L129-133
+--    (the Query Store tabs' qdb / qs, with history.replaceState) and mssql_xe.ts L35 (the database page's db=); at the
+--    join each becomes routeHash() / setRoute() as D481's rule says.
