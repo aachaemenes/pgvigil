@@ -29,16 +29,13 @@ func TestDailyChecksPostList(t *testing.T) {
 	if fmt.Sprint(d.Post) != "[hook chat]" || fmt.Sprint(d.Request().Post) != "[hook chat]" {
 		t.Errorf("post %v, the request's %v", d.Post, d.Request().Post)
 	}
-	pay, key, err := d.Request().Payload(time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC))
+	// whether a changed list is a change is the repository's compare (0273; the proof's K19c): no key here says it
+	pay, _, err := d.Request().Payload(time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fmt.Sprint(pay["post_channels"]) != "[hook chat]" {
 		t.Errorf("the payload's post_channels %v", pay["post_channels"])
-	}
-	_, key2, _ := KeptRequest{At: "07:00", TZ: "UTC", As: "dba", Channel: "mail", To: []string{"dba@example.org"}, AttachXLSX: true}.Payload(time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC))
-	if key == key2 {
-		t.Error("a keep with posts and one without have one key: a changed post list would read as kept")
 	}
 	if d, err := ParseDailyChecks(postBlock("")); err != nil || len(d.Post) != 0 {
 		t.Errorf("no post: %v %v", d, err)
@@ -47,10 +44,28 @@ func TestDailyChecksPostList(t *testing.T) {
 		{"    post: [mail]\n", "reports.daily_checks: post: mail is not a webhook channel of alerts:"},
 		{"    post: [hook, nope]\n", "reports.daily_checks: post: nope is not a webhook channel of alerts:"},
 		{"    post: hook\n", "reports.daily_checks: post is a list of webhook channel names of the alerts: block, as [team-chat] (line 13 of the file)"},
+		// review-26 go2 S2: an entry that is no channel name (a webhook's URL pasted for its channel) is named by its
+		// place, never printed - serve's log and the support report carry the refusal; N1: an empty name the same
+		{"    post: ['https://hooks.example/T0/secret']\n", "reports.daily_checks: post: entry 1 of the list is not a webhook channel of alerts:"},
+		{"    post: [hook, https://hooks.example/T0/secret]\n", "reports.daily_checks: post: entry 2 of the list is not a webhook channel of alerts:"},
+		{"    post: [hook, \"\"]\n", "reports.daily_checks: post: entry 2 of the list is not a webhook channel of alerts:"},
+		{"    post: [Team Chat]\n", "reports.daily_checks: post: entry 1 of the list is not a webhook channel of alerts:"},
 	} {
 		if _, err := ParseDailyChecks(postBlock(c.post)); err == nil || err.Error() != c.want {
 			t.Errorf("post %q: %v, want %q", strings.TrimSpace(c.post), err, c.want)
 		}
+	}
+	// review-26 go2 N1: an alias reads as the list it stands for; a channel that takes its kind through a merge key
+	// is a webhook channel
+	alias := "instances:\n  - {name: pg1, dsn: env:D, tags: &hooks [hook, chat]}\n" + string(postBlock("    post: *hooks\n"))
+	if d, err := ParseDailyChecks([]byte(alias)); err != nil || fmt.Sprint(d.Post) != "[hook chat]" {
+		t.Errorf("post: *hooks: %v %v", d, err)
+	}
+	merged := "alerts:\n  - &h {name: hook, kind: webhook, webhook: {url: env:X, format: json}}\n  - {<<: *h, name: hook2}\n" +
+		"  - {name: mail, kind: smtp, smtp: {host: 127.0.0.1, port: 25, from: a@b.org, to: [a@b.org]}}\n" +
+		"reports:\n  daily_checks:\n    enabled: true\n    at: 07:00\n    tz: UTC\n    to: [dba@example.org]\n    as: dba\n    channel: mail\n    post: [hook2]\n"
+	if d, err := ParseDailyChecks([]byte(merged)); err != nil || fmt.Sprint(d.Post) != "[hook2]" {
+		t.Errorf("a channel with a merge key: %v %v", d, err)
 	}
 	// an off block is checked for enabled alone: its post list may stay for the day it is turned on again
 	if _, err := ParseDailyChecks([]byte(postAlerts + "reports:\n  daily_checks:\n    enabled: false\n    post: [mail]\n")); err != nil {

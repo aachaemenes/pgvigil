@@ -48,6 +48,8 @@
 #   B20-4, the daily fleet health (the lead 11-15 16:3x D5 (a); written 11-16 15:1x before the first run; K15-K21 run after
 #   K14, on the plain serves, with a sender of their own whose configuration adds two webhook channels - hook, a loopback
 #   sink that keeps every POST's body, and deadhook, a port nothing listens on - and alerts_base_url http://pgvigil.test):
+#   K15u checksorder.ts's unit rows (web/src/checksorder.test.mjs, bundled by web's esbuild) all ok: the worst-first
+#       order and the post's numbers (review-26 go2 S3; written 11-16 16:4x before its first run).
 #   K15 THE ORDER: two proof instances of known bands, k15-aaa (1 critical, 3 warnings) and k15-zzz (2 critical), named
 #       so the reader's order (critical rows first, by name) puts k15-aaa first: the Daily checks page draws the rows
 #       naming no instance first, then each instance's rows together, the instances by critical count, warning count,
@@ -62,6 +64,9 @@
 #       worst three = the first three instances of the mail's grid in order, the link http://pgvigil.test/#/checks?w=24h;
 #       the send's posted_at set, post_error NULL; GET part=daily lists post_choices [deadhook, hook] (the repository's
 #       configured webhook channels) and post [hook].
+#   K17c THE DIALOG'S POST BOXES (review-26 go2 S4; written 11-16 16:4x before its first run): Change... on the page -
+#       the line says 'Its counts are posted to hook.', every field labelled, the hook box checked and the deadhook box
+#       not; Save with nothing changed answers done and writes nothing (post_channels still {hook}, no log row).
 #   K18 a second turn the same day is mailed (sent) and posts nothing: the sink unchanged, its post_taken_at NULL, its
 #       post_error 'the schedule's post of <day> was taken already' (review-26 N5; written 15:5x before its first run).
 #   K18b a turn due yesterday and mailed today posts ONCE under its due day: post_day and the post's day / summary are
@@ -73,15 +78,22 @@
 #   K19b a sent mail whose page sent no counts (its send row as the server stores it: post NULL, post_error 'the drawn
 #       page sent no counts') is alerted: a 'daily checks post failed' notice naming the mail and 'sent no counts'
 #       (review-26 S3; written 15:5x before its first run).
+#   K19c THE KEEP'S POST LIST (review-26 go2 S5, S6, N3; written 11-16 16:4x before its first run): a daily_keep with no
+#       post field (a page loaded before the upgrade) leaves post_channels {deadhook} and writes nothing; post [hook]
+#       then post [hook, deadhook] is a change ('changed', one log row, post_channels {deadhook,hook}); with deadhook
+#       no longer recorded by the sender the dialog says 'deadhook is no longer a recorded webhook channel: Save drops
+#       it', offers hook alone and its Save keeps {hook}; post [] clears the list.
 #   K20 the block's post: list: a serve whose block says post: [hook] keeps post_channels {hook} (kept_by file); a block
 #       with post: [mail] (an smtp channel) stops serve at start with 'reports.daily_checks: post: mail is not a webhook
-#       channel of alerts:'.
+#       channel of alerts:'; a block with a webhook's URL for a name stops it with 'reports.daily_checks: post: entry 1
+#       of the list is not a webhook channel of alerts:' and the URL nowhere in serve's words (review-26 go2 S2).
 #   K20b a block whose post: names a webhook channel the sender has not recorded yet keeps nothing at first (serve's log
-#       says 'post: newhook is not a webhook channel the sender ...') and keeps {newhook} within 75 s of a sender pass
+#       says 'post: newhook is not a webhook channel the sender ...'; nothing written to report_mail_log while it
+#       waits - review-26 go2 S1) and keeps {newhook} within 75 s of a sender pass
 #       that records it, with no restart (review-26 B1: tried again each minute, as channel: is; written 15:5x).
 #   K21 THE ROLE (the lead 11-15 12:0x, DAILYMAIL's line): a viewer's GET part=daily answers writable false with the
-#       role's words ('changing the Daily checks mail needs the admin role: proofview is a viewer'); its daily_keep 403
-#       with the role's words; nothing kept.
+#       role's words, the route's own ('changing a report mail schedule needs the admin role: proofview is a viewer' -
+#       review-26 go2 N4: one wording for the part and the POST); its daily_keep 403 with the same words; nothing kept.
 #   G1  a repository migrated and never seeded, the sender never run: the page-owner serve says the mail needs an smtp
 #       channel (writable false).
 #   G2  the block on there: for 130 s (three tries) nothing is kept, NOTHING is written to report_mail_log, the serve's
@@ -90,8 +102,8 @@
 #   G4  THE GREEN DAY: no check fails there. The turn brought due is SENT (before the fix: failed, 'the page drew no
 #       grid') and its body holds the checks grid's header row, no data row and the sentence 'All checks pass'.
 #   NOT PROVEN here (B20-4): Slack, Teams, Discord and Google Chat bodies against a real workspace (their shapes are
-#       internal/alerts post_test.go's rows); the Mail daily... dialog's post field by a click (K17 reads the part's
-#       choices); two senders racing one post for real (the unique index on the schedule and the day stands for it).
+#       internal/alerts post_test.go's rows); two senders racing one post for real (the unique index on the schedule
+#       and the day stands for it).
 #   NOT PROVEN here: a send at the real hour (next_at is brought due by hand); two serves racing a keep for real (K3's
 #       two sessions stand for it); the note on a server without a browser.
 
@@ -230,14 +242,17 @@ const LINE = `(() => { const p = document.querySelector('main p.daily-mail'); re
 const res = await ev(LINE);
 res.h2 = await ev(`document.querySelector('main h2')?.textContent ?? ''`);
 const said = async () => { let s = ''; for (let n = 0; n < 100; n++) { await sleep(200); s = await ev(`document.querySelector('dialog[open] [role=status]')?.textContent ?? ''`); if (/done|not done/.test(s)) break; } return s; };
-if (mode === 'off' || mode === 'keep') {
-  const label = mode === 'off' ? 'Turn off' : 'Mail daily...';
+if (mode === 'off' || mode === 'keep' || mode === 'change') {
+  const label = mode === 'off' ? 'Turn off' : mode === 'change' ? 'Change...' : 'Mail daily...';
   const hit = await ev(`(() => { const b = [...document.querySelectorAll('main p.daily-mail button')].find(x => x.textContent === ${JSON.stringify(label)}); if (!b) return false; b.click(); return true; })()`);
   if (!hit) { console.log(JSON.stringify({ ...res, error: 'no button ' + label })); process.exit(1); }
   for (let n = 0; n < 50 && !await ev(`!!document.querySelector('dialog[open] form')`); n++) await sleep(100);
   res.title = await ev(`document.querySelector('dialog[open] h3')?.textContent ?? ''`);
-  if (mode === 'keep') {
+  if (mode === 'keep' || mode === 'change') {
     res.unlabelled = await ev(`[...document.querySelectorAll('dialog[open] input, dialog[open] select, dialog[open] textarea')].filter(x => !x.closest('label')).length`);
+    // the post boxes as the dialog drew them (each a webhook channel's name; left as found) and its word on a kept channel that is gone
+    res.posts = await ev(`[...document.querySelectorAll('dialog[open] input[type=checkbox][value]')].map(b => [b.value, b.checked])`);
+    res.note = await ev(`document.querySelector('dialog[open] .post-gone')?.textContent ?? ''`);
     await ev(`(() => { const d = document.querySelector('dialog[open]'); const t = d.querySelector('textarea'); t.value = ${JSON.stringify(arg)}; t.dispatchEvent(new Event('input', { bubbles: true }));
       const tz = d.querySelectorAll('select')[0]; tz.value = 'UTC'; tz.dispatchEvent(new Event('change', { bubbles: true }));
       const ch = d.querySelectorAll('select')[1]; ch.value = 'mail'; ch.dispatchEvent(new Event('change', { bubbles: true })); })()`);
@@ -412,6 +427,15 @@ KBAD=0
 kfail() { if [[ ${PGVIGIL_KROWS_GO:-0} == 1 ]]; then echo "FAIL $*"; KBAD=$((KBAD + 1)); else fail "$@"; fi; }
 KROW=0
 kok() { if (( KBAD == KROW )); then ok "$@"; else echo "FAIL ${1%%:*}: the row ended with $((KBAD - KROW)) failed check(s) above"; fi; }
+# ---- K15u: checksorder.ts's unit rows, as the other web/src/*.test.mjs are run by their proofs (review-26 go2 S3) ----------
+if [[ ! -x web/node_modules/.bin/esbuild ]]; then
+  kfail "K15u: web/node_modules has no esbuild: run 'npm ci' in web/"
+elif ! web/node_modules/.bin/esbuild web/src/checksorder.ts --bundle --format=esm --platform=neutral --log-level=warning --outfile="$WORK/checksorder.mjs" > "$WORK/checksorder-unit.out" 2>&1; then
+  kfail "K15u: esbuild could not bundle web/src/checksorder.ts: $(head -c 300 "$WORK/checksorder-unit.out" | tr '\n' ' ')"
+elif ! node web/src/checksorder.test.mjs "$WORK/checksorder.mjs" > "$WORK/checksorder-unit.out" 2>&1; then
+  kfail "K15u: web/src/checksorder.test.mjs: $(grep -E '^FAIL|rror' "$WORK/checksorder-unit.out" | head -3 | tr '\n' ' ' | cut -c1-400)"
+fi
+kok "K15u: checksorder.ts's unit rows (web/src/checksorder.test.mjs): $(grep -c '^ok' "$WORK/checksorder-unit.out" 2>/dev/null || true) ok, none failed"
 # the webhook sink: every POST's body one file in $WORK/hook
 HOOKP=$(freeport); DEADHOOKP=$(freeport); mkdir -p "$WORK/hook"
 cat > "$WORK/hook.py" <<'PY'
@@ -622,6 +646,17 @@ for who in "$RDR" "$COL"; do
 done
 kok "K17: the turn (mail $SEND, sent): the mail's checks grid worst first; one post to hook with that mail's counts, the page's instance count, the worst three in order and the link; posted_at set; the reader and the collector may not take or record a post"
 
+# ---- K17c: the dialog's post boxes (review-26 go2 S4) -------------------------------------------------------------------
+KROW=$KBAD
+L5=$(nlog)
+kdrive change '#/checks?w=24h' 'post@pgvigil.test' > "$WORK/kd.json" || kfail "K17c: Change...: $(cat "$WORK/kd.json")"
+[[ $(kd "d['line']") == *"Its counts are posted to hook."* && $(kd "d['title']") == "Change the daily mail" && $(kd "d['unlabelled']") == 0 \
+   && $(kd "sorted(map(tuple, d['posts']))") == "[('deadhook', False), ('hook', True)]" && $(kd "d['said']") == *done* ]] \
+  || kfail "K17c: Change...'s dialog (the line, every field labelled, hook checked and deadhook not, Save done): $(cat "$WORK/kd.json")"
+[[ $(klive schedule_id) == "$KID" && $(klive "post_channels") == "{hook}" && $(klive channel) == mail && $(klive "recipients[1]") == post@pgvigil.test && $(nlog) == "$L5" ]] \
+  || kfail "K17c: a Save with nothing changed: schedule $(klive schedule_id) (was $KID), post_channels $(klive "post_channels"), $(( $(nlog) - L5 )) log row(s) written"
+kok "K17c: Change...'s dialog on the kept mail: the line names the post, every field labelled, the hook box checked and deadhook's not; its Save with nothing changed answered done and wrote nothing"
+
 # ---- K18: a second turn the same day posts nothing ------------------------------------------------------------------------
 KROW=$KBAD
 P0=$(nposts)
@@ -674,15 +709,38 @@ kwaitsent "$SEND4" || kfail "K19b: mail $SEND4 not answered in 3 minutes"
 grep -rl '"setting": "daily checks post failed"' "$WORK/drop" 2>/dev/null | xargs -r grep -l "mail $SEND4, sent): the drawn page sent no counts" | grep -q . || kfail "K19b: no 'daily checks post failed' notice naming mail $SEND4 and 'sent no counts' in the file drop"
 kok "K19b: a sent mail whose page sent no counts (mail $SEND4) was alerted ('daily checks post failed')"
 
+# ---- K19c: the keep's post list through the door (review-26 go2 S5, S6) and a kept channel that is gone (N3) -----------------
+KROW=$KBAD
+KKEEP='"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"mail"'
+L6=$(nlog)
+c=$(postj reportmail "{$KKEEP}")
+[[ $c == 200 && $(jget "d['outcome']") == done && $(klive schedule_id) == "$KID" && $(klive "post_channels") == "{deadhook}" && $(nlog) == "$L6" ]] \
+  || kfail "K19c: a keep with no post field (a page loaded before the upgrade): $c $(cat "$WORK/body"); post_channels $(klive "post_channels"), $(( $(nlog) - L6 )) log row(s) written"
+c=$(postj reportmail "{$KKEEP,\"post\":[\"hook\"]}")
+[[ $c == 200 && $(klive "post_channels") == "{hook}" ]] || kfail "K19c: the keep with post [hook]: $c $(cat "$WORK/body"); post_channels $(klive "post_channels")"
+L7=$(nlog)
+c=$(postj reportmail "{$KKEEP,\"post\":[\"hook\",\"deadhook\"]}")
+[[ $c == 200 && $(jget "d['detail']") == *changed* && $(klive "post_channels") == "{deadhook,hook}" && $(nlog) == $((L7 + 1)) ]] \
+  || kfail "K19c: one more post channel is a change: $c $(cat "$WORK/body"); post_channels $(klive "post_channels"), $(( $(nlog) - L7 )) log row(s) written"
+# deadhook as a channel the sender no longer records (no sender runs inside this row); put back after
+q "update pgvigil.alert_channels set is_configured = false where name = 'deadhook'" >/dev/null
+kdrive change '#/checks?w=24h' 'post@pgvigil.test' > "$WORK/kd.json" || kfail "K19c: Change...: $(cat "$WORK/kd.json")"
+[[ $(kd "d['note']") == *"deadhook is no longer a recorded webhook channel: Save drops it"* && $(kd "sorted(map(tuple, d['posts']))") == "[('hook', True)]" && $(kd "d['said']") == *done* \
+   && $(klive "post_channels") == "{hook}" ]] || kfail "K19c: the dialog with a kept channel that is gone: $(cat "$WORK/kd.json"); post_channels $(klive "post_channels")"
+q "update pgvigil.alert_channels set is_configured = true where name = 'deadhook'" >/dev/null
+c=$(postj reportmail "{$KKEEP,\"post\":[]}")
+[[ $c == 200 && $(klive schedule_id) == "$KID" && $(klive "post_channels") == "-" ]] || kfail "K19c: the keep with post []: $c $(cat "$WORK/body"); post_channels $(klive "post_channels")"
+kok "K19c: a keep with no post field left {deadhook} and wrote nothing; post [hook] then [hook, deadhook] was a change; the dialog named the kept channel that is gone and its Save dropped it; post [] cleared the list"
+
 # ---- K21: the role ------------------------------------------------------------------------------------------------------------
 KROW=$KBAD
 KVUSER=proofview; KVPW=$(openssl rand -hex 12)
 PGVIGIL_PASSWORD=$KVPW "$BIN" user add -config "$CFG" -role viewer $KVUSER >/dev/null 2>&1 || kfail "K21: user add -role viewer"
 login "$WORK/jarv" "$KVUSER" "$KVPW"
 L4=$(nlog); N4=$(nlive)
-[[ $(kget "$U" "$WORK/jarv") == 200 && $(jget "d['daily']['writable']") == False && $(jget "d['daily']['reason']") == *"changing the Daily checks mail needs the admin role: $KVUSER is a viewer"* ]] || kfail "K21: a viewer's part=daily: $(cat "$WORK/body")"
+[[ $(kget "$U" "$WORK/jarv") == 200 && $(jget "d['daily']['writable']") == False && $(jget "d['daily']['reason']") == *"changing a report mail schedule needs the admin role: $KVUSER is a viewer"* ]] || kfail "K21: a viewer's part=daily: $(cat "$WORK/body")"
 c=$(code -b "$WORK/jarv" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["v@pgvigil.test"],"channel":"mail"}' "$U/api/reportmail")
-[[ $c == 403 && $(jget "d['error']") == *"needs the admin role: $KVUSER is a viewer"* && $(nlog) == "$L4" && $(nlive) == "$N4" ]] || kfail "K21: a viewer's daily_keep: $c $(cat "$WORK/body")"
+[[ $c == 403 && $(jget "d['error']") == *"changing a report mail schedule needs the admin role: $KVUSER is a viewer"* && $(nlog) == "$L4" && $(nlive) == "$N4" ]] || kfail "K21: a viewer's daily_keep: $c $(cat "$WORK/body")"
 kok "K21: a viewer's Daily checks mail is read only with the role's words (part=daily writable false; daily_keep 403); nothing kept"
 
 # ---- K20: the block's post: list ----------------------------------------------------------------------------------------------
@@ -697,7 +755,11 @@ kwait 30 filekept || kfail "K20: the serve did not keep the row in 30 s: $(klive
 kstop "$SK"
 rc=0; out=$(timeout 20 "$BIN" serve -config "$WORK/cfg-kpbad.yaml" -listen "127.0.0.1:$(freeport)" 2>&1) || rc=$?
 [[ $rc != 0 && $rc != 124 && $out == *"reports.daily_checks: post: mail is not a webhook channel of alerts:"* ]] || kfail "K20: post: [mail] (exit $rc): $(tail -2 <<<"$out")"
-kok "K20: the block's post: [hook] kept post_channels {hook} (kept_by file); post: [mail] stopped serve at start in words"
+kpcfg "$WORK/cfg-kpurl.yaml" "    enabled: true\n    at: 06:30\n    tz: UTC\n    to: [post@pgvigil.test]\n    as: $UIUSER\n    channel: mail\n    post: [https://hooks.example/T0/kproofsecret]\n"
+rc=0; out=$(timeout 20 "$BIN" serve -config "$WORK/cfg-kpurl.yaml" -listen "127.0.0.1:$(freeport)" 2>&1) || rc=$?
+[[ $rc != 0 && $rc != 124 && $out == *"reports.daily_checks: post: entry 1 of the list is not a webhook channel of alerts:"* && $out != *kproofsecret* ]] \
+  || kfail "K20: post: [a webhook's URL] (exit $rc; the URL in serve's words: $([[ $out == *kproofsecret* ]] && echo yes || echo no)): $(tail -2 <<<"$out" | sed 's#https://[^ ]*#<the URL>#g')"
+kok "K20: the block's post: [hook] kept post_channels {hook} (kept_by file); post: [mail] stopped serve at start in words; a webhook's URL for a name stopped it by its place, the URL never printed"
 
 # ---- K20b: a post: channel the sender has not recorded yet is waited for, never refused for good (review-26 sql B1) ----------
 KROW=$KBAD
@@ -712,15 +774,16 @@ open(sys.argv[2], 'w').write('\n'.join(out) + '\n')
 PY
 { cat "$WORK/cfg-kpost2.yaml"; printf 'reports:\n  daily_checks:\n    enabled: true\n    at: 06:30\n    tz: UTC\n    to: [post@pgvigil.test]\n    as: %s\n    channel: mail\n    post: [newhook]\n' "$UIUSER"; } > "$WORK/cfg-kpnew.yaml"
 [[ $(q "select count(*) from pgvigil.alert_channels where name = 'newhook'") == 0 ]] || kfail "K20b: newhook was recorded before the row"
-PK=$(freeport); UK="http://127.0.0.1:$PK"
+PK=$(freeport); UK="http://127.0.0.1:$PK"; L8=$(nlog)
 kserve "$WORK/cfg-kpnew.yaml" "$PK" servekpnew.log; SK=$KPID
 sleep 10
+[[ $(nlog) == "$L8" ]] || kfail "K20b: $(( $(nlog) - L8 )) row(s) written to report_mail_log while the setting could not be kept yet: $(q "select outcome || ': ' || left(detail, 120) from pgvigil.report_mail_log order by log_id desc limit 1")"
 [[ $(klive "post_channels") != "{newhook}" ]] && grep -q 'post: newhook is not a webhook channel the sender' "$WORK/servekpnew.log" || kfail "K20b: before the sender recorded newhook: $(klive "post_channels"); $(grep -i 'daily checks' "$WORK/servekpnew.log" | tail -2)"
 "$BIN" alerts -config "$WORK/cfg-kpost2.yaml" >> "$WORK/ksender.log" 2>&1 || true   # a sender that names newhook records it
 newkept() { [[ $(klive "post_channels") == "{newhook}" ]] && echo y || echo n; }
 kwait 75 newkept || kfail "K20b: the row after the sender recorded newhook: $(klive "post_channels"); $(grep -i 'daily checks' "$WORK/servekpnew.log" | tail -3)"
 kstop "$SK"
-kok "K20b: post: [newhook] before the sender recorded it: nothing kept, the serve's log says why; kept with {newhook} within 75 s of the sender's pass, no restart"
+kok "K20b: post: [newhook] before the sender recorded it: nothing kept and nothing logged, the serve's log says why; kept with {newhook} within 75 s of the sender's pass, no restart"
 (( KBAD == 0 )) || fail "K15-K21: $KBAD row check(s) failed (PGVIGIL_KROWS_GO=1)"
 
 # ---- G: the green day, on a repository migrated and never seeded ------------------------------------------------------
