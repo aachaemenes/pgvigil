@@ -299,7 +299,8 @@ var keepKeys = map[string]bool{
 	"import": true,
 	// custom:
 	"every": true, "rule": true, "compare": true, "warning": true, "critical": true,
-	// reports: daily_checks: the switch, its hour and its zone (the addresses, the user and the channel are masked)
+	// reports: daily_checks: the switch, its hour and its zone (the addresses, the user, the channel and the post
+	// channels are masked)
 	"enabled": true, "at": true, "tz": true,
 }
 
@@ -326,7 +327,7 @@ var knownKeys = map[string]bool{
 	"alerts_base_url": true, "opsgenie": true, "api_key": true, "max_per_hour": true, "templates": true, "subject": true, "line": true,
 	"custom": true, "description": true, "sql": true, "every": true, "rule": true, "value": true, "compare": true,
 	"warning": true, "critical": true,
-	"reports": true, "daily_checks": true, "enabled": true, "at": true, "tz": true, "as": true, "channel": true,
+	"reports": true, "daily_checks": true, "enabled": true, "at": true, "tz": true, "as": true, "channel": true, "post": true,
 }
 
 // safeValue is the shape of a setting: a word, a number, a duration, a clock range, a time zone. A value of another
