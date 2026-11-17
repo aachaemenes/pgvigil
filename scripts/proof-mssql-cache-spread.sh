@@ -20,6 +20,9 @@
 # from disk again after it.
 #
 # Expected (written before the first run; the trial readings they rest on are SQL Server 2022 CU27's):
+#  S0. (Added after run 1, which stopped in its setup with no message.) A batch the server refuses - CREATE PROCEDURE
+#      behind sq's SET NOCOUNT ON, Msg 111 - comes back through sq with sqlcmd's exit and the server's message on
+#      stderr: a failing setup statement stops the proof with its message, never silently.
 #  C1. The statement columns. Marked statements over cs_big (220,000 rows, about 11,600 pages), each one cached plan,
 #      run AFTER a first read; a second read. For each (csrows, cssniff, csgate, csgrant, csreads1-3, cseven, csclr,
 #      and cspar, an aggregate asked to prefer a parallel plan: its stored largest used threads is over 0)
@@ -134,6 +137,11 @@ export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
 for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
 sq "SELECT 1" >/dev/null 2>&1 || fail "the SQL Server in $CT does not answer"
 echo "  $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(40)) + ' ' + CAST(SERVERPROPERTY('Edition') AS varchar(80))")"
+
+echo "--- S0. a batch the server refuses comes back with its message"
+if S0=$(sq "CREATE PROCEDURE dbo.cs_never AS SELECT 1" 2>&1 >/dev/null); then fail "S0: a batch the server refuses returned 0 through sq"; fi
+grep -q 'Msg 111' <<<"$S0" || fail "S0: sq did not say the server's error (it said: ${S0:0:200})"
+echo "ok   S0: $(tr '\n' ' ' <<<"$S0" | cut -c1-230)"
 
 adm() { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 "$@"; }
 adm -c "create database $REPO_DB"; MADE_REPO=1
