@@ -29,6 +29,10 @@ export const mssqlObjectName = (schema: unknown, name: unknown): string =>
 export const mssqlObjectCell = (ctx: Ctx, db: string, schema: unknown, name: unknown, tab?: string, instance = ctx.instance, more: Record<string, string | undefined> = {}): Node =>
   name == null || name === '' ? document.createTextNode('') : el('a', { href: mssqlObjectHref(ctx, db, mssqlObjectName(schema, name), tab, instance, more) }, String(name));
 
+// the kinds that run (their statistics, plans and sessions): any other object of the schema snapshot has its Schema tab
+// alone (control audit D1)
+const modules = new Set(['procedure', 'function', 'trigger']);
+
 // DBA Dash's tabs in its order (ObjectDetailControl.BuildTabs)
 const tabs: [string, string][] = [['objexec', 'Object Execution'], ['querystats', 'Query Stats'], ['running', 'Running Queries'], ['slow', 'Slow Queries'], ['qs', 'Query Store'], ['schema', 'Schema History']];
 
@@ -60,6 +64,8 @@ export async function mssqlObjectView(ctx: Ctx): Promise<HTMLElement> {
   if (!o?.schema_name) why.querystats = 'its schema is not known';
   if (!where) why.qs = 'its database is not known';
   if (!o) why.schema = 'the store does not hold the object';
+  // a table, a view or another object that does not run (control audit D1): DBA Dash's node shows its Schema tab alone
+  if (o && !modules.has(String(o.kind))) for (const k of ['objexec', 'querystats', 'running', 'slow', 'qs']) why[k] = `a ${String(o.kind)} does not run`;
   const shown = tabs.filter(([k]) => !why[k]);
   const asked = hashParam('otab');
   const tab = shown.some(([k]) => k === asked) ? asked! : shown[0][0];
@@ -188,17 +194,38 @@ function qsTab(ctx: Ctx, schema: string, name: string, where: string): HTMLEleme
     ' - the Query Store page\'s Top list with the object in its find box.');
 }
 
-// schemaTab: DBA Dash's Schema History of the object (E12) - its stored changes, the newest first, each with the Schema
-// tab's compare (the whole before and after, side by side)
+// schemaTab: DBA Dash's Schema History of the object (E12) and its Schema tab on every object node (control audit D1:
+// any standalone kind - a table's history holds its columns', indexes', constraints' and triggers' changes too - paged
+// as DBA Dash pages it, Page Size 100 to 5000 with Previous / Next) - its stored changes, the newest first, each with
+// the Schema tab's compare (the whole before and after, side by side)
 async function schemaTab(ctx: Ctx, o: Row): Promise<HTMLElement> {
-  const rows = await procsPart(ctx, { part: 'object_schema', db_id: Number(o.database_id), schema: String(o.schema_name ?? ''), name: String(o.object_name ?? '') });
+  const size = el('select', { 'aria-label': 'Page Size' }, ...[100, 200, 500, 1000, 5000].map(n => el('option', { value: String(n) }, String(n)))) as HTMLSelectElement;
+  const prev = el('button', { type: 'button' }, 'Previous') as HTMLButtonElement, next = el('button', { type: 'button' }, 'Next') as HTMLButtonElement;
+  const at = el('span', { class: 'meta' }), box = el('div');
   const cut = (v: unknown, r: Row) => r.cut ? `${String(v ?? '')} ...` : String(v ?? '');
-  return el('section', {}, el('p', { class: 'meta' }, 'Every stored change of this object (the range does not cut it), the newest first, 200 at most.'),
-    grid(rows, [
-      { key: 'snapshot_at', label: 'found', fmt: fmtTime }, { key: 'change' }, { key: 'attribute', label: 'what changed' },
-      { key: 'before', wide: true, fmt: cut }, { key: 'after', wide: true, fmt: cut },
-      { key: 'compare', label: 'before / after', fmt: compareCell(ctx) },
-    ], 'No schema snapshots include this object.'));
+  let page = 1, seq = 0;
+  const draw = async () => {
+    const mine = ++seq;
+    try {
+      const rows = await procsPart(ctx, { part: 'object_schema', db_id: Number(o.database_id), schema: String(o.schema_name ?? ''), name: String(o.object_name ?? ''),
+        kind: String(o.kind ?? 'procedure'), size: size.value, page });
+      if (mine !== seq) return;
+      prev.disabled = page <= 1;
+      next.disabled = rows.length < Number(size.value);
+      at.textContent = ` Page ${page} `;
+      box.replaceChildren(grid(rows, [
+        { key: 'snapshot_at', label: 'found', fmt: fmtTime }, { key: 'kind' }, { key: 'object_name', label: 'object' }, { key: 'change' },
+        { key: 'attribute', label: 'what changed' }, { key: 'before', wide: true, fmt: cut }, { key: 'after', wide: true, fmt: cut },
+        { key: 'compare', label: 'before / after', fmt: compareCell(ctx) },
+      ], page > 1 ? 'No more changes: this page is past the last.' : 'No schema snapshots include this object.'));
+    } catch (e) { if (mine === seq) box.replaceChildren(errorBox(e)); }
+  };
+  prev.addEventListener('click', () => { if (page > 1) { page--; void draw(); } });
+  next.addEventListener('click', () => { page++; void draw(); });
+  size.addEventListener('change', () => { page = 1; void draw(); });
+  await draw();
+  return el('section', {}, el('p', { class: 'meta' }, 'Every stored change of this object and of its parts (a table\'s columns, indexes, constraints and triggers), the newest first; the range does not cut it.'),
+    el('div', { class: 'toolbar', role: 'group', 'aria-label': 'Schema history pages' }, prev, at, next, el('label', {}, ' Page Size ', size)), box);
 }
 
 // THE POSTGRESQL TWIN (OBJ slice 5): one function of pg_stat_user_functions, #/pgfunction?i=&db=<dbid>&fn=<funcid>

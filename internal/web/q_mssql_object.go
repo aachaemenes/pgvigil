@@ -82,7 +82,7 @@ WITH p AS (
   SELECT o.dbid::int AS database_id, NULL::bigint AS object_id, o.datname AS database_name, o.schema_name, o.object_name,
          o.kind, NULL::text AS type_desc, 'schema'::text AS source, 2 AS pref
     FROM pgvigil.schema_objects o
-   WHERE o.instance_id = $1 AND o.is_present AND o.kind IN ('procedure', 'function', 'trigger') AND lower(o.object_name) = lower($6)
+   WHERE o.instance_id = $1 AND o.is_present AND o.kind IN ` + objectKindsSQL + ` AND lower(o.object_name) = lower($6)
      AND ($4::text IS NULL OR lower(o.datname) = lower($4)) AND ($5::text IS NULL OR lower(o.schema_name) = lower($5))
 )
 SELECT DISTINCT ON (lower(a.database_name), lower(a.schema_name), lower(a.object_name))
@@ -154,7 +154,7 @@ func objectSlowPart(q url.Values, id int, from, to time.Time) (part, error) {
 // stored snapshots, 200 at most, the newest first): 0058's schema_changes of the procedure, function or trigger $3.$4
 // (case-insensitive) in database $2, every stored change (the window does not cut it), each before / after cut as the
 // Schema tab's (schemaChangeCut, over the alias w) so the page's compare reads the whole text by part=change.
-const sqlMSSQLObjectSchema = `
+var sqlMSSQLObjectSchema = `
 SELECT w.snapshot_at, w.prev_at, w.dbid, w.datname, w.kind, w.identity, w.schema_name, w.object_name, w.parent, w.change, w.attribute,
        ` + schemaChangeCut + `
   FROM pgvigil.schema_changes w
@@ -163,12 +163,64 @@ SELECT w.snapshot_at, w.prev_at, w.dbid, w.datname, w.kind, w.identity, w.schema
  ORDER BY w.snapshot_at DESC
  LIMIT 200`
 
+// objectKindsSQL (control audit D1): the schema snapshot's standalone objects the object page takes - DBA Dash's object
+// nodes, each with its Schema tab; a column, an index or a constraint is a table's part, listed in its history
+const objectKindsSQL = `('procedure', 'function', 'trigger', 'table', 'view', 'synonym', 'sequence', 'type')`
+
+// objectSchemaKinds: kind= of part=object_schema (objectKindsSQL's)
+var objectSchemaKinds = map[string]bool{"procedure": true, "function": true, "trigger": true, "table": true, "view": true,
+	"synonym": true, "sequence": true, "type": true}
+
+// objectHistorySizes: DBA Dash's Schema tab's Page Size list (Main.Designer.cs tsPageSize; 100 its default)
+var objectHistorySizes = map[int]bool{100: true, 200: true, 500: true, 1000: true, 5000: true}
+
+// sqlMSSQLObjectHistory: DBA Dash's Schema tab of one object of any standalone kind (control audit D1;
+// DDLHistoryForObject_Get): its own stored changes ($5 its kind, $3.$4 its name in database $2) and its children's - a
+// column, an index, a constraint or a trigger whose parent is one of its identities (as the store's own rows and the
+// present snapshot name it) - the newest first, page $7 of $6 rows (DBA Dash's Page Size and Previous / Next).
+const sqlMSSQLObjectHistory = `
+WITH me AS (
+  SELECT w.identity FROM pgvigil.schema_changes w
+   WHERE w.instance_id = $1 AND w.dbid = $2 AND w.kind = $5::text
+     AND lower(w.schema_name) = lower($3::text) AND lower(w.object_name) = lower($4::text)
+  UNION
+  SELECT o.identity FROM pgvigil.schema_objects o
+   WHERE o.instance_id = $1 AND o.dbid = $2 AND o.kind = $5::text
+     AND lower(o.schema_name) = lower($3::text) AND lower(o.object_name) = lower($4::text)
+)
+SELECT w.snapshot_at, w.prev_at, w.dbid, w.datname, w.kind, w.identity, w.schema_name, w.object_name, w.parent, w.change, w.attribute,
+       ` + schemaChangeCut + `
+  FROM pgvigil.schema_changes w
+ WHERE w.instance_id = $1 AND w.dbid = $2
+   AND ((w.kind = $5::text AND lower(w.schema_name) = lower($3::text) AND lower(w.object_name) = lower($4::text))
+        OR w.parent IN (SELECT me.identity FROM me))
+ ORDER BY w.snapshot_at DESC, w.kind, w.identity
+ LIMIT $6 OFFSET ($7::int - 1) * $6`
+
 // objectSchemaPart: part=object_schema from db_id= (the database id), schema= and name=
 func objectSchemaPart(q url.Values, id int) (part, error) {
 	dbID, err := strconv.ParseInt(q.Get("db_id"), 10, 64)
 	schema, name := q.Get("schema"), q.Get("name")
 	if err != nil || name == "" || len([]rune(name)) > 128 || len([]rune(schema)) > 128 {
 		return part{}, errors.New("part=object_schema needs db_id= (the database id), schema= and name=")
+	}
+	// control audit D1: kind= takes any standalone kind, with its children and DBA Dash's paging (page=, size=)
+	if kind := q.Get("kind"); kind != "" {
+		if !objectSchemaKinds[kind] {
+			return part{}, errors.New("kind must be one of procedure, function, trigger, table, view, synonym, sequence, type")
+		}
+		size, page := 100, 1
+		if v := q.Get("size"); v != "" {
+			if size, err = strconv.Atoi(v); err != nil || !objectHistorySizes[size] {
+				return part{}, errors.New("size must be one of 100, 200, 500, 1000, 5000")
+			}
+		}
+		if v := q.Get("page"); v != "" {
+			if page, err = strconv.Atoi(v); err != nil || page < 1 || page > 100000 {
+				return part{}, errors.New("page must be 1 or more")
+			}
+		}
+		return part{"object_schema", sqlMSSQLObjectHistory, []any{id, dbID, schema, name, kind, size, page}}, nil
 	}
 	return part{"object_schema", sqlMSSQLObjectSchema, []any{id, dbID, schema, name}}, nil
 }

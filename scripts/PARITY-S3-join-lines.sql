@@ -171,11 +171,14 @@
 --        Execution) becomes a link mssqlObjectHref(ctx, <database>, <schema.name>, 'objexec').
 --    (e) web/src/mssql_deadlocks.ts: the deadlock's procedure (victim and processes, DBA Dash's F17 / F18) becomes
 --        mssqlObjectCell(ctx, <database>, <schema>, <name>).
---    (f) web/src/schema.ts: the Objects grid's procedure, function and trigger rows' name becomes
---        mssqlObjectCell(ctx, String(r.datname), r.schema_name, r.object_name, 'schema') (SQL Server replies only).
+--    (f) web/src/schema.ts: the Objects grid's rows of every standalone kind (procedure, function, trigger, and since
+--        control audit D1 table, view, synonym, sequence, type: DBA Dash's Schema tab on every object node) - the name
+--        becomes mssqlObjectCell(ctx, String(r.datname), r.schema_name, r.object_name, 'schema') (SQL Server replies
+--        only); a column, an index or a constraint row links its parent table the same way.
 --    (g) web/src/tree.ts (line 3's object nodes): a procedure, function or trigger leaf opens
 --        mssqlObjectHref(ctx, datname, mssqlObjectName(schema_name, object_name)) in place of the database page's
---        Object Execution searched by its name.
+--        Object Execution searched by its name; a table, view, synonym, sequence or type leaf (control audit D1)
+--        opens mssqlObjectHref(ctx, datname, mssqlObjectName(schema_name, object_name), 'schema').
 --    (h) qsdd-pgtwin's running requests (its RQ list A18 / E15, the lead's 13:42 D2 (a)): its Object Name cell becomes
 --        mssqlObjectCell(ctx, <database>, <schema>, <name>, 'running'), and mssql_object.ts' runningTab reads its column
 --        in place of its 'not carry the object's name yet' words.
