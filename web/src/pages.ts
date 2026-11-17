@@ -37,6 +37,7 @@ import { openDumpDialog, openUptimeDialog, summaryCellAction } from './uptimedia
 import { AckBody, AckData, ackDialog, ackHolds, ackOn, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 import { healthCalendar } from './healthcal';
 import { dailyPost, worstFirst } from './checksorder';
+import { cellRows, DailyRow, failedRow, readerOrder, splitAcked } from './dailysql';
 import { bandClass, cellState, Chip, chipTab, clockOf, freshness, serverNow, lastCollected, liveChips, measured, silenceButton, silencedMark, statusWord } from './instheader';
 
 export type { Ctx };
@@ -56,12 +57,37 @@ const instLink = (ctx: Ctx, text: string, id: unknown, tab = 'summary') => link(
 
 
 export async function checks(ctx: Ctx): Promise<HTMLElement> {
-  const f = await fleet();
+  // the acknowledgements in force, as the Summary reads them (a server without the route: none - every row open)
+  const [f, ad] = await Promise.all([fleet(), loadAckSafe(['acks'])]);
   const insts = inTag(ctx, f.instances);
   const ids = new Set(insts.map(r => Number(r.instance_id)));
-  // a check that could not run names no instance: it shows under every scope; the rows worst first (B20-4: the rows
-  // naming no instance, then each instance's rows together by critical count, warning count, name) - the mail too
-  const rows = worstFirst(f.checks.filter(r => r.instance_id == null || ids.has(Number(r.instance_id))));
+  // DAILY-SQL: a SQL Server instance's rows are its Summary's own cells (dailysql.ts) - the same reader, level rule,
+  // words, landing and acknowledgement; its collection rows stay the overview's, as a PostgreSQL instance's do
+  const cellsOf = new Map(insts.map(r => [Number(r.instance_id), cells(f, r)]));
+  const sqlRows: DailyRow[] = f.mssqlFailed ? [failedRow('the read of the status cells failed')] : insts.filter(r => isMssql(r.engine)).flatMap(r => {
+    const c = cellsOf.get(Number(r.instance_id))!;
+    const m = (k: string) => f.mssql.find(x => Number(x.instance_id) === Number(r.instance_id) && x.key === k);
+    return cellRows({ id: Number(r.instance_id), name: String(r.name) }, groups.filter(g => g.mssql && !g.both).map(g => ({
+      key: g.key, label: labelOf(g, false), level: c[g.key].level, none: c[g.key].none, text: cellText(c[g.key]), detail: c[g.key].detail,
+      at: c[g.key].since ?? m(g.mssql![0])?.read_at ?? null })));
+  });
+  // a check that could not run names no instance: it shows under every scope
+  const all = readerOrder([...f.checks.filter(r => r.instance_id == null || ids.has(Number(r.instance_id))) as DailyRow[], ...sqlRows]);
+  // a row's cell: its own (a SQL Server row), else the group whose checks hold its check_group (fleet.ts groups) -
+  // an acknowledged cell (in force, and for until-change the same state it was given for) takes its rows out of the
+  // counts, as the Summary counts it under Acknowledged only (one rule for both engines, the lead 11-16 18:47 Q1)
+  const acks = checkAcks(ad);
+  const groupOf = (r: DailyRow): Group | undefined => r.cell ? groups.find(g => g.key === r.cell)
+    : groups.find(g => g.checks.includes(String(r.check_group)) && (!g.names || g.names(String(r.check_name ?? ''), String(r.check_group))));
+  const ackOf = (r: DailyRow): string | null => {
+    const g = groupOf(r), c = g && r.instance_id != null ? cellsOf.get(Number(r.instance_id))?.[g.key] : undefined;
+    const a = g ? acks.get(`${String(r.instance_id)}|${g.key}`) : undefined;
+    return g && c && a && !c.none && c.level > 0 && ackHolds(a, cellState(c, g.key)) ? ackWords(a) : null;
+  };
+  const split = splitAcked(all, ackOf);
+  // the rows worst first (B20-4: the rows naming no instance, then each instance's rows together by critical count,
+  // warning count, name) - the mail too; the acknowledged rows after them, in the same order, not counted
+  const rows = worstFirst(split.open), acked = worstFirst(split.acked);
   const crit = rows.filter(r => r.severity === 'critical').length;
   const warn = rows.length - crit;
   const tiles = el('div', { class: 'tiles' },
@@ -69,9 +95,20 @@ export async function checks(ctx: Ctx): Promise<HTMLElement> {
     tile('Critical', String(crit), crit ? 'crit' : 'ok'),
     tile('Warnings', String(warn), warn ? 'warn' : 'ok'),
     tile('Lock waiters now', String(insts.reduce((a, r) => a + Number(r.waiting_lock ?? 0), 0)), ''));
+  // a SQL Server row's link is its cell's own landing (the Summary's cellHref: the cell's tab, view and filter), its
+  // cell (data-group) and instance (data-inst) named as the Summary's cell names them
+  const rowOf = new Map(insts.map(r => [Number(r.instance_id), r]));
+  const instCell = (v: unknown, r: Row) => {
+    if (r.instance_id == null) return String(v ?? '');
+    const g = r.cell ? groups.find(x => x.key === r.cell) : undefined, ir = rowOf.get(Number(r.instance_id));
+    if (!g || !ir) return instLink(ctx, String(v), r.instance_id, groupTab(r.check_group));
+    const t = cellTarget(g, ir);
+    return el('a', { href: withTarget(href(ctx, { tab: t.tab, instance: Number(r.instance_id), tag: undefined, ...(t.kind ? { kind: t.kind } : {}) }), t),
+      'data-group': g.key, 'data-inst': String(r.instance_id), 'data-text': String(r.object ?? '') }, String(v));
+  };
   const cols: Col[] = [
     { key: 'severity', fmt: v => badge(String(v), v === 'critical' ? 'crit' : 'warn') },
-    { key: 'instance', fmt: (v, r) => r.instance_id == null ? String(v ?? '') : instLink(ctx, String(v), r.instance_id, groupTab(r.check_group)) },
+    { key: 'instance', fmt: instCell },
     { key: 'check_name', label: 'check', fmt: v => checkLabel(v) },
     { key: 'object' },
     { key: 'at', label: 'when', fmt: fmtTime },
@@ -79,9 +116,12 @@ export async function checks(ctx: Ctx): Promise<HTMLElement> {
   ];
   // the mail's post (B20-4) says the drawn page's numbers: the section carries them for the mail builder (reportmail.ts)
   return el('section', { 'data-daily-post': JSON.stringify(dailyPost(rows, insts.length)) }, el('h2', {}, 'Daily checks' + scopeLabel(ctx)),
-    el('p', { class: 'meta' }, 'The state now, the worst instance first; the time range applies to the instance tabs.'),
+    el('p', { class: 'meta' }, 'The state now, the worst instance first; the time range applies to the instance tabs. A SQL Server instance\'s rows are the cells of its Summary at warning or critical (one row per cell; blocking is on its Activity, not here).'),
     await dailyMailControl(ctx), tiles,
-    grid(rows, cols, 'All checks pass: no failing or stale collections, replication problems, failed jobs, deadlocks or checksum failures.'));
+    grid(rows, cols, 'All checks pass: no failing or stale collections, replication problems, failed jobs, deadlocks or checksum failures, and no SQL Server status cell at warning or critical.'),
+    ...(acked.length ? [el('h3', {}, `Acknowledged (${acked.length})`),
+      el('p', { class: 'meta' }, 'Acknowledged on the Summary: not counted in the tiles above, the mail\'s counts or its post.'),
+      grid(acked, [{ key: 'acknowledged' }, ...cols], '')] : []));
 }
 
 function groupTab(g: unknown): string { return groups.find(x => x.checks.includes(String(g)))?.tab ?? 'summary'; }
