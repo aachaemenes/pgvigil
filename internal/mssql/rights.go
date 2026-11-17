@@ -434,40 +434,40 @@ func ReadRights(ctx context.Context, conn *sql.Conn, platform string) (RightsRea
 // answers): 'not on this server' with its reason (states), hidden when it was not asked, an opt-in with its Null words
 // and its block (counted in OptIns, never missing), else held, its Null words, or missing with its grant (counted;
 // database_access names the databases noAccess lists).
-func (out *RightsRead) addStates(rights []Right, states map[string]string, answers map[string]sql.NullInt64, id rightsIdentity, noAccess func() []string) {
-	for _, r := range rights {
-		st := RightState{Key: r.Key, Name: r.Name, For: r.For, Core: r.Core}
-		if why, off := states[r.Key]; off {
+func (r *RightsRead) addStates(rights []Right, states map[string]string, answers map[string]sql.NullInt64, id rightsIdentity, noAccess func() []string) {
+	for _, right := range rights {
+		st := RightState{Key: right.Key, Name: right.Name, For: right.For, Core: right.Core}
+		if why, off := states[right.Key]; off {
 			st.State = why
-			out.Rights = append(out.Rights, st)
+			r.Rights = append(r.Rights, st)
 			continue
 		}
-		a, asked := answers[r.Key]
+		a, asked := answers[right.Key]
 		if !asked {
 			continue // hidden on this server
 		}
-		if r.OptIn != "" {
-			out.Rights = append(out.Rights, optInState(r, id))
-			out.OptIns++
+		if right.OptIn != "" {
+			r.Rights = append(r.Rights, optInState(right, id))
+			r.OptIns++
 			continue
 		}
 		switch {
 		case a.Valid && a.Int64 == 1:
 			st.State = "held"
-		case !a.Valid && r.Null != "":
-			st.State = r.Null
+		case !a.Valid && right.Null != "":
+			st.State = right.Null
 		default:
 			st.State = "missing"
-			st.Grant = grantFor(r, id)
-			out.Missing++
-			if r.Core {
-				out.MissingCore++
+			st.Grant = grantFor(right, id)
+			r.Missing++
+			if right.Core {
+				r.MissingCore++
 			}
-			if r.Key == "database_access" {
+			if right.Key == "database_access" {
 				st.Databases = noAccess()
 			}
 		}
-		out.Rights = append(out.Rights, st)
+		r.Rights = append(r.Rights, st)
 	}
 }
 
