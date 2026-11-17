@@ -1698,8 +1698,10 @@ await guard('P-opengrid', async () => {
     await closeDialogs();
   }
   const differ = v?.heads ? ['name', 'platform', 'version'].filter(k => JSON.stringify(v[k]) !== JSON.stringify(cols[k])) : ['(no grid)'];
+  // the first row that differs in each such column, both values as JSON (a whitespace or a number's form shows)
+  const first = k => { const a = cols[k] ?? [], b = v?.[k] ?? [], i = a.findIndex((x, j) => x !== b[j]); return i < 0 ? `${k}: ${a.length} vs ${b.length} rows` : `${k} row ${i + 1}: the grid ${JSON.stringify(a[i]).slice(0, 160)}, opened ${JSON.stringify(b[i]).slice(0, 160)}`; };
   check('P-opengrid', !!file && !!v && v.title === 'Grid: ' + file.name && JSON.stringify(v.heads) === JSON.stringify(heads) && cols.name.length > 0 && differ.length === 0,
-    `${file ? `the JSON file ${file.name}` : 'no JSON file'}; opened as '${v?.title ?? 'nothing'}': ${v?.heads ? `${v.heads.length} columns (the grid ${heads.length}${JSON.stringify(v.heads) === JSON.stringify(heads) ? ', the same names' : ', NOT the same names: ' + JSON.stringify(v.heads).slice(0, 200)}), ${v.name.length} rows (the grid ${cols.name.length}); columns that differ: ${differ.join(', ') || 'none of name, platform, version'}` : 'no grid in the viewer'}`);
+    `${file ? `the JSON file ${file.name}` : 'no JSON file'}; opened as '${v?.title ?? 'nothing'}': ${v?.heads ? `${v.heads.length} columns (the grid ${heads.length}${JSON.stringify(v.heads) === JSON.stringify(heads) ? ', the same names' : ', NOT the same names: ' + JSON.stringify(v.heads).slice(0, 200)}), ${v.name.length} rows (the grid ${cols.name.length}); columns that differ: ${differ.join(', ') || 'none of name, platform, version'}${v?.heads && differ.length ? ' (' + differ.map(first).join('; ') + ')' : ''}` : 'no grid in the viewer'}`);
 });
 
 if (shots) await guard('G-themes', async () => {
