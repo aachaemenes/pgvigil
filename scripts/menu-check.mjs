@@ -298,6 +298,7 @@
 //                     grids) and DB Space at the root (name) and on erp01 / sql01 (database), allocated and used in any
 //                     unit ('allocated (*)') - red on 28eb10d3. Batch 9 (07:1x): sql01's Checks page, its identity
 //                     view (#/mssqlchecks?cv=identity, 6 labels) - red on addc72fa.
+//                     Batch 10 (07:3x): its databases view (#/mssqlchecks?cv=databases, 23 labels) - red on a3ad46bf.
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1858,6 +1859,12 @@ const L20 = [
   // batch 9: Identity Columns (DBA Dash's IdentityColumnsView) on sql01's Checks page, its identity view (a route may
   // carry its own query: 'page?x=y')
   ['mssqlchecks?cv=identity', ['ms'], ['type', '% used', 'last value', 'limit', 'per day', 'days left']],
+  // batch 10: DB Options (DBA Dash's DBOptions, its per-database grid) - the Checks page's databases view; the labels
+  // are the server's (internal/mssql/dboptions.go)
+  ['mssqlchecks?cv=databases', ['ms'], ['database', 'state', 'read only', 'recovery model', 'compatibility level', 'page verify', 'auto close',
+    'auto shrink', 'auto create statistics', 'auto update statistics', 'trustworthy', 'target recovery time (s)', 'virtual log files',
+    'read committed snapshot', 'accelerated database recovery', 'optimized locking', 'encrypted (TDE)', 'change data capture',
+    'last good CHECKDB', 'collation', 'Query Store', 'Service Broker', 'log reuse wait']],
 ];
 const msWord = /SQL Server|\bsys\.|DBCC|T-SQL|default trace|msdb|query hash|plan cache/i;
 const sqlId20 = idOf('demo-onprem-sql01');
