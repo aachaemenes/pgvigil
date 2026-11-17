@@ -51,7 +51,7 @@ func TestCheckNameRefusals(t *testing.T) {
 		{Postgres, "table", "a.b", ""},
 		{SQLServer, "table", "dbo.Customers", ""},
 		{Postgres, "table", " x ", ""},
-		{SQLServer, "table", " x ", ""},
+		{SQLServer, "table", " x ", "space"}, // review-31 NIT 8: SQL Server drops a name's trailing spaces
 		{Postgres, "table", "a;DROP TABLE t;--", ""},
 		{SQLServer, "table", "a;DROP TABLE t;--", ""},
 		{SQLServer, "table", "[x]", ""},
