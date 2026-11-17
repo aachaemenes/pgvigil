@@ -8,9 +8,11 @@
 # Needs: docker, psql, curl, python3, and
 #   PGVIGIL_ADMIN_DSN  a superuser connection to the PostgreSQL in KEYWORD form, no dbname (host=... port=... user=...)
 #   PGVIGIL_BIN        a build of this tree WITH scripts/savetable-wiring.patch applied (the routes, the switch)
-# It makes its repository database, three target databases and one template, five PostgreSQL logins, a SQL Server
-# container with four logins and two databases (the sa password through an env file, never a command line), two UI
-# users and two serves; everything is dropped at the end, on every exit path.
+# It makes its repository database, four target databases (the fourth, SPD, K2's) and one template, three PostgreSQL
+# logins (MON, ACT, OWN), a SQL Server container with four logins and three or four databases (SaveDB, NoSchemaDB,
+# K4's TrigDB, K5's distribution when the container can be a distributor), two UI users and two serves. No password
+# on any command line: env files, stdin, PGPASSWORD. Everything THIS run made, and only that, is dropped at the end, on
+# every exit path.
 #
 # Expected (written 11-17 02:4x before the first run; the lead's three named checks are C1 / C2, E and the store's
 # TestSaveTableAuditOnAStore):
@@ -19,13 +21,18 @@
 #  B. the switch on: GET on pg-save is on with the schema pgvigil_saved and its databases without template1 (and the
 #     run's template database); on ms-save on without master; on pg-nolist off 'off: this instance's actions: list
 #     does not name save_table'. An operator's POST 403 (the admin role's words); no row.
-#  C1. NAMED CHECK (1) and (2), PostgreSQL: a grid of 10,003 rows into the table x"y]z.w;-- with a column txt "q" ]x
-#     - the values ''); DROP TABLE t;--', a]b"c'd, x<NUL>y, 9007199254740993, a time with its offset, a date, true /
-#     false and nulls: 200 'Saved 10003 rows to <db>.pgvigil_saved.x"y]z.w;--; 1 NUL character(s) dropped from text
-#     cells'; read back as the superuser: ONE new relation in pgvigil_saved named exactly x"y]z.w;--, 10,003 rows,
-#     every value equal to the one sent (the NUL dropped: xy), the decoy table t of the database untouched.
-#  C2. the same on SQL Server into [pgvigil_saved].[x"y]]z.w;--] of SaveDB: 200, the same read back.
-#  D. no overwrite: the PostgreSQL save again: 409 'exists: pgvigil never overwrites a table', still 10,003 rows.
+#  C1. NAMED CHECK (1) and (2), PostgreSQL: a grid of 10,003 rows into the table x"y]z'.w;-- with a column txt "q" ]x
+#     - the values ''); DROP TABLE pgvigil_saved.decoy;--', a]b"c'd, x<NUL>y, 9007199254740993, a time with its offset,
+#     a date, true / false and nulls: 200 'Saved 10003 rows to <db>.pgvigil_saved.x"y]z'.w;--; 1 NUL character(s)
+#     dropped from text cells'; read back as the superuser: ONE new relation in pgvigil_saved beside the decoy, named
+#     exactly x"y]z'.w;--, 10,003 rows, the three hostile rows equal to the ones sent (the NUL dropped: xy), and every
+#     column's totals over all 10,003 rows equal to the ones sent (the sum of amt; the count, min and max of w; the min
+#     and max of d; the true flags; the total length of txt; the sums of id and big); the decoy pgvigil_saved.decoy,
+#     owned by the door login, untouched (its rows 1, 2).
+#  C2. the same on SQL Server into [pgvigil_saved].[x"y]]z'.w;--] of SaveDB: 200, the same read back, its own decoy
+#     untouched.
+#  D. no overwrite: the PostgreSQL save again: 409 'exists: pgvigil never overwrites a table', still 10,003 rows, no
+#     'started' row added; D2 the same on SQL Server (OBJECT_ID's bound argument), after C2.
 #  J1. a dotted name on SQL Server: the table dbo.Customers (3 rows) lands in [pgvigil_saved].[dbo.Customers]; the
 #     decoys [dbo].[Customers] and [pgvigil_saved].[Customers] hold 0 rows.
 #  E. the refusals, each 409 with its words and ONE audit row: pg-nolist (the list); the table name typed as the
@@ -34,7 +41,7 @@
 #     column id', the value never in the words); SQL Server: a '#' table, master, a database without the schema,
 #     ms-sys ('sysadmin').
 #  F. the body's limits: over 32 MiB 413 'over 32 MiB'; 1,025 columns on SQL Server 400 '1024'; no row for either.
-#  G. the audit: exactly 19 save_table rows - started 3, done 3, refused 13; the started / done pairs of C1, C2, J1
+#  G. the audit: exactly 20 save_table rows - started 3, done 3, refused 14 (D2's row added 07:2x); the started / done pairs of C1, C2, J1
 #     with engine postgres / sqlserver, the target and the database, pid NULL; no row's detail holds the refused value.
 #  J4. why the schema is the door login's own (review-29 B2), on SQL Server: with CREATE TABLE and ALTER on dbo the
 #     actions login drops dbo.victim; with only its own schema it cannot (Msg 3701) and creates
@@ -56,22 +63,29 @@
 #   K6 (NIT 6) SQL Server: an actions login in db_owner of the target: refused naming db_owner.
 #  NOT PROVEN HERE: J5 (a save over serve's 75 s WriteTimeout: the route moves its deadline as AppImport does);
 #  'another server' (one PostgreSQL and one SQL Server only: the unit rows hold it); Azure SQL Database, RDS.
+# CHANGED 11-17 07:2x (review-31 part B's fold, before savetable-g3; savetable-g2 on 70778a11 was red on C2's read-back
+# for this script's own reason): C2's SQL Server read-back prints NULL and a UTC time without its offset (B2); the
+# totals line on both engines (S3); the hostile name holds a quote, D2 on SQL Server, no 'started' row in D / D2 (S4);
+# serve and freeport outside $(...), serve's pid in a file (S5); no password on argv (S6); a 48-bit suffix and only
+# what this run made dropped (S7); the decoy is the door login's own table in pgvigil_saved on both engines (N12); E9
+# matches its words (N16). savetable-g2's 'Saved 0 rows' on SQL Server (C2, K4) was the product's (NOCOUNT): fixed.
 # The last line 'proof-savetable: <n> FAIL' (0 = every row ok); rc 1 when any failed.
 set -uo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_ADMIN_DSN:?a superuser keyword DSN without dbname}"
-SUF=$RANDOM
+SUF=$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')   # 48 bits: $RANDOM's 32,768 let two runs meet (review-31 B S7)
 REPO=pgv_st_repo_$SUF; TDB=pgv_st_t_$SUF; NOS=pgv_st_nos_$SUF; OTH=pgv_st_oth_$SUF; TPL=pgv_st_tpl_$SUF; SPD=pgv_st_sp_$SUF
 MON=pgv_st_mon_$SUF; ACT=pgv_st_act_$SUF; OWN=pgv_st_own_$SUF
 pw() { printf 'Pv9%s' "$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 PPW=$(pw); MSPW=$(pw); UPW=$(pw)
 W=$(mktemp -d); CT=savetable-mssql-$SUF; SRV=; SRV2=; FAILS=0
+MADE_DB=; MADE_ROLE=; MADE_TPL=; MADE_CT=   # what THIS run made: cleanup drops only these (review-31 B S7)
 cleanup() {
-  [[ -n $SRV ]] && kill "$SRV" 2>/dev/null; [[ -n $SRV2 ]] && kill "$SRV2" 2>/dev/null
-  docker rm -fv "$CT" >/dev/null 2>&1
-  for d in $REPO $TDB $NOS $OTH $SPD; do psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $d with (force)" >/dev/null 2>&1; done
-  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "alter database $TPL is_template false" -c "drop database if exists $TPL with (force)" >/dev/null 2>&1
-  for r in $MON $ACT $OWN; do psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists $r" >/dev/null 2>&1; done
+  for f in "$W"/pid-*; do [[ -f $f ]] && kill "$(cat "$f")" 2>/dev/null; done   # every serve, by its pid file (S5)
+  [[ -n $MADE_CT ]] && docker rm -fv "$CT" >/dev/null 2>&1
+  for d in $MADE_DB; do psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $d with (force)" >/dev/null 2>&1; done
+  [[ -n $MADE_TPL ]] && psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "alter database $TPL is_template false" -c "drop database if exists $TPL with (force)" >/dev/null 2>&1
+  for r in $MADE_ROLE; do psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists $r" >/dev/null 2>&1; done
   rm -rf "$W"
 }
 trap cleanup EXIT
@@ -80,13 +94,19 @@ bad() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 die() { echo "FAIL setup: $*"; echo "proof-savetable: setup FAIL"; exit 1; }
 for t in docker psql curl python3; do command -v $t >/dev/null || die "$t is not on this machine"; done
 adm() { psql "$PGVIGIL_ADMIN_DSN dbname=${2:-postgres}" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
+admin() { psql "$PGVIGIL_ADMIN_DSN dbname=${2:-postgres}" -XAtq -v ON_ERROR_STOP=1 <<< "$1"; }   # stdin: a password stays off argv (S6)
+mkdb() { adm "create database $1 ${2:-}" >/dev/null && MADE_DB="$MADE_DB $1"; }
+mkrole() { admin "create role $1 login password '$PPW' ${2:-}" >/dev/null && MADE_ROLE="$MADE_ROLE $1"; }
 
 # ---- the SQL Server container (the sa password in an env file) -------------------------------------------------------
-printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSQLCMDPASSWORD=%s\n' "$(pw)Aa1!" "" > "$W/sa.env"
-SAPW=$(sed -n 's/^MSSQL_SA_PASSWORD=//p' "$W/sa.env"); sed -i "s/^SQLCMDPASSWORD=.*/SQLCMDPASSWORD=$SAPW/" "$W/sa.env"
-docker run -d --name "$CT" --env-file "$W/sa.env" -p 127.0.0.1::1433 mcr.microsoft.com/mssql/server:2022-latest >/dev/null || die "the SQL Server container did not start"
+SAPW="$(pw)Aa1!"   # printf is a builtin: the passwords reach the env files and no command line (S6)
+printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSQLCMDPASSWORD=%s\n' "$SAPW" "$SAPW" > "$W/sa.env"
+printf 'SQLCMDPASSWORD=%s\n' "$MSPW" > "$W/ms.env"
+docker run -d --name "$CT" --env-file "$W/sa.env" -p 127.0.0.1::1433 mcr.microsoft.com/mssql/server:2022-latest >/dev/null && MADE_CT=1 || die "the SQL Server container did not start"
 MSPORT=$(docker port "$CT" 1433/tcp | head -1 | sed 's/.*://')
-sq() { docker exec --env-file "$W/sa.env" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -W -h -1 -s '|' -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
+# a batch through a file copied in (a CREATE LOGIN's password never on argv, S6); -i runs it as -Q did
+sq() { printf 'SET NOCOUNT ON; %s\n' "$1" > "$W/sq.sql" && docker cp "$W/sq.sql" "$CT:/tmp/sq.sql" >/dev/null 2>&1 || return 1
+  docker exec --env-file "$W/sa.env" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -W -h -1 -s '|' -d "${2:-master}" -i /tmp/sq.sql; }
 for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
 sq "SELECT 1" >/dev/null 2>&1 || die "the SQL Server container did not answer in 180 s"
 msdsn() { echo "sqlserver://$1:$2@127.0.0.1:$MSPORT?database=master&encrypt=true&TrustServerCertificate=true"; }
@@ -98,14 +118,15 @@ sq "CREATE LOGIN msmon WITH PASSWORD = '$MSPW', CHECK_POLICY = OFF; GRANT VIEW S
 sq "CREATE USER msact FOR LOGIN msact; GRANT CREATE TABLE TO msact;
     EXEC ('CREATE SCHEMA pgvigil_saved AUTHORIZATION msact');
     CREATE TABLE dbo.Customers (a int); CREATE TABLE pgvigil_saved.Customers (a int);
+    CREATE TABLE pgvigil_saved.decoy (a int); INSERT pgvigil_saved.decoy VALUES (1), (2);
     CREATE USER msown FOR LOGIN msown; ALTER ROLE db_owner ADD MEMBER msown;" SaveDB >/dev/null || die "SaveDB"
 sq "CREATE USER msact FOR LOGIN msact; GRANT CREATE TABLE TO msact;" NoSchemaDB >/dev/null || die "NoSchemaDB"
 
 # ---- PostgreSQL: the store, the targets, the logins ------------------------------------------------------------------
-adm "create database $REPO" >/dev/null && adm "create database $TDB" >/dev/null && adm "create database $NOS" >/dev/null \
-  && adm "create database $OTH" >/dev/null && adm "create database $TPL is_template true" >/dev/null || die "the databases"
-adm "create role $MON login password '$PPW' in role pg_monitor" >/dev/null && adm "create role $ACT login password '$PPW'" >/dev/null || die "the roles"
-adm "create schema pgvigil_saved authorization $ACT; create table public.t (a int); insert into public.t values (1), (2)" "$TDB" >/dev/null || die "the target database"
+mkdb "$REPO" && mkdb "$TDB" && mkdb "$NOS" && mkdb "$OTH" && { adm "create database $TPL is_template true" >/dev/null && MADE_TPL=1; } || die "the databases"
+mkrole "$MON" "in role pg_monitor" && mkrole "$ACT" || die "the roles"
+# the decoy: the door login's own table in its own schema, so a value run as SQL could drop it (N12)
+adm "create schema pgvigil_saved authorization $ACT; create table pgvigil_saved.decoy (a int); insert into pgvigil_saved.decoy values (1), (2); alter table pgvigil_saved.decoy owner to $ACT" "$TDB" >/dev/null || die "the target database"
 adm "create schema pgvigil_saved authorization $MON" "$OTH" >/dev/null || die "the other owner's schema"
 HOST=$(adm "select coalesce(host(inet_server_addr()), '127.0.0.1')"); PORT5=$(adm "select current_setting('port')")
 pgdsn() { echo "host=$HOST port=$PORT5 user=$1 password=$PPW dbname=$TDB sslmode=disable"; }
@@ -146,11 +167,13 @@ for id in $ID_ms_save $ID_ms_sys $ID_ms_own; do
 done
 PGVIGIL_PASSWORD=$UPW "$BIN" user add -config "$W/on.yaml" stadmin > /dev/null 2>&1 || die "user add (the first: admin)"
 PGVIGIL_PASSWORD=$UPW "$BIN" user add -config "$W/on.yaml" -role operator stop > /dev/null 2>&1 || die "user add (operator)"
-freeport() { local p; for _ in $(seq 1 50); do p=$((20000 + RANDOM % 20000)); ss -ltn | awk '{print $4}' | grep -qE "(^|[:\]])$p$" || { echo "$p"; return; }; done; die "no free port"; }
-serve() { "$BIN" serve -config "$1" -listen "127.0.0.1:$2" >> "$W/serve-$2.log" 2>&1 & local p=$!
-  for _ in $(seq 1 60); do curl -sf -o /dev/null "http://127.0.0.1:$2/" && { echo $p; return; }; kill -0 $p 2>/dev/null || die "serve died: $(tail -3 "$W/serve-$2.log")"; sleep 0.5; done; die "serve did not answer"; }
-P1=$(freeport); SRV=$(serve "$W/on.yaml" "$P1"); P2=$(freeport); SRV2=$(serve "$W/off.yaml" "$P2")
-login() { curl -s -c "$W/jar-$1-$2" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"$1\",\"password\":\"$UPW\"}" "http://127.0.0.1:$2/api/login" >/dev/null; }
+freeport() { local p; for _ in $(seq 1 50); do p=$((20000 + RANDOM % 20000)); ss -ltn | awk '{print $4}' | grep -qE "(^|[:\]])$p$" || { echo "$p"; return 0; }; done; return 1; }
+# serve runs in THIS shell (inside $(...) a die ended only the subshell, review-31 B S5); its pid in $W/pid-<port>
+serve() { "$BIN" serve -config "$1" -listen "127.0.0.1:$2" >> "$W/serve-$2.log" 2>&1 & local p=$!; echo "$p" > "$W/pid-$2"
+  for _ in $(seq 1 60); do curl -sf -o /dev/null "http://127.0.0.1:$2/" && return 0; kill -0 $p 2>/dev/null || die "serve died: $(tail -3 "$W/serve-$2.log")"; sleep 0.5; done; die "serve did not answer"; }
+P1=$(freeport) || die "no free port"; serve "$W/on.yaml" "$P1"; P2=$(freeport) || die "no free port"; serve "$W/off.yaml" "$P2"
+SRV=$(cat "$W/pid-$P1"); SRV2=$(cat "$W/pid-$P2")
+login() { curl -s -c "$W/jar-$1-$2" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary @- "http://127.0.0.1:$2/api/login" >/dev/null <<< "{\"username\":\"$1\",\"password\":\"$UPW\"}"; }
 login stadmin "$P1"; login stop "$P1"; login stadmin "$P2"
 code() { curl -s -o "$W/body" -w '%{http_code}' "$@"; }
 said() { python3 -c 'import json,sys; b=open(sys.argv[1]).read();
@@ -164,7 +187,7 @@ import json, sys, os
 w, tdb, suf = sys.argv[1], sys.argv[2], sys.argv[3]
 cols = [{"name": "id", "type": "int"}, {"name": 'txt "q" ]x', "type": "text"}, {"name": "amt", "type": "dec"},
         {"name": "w", "type": "time"}, {"name": "d", "type": "day"}, {"name": "flag", "type": "bool"}, {"name": "big", "type": "int"}]
-rows = [[1, "'); DROP TABLE t;--", 1.5, "2026-11-17T02:10:00-08:00", "2026-11-17", True, 9007199254740993],
+rows = [[1, "'); DROP TABLE pgvigil_saved.decoy;--", 1.5, "2026-11-17T02:10:00-08:00", "2026-11-17", True, 9007199254740993],
         [2, "a]b\"c'd", -0.0000000001, None, None, False, 2],
         [3, "x\u0000y", None, "2026-11-17T10:10:00Z", "2026-01-31", None, 3]]
 rows += [[i, "r%d" % i, i / 8, "2026-11-17T00:00:00Z", "2026-11-17", i % 2 == 0, i] for i in range(4, 10004)]
@@ -172,9 +195,17 @@ def body(inst, db, table, confirm, c=cols, r=rows, frm="grid"):
     return {"instance_id": int(inst), "database": db, "table": table, "from": frm, "confirm": confirm, "cols": c, "rows": r}
 json.dump({"cols": cols, "rows": rows}, open(os.path.join(w, "grid.json"), "w"))
 # the expected read back: count, the three hostile rows, the sums (both engines print them alike)
-exp = ["10003", "1|'); DROP TABLE t;--|1.5000000000|2026-11-17T10:10:00|2026-11-17|1|9007199254740993",
+exp = ["10003", "1|'); DROP TABLE pgvigil_saved.decoy;--|1.5000000000|2026-11-17T10:10:00|2026-11-17|1|9007199254740993",
        "2|a]b\"c'd|-0.0000000001|NULL|NULL|0|2", "3|xy|NULL|2026-11-17T10:10:00|2026-01-31|NULL|3",
        "sum_id %d sum_big %d" % (sum(r[0] for r in rows), sum(r[6] for r in rows))]
+# every column over all 10,003 rows (review-31 B S3): amt summed exactly (a JSON number's own decimal text), w counted
+# with its first and last instant in UTC, d's first and last day, the true flags, txt's total length (the NUL dropped)
+from decimal import Decimal
+from datetime import datetime, timezone
+utc = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+wv = [utc(r[3]) for r in rows if r[3] is not None]; dv = [r[4] for r in rows if r[4] is not None]
+exp.append("totals amt %s w %d %s %s d %s %s flag %d txt %d" % (format(sum(Decimal(repr(r[2])) for r in rows if r[2] is not None), ".10f"),
+           len(wv), min(wv), max(wv), min(dv), max(dv), sum(1 for r in rows if r[5] is True), sum(len(r[1].replace("\x00", "")) for r in rows)))
 open(os.path.join(w, "expect.txt"), "w").write("\n".join(exp) + "\n")
 PY
 mk() {   # mk <file> <instance_id> <database> <table> <confirm> [python edit of b]
@@ -188,7 +219,7 @@ json.dump(b, open(os.path.join(w, f), "w"))
 PY
 }
 post() { code -b "$W/jar-$1-$2" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary "@$W/$4" "http://127.0.0.1:$2/api/actions/save_table?instance_id=$3"; }
-HN='x"y]z.w;--'
+HN=$'x"y]z\'.w;--'   # a quote too: an existence check that pasted the name would break on it (review-31 B S4)
 mk pg.json "$ID_pg_save" "$TDB" "$HN" "pg-save-$SUF/$TDB"
 mk ms.json "$ID_ms_save" SaveDB "$HN" "ms-save-$SUF/SaveDB"
 
@@ -210,34 +241,42 @@ c=$(post stop "$P1" "$ID_pg_save" pg.json)
 c=$(post stadmin "$P1" "$ID_pg_save" pg.json)
 [[ $c == 200 && $(said) == "Saved 10003 rows to $TDB.pgvigil_saved.$HN; 1 NUL character(s) dropped from text cells" ]] && ok "C1: PostgreSQL: $(said)" || bad "C1: PostgreSQL: $c $(said)"
 python3 - "$W" <<'PY' > "$W/rb_pg.sql"
-t = '"pgvigil_saved"."x""y]z.w;--"'; c = '"txt ""q"" ]x"'
+t = '"pgvigil_saved"."x""y]z\'.w;--"'; c = '"txt ""q"" ]x"'
 print(f"select count(*) from {t};")
 print(f"select id || '|' || {c} || '|' || coalesce(to_char(amt, 'FM9999999990.0000000000'), 'NULL') || '|' || coalesce(to_char(w at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS'), 'NULL') || '|' || coalesce(d::text, 'NULL') || '|' || coalesce((flag::int)::text, 'NULL') || '|' || big from {t} where id <= 3 order by id;")
 print(f"select 'sum_id ' || sum(id) || ' sum_big ' || sum(big) from {t};")
+print(f"select 'totals amt ' || to_char(sum(amt), 'FM99999999990.0000000000') || ' w ' || count(w) || ' ' || to_char(min(w) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS') || ' ' || to_char(max(w) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS') || ' d ' || min(d)::text || ' ' || max(d)::text || ' flag ' || count(*) filter (where flag) || ' txt ' || sum(length({c})) from {t};")
 PY
 psql "$PGVIGIL_ADMIN_DSN dbname=$TDB" -XAt -f "$W/rb_pg.sql" > "$W/got_pg.txt" 2>&1
 if diff "$W/expect.txt" "$W/got_pg.txt" > "$W/diff_pg.txt"; then ok "C1: read back equal: 10,003 rows, the three hostile rows, the sums"; else bad "C1: read back differs: $(head -c 600 "$W/diff_pg.txt")"; fi
-rel=$(adm "select string_agg(c.relname, ',') from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'pgvigil_saved' and c.relkind = 'r'" "$TDB")
-dec=$(adm "select string_agg(a::text, ',' order by a) from public.t" "$TDB")
-[[ $rel == "$HN" && $dec == "1,2" ]] && ok "C1: one relation in pgvigil_saved named exactly $rel; the decoy t untouched" || bad "C1: the relations '$rel', the decoy '$dec'"
-c=$(post stadmin "$P1" "$ID_pg_save" pg.json)
-n=$(adm "select count(*) from pgvigil_saved.\"x\"\"y]z.w;--\"" "$TDB")
-[[ $c == 409 && $(said) == *"exists: pgvigil never overwrites a table"* && $n == 10003 ]] && ok "D: the same save again 409 ($(said)); still $n rows" || bad "D: again: $c $(said); rows $n"
+rel=$(adm "select string_agg(c.relname, ',') from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'pgvigil_saved' and c.relkind = 'r' and c.relname <> 'decoy'" "$TDB")
+dec=$(adm "select string_agg(a::text, ',' order by a) from pgvigil_saved.decoy" "$TDB")
+[[ $rel == "$HN" && $dec == "1,2" ]] && ok "C1: one new relation in pgvigil_saved named exactly $rel; the door's own decoy untouched" || bad "C1: the relations '$rel', the decoy '$dec'"
+started() { q "select count(*) from pgvigil.actions_log where action = 'save_table' and outcome = 'started'"; }
+s0=$(started); c=$(post stadmin "$P1" "$ID_pg_save" pg.json)
+n=$(adm "select count(*) from pgvigil_saved.\"x\"\"y]z'.w;--\"" "$TDB")
+[[ $c == 409 && $(said) == *"exists: pgvigil never overwrites a table"* && $n == 10003 && $(started) == "$s0" ]] && ok "D: the same save again 409 ($(said)); still $n rows, no 'started' row" || bad "D: again: $c $(said); rows $n; started $s0 -> $(started)"
 
 # ---- C2 / J1: SQL Server -----------------------------------------------------------------------------------------------
 c=$(post stadmin "$P1" "$ID_ms_save" ms.json)
 [[ $c == 200 && $(said) == "Saved 10003 rows to SaveDB.pgvigil_saved.$HN; 1 NUL character(s) dropped from text cells" ]] && ok "C2: SQL Server: $(said)" || bad "C2: SQL Server: $c $(said)"
 python3 - <<'PY' > "$W/rb_ms.sql"
-t = '[pgvigil_saved].[x"y]]z.w;--]'; c = '[txt "q" ]]x]'
+t = '[pgvigil_saved].[x"y]]z\'.w;--]'; c = '[txt "q" ]]x]'
 print("SET NOCOUNT ON;")
 print(f"SELECT COUNT(*) FROM {t};")
-print(f"SELECT CAST(id AS varchar(20)) + '|' + {c} + '|' + ISNULL(CONVERT(varchar(50), amt), 'NULL') + '|' + ISNULL(CONVERT(varchar(30), SWITCHOFFSET(w, '+00:00'), 126), 'NULL') + '|' + ISNULL(CONVERT(varchar(10), d, 23), 'NULL') + '|' + ISNULL(CAST(CAST(flag AS int) AS varchar(1)), 'NULL') + '|' + CAST(big AS varchar(20)) FROM {t} WHERE id <= 3 ORDER BY id;")
+print(f"SELECT CAST(id AS varchar(20)) + '|' + {c} + '|' + ISNULL(CONVERT(varchar(50), amt), 'NULL') + '|' + ISNULL(CONVERT(varchar(19), CAST(SWITCHOFFSET(w, '+00:00') AS datetime2(0)), 126), 'NULL') + '|' + ISNULL(CONVERT(varchar(10), d, 23), 'NULL') + '|' + ISNULL(CAST(CAST(flag AS int) AS varchar(4)), 'NULL') + '|' + CAST(big AS varchar(20)) FROM {t} WHERE id <= 3 ORDER BY id;")
 print(f"SELECT 'sum_id ' + CAST(SUM(CAST(id AS bigint)) AS varchar(30)) + ' sum_big ' + CAST(SUM(CAST(big AS decimal(38,0))) AS varchar(40)) FROM {t};")
+print(f"SELECT 'totals amt ' + CONVERT(varchar(50), SUM(amt)) + ' w ' + CAST(COUNT(w) AS varchar(20)) + ' ' + CONVERT(varchar(19), CAST(SWITCHOFFSET(MIN(w), '+00:00') AS datetime2(0)), 126) + ' ' + CONVERT(varchar(19), CAST(SWITCHOFFSET(MAX(w), '+00:00') AS datetime2(0)), 126) + ' d ' + CONVERT(varchar(10), MIN(d), 23) + ' ' + CONVERT(varchar(10), MAX(d), 23) + ' flag ' + CAST(SUM(CASE WHEN flag = 1 THEN 1 ELSE 0 END) AS varchar(20)) + ' txt ' + CAST(SUM(CAST(LEN({c}) AS bigint)) AS varchar(30)) FROM {t};")
 print("GO")
 PY
 docker cp "$W/rb_ms.sql" "$CT:/tmp/rb_ms.sql" >/dev/null
 docker exec --env-file "$W/sa.env" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -W -h -1 -d SaveDB -i /tmp/rb_ms.sql > "$W/got_ms.txt" 2>&1
 if diff "$W/expect.txt" "$W/got_ms.txt" > "$W/diff_ms.txt"; then ok "C2: read back equal on SQL Server"; else bad "C2: read back differs: $(head -c 600 "$W/diff_ms.txt")"; fi
+dm=$(sq "SELECT ISNULL(STRING_AGG(CAST(a AS varchar(9)), ',') WITHIN GROUP (ORDER BY a), '') FROM pgvigil_saved.decoy" SaveDB 2>&1)
+[[ $dm == "1,2" ]] && ok "C2: the door's own decoy untouched on SQL Server" || bad "C2: the decoy '$dm'"
+s0=$(started); c=$(post stadmin "$P1" "$ID_ms_save" ms.json)
+n=$(sq "SELECT COUNT(*) FROM [pgvigil_saved].[x\"y]]z'.w;--]" SaveDB 2>&1)
+[[ $c == 409 && $(said) == *"exists: pgvigil never overwrites a table"* && $n == 10003 && $(started) == "$s0" ]] && ok "D2: the SQL Server save again 409 ($(said)); still $n rows, no 'started' row" || bad "D2: again: $c $(said); rows $n; started $s0 -> $(started)"
 mk j1.json "$ID_ms_save" SaveDB dbo.Customers "ms-save-$SUF/SaveDB" 'b["rows"] = [[i, "j%d" % i, None, None, None, None, i] for i in (1, 2, 3)]'
 c=$(post stadmin "$P1" "$ID_ms_save" j1.json)
 j=$(sq "SELECT CAST((SELECT COUNT(*) FROM [pgvigil_saved].[dbo.Customers]) AS varchar) + ',' + CAST((SELECT COUNT(*) FROM [dbo].[Customers]) AS varchar) + ',' + CAST((SELECT COUNT(*) FROM [pgvigil_saved].[Customers]) AS varchar)" SaveDB 2>&1)
@@ -258,7 +297,7 @@ mk e6.json "$ID_pg_same" "$TDB" e6 "pg-same-$SUF/$TDB" "$small"; refuse "pg-same
 mk e7.json "$ID_pg_super" "$TDB" e7 "pg-super-$SUF/$TDB" "$small"; refuse "pg-super" "$ID_pg_super" e7.json "superuser"
 mk e8.json "$ID_pg_save" "$TDB" e8 "pg-save-$SUF/$TDB" 'b["rows"] = [["s3cr3t-abc", "x", None, None, None, None, 1]]'; refuse "a value" "$ID_pg_save" e8.json "row 1, column id"
 [[ $(said) != *s3cr3t* ]] && ok "E: the value's refusal does not hold the value" || bad "E: the value is in the words: $(said)"
-mk e9.json "$ID_ms_save" SaveDB '#x' "ms-save-$SUF/SaveDB" "$small"; refuse "a '#' table" "$ID_ms_save" e9.json "#"
+mk e9.json "$ID_ms_save" SaveDB '#x' "ms-save-$SUF/SaveDB" "$small"; refuse "a '#' table" "$ID_ms_save" e9.json "temporary table in tempdb"
 mk e10.json "$ID_ms_save" master e10 "ms-save-$SUF/master" "$small"; refuse "master" "$ID_ms_save" e10.json "system database"
 mk e11.json "$ID_ms_save" NoSchemaDB e11 "ms-save-$SUF/NoSchemaDB" "$small"; refuse "no schema (SQL Server)" "$ID_ms_save" e11.json "has no schema pgvigil_saved"
 mk e12.json "$ID_ms_sys" SaveDB e12 "ms-sys-$SUF/SaveDB" "$small"; refuse "ms-sys" "$ID_ms_sys" e12.json "sysadmin"
@@ -279,7 +318,7 @@ c=$(post stadmin "$P1" "$ID_ms_save" wide.json)
 
 # ---- G: the audit ------------------------------------------------------------------------------------------------------
 g=$(q "select string_agg(outcome || ':' || n, ' ' order by outcome) from (select outcome, count(*) n from pgvigil.actions_log where action = 'save_table' group by 1) x")
-[[ $g == "done:3 refused:13 started:3" ]] && ok "G: $g" || bad "G: the outcomes $g (want done:3 refused:13 started:3)"
+[[ $g == "done:3 refused:14 started:3" ]] && ok "G: $g" || bad "G: the outcomes $g (want done:3 refused:14 started:3)"
 pairs=$(q "select string_agg(engine || '|' || outcome || '|' || coalesce(datname, '') || '|' || coalesce(target, '') || '|' || (pid is null)::text, ';' order by action_id)
             from pgvigil.actions_log where action = 'save_table' and outcome in ('started', 'done')")
 want="postgres|started|$TDB|$TDB.pgvigil_saved.$HN|true;postgres|done|$TDB|$TDB.pgvigil_saved.$HN|true;sqlserver|started|SaveDB|SaveDB.pgvigil_saved.$HN|true;sqlserver|done|SaveDB|SaveDB.pgvigil_saved.$HN|true;sqlserver|started|SaveDB|SaveDB.pgvigil_saved.dbo.Customers|true;sqlserver|done|SaveDB|SaveDB.pgvigil_saved.dbo.Customers|true"
@@ -288,10 +327,10 @@ want="postgres|started|$TDB|$TDB.pgvigil_saved.$HN|true;postgres|done|$TDB|$TDB.
 
 # ---- J4: why the door login's own schema ---------------------------------------------------------------------------------
 sq "CREATE TABLE dbo.victim (a int); GRANT ALTER ON SCHEMA::dbo TO msact;" SaveDB >/dev/null
-a=$(docker exec -e SQLCMDPASSWORD="$MSPW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U msact -C -b -d SaveDB -Q "DROP TABLE dbo.victim" 2>&1; echo "rc=$?")
+a=$(docker exec --env-file "$W/ms.env" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U msact -C -b -d SaveDB -Q "DROP TABLE dbo.victim" 2>&1; echo "rc=$?")
 sq "REVOKE ALTER ON SCHEMA::dbo FROM msact; IF OBJECT_ID('dbo.victim') IS NULL CREATE TABLE dbo.victim (a int);" SaveDB >/dev/null
-b=$(docker exec -e SQLCMDPASSWORD="$MSPW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U msact -C -b -d SaveDB -Q "DROP TABLE dbo.victim" 2>&1; echo "rc=$?")
-c=$(docker exec -e SQLCMDPASSWORD="$MSPW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U msact -C -b -d SaveDB -Q "CREATE TABLE pgvigil_saved.j4 (i int)" 2>&1; echo "rc=$?")
+b=$(docker exec --env-file "$W/ms.env" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U msact -C -b -d SaveDB -Q "DROP TABLE dbo.victim" 2>&1; echo "rc=$?")
+c=$(docker exec --env-file "$W/ms.env" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U msact -C -b -d SaveDB -Q "CREATE TABLE pgvigil_saved.j4 (i int)" 2>&1; echo "rc=$?")
 [[ $a == *"rc=0" && $b == *3701* && $c == *"rc=0" ]] && ok "J4: with ALTER on dbo the actions login dropped dbo.victim; with its own schema only it cannot (3701) and creates pgvigil_saved.j4" \
   || bad "J4: with ALTER '$a'; without '$(echo "$b" | tail -2 | tr '\n' ' ')'; own schema '$c'"
 
@@ -309,8 +348,8 @@ mk k1b.json "$ID_pg_save" "$TDB" k1b "pg-save-$SUF/$TDB" 'b["table"] = "a‮b"; 
 kref "K1: U+202E in the table's name" "$ID_pg_save" k1b.json "invisible character"
 [[ $(last) == "$TDB|(a refused name)|refused" ]] && ok "K1: its audit row: the database, no table name" || bad "K1: the audit row: $(last)"
 # K2 (SF2): the database's owner (no superuser) sets its search_path and plants public.text
-adm "create role $OWN login password '$PPW'" >/dev/null && adm "create database $SPD owner $OWN" >/dev/null || bad "K2 setup: the owner and his database"
-psql "host=$HOST port=$PORT5 user=$OWN password=$PPW dbname=$SPD sslmode=disable" -XAtq -v ON_ERROR_STOP=1 \
+mkrole "$OWN" && mkdb "$SPD" "owner $OWN" || bad "K2 setup: the owner and his database"
+PGPASSWORD=$PPW psql "host=$HOST port=$PORT5 user=$OWN dbname=$SPD sslmode=disable" -XAtq -v ON_ERROR_STOP=1 \
   -c "alter database $SPD set search_path = public, pg_catalog" \
   -c "create function public.f(v pg_catalog.text) returns boolean language sql as \$\$ select current_user <> '$ACT' \$\$" \
   -c "create domain public.text as pg_catalog.text check (public.f(value))" > "$W/k2.log" 2>&1 || bad "K2 setup: the owner's search_path and domain: $(tail -2 "$W/k2.log")"
@@ -332,7 +371,7 @@ sq "CREATE USER msact FOR LOGIN msact; GRANT CREATE TABLE TO msact; EXEC ('CREAT
     CREATE USER msown FOR LOGIN msown; ALTER ROLE db_owner ADD MEMBER msown;
     CREATE TABLE dbo.probe_log (n int IDENTITY, orig sysname, usr sysname NULL, kill_perm int NULL); GRANT INSERT ON dbo.probe_log TO public;" TrigDB >/dev/null || bad "K4 setup: TrigDB's users"
 # CREATE TRIGGER alone in its batch (sq puts SET NOCOUNT ON first), made by the db_owner member himself
-t=$(docker exec -e SQLCMDPASSWORD="$MSPW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U msown -C -b -d TrigDB -Q "CREATE TRIGGER probe ON DATABASE FOR CREATE_TABLE AS INSERT dbo.probe_log (orig, usr, kill_perm) SELECT ORIGINAL_LOGIN(), USER_NAME(), HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY CONNECTION');" 2>&1; echo "rc=$?")
+t=$(docker exec --env-file "$W/ms.env" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -U msown -C -b -d TrigDB -Q "CREATE TRIGGER probe ON DATABASE FOR CREATE_TABLE AS INSERT dbo.probe_log (orig, usr, kill_perm) SELECT ORIGINAL_LOGIN(), USER_NAME(), HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY CONNECTION');" 2>&1; echo "rc=$?")
 [[ $t == *"rc=0" && $(sq "SELECT COUNT(*) FROM sys.triggers WHERE parent_class = 0 AND is_disabled = 0" TrigDB) == 1 ]] || bad "K4 setup: the trigger: $t"
 q "insert into pgvigil.mssql_database_option (instance_id, database_name, database_id, snapshot_at, is_present) values ($ID_ms_save, 'TrigDB', $(sq "SELECT DB_ID('TrigDB')"), now(), true)" >/dev/null
 mk k4.json "$ID_ms_save" TrigDB k4 "ms-save-$SUF/TrigDB" 'b["rows"] = b["rows"][:2]'
