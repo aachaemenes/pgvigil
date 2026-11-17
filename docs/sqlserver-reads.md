@@ -1,14 +1,15 @@
 # SQL Server: properties, procedures, index locks
 
-Three collections of the [SQL Server engine](sqlserver.md) and the tabs they feed, and two additions to pages that were already there (the fleet's Running queries and an instance's Waits). Nothing is installed on the monitored server and nothing is written there.
+Four collections of the [SQL Server engine](sqlserver.md) and the tabs they feed, and two additions to pages that were already there (the fleet's Running queries and an instance's Waits). Nothing is installed on the monitored server and nothing is written there.
 
 | collection | every | what | the login needs |
 |---|---|---|---|
 | `mssql_properties` | 1 hour | what the instance is: server, processors, memory, tempdb's layout, host; every change of a value | public for the server and tempdb rows and max / min server memory (on Amazon RDS the two RDS rows need EXECUTE on two msdb procedures, optional: [SQL Server in the cloud](sqlserver-cloud.md)); `VIEW SERVER STATE` for the processor rows, the machine's memory and the memory model; the host rows are public's before SQL Server 2022 and need `VIEW SERVER PERFORMANCE STATE` from it (partial where a row cannot be read) |
 | `mssql_procstats` | 5 min | what each stored procedure did between two reads | `VIEW SERVER STATE` (2022: `VIEW SERVER PERFORMANCE STATE` should be enough; not proven); names of another database's procedures: `CONNECT ANY DATABASE` and `VIEW ANY DEFINITION` |
+| `mssql_funcstats` | 5 min | what each scalar function run without inlining and each trigger did between two reads; hourly, whether each scalar function can be inlined | as `mssql_procstats`; the inlineability: a database the login can enter (SQL Server 2019 on) |
 | `mssql_indexlocks` | 5 min | where sessions waited for locks, per index, and lock escalations | as `mssql_procstats`; names: a database the login can enter |
 
-None of the three runs on Azure SQL Database; there the Properties page shows the tier's rows of `mssql_azuredb_governance` ([cloud](sqlserver-cloud.md#resource-use-and-the-tier)).
+None of the four runs on Azure SQL Database; there the Properties page shows the tier's rows of `mssql_azuredb_governance` ([cloud](sqlserver-cloud.md#resource-use-and-the-tier)).
 
 To name procedures and indexes in every database, the monitoring login takes one more grant than [the base login](sqlserver.md#the-login):
 
@@ -47,10 +48,18 @@ What a figure is, and is not:
 - It is what ran **between two reads**. The first read of an instance only sets the starting counters.
 - A plan the read before did not hold (a new procedure, a recompile, anything after a restart of the server) gives its whole count: all of it ran after the read before. A plan whose counters went down counts whole as well. No interval is ever negative.
 - A procedure compiled, run and dropped from the plan cache between two reads is in no read. The executions of a plan the cache dropped since the read before are lost with it. On a server under memory pressure the page undercounts.
-- Stored procedures only. Triggers and functions have their own views and are not collected. The resource database's own procedures (database id 32767) are left out: the server names almost none of them.
+- Stored procedures only: scalar functions and triggers are `mssql_funcstats`' (below). The resource database's own procedures (database id 32767) are left out: the server names almost none of them.
 - The list is cut at the 5,000 plans with the most CPU; the run is `partial` when it is. For the one read after a cut read, a plan new to the list is counted whole only when it was cached after the cut read, by the server's own clock; a plan that was merely past the cut sets its counters and gives nothing. In the hour the clocks go back that one comparison can miss a new plan's first interval or count a cut plan whole. A read that was not cut needs no clock.
 
 The names come from `OBJECT_NAME`, which waits behind a schema change on the object. The collector's session gives up on a lock after two seconds; the read then runs again without the names and the page shows `object <id>` for that interval.
+
+## Functions and triggers (`mssql_funcstats`)
+
+`sys.dm_exec_function_stats` and `sys.dm_exec_trigger_stats` are read as `sys.dm_exec_procedure_stats` is, every five minutes, with the same rules (the counters per cached plan, what one interval added, the cut at 5,000 plans a view, the resource database left out). Either view's read failing fails the run: a run never stores one view without the other. The Procedures tab shows them under the procedures, in the procedures' grid shape, the busiest CPU first:
+
+- **Functions (scalar, run without inlining).** The server lists no table-valued function and no scalar function it inlined (Microsoft Learn, sys.dm_exec_function_stats): an inlined function's work is counted in its callers' plans, on the Plan cache tab. The function view has no spilled pages, so that grid has no such column.
+- **Inlining**, beside each function, from `sys.sql_modules` (SQL Server 2019 on), read at most hourly in each database with a listed function: *not inlineable* (a construct of the definition prevents it), *inlining off* (it could be inlined, and its `INLINE` option is `OFF`), blank (it could be inlined and inlining is on: it ran without it for the call's own reason - a hint, the database's setting or compatibility level, the form of the call), *not read* (an older server, a module the login cannot see, or a read that failed: that read is a note of the run, which is then `partial`; the figures are stored all the same).
+- **Triggers**, with the scope of a DDL or logon trigger (*server* or *database*, named from `sys.server_triggers` or the database's `sys.triggers`: the view's `OBJECT_NAME` is NULL for them); a server trigger is listed under `master`.
 
 ## Index locks (`mssql_indexlocks`)
 

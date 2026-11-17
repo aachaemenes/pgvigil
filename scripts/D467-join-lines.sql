@@ -30,3 +30,10 @@
 --    scripts/proof-mssql-rds.sh's ALL gains mssql_funcstats with a verdict from its gate (perfApplies: it runs on
 --    RDS - stored with status ok, NOT PROVEN until the next RDS SQL Server lab). scripts/proof-mssql-2016.sh counts
 --    names against Register calls and needs no line.
+
+-- 7. The shared docs' collection tables (D467 edits docs/sqlserver-reads.md alone): docs/sqlserver.md's collection
+--    table gains, after mssql_procstats' row -
+--    | `mssql_funcstats` | 5 min | what each scalar function run without inlining and each trigger did between two reads; hourly, whether each scalar function can be inlined | as `mssql_procstats` | not run | [properties, procedures, index locks](sqlserver-reads.md) |
+--    and docs/sqlserver-cloud.md's Azure SQL Database row "`mssql_procstats`, `mssql_indexlocks`, `mssql_querystore`
+--    | skipped (not yet)" names mssql_funcstats with them; its RDS table a row "`mssql_funcstats` | runs | not proven
+--    on RDS (no lab since D467)".
