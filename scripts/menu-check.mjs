@@ -285,7 +285,9 @@
 //                     plan cache). The pages: the reports on demo-onprem-erp01 (pg) and demo-onprem-sql01 (ms), the
 //                     SQL Server-only ones on sql01 alone, the root-only ones at the root. Red on 535a0cfe: every row FAIL
 //                     'no title: <labels>'. Batch 2 (rows written 11-17 07:0x): sql01's Memory page, the grid under
-//                     'Workload groups and resource pools' alone (20 labels) - red on 0816da3c.
+//                     'Workload groups and resource pools' alone (20 labels) - red on 0816da3c. A row with a heading is
+//                     named 'H-title <page> (<heading>) <scope>'. Batch 3 (07:0x): sql01's Log Shipping, its Summary
+//                     (5 labels) and Detail (5) grids - red on ccc2a4e9.
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1818,11 +1820,15 @@ const L20 = [
   ['mssqlmemory', ['ms'], ['pool', 'pool min memory %', 'pool max memory %', 'pool target', 'pool used', 'pool grants used', 'pool grant waiters',
     'pool grant timeouts', 'group', 'importance', 'max grant % (the cap)', 'grant timeout s', 'max DOP', 'max CPU s', 'max requests', 'reduced grants',
     'requests', 'active', 'queued', 'largest grant'], 'Workload groups and resource pools'],
+  // batch 3: Log Shipping (DBA Dash's LogShippingView: its Summary and Detail grids; the panel's grids below reuse 'Instance')
+  ['mssqllogshipping', ['ms'], ['Instance', 'Primary Instance', 'Missing', 'New DBs', 'Configure'], 'Summary'],
+  ['mssqllogshipping', ['ms'], ['Instance', 'Primary Instance', 'Excluded By', 'Create Date', 'Configure'], 'Detail'],
 ];
 const msWord = /SQL Server|\bsys\.|DBCC|T-SQL|default trace|msdb|query hash|plan cache/i;
 const sqlId20 = idOf('demo-onprem-sql01');
 for (const [route, scopes, labels, heading] of L20) for (const sc of scopes) {
-  await guard(`H-title ${route} ${sc}`, async () => {
+  const name = `H-title ${route}${heading ? ` (${heading})` : ''} ${sc}`;
+  await guard(name, async () => {
     await go(`#/${route}${sc === 'pg' ? `?i=${erpId}` : sc === 'ms' ? `?i=${sqlId20}` : ''}`); await sleep(1500);
     // every header cell of the page's grids, drawn or empty: its label and its title
     const root = heading ? `([...document.querySelectorAll('main h3')].find(h => h.textContent.trim().startsWith(${JSON.stringify(heading)}))?.nextElementSibling ?? null)` : `document.querySelector('main')`;
@@ -1831,7 +1837,7 @@ for (const [route, scopes, labels, heading] of L20) for (const sc of scopes) {
     const missing = labels.filter(l => { const hs = (ths ?? []).filter(h => h.label === l); return hs.length === 0 || hs.some(h => h.title === '' || h.title === l); });
     const absent = labels.filter(l => !(ths ?? []).some(h => h.label === l));
     const leak = sc === 'pg' ? (ths ?? []).filter(h => msWord.test(h.title)).map(h => `${h.label}: '${h.title.slice(0, 60)}'`) : [];
-    check(`H-title ${route} ${sc}`, (ths ?? []).length > 0 && missing.length === 0 && leak.length === 0,
+    check(name, (ths ?? []).length > 0 && missing.length === 0 && leak.length === 0,
       `${(ths ?? []).length} header cell(s); ${missing.length ? `no title: ${missing.join(', ')}${absent.length ? ` (not drawn: ${absent.join(', ')})` : ''}` : `all ${labels.length} titled`}${leak.length ? `; SQL Server words on a PostgreSQL page: ${leak.join('; ')}` : ''}`);
   });
 }
