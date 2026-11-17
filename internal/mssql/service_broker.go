@@ -204,7 +204,7 @@ func (c serviceBrokerCollector) Run(ctx context.Context, conn *sql.Conn, info In
 			if ctx.Err() != nil {
 				return nil, err
 			}
-			out = append(out, collect.Row{"kind": "unread", "database_name": d.name, "note": "the queues of " + d.name + " were not read: " + errWords(err)})
+			out = append(out, collect.Row{"kind": "unread", "database_name": d.name, "note": "the queues of " + d.name + " were not read: " + errText(err, "")})
 			continue
 		}
 		out = append(out, collect.Row{"kind": "database", "database_name": d.name})
@@ -265,6 +265,3 @@ func (c serviceBrokerCollector) Run(ctx context.Context, conn *sql.Conn, info In
 	}
 	return out, nil
 }
-
-// quoteName: a SQL Server identifier in brackets (QUOTENAME's rule: a ] doubled)
-func quoteName(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
