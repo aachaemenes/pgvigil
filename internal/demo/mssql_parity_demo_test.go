@@ -10,8 +10,9 @@ import (
 // carry what the collector sends on a pooled Azure SQL Database (the server row naming the logical server, the
 // resources' minutes with their histograms, the governance row with the pool and one tier change in the week - the
 // Service Objectives grid -, the pool's minutes, and master's limits as periods with one DTU change - Pool history);
-// -sql01's steps carry a database's scoped configuration with one change in the week (0391), a database snapshot
-// (0392) and function and trigger statistics (0343).
+// -sql01's steps carry a database's scoped configuration with one change in the week (0391), its schema reads with a
+// change in the week (mssql_schema: the Snapshot Summary tab is DBA Dash's schema snapshots, row 2b as reworked) and
+// function and trigger statistics (0343).
 func TestParityDemo(t *testing.T) {
 	specs := Specs("demo-", FleetSize)
 	var az []int
@@ -90,6 +91,7 @@ func TestParityDemo(t *testing.T) {
 	seen := map[string]int{}
 	maxdop := map[string]bool{}
 	kinds := map[string]bool{}
+	procDefs := map[string]bool{}
 	for _, b := range run(t, specs[sql01], sql01, 7) {
 		seen[b.Collection] += len(b.Rows)
 		for _, r := range b.Rows {
@@ -99,15 +101,21 @@ func TestParityDemo(t *testing.T) {
 			if b.Collection == "mssql_funcstats" {
 				kinds[fmt.Sprint(r["kind"])] = true
 			}
+			if b.Collection == "mssql_schema" && r["kind"] == "obj" && r["object_kind"] == "procedure" && r["datname"] == "Sales" {
+				procDefs[fmt.Sprint(r["definition"])] = true
+			}
 		}
 	}
-	for _, c := range []string{"mssql_db_scoped_config", "mssql_db_snapshots", "mssql_funcstats"} {
+	for _, c := range []string{"mssql_db_scoped_config", "mssql_schema", "mssql_funcstats"} {
 		if seen[c] == 0 {
 			t.Errorf("demo-onprem-sql01: no %s rows", c)
 		}
 	}
 	if len(maxdop) != 2 {
 		t.Errorf("demo-onprem-sql01: the scoped MAXDOP values %v, want two (one change in the week)", maxdop)
+	}
+	if len(procDefs) < 2 {
+		t.Errorf("demo-onprem-sql01: Sales' procedure definitions %d, want a change in the week (two or more)", len(procDefs))
 	}
 	if !kinds["function"] || !kinds["trigger"] {
 		t.Errorf("demo-onprem-sql01: the function statistics' kinds %v, want function and trigger", kinds)
