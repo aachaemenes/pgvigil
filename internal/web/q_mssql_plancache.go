@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -23,12 +24,16 @@ const planEach = pgx.QueryExecModeDescribeExec
 // (mssql_plancache, every five minutes; 0092), and what the cache holds (mssql_plancache_health, hourly).
 //
 //	GET /api/mssql/plancache?instance=N[&from=&to=][&db=<database id>][&scope=noqs][&part=...]
+//	    [&min_avg_cpu_ms=][&min_executions=][&per_db=]
 //	  state      the two collections' last runs
 //	  reads      the reads of the window that took differences: how many, the seconds they cover, how many were cut
 //	  databases  the instance's databases with their Query Store switch (the filter, and scope=noqs)
 //	  totals     the window's sums over every statement (db= / scope= narrow them)
 //	  top        one row per query key: executions, CPU, duration, reads, writes, rows, spills, grants, plans; the
 //	             most CPU first, 1,000 at most; the text where one was sent
+//	  extremes   only when ?part=extremes names it: per query key of top (the same keys in the same order) the
+//	             smallest and the largest single run over the plans that ran in the window, each since its compile,
+//	             the plan's generation, the CLR time, the peak CPU and sp_QuickieCache's diagnostics (sqlMSSQLPCExtremes)
 //	  series     the window in about 120 steps: executions, CPU and duration per second
 //	  health     the cache per database as last read; singles and duplicates: its two lists
 //	  findings   the plan cache findings of the instance
@@ -43,6 +48,9 @@ const planEach = pgx.QueryExecModeDescribeExec
 // window's.
 //
 // scope=noqs keeps the databases whose Query Store is off (the plan cache is their only statement history).
+//
+// min_avg_cpu_ms, min_executions and per_db are dbatools' Get-DbaQueryExecutionTime filter on top and extremes
+// (pcFilter); none given = the parts as they were.
 
 const sqlMSSQLPCReads = `
 SELECT count(*) AS reads, coalesce(sum(r.interval_secs), 0)::float8 AS covered_secs, count(*) FILTER (WHERE r.capped) AS cut_reads,
@@ -108,6 +116,109 @@ SELECT p.database_id, coalesce(p.database_name, 'database ' || p.database_id) AS
   LEFT JOIN pgvigil.mssql_pc_database q ON q.instance_id = $1 AND q.database_id = p.database_id
  ORDER BY p.cpu_us DESC, p.query_key
  LIMIT 1000`
+
+// sqlMSSQLPCExtremes: what the statements' plans kept as their smallest and largest single run (0342's
+// mssql_pc_extreme: per read, over the plans of the key that ran in the interval, each since its compile). Over the
+// window: the smallest of the smallest and the largest of the largest; the plan generation's largest; the CLR time
+// of the reads that had the figure (clr_reads of intervals; none = NULL); the peak CPU - the window's busiest read,
+// its CPU over its own seconds (PerformanceMonitor's Top Queries shows a peak per statement; its own formula was not
+// read, this is the stored reads' largest). n is the key's NEWEST read of the window (an array orders by its first
+// element, the read's time): the diagnostics are sp_QuickieCache's rules on that one read's figures, all since
+// compile, as the procedure judges them - where it counts every cached plan of the hash, this counts the plans that
+// ran in that read. The keys and their order are top's (the same sums of the same reads, from this table's own
+// executions and CPU), so the page joins the two by database and key; a window that reaches before 0342 has reads
+// without a row here.
+const sqlMSSQLPCExtremes = `
+WITH p AS (
+  SELECT s.database_id, s.query_key, sum(s.executions)::bigint AS executions, sum(s.cpu_us)::bigint AS cpu_us,
+         min(s.min_cpu_us) AS min_cpu_us, max(s.max_cpu_us) AS max_cpu_us,
+         min(s.min_duration_us) AS min_duration_us, max(s.max_duration_us) AS max_duration_us,
+         min(s.min_physical_reads) AS min_physical_reads, max(s.max_physical_reads) AS max_physical_reads,
+         min(s.min_rows) AS min_rows, max(s.max_rows) AS max_rows, min(s.min_spills) AS min_spills, max(s.max_spills) AS max_spills,
+         min(s.min_grant_kb) AS min_grant_kb, min(s.min_ideal_grant_kb) AS min_ideal_grant_kb, max(s.max_ideal_grant_kb) AS max_ideal_grant_kb,
+         min(s.min_dop) AS min_dop, min(s.min_reserved_threads) AS min_reserved_threads, max(s.max_reserved_threads) AS max_reserved_threads,
+         min(s.min_used_threads) AS min_used_threads, max(s.max_used_threads) AS max_used_threads,
+         max(s.plan_generation) AS plan_generation, sum(s.clr_us) AS clr_us, count(s.clr_us) AS clr_reads, count(*) AS intervals,
+         max(s.cpu_us / nullif(s.interval_secs, 0)) AS peak_cpu_us_s,
+         max(ARRAY[extract(epoch FROM s.snapshot_at)::bigint, s.life_executions, s.life_cpu_us, s.life_physical_reads,
+                   s.min_cpu_us, s.max_cpu_us, s.min_physical_reads, s.max_physical_reads, s.min_rows, s.max_rows,
+                   s.max_grant_kb, s.max_used_grant_kb]) AS n
+    FROM pgvigil.mssql_pc_extreme s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ` + pcScope + `
+   GROUP BY s.database_id, s.query_key
+)
+SELECT p.database_id, p.query_key, p.plan_generation, round(p.clr_us / 1000.0, 1) AS clr_ms, p.clr_reads, p.intervals,
+       round((p.peak_cpu_us_s / 1000.0)::numeric, 1) AS peak_cpu_ms_s,
+       round(p.min_cpu_us / 1000.0, 3) AS min_cpu_ms, round(p.max_cpu_us / 1000.0, 3) AS max_cpu_ms,
+       round(p.min_duration_us / 1000.0, 3) AS min_duration_ms, round(p.max_duration_us / 1000.0, 3) AS max_duration_ms,
+       p.min_physical_reads, p.max_physical_reads, p.min_rows, p.max_rows, p.min_spills, p.max_spills,
+       p.min_grant_kb, p.min_ideal_grant_kb, p.max_ideal_grant_kb,
+       p.min_dop, p.min_reserved_threads, p.max_reserved_threads, p.min_used_threads, p.max_used_threads,
+       to_timestamp(p.n[1]) AS judged_at, p.n[2] AS life_executions,
+       pgvigil.mssql_pc_diagnostics(p.n[2], p.n[3], p.n[5], p.n[6], p.n[4], p.n[7], p.n[8], p.n[9], p.n[10], p.n[11], p.n[12]) AS diagnostics
+  FROM p
+ ORDER BY p.cpu_us DESC, p.query_key
+ LIMIT 1000`
+
+// pcFilter is dbatools' Get-DbaQueryExecutionTime filter (2.9.1, MIT, public/Get-DbaQueryExecutionTime.ps1: an
+// average CPU of at least MinExecMs over at least MinExecs executions, and of each database the first
+// MaxResultsPerDb by average CPU; its defaults 500 ms, 100 and 100 are the page's 'Slow and frequent' preset) on the
+// window's figures - dbatools reads the counts since compile, this the page's range. Each value is optional (nil).
+type pcFilter struct{ minAvgCPUms, minExecutions, perDB any }
+
+func (f pcFilter) set() bool { return f.minAvgCPUms != nil || f.minExecutions != nil || f.perDB != nil }
+
+// pcFilterOf reads the filter from the request: min_avg_cpu_ms a number from 0, min_executions a whole number from
+// 1, per_db from 1 to 1,000 (the part's cap).
+func pcFilterOf(q url.Values) (pcFilter, error) {
+	var f pcFilter
+	if v := q.Get("min_avg_cpu_ms"); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil || math.IsNaN(n) || n < 0 || n > 1e9 {
+			return f, errors.New("min_avg_cpu_ms must be a number of milliseconds from 0")
+		}
+		f.minAvgCPUms = n
+	}
+	if v := q.Get("min_executions"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			return f, errors.New("min_executions must be a whole number from 1")
+		}
+		f.minExecutions = n
+	}
+	if v := q.Get("per_db"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1000 {
+			return f, errors.New("per_db must be a whole number from 1 to 1000")
+		}
+		f.perDB = n
+	}
+	return f, nil
+}
+
+// pcFiltered puts the filter into top or extremes - a statement whose CTE p holds one row per key with its
+// executions and cpu_us and which ends 'FROM p ... ORDER BY p.cpu_us DESC, p.query_key LIMIT 1000': $6 the average
+// CPU's floor in ms, $7 the executions' floor, $8 how many of each database, each NULL for none. The rank within the
+// database is by average CPU, as dbatools orders, and is taken BEFORE the 1,000 cap: on many databases the cap by
+// total CPU would else drop whole databases unseen; matched (the first column) is how many rows the filter kept,
+// so a reader sees when the cap cut. It panics on a statement of another shape (a test names both).
+func pcFiltered(sql string) string {
+	const head, from = ")\nSELECT p.database_id,", "\n  FROM p\n"
+	if strings.Count(sql, head) != 1 || strings.Count(sql, from) != 1 {
+		panic("pcFiltered: not a statement over p")
+	}
+	sql = strings.Replace(sql, head, `), f AS (
+  SELECT p.*, row_number() OVER (PARTITION BY p.database_id
+                                 ORDER BY p.cpu_us::numeric / nullif(p.executions, 0) DESC NULLS LAST, p.query_key) AS db_rank
+    FROM p
+   WHERE ($6::numeric IS NULL OR p.cpu_us / 1000.0 / nullif(p.executions, 0) >= $6)
+     AND ($7::bigint IS NULL OR p.executions >= $7)
+)
+SELECT p.matched, p.database_id,`, 1)
+	return strings.Replace(sql, from, "\n  FROM (SELECT f.*, count(*) OVER () AS matched FROM f WHERE $8::int IS NULL OR f.db_rank <= $8) p\n", 1)
+}
+
+var sqlMSSQLPCTopFiltered, sqlMSSQLPCExtremesFiltered = pcFiltered(sqlMSSQLPCTop), pcFiltered(sqlMSSQLPCExtremes)
 
 // sqlMSSQLPCCompare: PerformanceMonitor's compare (top-compare.js, MIT, Erik Darling, Darling Data LLC) on the plan
 // cache's stored reads: the window ($2, $3) against the same span $6 seconds earlier, one read over every stored
@@ -238,9 +349,13 @@ SELECT l.ord, l.database_id, coalesce(l.database_name, 'database ' || l.database
  WHERE l.instance_id = $1 AND l.list = $2
  ORDER BY l.ord`
 
+// sqlMSSQLPCFindings: 0092's findings and the grant finding (0342's view, on the page from its migration on; its arm
+// of pgvigil.findings comes with a join file).
 const sqlMSSQLPCFindings = `
 SELECT f.severity, f.check_name, f.object, f.at, f.detail
-  FROM pgvigil.mssql_plancache_findings f
+  FROM (SELECT a.instance_id, a.severity, a.check_name, a.object, a.at, a.detail FROM pgvigil.mssql_plancache_findings a
+        UNION ALL
+        SELECT g.instance_id, g.severity, g.check_name, g.object, g.at, g.detail FROM pgvigil.mssql_plancache_grant_findings g) f
  WHERE f.instance_id = $1
  ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, f.check_name, f.object`
 
@@ -374,12 +489,23 @@ func (s *Server) MSSQLPlanCache(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	filter, err := pcFilterOf(r.URL.Query())
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// the statements' two parts: as they were with no filter, the filtered statement with one
+	topSQL, extSQL, stmtArgs := sqlMSSQLPCTop, sqlMSSQLPCExtremes, []any{id, from, to, database, noQS}
+	if filter.set() {
+		topSQL, extSQL = sqlMSSQLPCTopFiltered, sqlMSSQLPCExtremesFiltered
+		stmtArgs = append(stmtArgs, filter.minAvgCPUms, filter.minExecutions, filter.perDB)
+	}
 	parts := []part{
 		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_plancache", "mssql_plancache_health"}}},
 		{"reads", sqlMSSQLPCReads, []any{id, from, to}},
 		{"databases", sqlMSSQLPCDatabases, []any{id}},
 		{"totals", sqlMSSQLPCTotals, []any{id, from, to, database, noQS}},
-		{"top", sqlMSSQLPCTop, []any{id, from, to, database, noQS}},
+		{"top", topSQL, stmtArgs},
 		{"series", sqlMSSQLPCSeries, []any{id, from, to, database, noQS, procStep(to.Sub(from).Seconds())}},
 		{"health", sqlMSSQLPCHealth, []any{id}},
 		{"singles", sqlMSSQLPCList, []any{id, "single_use"}},
@@ -392,6 +518,11 @@ func (s *Server) MSSQLPlanCache(w http.ResponseWriter, r *http.Request) {
 			part{"compare_windows", sqlMSSQLPCCompareWindows, []any{planEach, id, from, to, shift}})
 	}
 	q := r.URL.Query()
+	// the extremes read every interval of the window in a table of their own: only when ?part=extremes asks (the
+	// page asks for it beside its first read, as it asks for the compare)
+	if q.Get("part") == "extremes" {
+		parts = append(parts, part{"extremes", extSQL, stmtArgs})
+	}
 	// the heatmap reads every sample of the window: only when ?part=heatmap asks for it (the page's section, alone)
 	if q.Get("part") == "heatmap" {
 		metric := q.Get("metric")

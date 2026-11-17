@@ -9,6 +9,8 @@
 --                                   seconds. mssql_pc_sample is not widened: its readers are measured at its width.
 --   mssql_pc_last.clr_us            the CLR time as last read: the next interval's difference starts from it
 --   mssql_proc_sample               gains the procedures' 12 extremes, over the plans that ran in the interval
+--   mssql_pc_diagnostics()          sp_QuickieCache's row-count variance, parameter-sniffing and wasteful-grant rules
+--                                   on one statement's figures since its compile, as words (the Plan cache page)
 --   mssql_plancache_grant_findings  one finding per instance: statements that ran in the last 3 hours with a memory
 --                                   grant over 1 MB of which under 10 % was used (sp_QuickieCache's Wasteful grant)
 -- The imports are 0092's import_mssql_plancache_0092 (0126's wrapper import_mssql_plancache calls it, unchanged) and
@@ -458,6 +460,37 @@ BEGIN
   ON CONFLICT (instance_id) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at, server_utc = EXCLUDED.server_utc,
       server_start = EXCLUDED.server_start, server_local = EXCLUDED.server_local, capped = EXCLUDED.capped;
 END $$;
+
+-- One statement's diagnostics, as words: sp_QuickieCache 1.11's Step 5 rules (MIT, Darling Data, LLC) on the figures
+-- of one read - the executions, CPU and physical reads of the statement's cached plans since their compile, and
+-- their extremes. NULL: none applies.
+--   Row count variance   the smallest run returned at least a row and the largest 100 times as many or more
+--   Parameter sniffing   more than 3 executions and, where the average CPU is over 0, a smallest run under 0.70 of it
+--                        or a largest over 1.30 of it; else the same band on the physical reads where their average
+--                        (a whole number, as the procedure divides) is over 1,000
+--   Wasteful grant       the largest grant over 1 MB, the largest use under 10 % of it
+-- The procedure compares milliseconds and megabytes kept to two decimals; these are the microseconds and kilobytes
+-- the server counts in.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_pc_diagnostics(p_executions bigint, p_cpu_us bigint, p_min_cpu_us bigint, p_max_cpu_us bigint,
+    p_physical_reads bigint, p_min_physical_reads bigint, p_max_physical_reads bigint, p_min_rows bigint, p_max_rows bigint,
+    p_max_grant_kb bigint, p_max_used_grant_kb bigint)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT nullif(concat_ws('; ',
+    CASE WHEN p_min_rows > 0 AND p_max_rows::numeric / p_min_rows >= 100
+         THEN format('Row count variance (%s to %s)', p_min_rows, p_max_rows) END,
+    CASE WHEN p_executions > 3 AND p_min_cpu_us IS NOT NULL AND p_max_cpu_us IS NOT NULL AND p_cpu_us > 0
+              AND (p_min_cpu_us < 0.70 * p_cpu_us / p_executions OR p_max_cpu_us > 1.30 * p_cpu_us / p_executions)
+         THEN format('Parameter sniffing (CPU %s-%s ms, avg %s ms)', round(p_min_cpu_us / 1000.0), round(p_max_cpu_us / 1000.0),
+                     round(p_cpu_us / 1000.0 / p_executions))
+         WHEN p_executions > 3 AND p_min_physical_reads IS NOT NULL AND p_max_physical_reads IS NOT NULL
+              AND p_physical_reads / p_executions > 1000
+              AND (p_min_physical_reads < 0.70 * (p_physical_reads / p_executions) OR p_max_physical_reads > 1.30 * (p_physical_reads / p_executions))
+         THEN format('Parameter sniffing (physical reads %s-%s, avg %s)', p_min_physical_reads, p_max_physical_reads,
+                     p_physical_reads / p_executions) END,
+    CASE WHEN p_max_grant_kb > 1024 AND p_max_used_grant_kb < 0.10 * p_max_grant_kb
+         THEN format('Wasteful grant (%s MB granted, %s %% used)', round(p_max_grant_kb / 1024.0, 1),
+                     round(100.0 * p_max_used_grant_kb / p_max_grant_kb, 1)) END), '')
+$$;
 
 -- The grant finding (sp_QuickieCache 1.11's Wasteful grant: a grant over 1 MB of which under 10 % was used, both the
 -- largest since the statement's compile). Judged at each read: a statement counts when any of its intervals of the
