@@ -452,8 +452,81 @@ await guard('CR-highlight', async () => {
   check('CR-highlight', ok && !!d && d.column === 'state' && d.value === 'warn me' && d.cond === 'eq', `Highlight Cell Value ${ok}; the rules dialog ${JSON.stringify(d)}`);
 });
 
-const notYet = ['task 6 the links',
-  'task 7 every grid', 'task 8 custom tools', 'task 9 the PM rows', 'task 10 the charts'];
+// ---- task 6: the links (a report's links: { column, kind: url | text | drill | tree, ... })
+await guard('CR-addlink', async () => {
+  await runStore({ name: `cr-al-${Date.now()}`, body: "SELECT 'x' AS a" });
+  await rightClick(TH('a')); await clickItem('Edit Report'); const ok = await clickItem('Add Link'); await sleep(400);
+  const d = await ev(`(() => { const d = document.querySelector('dialog[open]'); if (!d) return null; const s = d.querySelector('[aria-label="Link type"]');
+    return { types: [...(s?.options ?? [])].map(o => o.textContent.trim()), target: !!d.querySelector('[aria-label="Target column"]'), trust: /trust/i.test(d.textContent) }; })()`);
+  await ev(`(() => { const s = document.querySelector('dialog[open] [aria-label="Link type"]'); if (s) { s.value = 'url'; s.dispatchEvent(new Event('change', { bubbles: true })); } })()`);
+  await sleep(200);
+  const trust = await ev(`/only links you trust/i.test(document.querySelector('dialog[open]')?.textContent ?? '')`);
+  await closeDialogs();
+  check('CR-addlink', ok && !!d && JSON.stringify(d.types) === '["None","URL","Text","Drill Down","Navigate Tree"]' && d.target && trust,
+    `Add Link ${ok}; the dialog ${JSON.stringify(d)}; the URL type's trust words ${trust}`);
+});
+await guard('CR-drill', async () => {
+  const tgt = await addReport({ name: `cr-dt-${Date.now()}`, engine: 'store', body: 'SELECT @n::int * 10 AS tenfold', params: [{ name: 'n', type: 'int', label: 'n', default: '0' }] });
+  const res = {};
+  for (const where of ['new', 'same', 'panel']) {
+    const src = await runStore({ name: `cr-ds-${where}-${Date.now()}`, body: 'SELECT 7 AS n', links: [{ column: 'n', kind: 'drill', report_id: tgt.id, map: { n: 'n' }, open: where }] });
+    const before = (await send('Target.getTargets')).result?.targetInfos?.length ?? 0;
+    await ev(`${TD('n')}?.querySelector('a')?.click()`); await sleep(1500);
+    const after = (await send('Target.getTargets')).result?.targetInfos?.length ?? 0;
+    res[where] = { tabs: after - before, hash: await ev('location.hash'), panel: await ev(`document.querySelector('main .cr-child table.grid tbody td')?.textContent.trim() ?? ''`) };
+    if (where === 'same') { await ev('history.back()'); await sleep(800); res.same.back = await ev('location.hash'); }
+    void src;
+  }
+  check('CR-drill', res.new.tabs === 1 && res.same.hash.includes(`report=${tgt.id}`) && res.same.hash.includes('n=7') && /report=/.test(res.same.back ?? '') && !res.same.back.includes(`report=${tgt.id}`) && res.panel.panel === '70',
+    `new tab ${JSON.stringify(res.new)}; this tab ${JSON.stringify(res.same)}; a panel ${JSON.stringify(res.panel)}`);
+});
+await guard('CR-navtree', async () => {
+  const pg = (await instances()).find(r => r.name === crPg);
+  await runStore({ name: `cr-nt-${Date.now()}`, body: `SELECT ${Number(pg?.instance_id ?? 0)} AS iid, 'link' AS go`, links: [{ column: 'go', kind: 'tree', instance_column: 'iid', tab: 'activity' }] });
+  await ev(`${TD('go')}?.querySelector('a')?.click()`); await sleep(1200);
+  const h = await ev('location.hash');
+  check('CR-navtree', h.startsWith('#/activity') && h.includes(`i=${pg?.instance_id}`), `the link opened ${h}`);
+});
+await guard('CR-textlink', async () => {
+  await runStore({ name: `cr-tl-${Date.now()}`, body: `SELECT '{"a": 1}' AS doc`, links: [{ column: 'doc', kind: 'text', syntax: 'json' }] });
+  await ev(`${TD('doc')}?.querySelector('a, button')?.click()`); await sleep(600);
+  const v = await ev(`(() => { const d = document.querySelector('dialog.sqlview[open]'); return d ? { text: d.querySelector('pre')?.textContent ?? '', lang: d.querySelector('pre')?.dataset.lang ?? '' } : null; })()`);
+  await closeDialogs();
+  check('CR-textlink', !!v && v.text.includes('"a": 1') && v.lang === 'json', `the code viewer ${JSON.stringify(v)}`);
+});
+await guard('CR-url', async () => {
+  await runStore({ name: `cr-ul-${Date.now()}`, body: "SELECT 'https://example.org/x' AS u UNION ALL SELECT 'javascript:alert(1)'", links: [{ column: 'u', kind: 'url' }] });
+  const links = await ev(`[...document.querySelectorAll('main .cr-set table.grid tbody tr')].map(tr => { const a = tr.querySelector('a'); return a ? { href: a.getAttribute('href'), target: a.target } : null; })`);
+  check('CR-url', links.length === 2 && links[0]?.href === 'https://example.org/x' && links[0]?.target === '_blank' && links[1] === null, `the links ${JSON.stringify(links)} (a value that is no http(s) URL is no link)`);
+});
+
+// ---- task 7: every grid (the grid tools on any page: the demo's Statements grid; SQL Server's binary on the report)
+await guard('G-reorder', async () => {
+  const s = await runStore({ name: `g-ro-${Date.now()}`, body: 'SELECT 1 AS a, 2 AS b, 3 AS c' });
+  const moved = await ev(`(() => { const h = ${TH('c')}; if (!h || !h.draggable) return false; h.focus(); h.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true })); return true; })()`);
+  await sleep(300);
+  const now = await ev(`[...document.querySelectorAll('main .cr-set table.grid thead th')].map(h => h.textContent.trim())`);
+  await openReport(s.id); await sleep(1500);
+  const kept = await ev(`[...document.querySelectorAll('main .cr-set table.grid thead th')].map(h => h.textContent.trim())`);
+  check('G-reorder', moved && JSON.stringify(now) === '["a","c","b"]' && JSON.stringify(kept) === '["a","c","b"]', `c draggable and moved left by Alt+ArrowLeft ${moved}: ${JSON.stringify(now)}; after a reload ${JSON.stringify(kept)}`);
+});
+await guard('G-0x', async () => {
+  const saved = await addReport({ name: `g-0x-${Date.now()}`, engine: 'sqlserver', body: 'SELECT CAST(0x0A0B AS varbinary(8)) AS short, CAST(REPLICATE(0xFF, 40) AS varbinary(64)) AS long' });
+  await openReport(saved.id, await idByName(crMs)); await clickButton('Run'); await sleep(2500);
+  const short = await ev(`${TD('short')}?.textContent.trim() ?? ''`), long = await ev(`${TD('long')}?.textContent.trim() ?? ''`);
+  check('G-0x', short === '0x0A0B' && /^0x(FF){32}/.test(long) && /40 bytes/.test(long), `short '${short}', long '${long.slice(0, 90)}'`);
+});
+await guard('G-tipcap', async () => {
+  await runStore({ name: `g-tip-${Date.now()}`, body: "SELECT repeat('w', 1500) AS big" });
+  const t1 = await ev(`${TD('big')}?.title ?? ''`);
+  await ev(`(() => { try { localStorage.setItem('pgvigil.tipCap', '200'); } catch {} })()`); await ev('location.reload()'); await sleep(2500);
+  const t2 = await ev(`${TD('big')}?.title ?? ''`);
+  await ev(`(() => { try { localStorage.removeItem('pgvigil.tipCap'); } catch {} })()`);
+  check('G-tipcap', t1.length === 1003 && t1.endsWith('...') && t2.length === 203, `the title ${t1.length} characters (want 1,000 + '...'); with the setting at 200: ${t2.length}`);
+});
+
+const notYet = [
+  'task 8 custom tools', 'task 9 the PM rows', 'task 10 the charts'];
 for (const g of notYet) check(g, false, 'its cases are not written yet (task 1)');
 
 console.log(`crview-check: ${failed} FAIL`);
