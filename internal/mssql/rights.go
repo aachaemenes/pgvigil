@@ -151,7 +151,8 @@ var Rights = []Right{
 			"-- In the logical server's master database, as the server admin or the Entra admin:\n" +
 			"-- CREATE USER {login} FROM LOGIN {login};\n" +
 			"-- ALTER ROLE dbmanager ADD MEMBER {login};\n" +
-			"-- To take it back: ALTER ROLE dbmanager DROP MEMBER {login};",
+			"-- or: ALTER SERVER ROLE ##MS_DatabaseManager## ADD MEMBER {login}; (the server role: the same create and drop of databases)\n" +
+			"-- To take it back: ALTER ROLE dbmanager DROP MEMBER {login}; or ALTER SERVER ROLE ##MS_DatabaseManager## DROP MEMBER {login};",
 		Checks: []string{"IS_ROLEMEMBER('dbmanager')"},
 		On: func(i Info) string {
 			if i.Kind != KindAzureDB || !strings.EqualFold(i.ServiceObjective, "ElasticPool") {

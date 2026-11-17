@@ -50,9 +50,21 @@ func (poolLimitsCollector) Applies(info Info) (bool, string) {
 // run within it.
 const masterConnectCap = 15 * time.Second
 
-// poolLimitsRightSQL: whether the login may read the view, asked in master - a member of dbmanager there, or the server
-// admin (dbo in master: IS_ROLEMEMBER answers 0 for dbo, Microsoft's page)
-const poolLimitsRightSQL = `SELECT CAST(CASE WHEN IS_ROLEMEMBER('dbmanager') = 1 OR USER_NAME() = 'dbo' THEN 1 ELSE 0 END AS int) AS has_right`
+// poolLimitsRightSQL: whether the login may read the view, asked in master - a member of dbmanager there, the server
+// admin (dbo in master: IS_ROLEMEMBER answers 0 for dbo, Microsoft's page), or a member of the server role
+// ##MS_DatabaseManager## (the Pool lab's L4, 2026-11-17: a login holding it alone read the view, its 37 rows the
+// admin's; Microsoft's view page names dbmanager only). The server role is read as the login's own membership in
+// sys.server_role_members, which a login may see for itself: IS_SRVROLEMEMBER 'isn't supported in the master
+// database' of Azure SQL Database, and a SQL login is in sys.sql_logins there, not sys.server_principals (an Entra
+// login is in sys.server_principals) - Microsoft Learn, Azure SQL Database's server roles and sys.server_role_members.
+const poolLimitsRightSQL = `SELECT CAST(CASE WHEN IS_ROLEMEMBER('dbmanager') = 1 OR USER_NAME() = 'dbo'
+  OR EXISTS (SELECT 1 FROM sys.server_role_members m
+               JOIN sys.server_principals r ON r.principal_id = m.role_principal_id
+              WHERE r.name = N'##MS_DatabaseManager##'
+                AND m.member_principal_id IN (SELECT l.principal_id FROM sys.sql_logins l WHERE l.sid = SUSER_SID()
+                                              UNION ALL
+                                              SELECT p.principal_id FROM sys.server_principals p WHERE p.sid = SUSER_SID()))
+  THEN 1 ELSE 0 END AS int) AS has_right`
 
 // poolLimitsSQL: the pool's rows (@p1 its name) as periods of equal limits - a period starts at the first row and
 // wherever a limit differs from the row before (NULLs compared as values: INTERSECT), its limits its rows' - each with
@@ -79,10 +91,10 @@ SELECT CONVERT(varchar(27), MIN(start_time), 126) AS valid_from, CONVERT(varchar
  GROUP BY period
  ORDER BY MIN(start_time)`
 
-// noRightWords: the skip's words when the login is not in dbmanager (the opt-in not taken)
-const noRightWords = "Pool history is not read: the login is not a member of dbmanager in the logical server's master - an opt-in, " +
-	"since dbmanager lets the login create and drop databases on this logical server, which can cost money (the rights page's " +
-	"commented-out block gives it)"
+// noRightWords: the skip's words when the login is in neither dbmanager nor ##MS_DatabaseManager## (the opt-in not taken)
+const noRightWords = "Pool history is not read: the login is not a member of dbmanager in the logical server's master, nor of the " +
+	"server role ##MS_DatabaseManager## - an opt-in, since either lets the login create and drop databases on this logical server, " +
+	"which can cost money (the rights page's commented-out block gives it)"
 
 // noMasterWords: the skip's words when the login could not sign in to master
 func noMasterWords(err error) string {
