@@ -48,8 +48,12 @@ func (p DailyPost) Check() error {
 			return fmt.Errorf("the post's instance %d has no name", i+1)
 		case utf8.RuneCountInString(w.Name) > maxPostName:
 			return fmt.Errorf("the post's instance %d has a name over %d characters", i+1, maxPostName)
+		case strings.ContainsAny(w.Name, "\r\n\t"):
+			return fmt.Errorf("the post's instance %d has a name with a line break or a tab", i+1)
 		case w.Critical < 0 || w.Warnings < 0:
 			return errors.New("the post's counts are not counts")
+		case w.Critical+w.Warnings == 0:
+			return fmt.Errorf("the post's instance %d has no failing check", i+1)
 		}
 	}
 	return nil

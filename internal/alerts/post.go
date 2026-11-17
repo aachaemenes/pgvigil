@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Post is a short text a channel posts outside the alert cycle - no finding, no repeat, no recovery: the Daily checks
@@ -40,6 +41,43 @@ func (c *Channel) Post(ctx context.Context, p Post) error {
 	return w.do(sctx, body)
 }
 
+// chatText is a chat format's text within limit bytes: the head, the lines, then the link on its own last line; lines
+// that do not fit are dropped from the end, the last one that starts is cut at a character - never the link (review-26
+// go1 N1: the byte limits of Discord and Google Chat)
+func chatText(head string, lines []string, link string, limit int) string {
+	tail := ""
+	if link != "" {
+		tail = "\n" + link
+	}
+	budget := limit - len(tail)
+	out := cutAt(head, budget)
+	for _, l := range lines {
+		if len(out)+1+len(l) <= budget {
+			out += "\n" + l
+			continue
+		}
+		if rest := budget - len(out) - 1; rest > 0 {
+			out += "\n" + cutAt(l, rest)
+		}
+		break
+	}
+	return out + tail
+}
+
+// cutAt is s within n bytes, cut at a character's start
+func cutAt(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 0 {
+		return ""
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
 // postBody is a Post in the channel's format; the text is the title, the lines and the link, one a line
 func (s *webhookSender) postBody(p Post, link string) ([]byte, error) {
 	lines := append([]string{}, p.Lines...)
@@ -51,17 +89,16 @@ func (s *webhookSender) postBody(p Post, link string) ([]byte, error) {
 	case "slack":
 		return json.Marshal(map[string]any{"text": strings.Join(append([]string{"*" + p.Title + "*"}, lines...), "\n")})
 	case "discord":
-		t := strings.Join(append([]string{"**" + p.Title + "**"}, lines...), "\n")
-		if len(t) > discordLimit {
-			t = t[:discordLimit]
-		}
+		t := chatText("**"+p.Title+"**", p.Lines, link, discordLimit)
 		return json.Marshal(map[string]any{"content": t, "username": "pgvigil", "allowed_mentions": map[string]any{"parse": []string{}}})
 	case "googlechat":
-		t := strings.Join(append([]string{"*" + p.Title + "*"}, lines...), "\n")
-		if len(t) > googleChatLimit {
-			t = t[:googleChatLimit]
+		// the mention guard first, so what is measured is what is sent
+		guard := func(s string) string { return strings.ReplaceAll(s, "<users/", "< users/") }
+		gl := make([]string, len(p.Lines))
+		for i, l := range p.Lines {
+			gl[i] = guard(l)
 		}
-		return json.Marshal(map[string]any{"text": strings.ReplaceAll(t, "<users/", "< users/")})
+		return json.Marshal(map[string]any{"text": chatText("*"+guard(p.Title)+"*", gl, link, googleChatLimit)})
 	case "teams":
 		body := []map[string]any{{"type": "TextBlock", "text": p.Title, "weight": "Bolder", "size": "Medium", "wrap": true}}
 		for _, l := range lines {
