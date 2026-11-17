@@ -22,17 +22,21 @@
 #     avg_query_ms = sum(avg_query_us x query_rate) / sum(query_rate) / 1000, avg_wait_ms the same weighted by xact_rate
 #     (null when the weight is 0), recv_bps / sent_bps = sum(avg_recv) / sum(avg_sent) (null where not read).
 #   GET /api/tables/io?instance=<id>&dbid=&relid=&from=&to=  {points: [{at, seq_scan, idx_scan, ins, upd, del,
-#     hit_pct}], words: [..]} - per pgvigil.table_io read after the first in the window, each counter's change since the
-#     read before it; a counter lower than before (a stats reset) leaves that point's counts null and the words say
-#     'reset'; hit_pct = 100 x (heap + idx blks_hit change) / (that + heap + idx blks_read change), null when both are 0.
+#     hit_pct}], words: [..]} - per pgvigil.table_activity read (task 127's five-minute read; 0363 adds its six block
+#     counters) after the first in the window, each counter's change since the read before it; a counter lower than
+#     before (a stats reset) leaves that point's counts null and the words say 'reset'; hit_pct = 100 x (heap + idx
+#     blks_hit change) / (that + heap + idx blks_read change), null when both are 0 or not read (a read before 0363); a
+#     table pgvigil.tables lists with no table_activity read in the window: no point, and the words say it is outside
+#     its database's busiest 100 (the lead 11-17 02:50's added check).
 #   GET /api/tables/io_top?instance=<id>&from=&to=&top=<n>  {tables: [{table, dbid, relid, blks_read}]} - Most Disk I/O
 #     Reads: each table's heap + idx + toast blks_read increases over the window (a reset's drop not counted), the
 #     largest first, at most n.
 #
-# Expected (written 11-17 before the first run; the RED run on rel-j16-last 65083820): the seed of the pooler's traffic
-# and of pgvigil.table_io FAIL ('column "avg_recv" ... does not exist', 'relation "pgvigil.table_io" does not exist');
-# every row FAIL - the four routes answer 404 or the SPA's HTML, so no JSON (V1-V3, W1, W2, P1-P5, I1-I3). On the build,
-# each row as named:
+# Expected (written 11-17 before the first run; CHANGED 11-17 02:5x before any run - the lead 02:50: the table history
+# is table_activity's, extended by 0363, not a table_io; the RED run on rel-j16-last 65083820): the seed of the
+# pooler's traffic and of table_activity's block counters FAIL ('column "avg_recv" ... does not exist', 'column
+# "heap_blks_read" ... does not exist'); every row FAIL - the four routes answer 404 or the SPA's HTML, so no JSON
+# (V1-V3, W1, W2, P1-P5, I1-I4). On the build, each row as named:
 #   V1 workers   every point at a seeded minute, n = that minute's autovacuum workers (0 to 3; the manual VACUUM never
 #                counted), max 3; W1: the words name autovacuum_max_workers as last read
 #   V2 dead      the 5 tables with the most dead tuples at the newest read (by name), each a point per read equal to
@@ -44,6 +48,7 @@
 #   I1 io        t1's points: each change as stored, hit_pct within 0.05
 #   I2 reset     t0's read after its reset: its counts null, the words 'reset'
 #   I3 io_top    the tables in this script's order with its sums, top=3 three of them
+#   I4 quiet     t6 (in pgvigil.tables, no table_activity read): no point, the words name its database's busiest 100
 # 'proof-pmrows: <n> FAIL' last; exit 1 on any FAIL.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -95,7 +100,7 @@ q "insert into pgvigil.vacuum_sample (instance_id, snapshot_at, kind, pid, is_au
    select $P1, $AT, 'vacuum', 1000 + w, true from generate_series(0, 35) k, generate_series(1, 3) w where w <= k % 4
    union all select $P1, $AT, 'vacuum', 9000 + k, false from generate_series(0, 35) k where k % 2 = 0 or k % 4 = 0" > /dev/null || die "vacuum_sample"
 q "insert into pgvigil.tables (instance_id, dbid, relid, datname, schema_name, table_name, snapshot_at, first_seen)
-   select $P1, 1, 100 + i, 'app', 'public', 't' || i, now(), now() from generate_series(0, 5) i" > /dev/null || die "tables"
+   select $P1, 1, 100 + i, 'app', 'public', 't' || i, now(), now() from generate_series(0, 6) i" > /dev/null || die "tables"
 q "insert into pgvigil.table_sizes (instance_id, snapshot_at, dbid, relid, n_live_tup, n_dead_tup)
    select $P1, $AT, 1, 100 + i, 1000 * (i + 1), (k * 37 * (i + 1)) % (300 * (i + 2)) from generate_series(0, 35) k, generate_series(0, 5) i" > /dev/null || die "table_sizes"
 q "insert into pgvigil.pooler_sample (instance_id, snapshot_at, kind, database, xact_rate, query_rate, avg_wait_us, avg_query_us)
@@ -105,10 +110,10 @@ q "insert into pgvigil.pooler_sample (instance_id, snapshot_at, kind, database, 
 # the traffic and the table I/O history need task 4's migration: on the base each seed fails in its own words
 q "update pgvigil.pooler_sample set avg_recv = 1000 + 17 * extract(minute from snapshot_at)::int, avg_sent = 4000 + 3 * extract(minute from snapshot_at)::int
    where instance_id = $P1 and kind = 'stats'" > "$WORK/seed-traffic.log" 2>&1 || bad "the traffic seed: $(head -1 "$WORK/seed-traffic.log")"
-q "select pgvigil.ensure_month_partition('table_io', d) from generate_series('$T0'::timestamptz - interval '1 day', '$T0'::timestamptz + interval '1 day', interval '1 day') d" > "$WORK/seed-io.log" 2>&1 &&
-q "insert into pgvigil.table_io (instance_id, snapshot_at, dbid, relid, seq_scan, idx_scan, n_tup_ins, n_tup_upd, n_tup_del,
+q "select pgvigil.ensure_month_partition('table_activity', d) from generate_series('$T0'::timestamptz - interval '1 day', '$T0'::timestamptz + interval '1 day', interval '1 day') d" > "$WORK/seed-io.log" 2>&1 &&
+q "insert into pgvigil.table_activity (instance_id, snapshot_at, dbid, relid, datname, schema_name, table_name, seq_scan, idx_scan, n_tup_ins, n_tup_upd, n_tup_del,
      heap_blks_read, heap_blks_hit, idx_blks_read, idx_blks_hit, toast_blks_read, toast_blks_hit)
-   select $P1, $AT, 1, 100 + i,
+   select $P1, $AT, 1, 100 + i, 'app', 'public', 't' || i,
      case when i = 0 and k >= 20 then k - 20 else 5 * k * (i + 1) end, 11 * k * (i + 1), 3 * k * i, 2 * k, k % 3 + k,
      case when i = 0 and k >= 20 then 2 * (k - 20) else 40 * k * (i + 1) + (k * k) % 7 end, 900 * k * (i + 1), 13 * k * i, 400 * k, 2 * k * (i % 2), 0
    from generate_series(0, 35) k, generate_series(0, 5) i" >> "$WORK/seed-io.log" 2>&1 || bad "the table I/O seed: $(grep -m1 -i 'error' "$WORK/seed-io.log")"
@@ -121,7 +126,7 @@ dump "select s.snapshot_at, s.relid, s.n_live_tup, s.n_dead_tup, t.schema_name |
       join pgvigil.tables t using (instance_id, dbid, relid) where s.instance_id = $P1" ts
 dump "select snapshot_at, kind, xact_rate, query_rate, avg_wait_us, avg_query_us, to_jsonb(p) -> 'avg_recv' as avg_recv, to_jsonb(p) -> 'avg_sent' as avg_sent
       from pgvigil.pooler_sample p where instance_id = $P1" ps
-dump "select i.*, t.schema_name || '.' || t.table_name as name from pgvigil.table_io i join pgvigil.tables t using (instance_id, dbid, relid) where i.instance_id = $P1" tio
+dump "select i.*, t.schema_name || '.' || t.table_name as name from pgvigil.table_activity i join pgvigil.tables t using (instance_id, dbid, relid) where i.instance_id = $P1" tio
 
 # ---- the API
 port=$(freeport); U="http://127.0.0.1:$port"
@@ -137,6 +142,7 @@ get "pooler/trend?$W" a-pool
 get "tables/io?$W&dbid=1&relid=101" a-io1
 get "tables/io?$W&dbid=1&relid=100" a-io0
 get "tables/io_top?$W&top=3" a-top
+get "tables/io?$W&dbid=1&relid=106" a-io6
 
 python3 -I - "$WORK" <<'PY'
 import json, sys, os
@@ -259,6 +265,11 @@ else:
     want = sorted(sums.items(), key=lambda x: (-x[1], x[0]))[:3]
     got = [(t.get('table'), t.get('blks_read')) for t in a.get('tables') or []]
     say(got == want and len(want) == 3, 'I3 io_top', f"got {got} want {want}")
+a = api('a-io6')
+if a is None: say(False, 'I4 quiet', f"GET /api/tables/io answered {code('a-io6')} with no JSON object")
+else:
+    words = ' '.join(a.get('words') or [])
+    say(not a.get('points') and 'busiest 100' in words, 'I4 quiet', f"{len(a.get('points') or [])} points, words {words[:160]!r}")
 print('\n'.join(out))
 fails = sum(1 for l in out if l.startswith('FAIL'))
 open(os.path.join(W, 'fails'), 'w').write(str(fails))
