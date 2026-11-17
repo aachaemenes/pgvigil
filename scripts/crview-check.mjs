@@ -551,10 +551,10 @@ const section = async (h, cols) => ev(`(() => { const t = [...document.querySele
   let g = t.nextElementSibling; while (g && !g.matches('table.grid') && !g.querySelector('table.grid')) g = g.nextElementSibling; const tb = g?.matches('table.grid') ? g : g?.querySelector('table.grid');
   return { heads: [...(tb?.querySelectorAll('thead th') ?? [])].map(x => x.textContent.trim()), rows: tb?.querySelectorAll('tbody tr').length ?? 0, want: ${JSON.stringify(cols)} }; })()`);
 const hasCols = s => !!s && s.want.every(c => s.heads.includes(c)) && s.rows > 0;
-// tiles: a section's tile labels and values (pgvigil's tiles: .tile > .tile-label / .tile-value)
+// tiles: a section's tile labels and values (pgvigil's tiles, ui.ts tile(): .tile > .tile-l the label / .tile-v the value)
 const tilesOf = async h => ev(`(() => { const t = [...document.querySelectorAll('main h3, main h2')].find(x => x.textContent.trim().startsWith(${JSON.stringify(h)})); if (!t) return null;
   let g = t.nextElementSibling; while (g && !g.matches('.tiles') && !g.querySelector('.tiles')) g = g.nextElementSibling; const box = g?.matches('.tiles') ? g : g?.querySelector('.tiles');
-  return [...(box?.querySelectorAll('.tile') ?? [])].map(x => ({ label: x.querySelector('.tile-label, .label')?.textContent.trim() ?? '', value: x.querySelector('.tile-value, .value')?.textContent.trim() ?? '' })); })()`);
+  return [...(box?.querySelectorAll('.tile') ?? [])].map(x => ({ label: x.querySelector('.tile-l')?.textContent.trim() ?? '', value: x.querySelector('.tile-v')?.textContent.trim() ?? '' })); })()`);
 const tilesHave = (ts, labels) => !!ts && labels.every(l => ts.some(t => t.label === l && t.value !== '' && t.value !== '-'));
 await guard('PM-vacthr', async () => {
   await go(`#/vacuum?i=${await pgDemo()}`); await sleep(1200);
