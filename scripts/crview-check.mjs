@@ -222,7 +222,84 @@ await guard('CR-role', async () => {
     `saved ${saved.status}; the operator's page says no access ${said}; the operator's run ${run.status} ${run.body.slice(0, 120)}; the admin's run ${adminRun.status}`);
 });
 
-const notYet = [ 'task 4 the result sets', 'task 5 the columns', 'task 6 the links',
+// ---- task 3: the run
+const crPg = process.env.CR_PG_NAME ?? '', crMs = process.env.CR_MS_NAME ?? '', msCt = process.env.CR_MS_CT ?? '', msEnv = process.env.CR_MS_ENV ?? '';
+const idByName = async n => (await instances()).find(r => r.name === n)?.instance_id;
+// sqlcmd in the run's SQL Server container, the sa password from its env file (never a command line)
+const sqlcmd = q => execFileSync('docker', ['exec', '--env-file', msEnv, msCt, 'bash', '-c', '/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C -b -W -h -1 -Q "SET NOCOUNT ON; ' + q + '"'], { encoding: 'utf8' }).trim();
+const statusText = () => ev(`document.querySelector('main [role=status]')?.textContent.trim() ?? ''`);
+const clickButton = label => ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === ${JSON.stringify(label)}); if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return false; b.click(); return true; })()`);
+const openReport = async (id, instId) => { await go(`#/customreports?report=${id}${instId ? '&i=' + instId : ''}`); await sleep(500); };
+for (const [eng, inst, body, gone] of [
+  ['postgres', crPg, 'SELECT pg_sleep(60) AS slept', () => psql(`select count(*) from pg_stat_activity where query like '%pg_sleep(60)%' and pid <> pg_backend_pid()`)],
+  ['sqlserver', crMs, "WAITFOR DELAY '00:01:00'; SELECT 1 AS slept", () => sqlcmd("SELECT COUNT(*) FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE t.text LIKE '%00:01:00%' AND r.session_id <> @@SPID")],
+]) await guard(`CR-cancel ${eng}`, async () => {
+  const saved = await addReport({ name: `cr-cancel-${eng}-${Date.now()}`, engine: eng, body, timeout_secs: 120 });
+  await openReport(saved.id, await idByName(inst));
+  const ran = await clickButton('Run'); await sleep(1500);
+  const t0 = Date.now(), cancelled = await clickButton('Cancel');
+  let st = '';
+  for (let k = 0; k < 25 && !/Cancelled/.test(st); k++) { await sleep(200); st = await statusText(); }
+  const took = Date.now() - t0; await sleep(500);
+  const left = cancelled ? String(gone()) : '-';
+  check(`CR-cancel ${eng}`, saved.status === 200 && ran && cancelled && /Cancelled/.test(st) && took <= 5000 && left === '0',
+    `saved ${saved.status}; Run ${ran}; a Cancel button ${cancelled}; the status '${st.slice(0, 80)}' after ${took} ms; the statement left on the server: ${left}`);
+});
+for (const [eng, inst, body] of [['postgres', crPg, 'SELECT public.cr_notice() AS one'], ['sqlserver', crMs, "PRINT 'step two of three'; SELECT 1 AS one"]])
+  await guard(`CR-timer ${eng}`, async () => {
+    const slow = await addReport({ name: `cr-timer-${eng}-${Date.now()}`, engine: eng, body: eng === 'postgres' ? 'SELECT pg_sleep(3) AS s' : "WAITFOR DELAY '00:00:03'; SELECT 1 AS s" });
+    await openReport(slow.id, await idByName(inst));
+    await clickButton('Run'); await sleep(1000);
+    const a = await statusText(); await sleep(1500); const b = await statusText();
+    let c = ''; for (let k = 0; k < 30 && !/Completed/.test(c); k++) { await sleep(200); c = await statusText(); }
+    const msg = await addReport({ name: `cr-msg-${eng}-${Date.now()}`, engine: eng, body, status_from_messages: true });
+    await openReport(msg.id, await idByName(inst));
+    await clickButton('Run');
+    let m = ''; for (let k = 0; k < 30 && !/step two of three/.test(m); k++) { await sleep(200); m = await statusText(); }
+    const clock = /Running \d\d:\d\d:\d\d/;
+    check(`CR-timer ${eng}`, clock.test(a) && clock.test(b) && a !== b && /Completed in \d\d:\d\d:\d\d/.test(c) && /step two of three/.test(m),
+      `running '${a}' then '${b}', ended '${c.slice(0, 60)}'; the messages report's status '${m.slice(0, 80)}'`);
+  });
+await guard('CR-paramreq', async () => {
+  const saved = await addReport({ name: `cr-param-${Date.now()}`, engine: 'store', body: 'SELECT @n::int AS n', params: [{ name: 'n', type: 'int', label: 'n', required: true }] });
+  await openReport(saved.id);
+  await clickButton('Run'); await sleep(800);
+  const said = await ev(`(document.querySelector('main')?.textContent ?? '').includes('Parameters are required to run the report')`);
+  const link = await ev(`(() => { const a = [...document.querySelectorAll('main a, main button')].find(x => x.textContent.trim() === 'Set Parameters'); if (!a) return false; a.click(); return true; })()`);
+  await sleep(200);
+  const focus = await ev(`document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.name ?? ''`);
+  check('CR-paramreq', said && link && /^n\b/.test(focus), `the words ${said}; Set Parameters ${link}; the focus on '${focus}'`);
+});
+await guard('CR-pickers', async () => {
+  const params = [
+    { name: 'kind', type: 'text', label: 'kind', default: 'a', picker: { kind: 'list', values: ['a', 'b'], menu: true } },
+    { name: 'q', type: 'text', label: 'q', default: '', picker: { kind: 'text' } },
+    { name: 'db', type: 'text', label: 'db', picker: { kind: 'query', query: "SELECT datname FROM pg_database WHERE datname IN ('postgres', 'template1') ORDER BY 1" } },
+  ];
+  const saved = await addReport({ name: `cr-pick-${Date.now()}`, engine: 'store', body: 'SELECT @kind::text AS kind, @q::text AS q, @db::text AS db', params });
+  await openReport(saved.id); await sleep(800);
+  const shape = await ev(`(() => { const f = n => document.querySelector('main [aria-label=' + JSON.stringify(n) + ']');
+    return { kind: f('kind')?.tagName, kindOpts: [...(f('kind')?.options ?? [])].map(o => o.value), q: f('q')?.tagName, db: f('db')?.tagName, dbOpts: [...(f('db')?.options ?? [])].map(o => o.value) }; })()`);
+  await ev(`(() => { const k = document.querySelector('main [aria-label=kind]'); if (k) { k.value = 'b'; k.dispatchEvent(new Event('change', { bubbles: true })); }
+    const q = document.querySelector('main [aria-label=q]'); if (q) { q.value = 'zz'; q.focus(); q.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); } })()`);
+  await sleep(1500);
+  const row = await ev(`[...document.querySelectorAll('main table.grid tbody tr:first-child td')].map(td => td.textContent.trim())`);
+  const marked = await ev(`(() => { const l = document.querySelector('main [aria-label=kind]')?.closest('label'); return !!l && (l.classList.contains('not-default') || Number(getComputedStyle(l).fontWeight) >= 600); })()`);
+  check('CR-pickers', shape.kind === 'SELECT' && JSON.stringify(shape.kindOpts) === '["a","b"]' && shape.q === 'INPUT' && shape.db === 'SELECT' && JSON.stringify(shape.dbOpts) === '["postgres","template1"]'
+    && row[0] === 'b' && row[1] === 'zz' && row[2] === 'postgres' && marked,
+    `the pickers ${JSON.stringify(shape)}; the run after kind b and q zz + Enter: ${JSON.stringify(row)}; kind marked as not at its default ${marked}`);
+});
+await guard('CR-assoc', async () => {
+  const saved = await addReport({ name: `cr-assoc-${Date.now()}`, engine: 'postgres', body: 'SELECT 1 AS one', collections: ['activity'] });
+  await go(`#/customreports?edit=${saved.id}`);
+  const field = await ev(`!![...document.querySelectorAll('main label')].find(l => /^Associate Collection/.test(l.textContent.trim()))`);
+  await openReport(saved.id, await idByName(crPg));
+  const btn = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === 'Trigger Collection'); return b ? { title: b.title, off: b.getAttribute('aria-disabled') === 'true', note: document.getElementById(b.dataset.offNote ?? '')?.textContent ?? '' } : null; })()`);
+  const okBtn = !!btn && /activity/.test(btn.title + btn.note) && (!btn.off || /P13/.test(btn.note));
+  check('CR-assoc', saved.status === 200 && field && okBtn, `saved ${saved.status}; the editor's Associate Collection ${field}; the Trigger Collection button ${JSON.stringify(btn)}`);
+});
+
+const notYet = ['task 4 the result sets', 'task 5 the columns', 'task 6 the links',
   'task 7 every grid', 'task 8 custom tools', 'task 9 the PM rows', 'task 10 the charts'];
 for (const g of notYet) check(g, false, 'its cases are not written yet (task 1)');
 

@@ -26,7 +26,7 @@ cleanup() {
   [[ -n "${PGVIGIL_PROOF_OUT:-}" ]] && mkdir -p "$PGVIGIL_PROOF_OUT" && cp "$WORK"/*.log "$PGVIGIL_PROOF_OUT"/ 2>/dev/null
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null
   docker rm -fv "$CT" >/dev/null 2>&1
-  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" -c "drop role if exists $MON" >/dev/null 2>&1
+  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" -c "drop role if exists $MON" -c "drop function if exists public.cr_notice()" >/dev/null 2>&1
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -54,6 +54,8 @@ instances:
   - {name: cr-pg-$SUF, dsn: "env:CR_PG"}
   - {name: cr-ms-$SUF, engine: sqlserver, dsn: "env:CR_MS"}
 EOF
+# CR-timer's PostgreSQL report raises a NOTICE through a function of the run's own (dropped at the end)
+psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create or replace function public.cr_notice() returns int language plpgsql as \$f\$ begin raise notice 'step two of three'; return 1; end \$f\$" >/dev/null || die "cr_notice"
 "$BIN" migrate -config "$WORK/pgvigil.yaml" > "$WORK/migrate.log" 2>&1 || die "migrate: $(tail -3 "$WORK/migrate.log")"
 "$BIN" demo -config "$WORK/pgvigil.yaml" -days 1 > "$WORK/seed.log" 2>&1 || die "the demo seed: $(tail -3 "$WORK/seed.log")"
 for n in "cr-pg-$SUF postgres" "cr-ms-$SUF sqlserver"; do set -- $n
@@ -67,5 +69,5 @@ for _ in $(seq 1 60); do curl -sf -o /dev/null "$U" && break; kill -0 $SRV 2>/de
 
 # ---- the check
 PGVIGIL_CRVIEW_URL=$U PGVIGIL_CRVIEW_DB=$DB PGVIGIL_CRVIEW_ADMIN="cradmin:$UPW" PGVIGIL_CRVIEW_OPERATOR="crop:$OPW" \
-  CR_PG_NAME="cr-pg-$SUF" CR_MS_NAME="cr-ms-$SUF" node scripts/crview-check.mjs 2>&1 | tee "$WORK/check.log"
+  CR_PG_NAME="cr-pg-$SUF" CR_MS_NAME="cr-ms-$SUF" CR_MS_CT="$CT" CR_MS_ENV="$WORK/sa.env" node scripts/crview-check.mjs 2>&1 | tee "$WORK/check.log"
 exit "${PIPESTATUS[0]}"
