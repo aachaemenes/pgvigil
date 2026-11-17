@@ -31,6 +31,12 @@ const pages = [
   ['azurepool', `#/azurepool?server=${srv}&pool=${pool}`],
   ['mssqlazure', `#/mssqlazure?i=${db01}`],
   ['mssqlpool', `#/mssqlpool?i=${db01}`],
+  // P25 row 73 and (i): the database's Service Broker tab; the nodes' tabs (a bare node opens its first: the server's
+  // Performance Summary, the pool's Pool)
+  ['db-servicebroker', `#/mssqldb?i=${sql01}&db=Sales&dbtab=servicebroker`],
+  ['azureserver-azuresummary', `#/azureserver?server=${srv}&ntab=azuresummary`],
+  ['azurepool-azuresummary', `#/azurepool?server=${srv}&pool=${pool}&ntab=azuresummary`],
+  ['azurepool-perfsummary', `#/azurepool?server=${srv}&pool=${pool}&ntab=perfsummary`],
 ];
 
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
