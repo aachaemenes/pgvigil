@@ -75,18 +75,28 @@ SELECT c.name, c.value, c.value_for_secondary, c.is_default, c.is_present, c.not
 const sqlMSSQLChecksBrokerQueues = `
 SELECT q.schema_name, q.queue_name, q.is_receive_enabled, q.is_enqueue_enabled, q.is_retention_enabled, q.is_activation_enabled,
        q.is_poison_handling, q.activation_procedure, q.activation_procedure_exists, q.max_readers, q.message_count, q.activated_tasks,
-       q.monitor_state, q.monitor_tasks_waiting, q.monitor_last_activated, q.monitor_last_empty, q.oldest_message_at,
+       q.monitor_state, q.monitor_tasks_waiting, q.monitor_last_activated, q.monitor_last_empty, q.oldest_message_at, q.oldest_note,
        q.note, q.is_present, q.first_seen, q.snapshot_at
   FROM pgvigil.mssql_broker_queue q
  WHERE q.instance_id = $1 AND q.database_name = $2::text
  ORDER BY q.is_present DESC, q.schema_name, q.queue_name`
 
+// the depth samples of the window, oldest first - the NEWEST 20,000 when the window holds more (review t11-8 item 6:
+// the page says so when the reply is that long)
 const sqlMSSQLChecksBrokerDepth = `
-SELECT s.snapshot_at, s.schema_name, s.queue_name, s.message_count, s.activated_tasks
-  FROM pgvigil.mssql_broker_queue_sample s
- WHERE s.instance_id = $1 AND s.database_name = $2::text AND s.snapshot_at > $3 AND s.snapshot_at <= $4
- ORDER BY s.snapshot_at, s.schema_name, s.queue_name
- LIMIT 20000`
+SELECT x.* FROM (
+  SELECT s.snapshot_at, s.schema_name, s.queue_name, s.message_count, s.activated_tasks
+    FROM pgvigil.mssql_broker_queue_sample s
+   WHERE s.instance_id = $1 AND s.database_name = $2::text AND s.snapshot_at > $3 AND s.snapshot_at <= $4
+   ORDER BY s.snapshot_at DESC, s.schema_name, s.queue_name
+   LIMIT 20000) x
+ ORDER BY x.snapshot_at, x.schema_name, x.queue_name`
+
+// the database's read state (review t11-8 item 3): when it was last read, and why not or what the read left out
+const sqlMSSQLChecksBrokerRead = `
+SELECT r.read_at, r.note, r.snapshot_at
+  FROM pgvigil.mssql_broker_read r
+ WHERE r.instance_id = $1 AND r.database_name = $2::text`
 
 const sqlMSSQLChecksBrokerTransmission = `
 SELECT t.to_service_name, t.transmission_status, t.message_count, t.oldest_enqueue_at, t.snapshot_at
@@ -107,18 +117,22 @@ SELECT e.endpoint_name, e.state_desc, e.port, e.connection_count, e.connected_co
  ORDER BY e.endpoint_name`
 
 // the counters as rates: each sample's difference from the sample before, over the seconds between them; none where
-// the value fell (the instance restarted: the counters start again) or for the window's first sample
+// the value fell (the instance restarted: the counters start again) or for the window's first sample; oldest first,
+// the NEWEST 20,000 when the window holds more (review t11-8 item 6); none without a database (item 15: the Checks
+// page asks with an empty db= and draws none of them)
 const sqlMSSQLChecksBrokerCounters = `
-SELECT x.snapshot_at, x.object, x.instance_name, x.counter_name,
-       round(((x.cntr_value - x.prev_value) / nullif(extract(epoch FROM x.snapshot_at - x.prev_at), 0))::numeric, 2)::float8 AS per_sec
-  FROM (SELECT c.snapshot_at, c.object, c.instance_name, c.counter_name, c.cntr_value,
-               lag(c.cntr_value) OVER w AS prev_value, lag(c.snapshot_at) OVER w AS prev_at
-          FROM pgvigil.mssql_broker_counter_sample c
-         WHERE c.instance_id = $1 AND c.snapshot_at > $3 AND c.snapshot_at <= $4
-        WINDOW w AS (PARTITION BY c.object, c.instance_name, c.counter_name ORDER BY c.snapshot_at)) x
- WHERE x.prev_value IS NOT NULL AND x.cntr_value >= x.prev_value AND ($2::text = '' OR x.object = 'Broker Statistics' OR x.instance_name = $2::text)
- ORDER BY x.snapshot_at, x.object, x.counter_name, x.instance_name
- LIMIT 20000`
+SELECT y.* FROM (
+  SELECT x.snapshot_at, x.object, x.instance_name, x.counter_name,
+         round(((x.cntr_value - x.prev_value) / nullif(extract(epoch FROM x.snapshot_at - x.prev_at), 0))::numeric, 2)::float8 AS per_sec
+    FROM (SELECT c.snapshot_at, c.object, c.instance_name, c.counter_name, c.cntr_value,
+                 lag(c.cntr_value) OVER w AS prev_value, lag(c.snapshot_at) OVER w AS prev_at
+            FROM pgvigil.mssql_broker_counter_sample c
+           WHERE c.instance_id = $1 AND c.snapshot_at > $3 AND c.snapshot_at <= $4 AND $2::text <> ''
+          WINDOW w AS (PARTITION BY c.object, c.instance_name, c.counter_name ORDER BY c.snapshot_at)) x
+   WHERE x.prev_value IS NOT NULL AND x.cntr_value >= x.prev_value AND (x.object = 'Broker Statistics' OR x.instance_name = $2::text)
+   ORDER BY x.snapshot_at DESC, x.object, x.counter_name, x.instance_name
+   LIMIT 20000) y
+ ORDER BY y.snapshot_at, y.object, y.counter_name, y.instance_name`
 
 const sqlMSSQLChecksScopedChanges = `
 SELECT x.name, x.changed_at, x.old_value, x.new_value
@@ -233,6 +247,7 @@ func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
 		{"broker_conversations", sqlMSSQLChecksBrokerConversations, []any{id, r.URL.Query().Get("db")}},
 		{"broker_endpoint", sqlMSSQLChecksBrokerEndpoint, []any{id}},
 		{"broker_counters", sqlMSSQLChecksBrokerCounters, []any{id, r.URL.Query().Get("db"), from, to}},
+		{"broker_read", sqlMSSQLChecksBrokerRead, []any{id, r.URL.Query().Get("db")}},
 	})
 }
 

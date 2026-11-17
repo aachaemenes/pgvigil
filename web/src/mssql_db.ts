@@ -110,13 +110,19 @@ async function snapshotSummary(ctx: Ctx, db: string): Promise<HTMLElement> {
 async function serviceBroker(ctx: Ctx, db: string): Promise<HTMLElement> {
   const part = <T extends string>(p: T, win = false) =>
     get<Record<T, Table | null>>('mssql/checks', { instance: ctx.instance, part: p, db, ...(win ? window_(ctx) : {}) }).then(d => rowsOf(d[p]));
-  const [queues, depth, trans, convs, eps, counters, state] = await Promise.all([part('broker_queues'), part('broker_depth', true),
-    part('broker_transmission'), part('broker_conversations'), part('broker_endpoint'), part('broker_counters', true), part('broker_state')]);
-  const st = state[0];
+  const [queues, depth, trans, convs, eps, counters, state, read] = await Promise.all([part('broker_queues'), part('broker_depth', true),
+    part('broker_transmission'), part('broker_conversations'), part('broker_endpoint'), part('broker_counters', true), part('broker_state'),
+    part('broker_read')]);
+  const st = state[0], rd = read[0];
+  // the database's read state (review t11-8 items 3 / 4): why it was not read, or what the read left out
+  const readLine = rd?.note ? el('p', { class: 'meta' }, badge('note', 'warn'),
+    rd.read_at ? ` read ${fmtTime(rd.read_at)}; ${String(rd.note)}.` : ` not read: ${String(rd.note)}.`) : '';
   if (!queues.length && !trans.length && !convs.length) {
-    return el('p', { class: 'empty' }, `No Service Broker read of ${db}: the mssql_service_broker collection reads, every 5 minutes, each database ` +
-      `with the broker on that the login may enter (none here, or not read yet)` + (st?.note ? ` - its last run: ${String(st.note)}` : '') + '.');
+    return el('div', {}, readLine, el('p', { class: 'empty' }, `No Service Broker read of ${db}: the mssql_service_broker collection reads, every 5 minutes, each database ` +
+      `with the broker on that the login may enter` + (rd?.note ? '' : ' (none here, or not read yet)') + (st?.note ? ` - its last run: ${String(st.note)}` : '') + '.'));
   }
+  // the depth and the counters keep the window's newest 20,000 samples (review t11-8 item 6)
+  const cutWords = (rows: Row[], what: string) => rows.length >= 20000 ? el('p', { class: 'meta' }, `Only the newest 20,000 ${what} of the range are drawn: narrow the range for older ones.`) : '';
   const yes = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
   const note = queues.find(r => r.note);
   // the depth per queue over the window: one series a queue (by its schema and name)
@@ -137,20 +143,21 @@ async function serviceBroker(ctx: Ctx, db: string): Promise<HTMLElement> {
     cAt.set(k, row);
   }
   return el('div', {},
-    note ? el('p', { class: 'meta' }, `The last read did not read ${db}: ${String(note.note)} - these are the values read before.`) : '',
+    note ? el('p', { class: 'meta' }, `The last read did not read ${db}: ${String(note.note)} - these are the values read before.`) : readLine,
     el('h3', {}, 'Queues'),
     grid(queues, [
       { key: 'schema_name', label: 'schema' }, { key: 'queue_name', label: 'queue' },
       { key: 'is_receive_enabled', label: 'receive', fmt: v => v === false ? badge('disabled (a poison message?)', 'crit') : yes(v) },
       { key: 'is_enqueue_enabled', label: 'enqueue', fmt: v => v === false ? badge('disabled', 'warn') : yes(v) },
       { key: 'message_count', label: 'messages', num: true, fmt: (v, r) => v == null ? (r.is_retention_enabled ? el('span', { class: 'meta', title: 'a RETENTION queue also holds received messages: its count is read from the queue, and was not this time' }, 'not read') : '') : fmtNum(v) },
-      { key: 'oldest_message_at', label: 'oldest ready message', fmt: fmtTime },
+      // a queue whose own read was refused says why (review t11-8 item 12: the documented login holds no SELECT on it)
+      { key: 'oldest_message_at', label: 'oldest ready message', fmt: (v, r) => v != null ? fmtTime(v) : r.oldest_note ? el('span', { class: 'meta' }, String(r.oldest_note)) : '' },
       { key: 'activated_tasks', label: 'readers running', num: true }, { key: 'max_readers', label: 'max readers', num: true },
       { key: 'activation_procedure', label: 'activation', fmt: (v, r) => v == null ? (r.is_activation_enabled ? 'on, no procedure' : '') : r.activation_procedure_exists === false ? badge(`${String(v)} (missing)`, 'crit') : String(v) },
       { key: 'monitor_state', label: 'monitor' }, { key: 'monitor_last_activated', label: 'last activated', fmt: fmtTime },
       { key: 'is_present', label: 'in the database', fmt: v => v ? 'yes' : 'no longer' }, { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ], 'No user queue in this database.'),
-    names.length ? lineChart('Queue depth (messages)', [...at.values()], names.map(n => ({ key: n, label: n })), v => fmtNum(v)) : '',
+    names.length ? lineChart('Queue depth (messages)', [...at.values()], names.map(n => ({ key: n, label: n })), v => fmtNum(v)) : '', cutWords(depth, 'depth samples'),
     el('h3', {}, 'Transmission queue'),
     grid(trans, [{ key: 'to_service_name', label: 'to service' }, { key: 'transmission_status', label: 'status', fmt: v => v ? String(v) : 'not sent yet' },
       { key: 'message_count', label: 'messages', num: true }, { key: 'oldest_enqueue_at', label: 'oldest', fmt: fmtTime }], 'Nothing waits to be sent.'),
@@ -161,7 +168,7 @@ async function serviceBroker(ctx: Ctx, db: string): Promise<HTMLElement> {
       { key: 'connection_count', label: 'connections', num: true }, { key: 'connected_count', label: 'connected', num: true },
       { key: 'login_failed_count', label: 'login failed', num: true }, { key: 'last_activity_at', label: 'last activity', fmt: fmtTime }],
       'No Service Broker endpoint on this instance (messages stay within it), or the endpoint was not read.'),
-    cNames.length ? lineChart('Broker counters (per second)', [...cAt.values()], cNames.map(n => ({ key: n, label: n })), v => fmtNum(v)) : '');
+    cNames.length ? lineChart('Broker counters (per second)', [...cAt.values()], cNames.map(n => ({ key: n, label: n })), v => fmtNum(v)) : '', cutWords(counters, 'counter rates'));
 }
 
 // dbPermissions: DBA Dash's database sp_DBPermissions tab (P25 row 75): Kenneth Fisher's sp_DBPermissions (SQLStudies,
