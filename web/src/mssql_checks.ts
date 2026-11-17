@@ -296,11 +296,13 @@ function identityView(cols: Row[], scans: Row[]): HTMLElement[] {
       + (cols.length >= 500 ? ' The 500 fullest columns are listed; the area cell counts every one.' : '')),
     grid(cols, [
       { key: 'database_name', label: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' },
-      { key: 'column_name', label: 'column' }, { key: 'type_name', label: 'type' },
-      { key: 'pct_used', label: '% used', num: true, cls: (v, r) => statusCls(r.status) || (v == null || v === '' ? '' : 'status ok'), fmt: fmtNum },
+      { key: 'column_name', label: 'column' }, { key: 'type_name', label: 'type', title: 'The column\'s data type, which sets how far its values can go' },
+      { key: 'pct_used', label: '% used', num: true, title: 'How far the last value has gone into the type\'s range: yellow from the warning line, red from the critical line', cls: (v, r) => statusCls(r.status) || (v == null || v === '' ? '' : 'status ok'), fmt: fmtNum },
       { key: 'status', label: 'verdict', fmt: v => v === 'crit' ? 'critical' : v === 'warn' ? 'warning' : 'under the warning line' },
-      { key: 'last_value', label: 'last value', num: true, fmt: fmtNum }, { key: 'max_value', label: 'limit', num: true, fmt: fmtNum },
-      { key: 'per_day', label: 'per day', num: true, fmt: fmtNum }, { key: 'days_left', label: 'days left', num: true, fmt: fmtNum },
+      { key: 'last_value', label: 'last value', num: true, fmt: fmtNum, title: 'The newest value the column has handed out' },
+      { key: 'max_value', label: 'limit', num: true, fmt: fmtNum, title: 'The largest value the type can hold: past it every insert fails' },
+      { key: 'per_day', label: 'per day', num: true, fmt: fmtNum, title: 'Values used per day, against a read up to seven days back' },
+      { key: 'days_left', label: 'days left', num: true, fmt: fmtNum, title: 'Days until the limit at that rate' },
     ], 'No identity column at 10 % of its range or more.'),
     el('h3', {}, 'Scan state'),
     grid(scans, [
