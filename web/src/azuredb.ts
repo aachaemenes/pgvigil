@@ -18,6 +18,18 @@ const tone: Record<string, string> = { ok: 'ok', warning: 'warn', critical: 'cri
 // a numeric column: sorted and filtered as a number (ui.ts grid)
 const n = (key: string, label: string, fmt: (v: unknown) => string = num): Col => ({ key, label, fmt, num: true });
 
+// hist: DBA Dash's utilisation histogram column (P25 task 8) - the window's samples in ten 10 % buckets (0-10 % to
+// 90-100 %), one bar each, its height the bucket's share of the samples; the counts in the title and the label
+const hist = (key: string, label: string): Col => ({ key, label, fmt: v => {
+  const b = Array.isArray(v) ? v.map(Number) : [];
+  const all = b.reduce((x, y) => x + y, 0);
+  if (!all) return '';
+  const words = b.map((c, i) => `${i * 10}-${i * 10 + 10} %: ${c}`).join(', ');
+  return el('span', { class: 'hist', role: 'img', 'aria-label': `${label}: ${words}`, title: words,
+    style: 'display:inline-flex;align-items:flex-end;gap:1px;height:1.4em' },
+  ...b.map((c, i) => el('span', { style: `display:inline-block;width:4px;height:${Math.max(c ? 8 : 0, Math.round(100 * c / all))}%;background:${i >= 7 ? 'var(--crit, #c33)' : 'var(--accent, #36c)'}` })));
+} });
+
 type Parts = Record<'tier' | 'summary' | 'minutes' | 'hours' | 'gaps', Table | null>;
 
 export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
@@ -110,7 +122,7 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
 }
 
 export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
-  const d = await get<{ databases: Table | null }>('azuredb/summary', { ...window_(ctx), ...(ctx.tag ? { tag: ctx.tag } : {}) });
+  const d = await get<{ databases: Table | null; pools: Table | null }>('azuredb/summary', { ...window_(ctx), ...(ctx.tag ? { tag: ctx.tag } : {}) });
   const rows = rowsOf(d.databases);
   // the read lists every Azure SQL Database of the scope (read or not): none = the scope holds none, so no grid of
   // Azure's columns and no word of them, the scope said instead (j15b's wording walk: 'elastic pool' under a
@@ -127,8 +139,8 @@ export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
     el('p', { class: 'meta' }, `Every Azure SQL Database ${ctx.tag ? `of ${folderWords(ctx.tag)} ` : ''}pgvigil reads, over the window: its resource use as a share of its limit (each average weighs ` +
       'the minutes by their 15-second samples; a maximum is the largest sample), the share of samples at 70 % and over, and its PRIMARY data files ' +
       'against their max size (DBA Dash\'s % Max Size: warning over 80 %, critical over 90 %; stale when the files were read over 3 hours ago). ' +
-      'Sorted as DBA Dash sorts it, the most unused DTUs first. Not as DBA Dash: the four histograms show as the share of samples at 70 % and over ' +
-      '(the instance\'s Azure tab has them whole), and a long window reads its built hours and its edge minutes (the minutes\' numbers exactly; DBA Dash rounds a window over a day to hours).'));
+      'Sorted as DBA Dash sorts it, the most unused DTUs first. The four histograms are DBA Dash\'s: the window\'s samples in ten 10 % buckets, ' +
+      'beside the share at 70 % and over. Not as DBA Dash: a long window reads its built hours and its edge minutes (the minutes\' numbers exactly; DBA Dash rounds a window over a day to hours).'));
   const name = (v: unknown, r: Row) => el('a', { href: href(ctx, { instance: Number(r.instance_id), tag: undefined, tab: 'mssqlazure' }) }, String(v));
   sec.append(grid(rows, [
     { key: 'instance', label: 'database (instance)', fmt: name }, { key: 'service_objective', label: 'tier', fmt: (v, r) => v == null ? (r.tier_read ? '' : el('span', { class: 'meta' }, 'not read')) : String(v) },
@@ -138,11 +150,27 @@ export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
     n('avg_log_write_percent', 'log write avg', pct), n('max_log_write_percent', 'log write max', pct), n('log_hot_pct', 'log write samples at 70 %+', pct),
     n('avg_dtu_percent', 'DTU avg', pct), n('max_dtu_percent', 'DTU max', pct), n('dtu_hot_pct', 'DTU samples at 70 %+', pct),
     n('unused_dtu', 'DTUs unused at the max'),
+    hist('cpu_hist', 'CPU histogram'), hist('data_hist', 'data IO histogram'), hist('log_hist', 'log write histogram'), hist('dtu_hist', 'DTU histogram'),
     n('samples', 'samples'), n('gap_minutes', 'minutes in gaps', v => Number(v) > 0 ? num(v) : ''),
     n('allocated_mb', 'allocated', mb), n('used_mb', 'used', mb), n('max_size_mb', 'max size', mb),
     n('allocated_pct', '% max size (allocated)', pct), n('used_pct', '% max size (used)', pct),
     { key: 'pctmax_status', label: '% Max Size', fmt: v => v == null ? el('span', { class: 'meta' }, 'not read') : badge(String(v), tone[String(v)] ?? '') },
     { key: 'files_read_at', label: 'files read', fmt: fmtTime },
   ], 'No Azure SQL Database is read in this scope.'));
+  // DBA Dash's separate Elastic Pool grid (P25 task 8): each pool of the scope's databases once (/api/azuredb/summary
+  // part=pools); a pool's name opens the Elastic pool page of one of its databases (the pool is read through them)
+  const pools = rowsOf(d.pools);
+  const member = (r: Row) => rows.find(x => x.pool === r.pool);
+  sec.append(el('h3', {}, 'Elastic pools'), grid(pools, [
+    { key: 'pool', label: 'elastic pool', fmt: (v, r) => member(r) ? el('a', { href: href(ctx, { instance: Number(member(r)!.instance_id), tag: undefined, tab: 'mssqlpool' }) }, String(v)) : String(v) },
+    { key: 'server', label: 'logical server' }, n('databases', 'databases read'),
+    n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct),
+    n('avg_data_io_percent', 'data IO avg', pct), n('max_data_io_percent', 'data IO max', pct),
+    n('avg_log_write_percent', 'log write avg', pct), n('max_log_write_percent', 'log write max', pct),
+    n('avg_edtu_percent', 'eDTU avg', pct), n('max_edtu_percent', 'eDTU max', pct),
+    n('max_worker_percent', 'workers max', pct), n('max_session_percent', 'sessions max', pct),
+    n('used_storage_percent', 'storage used', pct), n('allocated_storage_percent', 'storage allocated', pct),
+    n('minutes', 'minutes'), { key: 'last_minute', label: 'last minute', fmt: fmtTime },
+  ], 'No database of this scope is in an elastic pool pgvigil reads.'));
   return sec;
 }
