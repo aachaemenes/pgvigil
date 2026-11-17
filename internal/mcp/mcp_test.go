@@ -22,10 +22,16 @@ func fakeAPI(t *testing.T, seen *[]string) http.Handler {
 		return map[string]any{"columns": cols, "rows": rows}
 	}
 	answers := map[string]any{
-		"/api/instances": tbl([]string{"instance_id", "name"}, []any{1, "Alpha"}, []any{2, "beta"}),
+		"/api/instances": tbl([]string{"instance_id", "name"}, []any{1, "Alpha"}, []any{2, "beta"}, []any{3, "sql01"}),
 		"/api/overview": tbl([]string{"severity", "instance", "instance_id", "check_name", "object", "at", "detail", "check_group"},
 			[]any{"critical", "Alpha", 1, "stale", "x", "t", "d", "g"}, []any{"warning", "beta", 2, "bloat", "y", "t", "d", "g"}),
 		"/api/findings": tbl([]string{"setting", "value"}, []any{"work_mem", "4MB"}),
+		// DAILY-SQL (Q3): the SQL Server instances' Summary cells, the Daily checks page's reader for that engine
+		"/api/mssql/summary": map[string]any{"cells": tbl([]string{"instance_id", "key", "state", "sampled", "critical", "warning", "value", "detail", "read_at", "err", "since"},
+			[]any{3, "jobs", "ok", true, 1, 0, nil, []any{"job ETL: the last run failed"}, "2026-11-16T01:00:00Z", nil, nil},
+			[]any{3, "blocking", "ok", true, 1, 0, nil, []any{"session 71 heads a chain"}, "2026-11-16T01:00:00Z", nil, nil},
+			[]any{3, "full", "ok", true, 0, 0, nil, []any{}, "2026-11-16T01:00:00Z", nil, nil},
+			[]any{3, "disk", "stale", true, 0, 2, nil, []any{"E: 5 % free", "F: 8 % free"}, "2026-11-15T20:00:00Z", nil, nil})},
 		"/api/activity": map[string]any{"snapshot_at": "2026-11-09T10:00:00Z",
 			"summary": tbl([]string{"instance_id", "total"}, []any{1, 5}),
 			"chains":  tbl([]string{"pid", "head_pid", "depth"}, []any{11, 10, 1}, []any{12, 10, 2})},
@@ -183,13 +189,16 @@ func TestTools(t *testing.T) {
 		call(17, "statement_everywhere", `{"query_hash":"1a2b"}`),
 		call(18, "find_statements", `{"text":"orders"}`),
 		call(19, "find_statements", `{"text":"orders","instance":"beta"}`),
+		call(20, "fleet_summary", `{}`),
 	)
 	want := map[string]struct {
 		err  bool
 		has  []string
 		hasn []string
 	}{
-		"1":  {has: []string{`"critical": 1`, `"stale"`}, hasn: []string{`"bloat"`}},
+		// DAILY-SQL (Q3): the SQL Server cells at warning or critical are checks too (blocking left out, as on the page)
+		"1":  {has: []string{`"critical": 2`, `"stale"`, `"check_name": "summary cell jobs"`, `"object": "1 critical"`, "job ETL: the last run failed"}, hasn: []string{`"bloat"`, "blocking", `"check_name": "summary cell disk"`}},
+		"20": {has: []string{`"warning": 2`, `"check_name": "summary cell disk"`, `"object": "2 warning, stale"`, "E: 5 % free; F: 8 % free", `"instance": "sql01"`}, hasn: []string{"blocking", "summary cell full"}},
 		"2":  {has: []string{`"work_mem"`, `"stale"`, `"name": "Alpha"`}},
 		"3":  {has: []string{`"heads": 1`, `"head_pid": 10`, `"total": 5`}},
 		"4":  {has: []string{`"order": "io"`, `"9007199254740993"`, `password = $1 WHERE`, `select '[redacted]' as leaked`}},
@@ -351,5 +360,25 @@ func TestServeCancel(t *testing.T) {
 			t.Fatalf("run %d: Serve did not return within 2 s of the cancel", i)
 		}
 		_ = pw.Close()
+	}
+}
+
+// DAILY-SQL (Q3): a failed read of the SQL Server cells is a check of its own, never a silent fleet summary
+func TestFleetSummaryCellsReadFails(t *testing.T) {
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/instances", "/api/overview":
+			_ = json.NewEncoder(w).Encode(map[string]any{"columns": []string{"severity"}, "rows": [][]any{}})
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"cells: boom"}`))
+		}
+	})
+	got, _, _ := exchange(t, New(api, "test", ""), call(1, "fleet_summary", `{}`))
+	b, _ := json.Marshal(got["1"])
+	for _, w := range []string{"check could not run", "SQL Server status cells", "cells: boom", `\"critical\": 1`} {
+		if !strings.Contains(string(b), w) {
+			t.Errorf("fleet_summary with the cells' read failing: %q not in %s", w, b)
+		}
 	}
 }

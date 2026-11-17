@@ -332,7 +332,7 @@ func fleetSummary(ctx context.Context, s *Server, a map[string]any) (any, error)
 	}
 	counts := map[string]int{}
 	checks := []map[string]any{}
-	for _, r := range records(ov) {
+	for _, r := range append(records(ov), mssqlCellChecks(ctx, s, records(inst))...) {
 		v := fmt.Sprint(r["severity"])
 		counts[v]++
 		if sev == "" || v == sev {
@@ -340,6 +340,59 @@ func fleetSummary(ctx context.Context, s *Server, a map[string]any) (any, error)
 		}
 	}
 	return map[string]any{"instances": records(inst), "check_counts": counts, "checks": checks}, nil
+}
+
+// mssqlCellChecks: the SQL Server instances' Summary cells at warning or critical as checks (DAILY-SQL, Q3: the Daily
+// checks page's reader for that engine, GET /api/mssql/summary's cells) - one per cell, critical when the cell counts a
+// critical, else warning, whatever its read's state (said beside the count), as the page judges them (fleet.ts cells);
+// blocking (the state of one minute) left out, as on the page. A failed read is one check naming no instance.
+// Acknowledgements are the page's: the tool lists every cell, as it lists every overview row.
+func mssqlCellChecks(ctx context.Context, s *Server, inst []map[string]any) []map[string]any {
+	ms, err := s.get(ctx, "/api/mssql/summary", url.Values{"part": {"cells"}})
+	if err != nil {
+		return []map[string]any{{"severity": "critical", "instance": "", "instance_id": nil, "check_name": "check could not run",
+			"object": "SQL Server status cells", "detail": err.Error(), "check_group": "summary cell"}}
+	}
+	names := map[string]any{}
+	for _, r := range inst {
+		names[fmt.Sprint(r["instance_id"])] = r["name"]
+	}
+	num := func(v any) int { // the API's numbers arrive as json.Number (get decodes with UseNumber)
+		switch x := v.(type) {
+		case json.Number:
+			i, _ := x.Int64()
+			return int(i)
+		case float64:
+			return int(x)
+		}
+		return 0
+	}
+	var out []map[string]any
+	for _, c := range records(field(ms, "cells")) {
+		crit, warn, key := num(c["critical"]), num(c["warning"]), fmt.Sprint(c["key"])
+		if (crit == 0 && warn == 0) || key == "blocking" {
+			continue
+		}
+		sev, n := "critical", crit
+		if crit == 0 {
+			sev, n = "warning", warn
+		}
+		late := map[string]string{"stale": ", stale", "failed": ", read failed"}[fmt.Sprint(c["state"])]
+		var detail []string
+		if d, ok := c["detail"].([]any); ok {
+			for _, x := range d {
+				detail = append(detail, fmt.Sprint(x))
+			}
+		}
+		at := c["since"]
+		if at == nil {
+			at = c["read_at"]
+		}
+		out = append(out, map[string]any{"severity": sev, "instance": names[fmt.Sprint(c["instance_id"])], "instance_id": c["instance_id"],
+			"check_name": "summary cell " + key, "object": fmt.Sprintf("%d %s%s", n, sev, late), "at": at,
+			"detail": strings.Join(detail, "; "), "check_group": "summary cell"})
+	}
+	return out
 }
 
 func instanceFindings(ctx context.Context, s *Server, a map[string]any) (any, error) {
