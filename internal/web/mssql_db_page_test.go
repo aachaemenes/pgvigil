@@ -48,4 +48,15 @@ func TestMSSQLDatabasePageIsWired(t *testing.T) {
 	if !regexp.MustCompile(`for \(const k of \[[^\]]*'dbtab', 'fg'\]\)`).MatchString(router) {
 		t.Error("router.ts: a range change on a drill page keeps no dbtab / fg")
 	}
+	// DBA Dash's four Query Store tabs are the Query Store page's views on this database (mssql_querystore.ts reads
+	// qs= and qdb= from the hash): QS its store state, Top Queries its top, Forced Plans its forced plans, Tuning
+	// Recommendations its tuning
+	views := regexp.MustCompile(`const qsViews: Record<string, string> = \{([^}]*)\}`).FindStringSubmatch(page)
+	if views == nil || !strings.Contains(views[1], "qs: 'state'") || !strings.Contains(views[1], "topqueries: 'top'") ||
+		!strings.Contains(views[1], "forcedplans: 'forced'") || !strings.Contains(views[1], "tuning: 'tuning'") {
+		t.Errorf("mssql_db.ts qsViews %v: want qs state, topqueries top, forcedplans forced, tuning tuning", views)
+	}
+	if !strings.Contains(page, "mssqlQueryStoreView(ctx)") {
+		t.Error("mssql_db.ts draws no Query Store tab with mssqlQueryStoreView")
+	}
 }
