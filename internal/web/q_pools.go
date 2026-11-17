@@ -11,8 +11,9 @@ import "net/http"
 const sqlPoolStatus = `SELECT status, allocated_storage_percent, minute, server, pool, warning, critical
   FROM pgvigil.mssql_pool_storage_status($1)`
 
-// the pool grid's one row over the window: the newest storage figures and the window's averages and maxima
-const sqlPoolSummary = `
+// the pool grid's one row over the window: the newest storage figures and the window's averages (each minute weighed by
+// its samples, as the buckets and the Azure Summary's pools grid: review t11-2 SHOULD 3) and maxima
+var sqlPoolSummary = `
 WITH m AS (SELECT server, pool FROM pgvigil.mssql_pool_member WHERE instance_id = $1),
 w AS (SELECT pm.* FROM m JOIN pgvigil.mssql_pool_minute pm ON pm.server = m.server AND pm.pool = m.pool
        WHERE pm.snapshot_at >= $2 AND pm.snapshot_at < $3),
@@ -25,10 +26,10 @@ SELECT (SELECT server FROM m) AS server, (SELECT pool FROM m) AS pool, count(*) 
        round((SELECT allocated_storage_mb FROM n) / 1024.0, 2) AS allocated_storage_gb,
        round(((SELECT storage_limit_mb FROM n) - (SELECT used_storage_mb FROM n)) / 1024.0, 2) AS free_storage_gb,
        (SELECT instance_vcores FROM n) AS instance_vcores,
-       round(avg(avg_cpu_percent), 2) AS avg_cpu_percent, max(max_cpu_percent) AS max_cpu_percent,
-       round(avg(avg_data_io_percent), 2) AS avg_data_io_percent, max(avg_data_io_percent) AS max_data_io_percent,
-       round(avg(avg_log_write_percent), 2) AS avg_log_write_percent, max(avg_log_write_percent) AS max_log_write_percent,
-       round(avg(avg_edtu_percent), 2) AS avg_edtu_percent, max(avg_edtu_percent) AS max_edtu_percent,
+       ` + avgW("avg_cpu_percent") + ` AS avg_cpu_percent, max(max_cpu_percent) AS max_cpu_percent,
+       ` + avgW("avg_data_io_percent") + ` AS avg_data_io_percent, max(avg_data_io_percent) AS max_data_io_percent,
+       ` + avgW("avg_log_write_percent") + ` AS avg_log_write_percent, max(avg_log_write_percent) AS max_log_write_percent,
+       ` + avgW("avg_edtu_percent") + ` AS avg_edtu_percent, max(avg_edtu_percent) AS max_edtu_percent,
        max(max_worker_percent) AS max_worker_percent, max(max_session_percent) AS max_session_percent,
        min(snapshot_at) AS first_minute, max(snapshot_at) AS last_minute
   FROM w`

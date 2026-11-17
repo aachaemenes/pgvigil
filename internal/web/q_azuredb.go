@@ -140,7 +140,9 @@ func (s *Server) MSSQLAzureDB(w http.ResponseWriter, r *http.Request) {
 // ($5; NULL = every server) and one pool of it ($6; NULL = in a pool or not) - P25 task 7's server and pool nodes; a
 // name is matched without case, as Azure names them. A database's server is its pool member row's (the pool read),
 // else the instance's own server name (@@SERVERNAME, mssql_instance), else its governance row's server_name; its pool
-// the member row's, else the governance row's.
+// the member row's while it is current, else the governance row's - the member row stays behind when a database leaves
+// its pool (0128), so it counts unless the governance row is newer and not ElasticPool (review t11-2 BLOCKER 1: a
+// database moved to a single tier is in no pool).
 var sqlAzureScope = strings.Replace(sqlPerfScope, "WITH inst AS (", "WITH inst_scope AS (", 1) + `, inst AS (
   SELECT s.instance_id, s.instance, s.engine, s.platform, x.az_server, x.az_pool
     FROM inst_scope s
@@ -148,7 +150,8 @@ var sqlAzureScope = strings.Replace(sqlPerfScope, "WITH inst AS (", "WITH inst_s
     LEFT JOIN pgvigil.mssql_instance mi ON mi.instance_id = s.instance_id
     LEFT JOIN pgvigil.mssql_azuredb_governance g ON g.instance_id = s.instance_id
     CROSS JOIN LATERAL (SELECT coalesce(pm.server, nullif(mi.server_name, ''), g.gov->>'server_name') AS az_server,
-                               coalesce(pm.pool, g.pool) AS az_pool) x
+                               coalesce(CASE WHEN NOT coalesce(g.snapshot_at > pm.seen_at AND g.service_objective IS DISTINCT FROM 'ElasticPool', false)
+                                             THEN pm.pool END, g.pool) AS az_pool) x
    WHERE ($5::text IS NULL OR upper(x.az_server) = upper($5::text))
      AND ($6::text IS NULL OR upper(x.az_pool) = upper($6::text))
 )`
@@ -212,6 +215,9 @@ SELECT h.instance_id, inst.instance, h.valid_from AS changed_at, h.old_edition, 
        h.old_dtu_limit, h.dtu_limit AS new_dtu_limit, h.old_cpu_limit, h.cpu_limit AS new_cpu_limit
   FROM h JOIN inst USING (instance_id)
  WHERE h.prev_from IS NOT NULL AND $1::timestamptz <= $2::timestamptz
+   -- a tier change: 0145 opens a period when any governance column changes; only these make a change (review t11-2 SHOULD 2)
+   AND (h.old_edition, h.old_service_objective, h.old_pool, h.old_dtu_limit, h.old_cpu_limit)
+       IS DISTINCT FROM (h.edition, h.service_objective, h.pool, h.dtu_limit, h.cpu_limit)
  ORDER BY h.valid_from DESC, inst.instance
  LIMIT 2000`
 
@@ -235,11 +241,13 @@ func avgW(col string) string {
 // and over the window its minutes' figures (0128: an average weighs each minute by its samples, a maximum is the
 // largest) and its storage as last read. $1 / $2 the window, $3 / $4 sqlPerfScope's engine and tag, $5 / $6 the node.
 var sqlAzurePools = sqlAzureScope + `, mp AS (
-  SELECT m.server, m.pool, count(*) AS databases
-    FROM pgvigil.mssql_pool_member m JOIN inst ON inst.instance_id = m.instance_id
+  SELECT upper(inst.az_server) AS u_server, upper(inst.az_pool) AS u_pool, min(inst.az_server) AS server, min(inst.az_pool) AS pool,
+         count(*) AS databases
+    FROM inst
+   WHERE inst.az_server IS NOT NULL AND inst.az_pool IS NOT NULL
    GROUP BY 1, 2
 ), w AS (
-  SELECT pm.* FROM pgvigil.mssql_pool_minute pm JOIN mp USING (server, pool)
+  SELECT pm.*, mp.u_server, mp.u_pool FROM pgvigil.mssql_pool_minute pm JOIN mp ON upper(pm.server) = mp.u_server AND upper(pm.pool) = mp.u_pool
    WHERE pm.snapshot_at >= $1 AND pm.snapshot_at < $2
 )
 SELECT mp.server, mp.pool, mp.databases, count(w.snapshot_at) AS minutes,
@@ -251,17 +259,9 @@ SELECT mp.server, mp.pool, mp.databases, count(w.snapshot_at) AS minutes,
        (array_agg(w.used_storage_percent ORDER BY w.snapshot_at DESC) FILTER (WHERE w.snapshot_at IS NOT NULL))[1] AS used_storage_percent,
        (array_agg(w.allocated_storage_percent ORDER BY w.snapshot_at DESC) FILTER (WHERE w.snapshot_at IS NOT NULL))[1] AS allocated_storage_percent,
        max(w.snapshot_at) AS last_minute
-  FROM mp LEFT JOIN w USING (server, pool)
- GROUP BY mp.server, mp.pool, mp.databases
+  FROM mp LEFT JOIN w ON w.u_server = mp.u_server AND w.u_pool = mp.u_pool
+ GROUP BY mp.u_server, mp.u_pool, mp.server, mp.pool, mp.databases
  ORDER BY max(w.avg_edtu_percent) DESC NULLS LAST, max(w.max_cpu_percent) DESC NULLS LAST, mp.server, mp.pool`
-
-// azurePoolCurrent: the scope's databases still in the pool the scope names for them - one whose governance row is newer
-// than its pool member row and in no pool (it left the pool for a single tier; the member row stays) is left out.
-const azurePoolCurrent = `
-  SELECT inst.* FROM inst
-    LEFT JOIN pgvigil.mssql_pool_member pm ON pm.instance_id = inst.instance_id
-    LEFT JOIN pgvigil.mssql_azuredb_governance g ON g.instance_id = inst.instance_id
-   WHERE NOT coalesce(g.snapshot_at > pm.seen_at AND g.pool IS NULL AND g.service_objective IS DISTINCT FROM 'ElasticPool', false)`
 
 // sqlAzurePoolHistory: DBA Dash's Pool history (P25 task 9b): each change of an elastic pool's DTU or storage limit -
 // a period of 0395's that follows another of the same pool with another limit - once, however many of the pool's
@@ -273,12 +273,12 @@ const azurePoolCurrent = `
 // A copy whose reads had a gap (a database not read for over master's 14 days) holds a change at the first period it
 // read after the gap: its period before ends earlier, so the change is known only between the two - changed_after,
 // left out where another copy holds the same change inside the gap (review t11-1 SHOULD 3). A database's copy counts
-// only while it is in that pool (azurePoolCurrent, NIT 5).
-var sqlAzurePoolHistory = sqlAzureScope + `, cur AS (` + azurePoolCurrent + `), p AS (
+// only while it is in that pool (the scope's az_pool: review t11-1 NIT 5, t11-2 BLOCKER 1).
+var sqlAzurePoolHistory = sqlAzureScope + `, p AS (
   SELECT h.server, h.pool, h.valid_from, h.dtu_limit, h.storage_limit_mb, lag(h.valid_from) OVER w AS prev_from,
          lag(h.valid_to) OVER w AS prev_to, lag(h.dtu_limit) OVER w AS old_dtu, lag(h.storage_limit_mb) OVER w AS old_storage
     FROM pgvigil.mssql_pool_limit_history h
-    JOIN cur inst ON inst.instance_id = h.instance_id AND upper(h.server) = upper(inst.az_server) AND upper(h.pool) = upper(inst.az_pool)
+    JOIN inst ON inst.instance_id = h.instance_id AND upper(h.server) = upper(inst.az_server) AND upper(h.pool) = upper(inst.az_pool)
   WINDOW w AS (PARTITION BY h.instance_id, h.server, h.pool ORDER BY h.valid_from)
 ), c AS (
   SELECT DISTINCT p.server, p.pool, p.valid_from AS changed_at, CASE WHEN p.prev_to < p.valid_from THEN p.prev_to END AS changed_after,
@@ -303,13 +303,13 @@ SELECT c.server, c.pool, c.changed_at, c.changed_after, c.old_dtu_limit, c.new_d
 // ok or partial, or none logged yet), so a pool whose readers were skipped since (no dbmanager, no way into master) or
 // failed has no current read (review t11-1 SHOULD 1) - its last read before that (read_until) and, where a run was
 // skipped, the newest skip's words: the page's words for such a pool.
-var sqlAzurePoolHistoryState = sqlAzureScope + `, cur AS (` + azurePoolCurrent + `)
+var sqlAzurePoolHistoryState = sqlAzureScope + `
 SELECT inst.az_server AS server, inst.az_pool AS pool,
        max(rd.read_at) FILTER (WHERE rd.state = 'read' AND (cd.status IS NULL OR cd.status IN ('ok', 'partial'))) AS last_read,
        max(rd.read_at) FILTER (WHERE rd.state = 'read') AS read_until,
        (array_agg(cd.note ORDER BY cd.snapshot_at DESC) FILTER (WHERE cd.status = 'skipped'))[1] AS skip_note,
        max(cd.snapshot_at) FILTER (WHERE cd.status = 'skipped') AS skipped_at
-  FROM cur inst
+  FROM inst
   LEFT JOIN pgvigil.mssql_pool_limit_read rd ON rd.instance_id = inst.instance_id
   LEFT JOIN pgvigil.collection_dates cd ON cd.instance_id = inst.instance_id AND cd.collection = 'mssql_pool_limits'
  WHERE inst.platform = 'azuresqldb' AND inst.az_server IS NOT NULL AND inst.az_pool IS NOT NULL AND $1::timestamptz <= $2::timestamptz
