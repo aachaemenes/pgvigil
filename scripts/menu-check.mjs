@@ -277,6 +277,14 @@
 //                     (.error-box) with two buttons - Show details (aria-expanded false;
 //                     pressed: true, its region holds 'GET /api/statements', 'HTTP 500' and the server's words) and
 //                     Copy details (the clipboard holds exactly the region's text). Red: the box has no button.
+//   H-title <page> <pg|ms|root>  (L20, the lead 11-17 05:59 / 06:18; one row per page and scope, written 11-17 06:5x
+//                     before the text) every th of the page whose label is a column DBA Dash describes (the table L20
+//                     below, from ~/Work/DBA-evidence/.../relgm/l20-desc.py) carries a title of its own: non-empty, not its
+//                     label, on the grid's header and on an empty grid's header alike; on a PostgreSQL instance's page
+//                     no th title holds a SQL Server word (SQL Server, sys., DBCC, T-SQL, default trace, msdb, query hash,
+//                     plan cache). The pages: the reports on demo-onprem-erp01 (pg) and demo-onprem-sql01 (ms), the
+//                     SQL Server-only ones on sql01 alone, the root-only ones at the root. Red on 535a0cfe: every row FAIL
+//                     'no title: <labels>'.
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1786,6 +1794,39 @@ await guard('E-details', async () => {
   check('E-details', /^Error: E-details marker/.test(said) && before === 'false' && after === 'true' && /GET \/api\/statements/.test(region) && /HTTP 500/.test(region) && /E-details marker/.test(region) && copied != null && copied === region,
     `the box '${said.slice(0, 40)}'; Show details aria-expanded ${before} -> ${after}; the details ${region ? `'${region.replace(/\s+/g, ' ').slice(0, 90)}'` : '(none)'}; Copy details gave ${copied == null ? 'nothing' : copied === region ? 'the same text' : 'another text'}`);
 });
+
+// ---- RELNOTES set 4, L20: the header titles of the columns DBA Dash describes, page by page ------------------------
+// [route, scopes, labels]: scopes 'pg' demo-onprem-erp01, 'ms' demo-onprem-sql01, 'root' the root; the labels are the
+// drawn columns DBA Dash describes on the page's twin (the gaps, described and not drawn, are in relgm/l20-gaps.tsv)
+const L20 = [
+  ['rp_props', ['pg', 'ms'], ['Instance', 'Database', 'Property', 'Value', 'Valid From']],
+  ['rp_finder', ['pg', 'ms'], ['Instance']],
+  ['rp_dbdeleted', ['pg', 'ms'], ['Instance', 'DB', 'Created Date', '~Deleted Date', 'Size MB']],
+  ['rp_dbnew', ['pg', 'ms'], ['Instance', 'Created Date', 'Size (MB)']],
+  ['rp_killed', ['pg', 'ms'], ['Instance', 'Session ID']],
+  ['rp_actions', ['pg', 'ms'], ['Instance', 'User']],
+  ['rp_tables', ['pg', 'ms'], ['Instance', 'Snapshot Date', 'Schema Name', 'Object Name', 'Reserved KB', 'Used KB', 'Data KB', 'Index KB', 'Avg Rows Per Day', 'Avg KB Per Day', 'Calc Days']],
+  ['rp_flushed', ['ms'], ['Instance', 'Session ID', 'Text']],
+  ['rp_services', ['ms'], ['Instance', 'Service Type', 'Service Name', 'Startup Type', 'Status', 'Process ID', 'Last Startup Time', 'Service Account',
+    'Managed Service Account?', 'FileName', 'Is Clustered', 'Cluster Node Name', 'Instant File Initialization Enabled', 'Snapshot Date']],
+  ['rp_qs', ['root'], ['Instance', 'Query Hash', 'Plans']],
+  ['rp_qscharts', ['root'], ['Text']],
+];
+const msWord = /SQL Server|\bsys\.|DBCC|T-SQL|default trace|msdb|query hash|plan cache/i;
+const sqlId20 = idOf('demo-onprem-sql01');
+for (const [route, scopes, labels] of L20) for (const sc of scopes) {
+  await guard(`H-title ${route} ${sc}`, async () => {
+    await go(`#/${route}${sc === 'pg' ? `?i=${erpId}` : sc === 'ms' ? `?i=${sqlId20}` : ''}`); await sleep(1500);
+    // every header cell of the page's grids, drawn or empty: its label and its title
+    const ths = await ev(`[...document.querySelectorAll('main table.grid > thead > tr:first-child > th, main table.grid-empty > thead > tr > th')]
+      .map(h => ({ label: (h.querySelector('.th-label') ?? h).textContent.trim(), title: h.getAttribute('title') ?? '' }))`);
+    const missing = labels.filter(l => { const hs = (ths ?? []).filter(h => h.label === l); return hs.length === 0 || hs.some(h => h.title === '' || h.title === l); });
+    const absent = labels.filter(l => !(ths ?? []).some(h => h.label === l));
+    const leak = sc === 'pg' ? (ths ?? []).filter(h => msWord.test(h.title)).map(h => `${h.label}: '${h.title.slice(0, 60)}'`) : [];
+    check(`H-title ${route} ${sc}`, (ths ?? []).length > 0 && missing.length === 0 && leak.length === 0,
+      `${(ths ?? []).length} header cell(s); ${missing.length ? `no title: ${missing.join(', ')}${absent.length ? ` (not drawn: ${absent.join(', ')})` : ''}` : `all ${labels.length} titled`}${leak.length ? `; SQL Server words on a PostgreSQL page: ${leak.join('; ')}` : ''}`);
+  });
+}
 
 if (shots) await guard('G-themes', async () => {
   const both = {};
