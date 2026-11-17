@@ -71,7 +71,9 @@ export interface Col {
 // extra: the columns the grid draws beyond the page's own - a key each, its label the key, its header data-gt-added -
 // set whole (the ones given, in that order; none = the page's own alone); a set equal to the drawn one draws nothing
 export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[]; allRows?(): HTMLTableRowElement[]; text?(r: Record<string, unknown>, c: Col): string;
-  keys?(): string[]; extra?(keys: string[]): void }
+  keys?(): string[]; extra?(keys: string[]): void;
+  // all: every row the grid was given, whatever its filters or scope (Save Table > Script Data Table, task PGRID B04)
+  all?(): Record<string, unknown>[] }
 const models = new WeakMap<HTMLTableElement, GridModel>();
 export function gridModel(t: HTMLTableElement): GridModel | undefined { return models.get(t); }
 
@@ -525,7 +527,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   };
   models.set(table, { cols, rows: () => shown,
     allRows: () => shown.length > limit ? shown.map(rowEl) : [...tbody.children] as HTMLTableRowElement[],
-    text: (r, c) => words(fmtCell(c, r)), keys, extra });
+    text: (r, c) => words(fmtCell(c, r)), keys, extra, all: () => rows });
   draw();
   new MutationObserver(() => rove(document.activeElement === document.body)).observe(head, { attributes: true, subtree: true, attributeFilter: ['data-gt-hidden'] });
   const wrap = el('div', { class: 'grid-wrap' }, table);   // its scroll is the keyboard's through the table's current cell (one tab stop)

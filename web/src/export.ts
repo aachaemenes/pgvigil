@@ -1115,6 +1115,10 @@ export async function zip(files: { name: string; data: Uint8Array }[], at = new 
 
 const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
 
+// gridMeta: the page's instance, tab, window and engine as the export writes them (the grid menu's Save Table scripts,
+// task PGRID B04: the dialect is the page's engine)
+export function gridMeta(ctx: Ctx = parse()): Promise<Meta> { return metaOf(ctx); }
+
 async function metaOf(ctx: Ctx): Promise<Meta> {
   let instance = ctx.tag ? 'tag ' + ctx.tag : 'fleet';
   let engine: string | undefined, platform: string | undefined;

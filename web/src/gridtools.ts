@@ -12,7 +12,8 @@
 // grid is drawn: classes on the table, a panel and a line beside it. A hidden column is marked data-gt-hidden on its
 // header, which the export honours. The one hook is the grid's menu: ui.ts sends a 'pgvigil:gridmenu' event (askGridMenu)
 // and the tools build the menu from it, a page's own lines (the event's extra) at its end.
-import { Cell, Kind, Meta, Section, Status, csv, exportGrid, fillOf, fontOf, fromText, headFill, linkFill, linkFont, readGrid, saveGridAs, statusOf, timeZone, typed } from './export';
+import { Cell, Kind, Meta, Section, Status, csv, exportGrid, fillOf, fontOf, fromText, gridMeta, headFill, linkFill, linkFont, readGrid, saveGridAs, statusOf, timeZone, typed } from './export';
+import { openViewer } from './sqlview';
 import { GridMenuAsk, cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, isCondList, offControl, quoteFilter } from './ui';
 import { MenuItem, gridLines, showTreeMenu } from './treemenu';
 import { Grid, htmlDoc, json, markdown, sqlScript, tsv } from './gridwriters';
@@ -742,6 +743,40 @@ function filterPrompt(t: HTMLTableElement, j: number, op: string, value: string,
   cancel.addEventListener('click', () => d.close());
   inp.focus(); inp.select();
 }
+// ---- Save Table (task PGRID B04, DBA Dash's) ---------------------------------------------------------------------
+// dataTable: Script Data Table's grid - every row the page gave the grid whatever its filters, and every column the
+// chooser offers (the page's own, then its undrawn data columns; never a '_' key or a held-back one), raw values
+// as DBA Dash scripts its underlying DataTable
+function dataTable(t: HTMLTableElement): Grid | null {
+  const m = gridModel(t);
+  if (!m?.all) return null;
+  const hs = heads(t), own = m.cols.filter((_, j) => !isAdded(hs[j])), more = offered(t);
+  const keys = [...own.map(c => c.key), ...more], cols = [...own.map(c => c.label ?? c.key), ...more];
+  const cell = (v: unknown): Cell => {
+    if (v === null || v === undefined || v === '') return { v: '', kind: 'text', text: '' };
+    if (typeof v === 'number' && Number.isFinite(v)) return { v, kind: Number.isInteger(v) ? 'int' : 'dec', text: String(v) };
+    if (typeof v === 'boolean') return { v: v ? 1 : 0, kind: 'bool', text: v ? 'true' : 'false' };
+    const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return { v: s, kind: 'text', text: s };
+  };
+  const rows = m.all().map(r => keys.map(k => cell(r[k])));
+  return { cols, rows, num: keys.map((_, j) => rows.some(r => typeof r[j].v === 'number' && r[j].kind !== 'bool') && rows.every(r => r[j].v === '' || (typeof r[j].v === 'number' && r[j].kind !== 'bool'))) };
+}
+// scriptTable: CREATE TABLE and its INSERTs (the export's sqlScript) in the code viewer, in the page's engine's dialect
+// (a fleet page: PostgreSQL's)
+function scriptTable(t: HTMLTableElement, what: 'Script Data Table' | 'Script Grid') {
+  const g = what === 'Script Grid' ? gridOf(t, false) : dataTable(t);
+  const name = headingOf(t) || 'grid';
+  if (!g) { line(t).textContent = `${what}: this grid holds no rows of its own to script`; return; }
+  void gridMeta().then(m => {
+    const e = m.engine === 'SQL Server' ? 'sqlserver' : 'postgres';
+    openViewer(`${what}: ${name}`, sqlScript(g, e, { title: `${name} (${m.instance}, ${m.tab}, ${m.window})`, zone: timeZone(m.at), at: m.at.toISOString() }));
+  });
+}
+// the From items write a table on an instance through its actions door: an administrator's opt-in (task 7b); until
+// it is on they say so (the lead 11-17 01:26: in the menu, never absent)
+const SAVE_TABLE_OFF = 'off: an administrator turns on doors: save_table in pgvigil.yaml; the door login needs CREATE in the database';
+
 // barOptions: DBA Dash's data bar Options (DataBarConfig, task PGRID B14): Style, Minimum and Maximum (empty: the
 // grid's own values), and a traffic light's Warning at / Critical at with Thresholds are values; OK, Cancel, Remove. A
 // field that is no number is refused in words naming it, the dialog open and the bar as it was. DBA Dash's two colour
@@ -874,6 +909,9 @@ export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | 
     file('SQL (INSERT) for PostgreSQL', 'pg.sql', 'application/sql', (x, sec, m) => sqlScript(x, 'postgres', head(sec, m))),
     file('SQL (INSERT) for SQL Server', 'mssql.sql', 'application/sql', (x, sec, m) => '﻿' + sqlScript(x, 'sqlserver', head(sec, m))),
   ] });
+  // Save Table (DBA Dash's: From Data Table, From Grid, Script Data Table, Script Grid)
+  out.push({ label: 'Save Table', sub: [{ label: 'From Data Table', off: SAVE_TABLE_OFF }, { label: 'From Grid', off: SAVE_TABLE_OFF },
+    { label: 'Script Data Table', act: () => scriptTable(t, 'Script Data Table') }, { label: 'Script Grid', off: none, act: () => scriptTable(t, 'Script Grid') }] });
   // 4. Transpose, 5. Select
   if (!th) {
     const selRows = [...new Set(sel.map(c => trs.indexOf(c.parentElement as HTMLTableRowElement)).filter(i => i >= 0))].sort((a, b) => a - b);
