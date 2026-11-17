@@ -117,11 +117,33 @@ async function snapshotSummary(ctx: Ctx, db: string): Promise<HTMLElement> {
   return el('div', {}, snaps, sec);
 }
 
+// schemaSnapshotsView (control audit D3 c): DBA Dash's Snapshot Summary over every instance, the root page 'Schema
+// Snapshots' (the wiring patch) - DDLSnapshotInstanceSummary_Get's Instance, Last Updated and Last Validated over
+// /api/schema part=ddl_instances (the tag folder's instances under ?tag=); its Instance link (sinst=) opens that
+// instance's snapshots over its databases (ddlSnapshots with a DB column), as DBA Dash's drills in
+export async function schemaSnapshotsView(ctx: Ctx): Promise<HTMLElement> {
+  const sec = el('section', {}, el('h2', {}, 'Schema Snapshots'));
+  const si = Number(hashParam('sinst'));
+  if (si > 0) {
+    sec.append(el('p', {}, el('a', { href: hrefWith(ctx, 'schemasnapshots', {}, undefined) }, 'All instances')), await ddlSnapshots(ctx, null, si));
+    return sec;
+  }
+  try {
+    const d = await get<{ ddl_instances: Table | null }>('schema', { part: 'ddl_instances', tag: ctx.tag });
+    sec.append(grid(rowsOf(d.ddl_instances), [
+      { key: 'instance', label: 'Instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'schemasnapshots', { sinst: String(r.instance_id) }, undefined) }, String(v)) },
+      { key: 'engine' }, { key: 'databases', label: 'databases', num: true },
+      { key: 'last_updated', label: 'Last Updated', fmt: fmtTime }, { key: 'last_validated', label: 'Last Validated', fmt: fmtTime },
+    ], 'No instance has a schema read yet (the mssql_schema and schema collections).'));
+  } catch (e) { sec.append(errorBox(e)); }
+  return sec;
+}
+
 // ddlSnapshots (control audit D3 a): DBA Dash's Snapshot Summary list of one database (SchemaSnapshots.cs,
 // DDLSnapshots_Get over /api/schema part=ddl_snapshots): its schema snapshots newest first - the first read its
 // baseline - paged with Previous / Next and Page Size; a snapshot's Objects button lists them below (DDLSnapshotDiff_Get:
 // part=ddl_snapshot_objects; View = its definition after, Diff = the Schema tab's compare)
-async function ddlSnapshots(ctx: Ctx, dbid: number): Promise<HTMLElement> {
+async function ddlSnapshots(ctx: Ctx, dbid: number | null, instance = ctx.instance): Promise<HTMLElement> {
   const size = el('select', { 'aria-label': 'Page Size' }, ...[100, 200, 500, 1000, 5000].map(n => el('option', { value: String(n) }, String(n)))) as HTMLSelectElement;
   const prev = el('button', { type: 'button' }, 'Previous') as HTMLButtonElement, next = el('button', { type: 'button' }, 'Next') as HTMLButtonElement;
   const at = el('span', { class: 'meta' }), list = el('div'), objs = el('div');
@@ -131,7 +153,7 @@ async function ddlSnapshots(ctx: Ctx, dbid: number): Promise<HTMLElement> {
   const exportAt = async (r: Row, b: HTMLButtonElement) => {
     b.disabled = true;
     try {
-      const d = await get<{ ddl_at: Table | null }>('schema', { instance: ctx.instance, ...window_(ctx), part: 'ddl_at', db: String(dbid), snap_at: String(r.snapshot_at) });
+      const d = await get<{ ddl_at: Table | null }>('schema', { instance, ...window_(ctx), part: 'ddl_at', db: String(r.dbid), snap_at: String(r.snapshot_at) });
       const at = new Date(String(r.snapshot_at)), enc = new TextEncoder(), safe = (v: unknown) => String(v ?? '').replace(/[^A-Za-z0-9._-]+/g, '_');
       const files = rowsOf(d.ddl_at).map(o => ({
         name: `${safe(o.schema_name)}.${safe(o.object_name)}.${safe(o.kind)}.sql`,
@@ -145,7 +167,7 @@ async function ddlSnapshots(ctx: Ctx, dbid: number): Promise<HTMLElement> {
     objs.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
     try {
       const d = await get<{ ddl_snapshot_objects: Table | null }>('schema',
-        { instance: ctx.instance, ...window_(ctx), part: 'ddl_snapshot_objects', db: String(dbid), snap_at: String(r.snapshot_at) });
+        { instance, ...window_(ctx), part: 'ddl_snapshot_objects', db: String(r.dbid), snap_at: String(r.snapshot_at) });
       objs.replaceChildren(el('h4', {}, `The snapshot of ${fmtTime(r.snapshot_at)}${r.baseline ? ' (the first read: every object it found)' : ''}`),
         grid(rowsOf(d.ddl_snapshot_objects), [
           { key: 'object_name', label: 'Object Name' }, { key: 'schema_name', label: 'Schema Name' }, { key: 'kind', label: 'type' },
@@ -159,13 +181,15 @@ async function ddlSnapshots(ctx: Ctx, dbid: number): Promise<HTMLElement> {
     const mine = ++seq;
     try {
       const d = await get<{ ddl_snapshots: Table | null }>('schema',
-        { instance: ctx.instance, ...window_(ctx), part: 'ddl_snapshots', db: String(dbid), size: size.value, page });
+        { instance, ...window_(ctx), part: 'ddl_snapshots', db: dbid == null ? undefined : String(dbid), size: size.value, page });
       if (mine !== seq) return;
       const rows = rowsOf(d.ddl_snapshots);
       prev.disabled = page <= 1;
       next.disabled = rows.length < Number(size.value);
       at.textContent = ` Page ${page} `;
       list.replaceChildren(grid(rows, [
+        // the instance's list (DBA Dash's Instance link: every database's snapshots) names each row's database
+        ...(dbid == null ? [{ key: 'database', label: 'DB' }] : []),
         { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime }, { key: 'validated_at', label: 'Validated Date', fmt: fmtTime },
         { key: 'valid_for_days', label: 'Valid For (Days)', num: true }, { key: 'days_since_validation', label: 'Days Since Validation', num: true },
         { key: 'created', label: 'Created', num: true }, { key: 'modified', label: 'Modified', num: true }, { key: 'dropped', label: 'Dropped', num: true },

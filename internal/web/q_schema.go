@@ -201,11 +201,31 @@ SELECT so.kind, so.identity, so.schema_name, so.object_name, x.def AS definition
    AND so.first_seen <= $3 AND coalesce(ev.change, 'added') <> 'dropped'
  ORDER BY so.kind, so.schema_name, so.object_name`
 
+// sqlDDLInstances: DBA Dash's Snapshot Summary over every instance (control audit D3 c; DDLSnapshotInstanceSummary_Get):
+// each instance with present schema reads ($1 a tag, empty = all), its newest snapshot over its databases (a change,
+// else the first read: Last Updated) and its newest read (Last Validated), the newest first.
+const sqlDDLInstances = `
+SELECT i.instance_id, i.name AS instance, i.engine,
+       max(greatest(sd.first_read, coalesce(c.last_change, sd.first_read))) AS last_updated,
+       max(sd.snapshot_at) AS last_validated, count(*) AS databases
+  FROM pgvigil.instances i
+  JOIN pgvigil.schema_databases sd ON sd.instance_id = i.instance_id AND sd.is_present
+  LEFT JOIN LATERAL (SELECT max(ch.snapshot_at) AS last_change FROM pgvigil.schema_changes ch
+                      WHERE ch.instance_id = sd.instance_id AND ch.dbid = sd.dbid) c ON true
+ WHERE $1::text = '' OR $1::text = ANY (i.tags)
+ GROUP BY i.instance_id, i.name, i.engine
+ ORDER BY last_updated DESC, i.name`
+
 // ddlSnapshotSizes: DBA Dash's Snapshot Summary Page Size list (SchemaSnapshots.Designer.cs tsSummaryPageSize; 100 the default)
 var ddlSnapshotSizes = map[int]bool{100: true, 200: true, 500: true, 1000: true, 5000: true}
 
 // Schema serves the schema snapshots of one instance, or of one of its databases, over the window.
 func (s *Server) Schema(w http.ResponseWriter, r *http.Request) {
+	// DBA Dash's Snapshot Summary over every instance (control audit D3 c): no instance=, tag= narrows
+	if r.URL.Query().Get("part") == "ddl_instances" {
+		s.multiPart(w, r, []part{{"ddl_instances", sqlDDLInstances, []any{r.URL.Query().Get("tag")}}})
+		return
+	}
 	id, from, to, err := params(r, true)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
