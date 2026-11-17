@@ -37,3 +37,15 @@
 --    or trigger to the database page's Object Execution tab searched by its name
 --    (mssqlDbLink(ctx, datname, 'objexec') + '&oesearch=<name>': mssql_objexec.ts presets its Search from it), at most
 --    TABLES_SHOWN per folder with 'all N ...' to the Schema tab, as the Tables folder does.
+
+-- 4. 0391 (P25 row 2a, DB Configuration) creates only its own objects (the JOIN-FILE RULE). At the join:
+--    (a) import_mssql_confcheck (0160, re-created by the join file whole) calls, after its own rows,
+--          PERFORM pgvigil.import_mssql_db_scoped_config(p_instance_id, p_snapshot_at, p_payload);
+--        the collector's payload carries the 'scoped_config' and 'scoped_unread' rows (internal/mssql/dboptions.go
+--        confDatabaseRows) - until this line they are read and not stored;
+--    (b) mssql_db_scoped_config and mssql_db_scoped_config_change under the instance scope's policy pgvigil_scope
+--        (an instance_id with its foreign key: the join's TestEveryInstanceTableHasScope names them);
+--    (c) purge: an instance's rows go with the instance (ON DELETE CASCADE); mssql_db_scoped_config_change is kept
+--        as the other configuration histories are (mssql_config_expect's history) - no time cut;
+--    (d) apply_roles grants the collector EXECUTE on import_mssql_db_scoped_config as on the other import_ functions
+--        and the reader SELECT on both tables (the reader reads them through /api/mssql/checks).

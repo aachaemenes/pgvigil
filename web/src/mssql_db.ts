@@ -12,7 +12,7 @@ import { mssqlPlanCacheView } from './mssql_plancache';
 import { mssqlSlow } from './mssql_xe';
 import { objectExecutionSection } from './mssql_objexec';
 import { get, rowsOf, Table } from './api';
-import { badge, el, grid } from './ui';
+import { badge, el, fmtTime, grid } from './ui';
 
 export const mssqlDbTab = 'mssqldb';
 
@@ -64,7 +64,7 @@ async function dbConfiguration(ctx: Ctx, db: string): Promise<HTMLElement> {
       { key: 'is_present', label: 'in the view', fmt: v => v ? 'yes' : 'no longer' },
     ], 'No setting.'),
     el('h3', {}, 'Changes'),
-    grid(rowsOf(x.scoped_changes), [{ key: 'changed_at', label: 'seen at' }, { key: 'name' }, { key: 'old_value', label: 'from' },
+    grid(rowsOf(x.scoped_changes), [{ key: 'changed_at', label: 'seen at', fmt: fmtTime }, { key: 'name' }, { key: 'old_value', label: 'from' },
       { key: 'new_value', label: 'to', fmt: v => v == null ? 'left the view' : String(v) }], 'No change seen since the first read.'));
 }
 
