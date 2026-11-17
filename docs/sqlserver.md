@@ -23,7 +23,7 @@ SQL Server 2017, 2019, 2022 and 2025 are proven; the table says on what. `script
 | SQL Server 2017 | 14.0.3570.2 (RTM, CU31), Developer Edition | Ubuntu 18.04 | setup and all ten proofs passed |
 | SQL Server 2016 (SP1 and later) | 13.0.7050.2 (SP3 CU1 GDR), Developer Edition | Windows Server 2019 Datacenter (an Azure VM) | proven on one Windows server by `scripts/proof-mssql-2016.sh`: [SQL Server 2016](sqlserver-2016.md) (Always On not proven: one server; `mssql_defaulttrace` partial there) |
 | Azure SQL Database | 12.0.2000.8, General Purpose serverless Gen5, 1 vCore | Azure (the service) | proven by `scripts/proof-mssql-azuresqldb.sh` on the 32 collections before `mssql_waiting_tasks` and `mssql_reports` joined: 4 collections stored equal to the setup login's read, 28 skipped by an Azure SQL Database rule, each with its reason ([SQL Server in the cloud](sqlserver-cloud.md)) |
-| Azure SQL Managed Instance | not proven yet | | |
+| Azure SQL Managed Instance | General Purpose, Gen5, 4 vCores (Microsoft's free offer) | Azure (the service) | proven by `scripts/proof-mssql-mi.sh`: every collection ok or skipped, `mssql_plancache` partial only by its own cap ([SQL Server in the cloud](sqlserver-cloud.md#azure-sql-managed-instance)); Business Critical not proven |
 | Amazon RDS for SQL Server | 15.0.4500.2 (SQL Server 2019), Express Edition, db.t3.micro | AWS (the service) | proven by `scripts/proof-mssql-rds.sh` on the 32 collections before `mssql_waiting_tasks` and `mssql_reports` joined: 29 collections stored equal to the master user's read, 3 skipped by an RDS rule; the login is the RDS form ([SQL Server in the cloud](sqlserver-cloud.md)) |
 
 Each proof on each version, as the runs printed it (`setup` is the pair itself: both servers answer, the collector connects to both and stores the version it read, the group is synchronized; the other rows are `scripts/proof-mssql-<name>.sh`, and each proof's page says what it checks):
@@ -53,7 +53,7 @@ What a version changes. The collector reads the server's version at every connec
 - **Before SQL Server 2022** an availability group's `is_contained` is not read.
 - **SQL Server 2025**: no change of the collector or of a proof was specific to it.
 
-Not proven by these runs: a Windows host on any version, an edition other than Developer, a Windows cluster's availability group. What each proof leaves out on any server (mirroring, log shipping and replication without a real partner; a browser render) is on that proof's own page; the availability proof's job history check ran against sixty seeded history rows, and a server with fewer than fifty rows of job history is not proven there.
+Not proven by these runs: a Windows host other than the SQL Server 2016 server above, an edition other than Developer on a server someone runs, a Windows cluster's availability group. What each proof leaves out on any server (mirroring, log shipping and replication without a real partner; a browser render) is on that proof's own page; the availability proof's job history check ran against sixty seeded history rows, and a server with fewer than fifty rows of job history is not proven there.
 
 ## Collections
 
