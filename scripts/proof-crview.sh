@@ -9,8 +9,10 @@
 #   PGVIGIL_BIN          the build to prove (its web bundle built in); default bin/pgvigil
 #   PGVIGIL_CRVIEW_ONLY  the cases to run, by name prefix (crview-check.mjs)
 #   PGVIGIL_PROOF_OUT    a folder for the logs (default: removed with the work folder)
-# Needs docker, psql, curl, node 22+ and chromium. The sa password and the users' passwords go through environment
-# variables and an env file, never a command line. The last line is crview-check.mjs's 'crview-check: <n> FAIL'.
+# Needs docker, psql, curl, node 22+ and chromium. The sa password (an env file) and the UI users' passwords (the
+# environment) never reach a command line; the run's own throwaway logins (the container's crmon, the store's pg_monitor
+# role) are made by statements whose text holds their password, as proof-mssql-actions.sh's are. The last line is
+# crview-check.mjs's 'crview-check: <n> FAIL'.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
