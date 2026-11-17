@@ -17,7 +17,6 @@ import (
 	"unicode"
 	"unicode/utf16"
 
-	"github.com/aachaemenes/pgvigil/internal/actions"
 	"github.com/aachaemenes/pgvigil/internal/mssqlread"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -307,7 +306,8 @@ func OffWords(on bool, in Instance) string {
 	case !on:
 		return OffSwitch
 	case in.Page:
-		return "off: " + actions.PageOff(in.Name)
+		// internal/actions' PageOff in words of their own (that package builds on this one)
+		return fmt.Sprintf("off: instance %s was added in Admin > Instances: actions run only on an instance of pgvigil.yaml (dsn, actions_dsn, actions:)", in.Name)
 	case !in.Allowed:
 		return OffList
 	case !in.Configured:
@@ -443,12 +443,67 @@ type Conn interface {
 	Exists(ctx context.Context, quoted string) (bool, error)
 }
 
+// Writer is the writing login's connection: the checks, then the write - CREATE TABLE (no IF NOT EXISTS: an 'already
+// exists' error is the refusal, Exists') and the engine's bulk copy of the converted rows in ONE transaction, rolled
+// back on any error (no half table). It answers the rows written.
+type Writer interface {
+	Conn
+	Write(ctx context.Context, t Target, cols []Col, rows [][]any) (int64, error)
+}
+
+// ErrExists is what a Writer answers when the engine says 'already exists' (PostgreSQL 42P07, and 42710 for a
+// same-named type; SQL Server Msg 2714): the race the existence read cannot close, refused in the same words
+// (review-29 N4).
+var ErrExists = errors.New("the table exists")
+
+// CreateSQL is the CREATE TABLE of the target: every identifier quoted by QuoteIdent, every type from ColumnType's
+// closed list; no value of the grid is ever in it.
+func CreateSQL(engine string, t Target, cols []Col) (string, error) {
+	var b strings.Builder
+	b.WriteString("CREATE TABLE " + Quoted(engine, t) + " (")
+	for i, c := range cols {
+		typ, err := ColumnType(engine, c.Type)
+		if err != nil {
+			return "", err
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(QuoteIdent(engine, c.Name) + " " + typ + " NULL")
+	}
+	b.WriteString(")")
+	return b.String(), nil
+}
+
+// ConvertRows converts every cell (Convert) and counts the NUL characters dropped from text cells; the first cell
+// that does not convert refuses the whole grid, naming its row and column.
+func ConvertRows(engine string, cols []Col, rows [][]any) ([][]any, int, error) {
+	out, nuls := make([][]any, len(rows)), 0
+	for i, r := range rows {
+		o := make([]any, len(r))
+		for j, v := range r {
+			if cols[j].Type == "text" {
+				nuls += NULs(v)
+			}
+			x, err := Convert(engine, cols[j].Type, i+1, cols[j].Name, v)
+			if err != nil {
+				return nil, 0, err
+			}
+			o[j] = x
+		}
+		out[i] = o
+	}
+	return out, nuls, nil
+}
+
 // Verdict is Check's answer: Outcome "" = every gate passed (write the started row, then the table); else
 // "refused" or "failed" with its words. Row says whether the attempt writes an audit row.
 type Verdict struct {
 	Outcome, Words string
 	Row            bool
-	Target         string // the one quoted form, once the identifiers passed
+	Target         string  // the one quoted form, once the identifiers passed
+	Rows           [][]any // the converted rows, once every gate passed
+	NULs           int     // the NUL characters dropped from text cells
 }
 
 // Check runs the gates from the instance's door on, in the design's order (5 the list and the login, 6 the typed
@@ -498,6 +553,10 @@ func Check(ctx context.Context, in Instance, dbs []Database, b Body, open func(c
 		if _, err := ColumnType(in.Engine, c.Type); err != nil {
 			return refuse(fmt.Sprintf("column %d (%s): %v", i+1, c.Name, err))
 		}
+	}
+	rows, nuls, err := ConvertRows(in.Engine, b.Cols, b.Rows)
+	if err != nil {
+		return refuse(err.Error())
 	}
 	t := Target{Database: b.Database, Schema: Schema, Table: b.Table}
 	quoted := Quoted(in.Engine, t)
@@ -552,5 +611,5 @@ func Check(ctx context.Context, in Instance, dbs []Database, b Body, open func(c
 	if there {
 		return refuse(fmt.Sprintf("the table %s exists: pgvigil never overwrites a table", t.Display()))
 	}
-	return Verdict{Row: true, Target: quoted}
+	return Verdict{Row: true, Target: quoted, Rows: rows, NULs: nuls}
 }
