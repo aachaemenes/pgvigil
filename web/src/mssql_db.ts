@@ -52,6 +52,10 @@ async function dbOptions(ctx: Ctx, db: string): Promise<HTMLElement> {
       { key: 'status', label: 'check', fmt: v => v ? badge(String(v), v === 'critical' ? 'crit' : 'warn') : '' }], 'No option column.'));
 }
 
+// configuredOnly (control audit D2): DBA Dash's Filter > Configured Only on one database - the settings whose value is
+// not the default (DBConfiguration_Get's @ConfiguredOnly); 0391's is_default (is_value_default after the 0375 merge)
+const configuredOnly = (rows: Row[]) => rows.filter(r => r.is_default === false);
+
 // dbConfiguration: one database's scoped configuration (DBA Dash's DB Configuration; 0391, /api/mssql/checks
 // part=scoped_config and scoped_changes cut by db=): each setting as last read, a value not the default marked, then
 // the changes the hourly reads saw
@@ -62,14 +66,20 @@ async function dbConfiguration(ctx: Ctx, db: string): Promise<HTMLElement> {
   const rows = rowsOf(c.scoped_config);
   if (!rows.length) return el('p', { class: 'empty' }, `No scoped configuration read for ${db}: the mssql_confcheck collection reads sys.database_scoped_configurations hourly (SQL Server 2016 and later).`);
   const note = rows.find(r => r.note);
+  // DBA Dash's Filter > Configured Only, ticked as there: untick it for every setting
+  const only = el('input', { type: 'checkbox', checked: 'checked' }) as HTMLInputElement;
+  const box = el('div');
+  const draw = () => box.replaceChildren(grid(only.checked ? configuredOnly(rows) : rows, [
+    { key: 'name' }, { key: 'value' },
+    { key: 'value_for_secondary', label: 'for secondaries', fmt: v => v == null ? 'as the primary' : String(v) },
+    { key: 'is_default', label: 'default', fmt: v => v == null ? 'not read' : v ? 'yes' : badge('changed', 'warn') },
+    { key: 'is_present', label: 'in the view', fmt: v => v ? 'yes' : 'no longer' },
+  ], only.checked ? `Every setting of ${db} is at its default (Configured Only: untick it for every setting).` : 'No setting.'));
+  only.addEventListener('change', draw);
+  draw();
   return el('div', {},
     note ? el('p', { class: 'meta' }, `The last read did not read ${db}: ${String(note.note)} - these are the values read before.`) : '',
-    grid(rows, [
-      { key: 'name' }, { key: 'value' },
-      { key: 'value_for_secondary', label: 'for secondaries', fmt: v => v == null ? 'as the primary' : String(v) },
-      { key: 'is_default', label: 'default', fmt: v => v == null ? 'not read' : v ? 'yes' : badge('changed', 'warn') },
-      { key: 'is_present', label: 'in the view', fmt: v => v ? 'yes' : 'no longer' },
-    ], 'No setting.'),
+    el('div', { class: 'toolbar', role: 'group', 'aria-label': 'DB Configuration filter' }, el('label', {}, only, ' ', 'Configured Only')), box,
     el('h3', {}, 'Changes'),
     grid(rowsOf(x.scoped_changes), [{ key: 'changed_at', label: 'seen at', fmt: fmtTime }, { key: 'name' }, { key: 'old_value', label: 'from' },
       { key: 'new_value', label: 'to', fmt: v => v == null ? 'left the view' : String(v) }], 'No change seen since the first read.'));
