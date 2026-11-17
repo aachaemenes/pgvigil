@@ -11,7 +11,7 @@
 //                  is listed only where the rules match - on the fleet tree, under env:prod, on the included instance,
 //                  never on the excluded one or a SQL Server instance; the editor's rules section warns 'these rules
 //                  match no instance' for rules that match none; Clear Rules lists it everywhere again (DBA Dash L84)
-//   CR-role        a report whose access is 'admin': an operator's page says 'You do not have access to this report'
+//   CR-role        a report whose access is the list ['admin'] (a list of role names: Allen's Q160 is open): an operator's page says 'You do not have access to this report'
 //                  and its run POST answers 403 with the role's words; an admin runs it (L85)
 //  task 3 - the run
 //   CR-cancel      a report that sleeps 45 s (a report's timeout is 60 s at most): Cancel ends it within 5 s, the status 'Cancelled', the statement gone
@@ -214,7 +214,7 @@ await guard('CR-visibility', async () => {
 });
 await guard('CR-role', async () => {
   const name = `cr-role-${Date.now()}`;
-  const saved = await addReport({ name, engine: 'store', body: 'SELECT 1 AS one', access: 'admin' });
+  const saved = await addReport({ name, engine: 'store', body: 'SELECT 1 AS one', access: ['admin'] });   // a LIST of role names (the lead 03:15: Q160 open)
   await login(opUser, opPw);
   await go(`#/customreports?report=${saved.id}`);
   const said = await ev(`(document.querySelector('main')?.textContent ?? '').includes('You do not have access to this report')`);
