@@ -20,7 +20,8 @@ import (
 // (42501), and serve WARNed it at every start and every hour while a stopped serve's 'started' verify stayed open. On
 // such a login: the sweep returns no error, writes one 'ended unknown' row for the open verify of an instance whose
 // verify lock is free, writes nothing for an instance whose lock another session holds (a verify runs there), and a
-// second sweep writes no second end row; once the lock is free that instance's verify is ended too.
+// second sweep writes no second end row; once the lock is free that instance's verify is ended too; and the sweep of
+// an instance removed since the open read ends nothing and returns no error.
 func TestVerifySweepAsTheAuditLoginOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -110,5 +111,14 @@ func TestVerifySweepAsTheAuditLoginOnAStore(t *testing.T) {
 	}
 	if k, _ := ends(held); k != 1 {
 		t.Errorf("the held instance once its lock is free: %d 'ended unknown' row(s), want 1", k)
+	}
+	// an instance removed between the open read and its sweep (no instances row): nothing to end, and no error - the
+	// hourly sweep would WARN on it otherwise
+	var gone, k int
+	if err := pool.QueryRow(ctx, `SELECT coalesce(max(instance_id), 0) + 1000000 FROM pgvigil.instances`).Scan(&gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.QueryRow(ctx, sqlVerifySweep, gone).Scan(&k); err != nil || k != 0 {
+		t.Errorf("the sweep of a removed instance: %d row(s), err %v - want 0 and no error", k, err)
 	}
 }

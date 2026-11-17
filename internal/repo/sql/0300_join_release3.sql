@@ -2497,13 +2497,19 @@ $$;
 
 -- import_cq_verify_sweep: for one SQL Server instance, an 'ended unknown' row for each 'started' verify with no end of
 -- its own (import_cq_verify_open's pairing), written through import_mssql_actions_log; how many. The caller holds the
--- instance's verify lock, so no verify runs there (whatever the row's age).
+-- instance's verify lock, so no verify runs there (whatever the row's age). An instance removed since the open read
+-- (its rows' instance_id is NULL now) has nothing to end: 0, no error.
 CREATE OR REPLACE FUNCTION pgvigil.import_cq_verify_sweep(p_instance_id integer)
 RETURNS integer LANGUAGE plpgsql AS $$
 DECLARE
-  v_rows jsonb;
+  v_engine text;
+  v_rows   jsonb;
 BEGIN
-  IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
+  SELECT engine INTO v_engine FROM pgvigil.instances WHERE instance_id = p_instance_id;
+  IF NOT FOUND THEN
+    RETURN 0;
+  END IF;
+  IF v_engine IS DISTINCT FROM 'sqlserver' THEN
     RAISE EXCEPTION 'import_cq_verify_sweep: instance % is not a SQL Server instance', p_instance_id;
   END IF;
   SELECT jsonb_agg(jsonb_build_object(
