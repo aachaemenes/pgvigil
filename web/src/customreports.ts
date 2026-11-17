@@ -15,13 +15,18 @@ import { fleetWideNote, folderWords, inTagScope, tagWords, writtenTag } from './
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
 import { Can, markNeed, routeWhy } from './needs';
 
-export interface Param { name: string; type: string; label?: string; default?: string; required?: boolean }
+// picker: how the run's form offers the value (DBA Dash's Pickers, L95) - a list, a text box (Enter runs) or a query's
+// values (its first column the value, its second the words); menu = on the run's toolbar first
+export interface Picker { kind: 'list' | 'text' | 'query'; values?: string[]; query?: string; menu?: boolean }
+export interface Param { name: string; type: string; label?: string; default?: string; required?: boolean; picker?: Picker }
 export interface ColFmt { set: number; column: string; label?: string; format?: string; decimals?: number; hidden?: boolean }
 export interface Rule { set: number; column: string; eval?: string; cond: string; value1?: string; value2?: string; status: string; case_sensitive?: boolean }
 export interface ReportDef {
   report_id?: number; name: string; description?: string; folder: string; engine: string; kind: string; body: string;
   params: Param[]; columns: ColFmt[]; rules: Rule[]; timeout_secs: number; max_rows: number; version?: number;
   visibility?: Visibility; access?: string[];   // 0372's view: who sees it, which roles open it (a list: Q160 is open)
+  status_from_messages?: boolean;               // the run's own NOTICE / PRINT messages as its status (L90)
+  collections?: string[];                       // the collections its data comes from (Associate Collection, L98)
 }
 export interface Visibility { engines?: string[]; tags?: string[]; include?: string[]; exclude?: string[] }
 // matches: whether an instance meets a report's visibility rules (the server's visibleOn, internal/web/q_customreports_view.go)
@@ -34,7 +39,7 @@ export function matches(v: Visibility | undefined, i: { name: string; engine: st
   return true;
 }
 export interface ResultSet { columns: string[]; types: string[]; rows: unknown[][]; truncated?: boolean }
-export interface InstanceRun { instance_id?: number; instance: string; engine: string; outcome: string; error?: string; duration_ms: number; rows: number; sets: ResultSet[]; declined?: boolean }
+export interface InstanceRun { instance_id?: number; instance: string; engine: string; outcome: string; error?: string; duration_ms: number; rows: number; sets: ResultSet[]; declined?: boolean; messages?: string[] }
 // store: why a report on the store cannot run here (REPORT ROLE: reports_dsn, a login IN ROLE pgvigil_reader alone),
 // absent when it can
 // can: what the session's role may do (B24f): a run is open to every role, a save, move or delete needs admin
@@ -201,11 +206,14 @@ export function resultView(runs: InstanceRun[], def?: Pick<ReportDef, 'columns' 
 // ---- reading the definitions ------------------------------------------------------------------------------------
 
 // viewOf: 0372's view column as the definition's own keys (an empty view, '{}': none of them - the report as before)
-function viewOf(v: unknown): Pick<ReportDef, 'visibility' | 'access'> {
+type ViewKeys = Pick<ReportDef, 'visibility' | 'access' | 'status_from_messages' | 'collections'>;
+function viewOf(v: unknown): ViewKeys {
   const o = v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
-  const out: Pick<ReportDef, 'visibility' | 'access'> = {};
+  const out: ViewKeys = {};
   if (o.visibility && typeof o.visibility === 'object') out.visibility = o.visibility as Visibility;
   if (Array.isArray(o.access) && o.access.length) out.access = o.access.map(String);
+  if (o.status_from_messages === true) out.status_from_messages = true;
+  if (Array.isArray(o.collections) && o.collections.length) out.collections = o.collections.map(String);
   return out;
 }
 function defOf(r: Row): ReportDef {
@@ -376,9 +384,25 @@ function folderActions(f: string, msg: HTMLElement, off: string, offNote: HTMLEl
   return el('div', { class: 'toolbar' }, el('span', {}, name, ' ', ren, ' ', renWhy), del, add);
 }
 
-// paramInput is one parameter's field, filled from the address (p.<name>) or its default
-function paramInput(p: Param, q: URLSearchParams): HTMLInputElement {
+type Field = HTMLInputElement | HTMLSelectElement;
+// paramField is one parameter's field: its picker's (a select of the list's or the query's values, or a text box) or the
+// plain typed field; filled from the address (p.<name>) or its default. A query picker's options come later (loadPicker).
+function paramField(p: Param, q: URLSearchParams): Field {
   const v = q.get('p.' + p.name) ?? p.default ?? '';
+  const label = p.label || p.name;
+  if (p.picker?.kind === 'list' || p.picker?.kind === 'query') {
+    const s = el('select', { name: p.name, 'aria-label': label }) as HTMLSelectElement;
+    for (const x of p.picker.values ?? []) s.append(el('option', { value: x }, x === '' ? '(the default)' : x));
+    s.dataset.want = v;
+    if (v !== '' && [...s.options].some(o => o.value === v)) s.value = v;
+    return s;
+  }
+  if (p.picker?.kind === 'text') return el('input', { type: 'text', name: p.name, 'aria-label': label, value: v }) as HTMLInputElement;
+  return paramInput(p, v);
+}
+
+// paramInput is a plain parameter's field (a report before pickers: unchanged)
+function paramInput(p: Param, v: string): HTMLInputElement {
   const attrs: Record<string, string> = { name: p.name, 'aria-label': `${p.label || p.name} (${typeNames[p.type] ?? p.type})`, value: v };
   if (p.type === 'int' || p.type === 'number') { attrs.type = 'text'; attrs.inputmode = 'decimal'; }
   else if (p.type === 'date') attrs.type = 'date';
@@ -431,7 +455,14 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   const showTarget = () => { instBox.hidden = target.value !== 'instance'; tagBox.hidden = target.value !== 'tag'; };
   target.addEventListener('change', showTarget); showTarget();
 
-  const inputs = def.params.map(p => paramInput(p, q));
+  const inputs = def.params.map(p => paramField(p, q));
+  // a picker away from its parameter's default is marked (DBA Dash draws the picker bold), the words in its title
+  const labels = def.params.map((p, i) => el('label', {}, `${p.label || p.name} `, inputs[i]));
+  const mark = (i: number) => {
+    const p = def.params[i], off = !!p.picker && p.default != null && inputs[i].value !== p.default;
+    labels[i].classList.toggle('not-default', off);
+    if (off) labels[i].title = `${p.label || p.name} is not at its default (${p.default === '' ? 'empty' : p.default})`; else labels[i].removeAttribute('title');
+  };
   const runBtn = el('button', { type: 'button' }, 'Run');
   // Cancel (DBA Dash L89): stops the run's request; the server's context ends and the statement with it on either engine
   const cancelBtn = el('button', { type: 'button', disabled: '' }, 'Cancel') as HTMLButtonElement;
@@ -447,9 +478,24 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   if (runWhy) offControl(runBtn, runWhy, runOff);
   const storeTextRun = def.engine === 'store' && d.state.store_text ? el('p', { class: 'meta said' }, d.state.store_text) : null;
   const editBtn = el('a', { href: `#/customreports?edit=${def.report_id}${tagQ(ctx) ? '&' + tagQ(ctx) : ''}` }, 'Edit this report');
+  // the menu bar's pickers first (DBA Dash's Menu Bar), then the parameters in their order
+  const order = def.params.map((_, i) => i).sort((a, b) => Number(!def.params[a].picker?.menu) - Number(!def.params[b].picker?.menu));
+  // Trigger Collection (DBA Dash L98): the collections the report names; this server starts a collection on its
+  // schedule only, so the button is off and its words give the run by hand for the instance picked
+  const trigBtn = def.collections?.length ? el('button', { type: 'button' }, 'Trigger Collection') : null;
+  const trigOff = el('p', { class: 'meta off-reason' });
+  const trigWords = () => {
+    if (!trigBtn) return;
+    const who = target.value === 'instance' && instSel.selectedOptions[0] ? instSel.selectedOptions[0].textContent!.replace(/ \(not active here\)$/, '') : '<name>';
+    const w = `Trigger Collection is off: this server starts ${def.collections!.join(', ')} on ${def.collections!.length > 1 ? 'their' : 'its'} schedule only. `
+      + 'One run by hand on the server: ' + def.collections!.map(c => `pgvigil collect -config pgvigil.yaml -once ${c} -instance ${who}`).join('; ') + '.';
+    trigOff.textContent = w;
+    offControl(trigBtn, w, trigOff);
+  };
   const form = el('div', { class: 'toolbar' }, el('label', {}, 'Run on ', target), instBox, tagBox,
-    ...def.params.map((p, i) => el('label', {}, `${p.label || p.name} `, inputs[i])), runBtn, cancelBtn, editBtn);
+    ...order.map(i => labels[i]), runBtn, cancelBtn, ...(trigBtn ? [trigBtn] : []), editBtn);
   sec.append(form);
+  if (trigBtn) { sec.append(trigOff); trigWords(); }
   if (folderTag) sec.append(el('p', { class: 'meta' }, `Opened from ${folderWords(folderTag)}: a run from here goes to its instances`
     + (runTag ? '.' : ', one at a time (the folder is no tag a run can name).')));
   if (runWhy) sec.append(runOff);
@@ -459,8 +505,34 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   const out = el('div', {});
   sec.append(status, out);
 
+  // a query picker's values: its query run on the report's target (POST .../run with 'picker'), audited as a run; the
+  // first column the value, the second (when there is one) the words; a list that cannot be read says so in its options
+  const runBody = () => { const w = window_(ctx); return { report_id: def.report_id, target: target.value, instance_id: Number(instSel.value), tag: tagSel.value, from: w.from, to: w.to }; };
+  const loadPicker = async (i: number) => {
+    const p = def.params[i], s = inputs[i] as HTMLSelectElement;
+    const keep = s.value || s.dataset.want || '';
+    const one = (value: string, words: string, off = false) => { const o = el('option', { value }, words) as HTMLOptionElement; o.disabled = off; return o; };
+    if (runWhy) { s.replaceChildren(one('', 'the list is not read: ' + runWhy, true)); return; }
+    s.replaceChildren(one(keep, 'reading the list...'));
+    try {
+      const r = await post<{ runs: InstanceRun[] }>('customreports/run', { ...runBody(), picker: p.name, params: {} });
+      const seen = new Map<string, string>(), errs: string[] = [];
+      for (const x of r.runs) {
+        if (x.outcome !== 'done') { errs.push(x.error || x.outcome); continue; }
+        for (const row of x.sets[0]?.rows ?? []) { const v = row[0] == null ? '' : String(row[0]); if (!seen.has(v)) seen.set(v, row.length > 1 && row[1] != null ? String(row[1]) : v); }
+      }
+      s.replaceChildren(...[...seen].map(([v, w]) => one(v, w)));
+      if (!seen.size) s.append(one('', errs.length ? 'Error loading the list: ' + errs[0] : 'the list is empty', true));
+      if (keep && seen.has(keep)) s.value = keep;
+    } catch (e) { s.replaceChildren(one('', 'Error loading the list: ' + (e instanceof Error ? e.message : String(e)), true)); }
+    mark(i);
+  };
+  const loadPickers = () => Promise.all(def.params.map((p, i) => p.picker?.kind === 'query' ? loadPicker(i) : Promise.resolve()));
+
   // hh:mm:ss of a run's time (the status strip's timer, DBA Dash L90)
   const clock = (ms: number) => { const s = Math.floor(ms / 1000), p = (n: number) => String(n).padStart(2, '0'); return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`; };
+  // a later run (a picker changed while one ran) replaces the earlier: its request is stopped and its answer dropped
+  let seq = 0;
   const run = async () => {
     // a required parameter left empty: no run, the words and a way to it (DBA Dash L92)
     const empty = def.params.findIndex((p, i) => p.required && inputs[i].value.trim() === '');
@@ -470,29 +542,49 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
       status.replaceChildren('Parameters are required to run the report. ', go);
       return;
     }
+    const my = ++seq;
+    running?.abort();
+    const ctl = new AbortController();
+    running = ctl; cancelBtn.disabled = false;
     const t0 = Date.now();
     status.textContent = `Running ${clock(0)}`;
-    const tick = setInterval(() => { status.textContent = `Running ${clock(Date.now() - t0)}`; }, 1000);
+    const tick = setInterval(() => { if (my === seq) status.textContent = `Running ${clock(Date.now() - t0)}`; }, 1000);
     offControl(runBtn, 'running', status);
-    running = new AbortController(); cancelBtn.disabled = false;
-    const w = window_(ctx);
     const params: Record<string, string> = {};
     def.params.forEach((p, i) => { params[p.name] = inputs[i].value; });
     try {
-      const r = await post<{ runs: InstanceRun[]; ran_at: string }>('customreports/run', {
-        report_id: def.report_id, target: target.value, instance_id: Number(instSel.value), tag: tagSel.value, from: w.from, to: w.to, params,
-      }, running.signal);
+      const r = await post<{ runs: InstanceRun[]; ran_at: string }>('customreports/run', { ...runBody(), params }, ctl.signal);
+      if (my !== seq) return;
       out.replaceChildren(resultView(r.runs, def, def.name));
-      status.textContent = `Completed in ${clock(Date.now() - t0)} (ran at ${fmtTime(r.ran_at)}).`;
+      // the report's own messages in place of 'Completed' (DBA Dash's ShowInfoMessages), per instance when several ran
+      const said = def.status_from_messages ? r.runs.filter(x => x.messages?.length).map(x => (r.runs.length > 1 ? x.instance + ': ' : '') + x.messages!.join(' / ')) : [];
+      status.textContent = said.length ? `${said.join('; ')} (completed in ${clock(Date.now() - t0)}, ran at ${fmtTime(r.ran_at)})`
+        : `Completed in ${clock(Date.now() - t0)} (ran at ${fmtTime(r.ran_at)}).`;
     } catch (e) {
-      if (running?.signal.aborted) { status.textContent = `Cancelled after ${clock(Date.now() - t0)}: the statement was stopped on the server.`; }
+      if (my !== seq) return;
+      if (ctl.signal.aborted) { status.textContent = `Cancelled after ${clock(Date.now() - t0)}: the statement was stopped on the server.`; }
       else { out.replaceChildren(errorBox(e)); status.textContent = ''; }
     } finally {
-      clearInterval(tick); running = null; cancelBtn.disabled = true;
-      offControl(runBtn, runWhy || null, runWhy ? runOff : status);
+      clearInterval(tick);
+      if (my === seq) {
+        running = null; cancelBtn.disabled = true;
+        offControl(runBtn, runWhy || null, runWhy ? runOff : status);
+      }
     }
   };
   runBtn.addEventListener('click', () => { void run(); });
+  // a picker runs the report when it changes (DBA Dash refreshes on a picked item), a text picker on Enter
+  def.params.forEach((p, i) => {
+    if (!p.picker) return;
+    mark(i);
+    if (p.picker.kind === 'text') {
+      inputs[i].addEventListener('input', () => mark(i));
+      inputs[i].addEventListener('keydown', e => { if ((e as KeyboardEvent).key === 'Enter') { e.preventDefault(); void run(); } });
+    } else inputs[i].addEventListener('change', () => { mark(i); if (!runWhy) void run(); });
+  });
+  const retarget = () => { trigWords(); void loadPickers(); };
+  for (const x of [target, instSel, tagSel]) x.addEventListener('change', retarget);
+  await loadPickers();
   // a repository report runs on open (DBA Dash's custom reports run when opened); an instance report on the button,
   // or on open when the address says run=1 (a mailed or linked page)
   // a run only where it may: a store report without its login is not run on open (no refused row per page view); its
