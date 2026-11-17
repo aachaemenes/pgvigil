@@ -544,6 +544,16 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 		parts = append(parts, part{"intervals", sqlMSSQLProcIntervals, []any{id, from, to, dbID, obj}},
 			part{"history", sqlMSSQLProcHistory, []any{planEach, id, from, to, dbID, obj, procStep(to.Sub(from).Seconds())}})
 	}
+	// the object page's lookup (OBJ, q_mssql_object.go): read only when asked, its database by name (dbname=; db= stays
+	// the database id this endpoint's other parts read)
+	if q.Get("part") == "object_lookup" {
+		p, err := objectLookupPart(q, id, from, to)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		parts = append(parts, p)
+	}
 	s.multiPart(w, r, parts)
 }
 

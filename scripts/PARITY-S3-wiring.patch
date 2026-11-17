@@ -1,14 +1,15 @@
 --- a/web/src/main.ts
 +++ b/web/src/main.ts
-@@ -60,6 +60,7 @@ import { mssqlJobs } from './mssql_jobs';
+@@ -60,6 +60,8 @@ import { mssqlJobs } from './mssql_jobs';
  import { jobsPgView } from './jobs_pg';
  import { pgDeadlocksView } from './pg_deadlocks';
  import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
 +import { mssqlDbView } from './mssql_db';
++import { mssqlObjectView } from './mssql_object';
  import { mssqlMaintenanceView } from './mssql_maintenance';
  import { mssqlRowVersionsView } from './mssql_rowversions';
  import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
-@@ -67,6 +68,7 @@ import { mssqlQueryStoreView } from './mssql_querystore';
+@@ -67,6 +69,7 @@ import { mssqlQueryStoreView } from './mssql_querystore';
  import { mssqlConfigView } from './mssql_config';
  import { hasPool, mssqlPoolView } from './pools';
  import { azureSummaryView, mssqlAzureView } from './azuredb';
@@ -16,16 +17,16 @@
  import { mssqlPropertiesView } from './mssql_properties';
  import { mssqlAuditView } from './mssql_audit';
  import { mssqlSecurityView } from './mssql_security';
-@@ -118,7 +120,7 @@ const mssqlPages: Record<string, Render> = {
+@@ -118,7 +121,7 @@ const mssqlPages: Record<string, Render> = {
    jobstimeline: jobsTimelineView, custom: customView,
    availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); s.append(await geoReplBlock(c).catch(() => document.createElement('span'))); s.append(await cloudReplicasBlock(c).catch(() => document.createElement('span'))); return s; },
    mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
 -  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
-+  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView, mssqldb: mssqlDbView,
++  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView, mssqldb: mssqlDbView, mssqlobject: mssqlObjectView,
    drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, collectionhealth: collectionHealthView, collectionperf: collectionPerfView,
    rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlazure: mssqlAzureView, mssqlactions: mssqlActionsLogView,
    mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
-@@ -180,7 +182,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
+@@ -180,7 +183,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
  };
  const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
  const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
@@ -77,10 +78,10 @@
  }
  // the drill-down pages of one instance (drill.ts): reached by links, not shown in the tab strip
 -export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index', compare: 'Compare' };
-+export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index', compare: 'Compare', mssqldb: 'Database' };
++export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index', compare: 'Compare', mssqldb: 'Database', mssqlobject: 'Object' };
  // the tab a drill page belongs to: marked in the strip, and where the tree's link to another instance lands
 -export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements', collectionperf: 'collectionhealth' };
-+export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements', collectionperf: 'collectionhealth', mssqldb: 'dbspace' };
++export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements', collectionperf: 'collectionhealth', mssqldb: 'dbspace', mssqlobject: 'mssqlprocs' };
  
  export function parse(): Ctx {
    const h = location.hash.replace(/^#\/?/, '');
@@ -89,7 +90,7 @@
    if (keep && (drillTabs[c.tab] || c.tab === 'dbinfo')) {
      const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
 -    for (const k of ['db', 'rel', 'scheduler', 'job', 'idx']) { const v = cur.get(k); if (v) q.set(k, v); }
-+    for (const k of ['db', 'rel', 'scheduler', 'job', 'idx', 'dbtab', 'fg']) { const v = cur.get(k); if (v) q.set(k, v); }
++    for (const k of ['db', 'rel', 'scheduler', 'job', 'idx', 'dbtab', 'fg', 'obj', 'otab']) { const v = cur.get(k); if (v) q.set(k, v); }
 +  }
 +  // the Azure logical server and elastic pool pages (azure_nodes.ts, P25 task 7 and (i)) stay on their node and its tab: a range change keeps them
 +  if (keep && (c.tab === 'azureserver' || c.tab === 'azurepool')) {
@@ -105,7 +106,7 @@
  // the page parameters of the Database info tab and the drill-down pages: the router keeps them on a link to the same
  // page (a range change), hrefWith sets only the ones it is given
 -export const pageKeys = ['db', 'rel', 'scheduler', 'job', 'idx'];
-+export const pageKeys = ['db', 'rel', 'scheduler', 'job', 'idx', 'dbtab', 'fg', 'oesearch'];
++export const pageKeys = ['db', 'rel', 'scheduler', 'job', 'idx', 'dbtab', 'fg', 'oesearch', 'obj', 'otab'];
  
  // hrefWith is the router's link to a tab (instance, tag and time range kept) plus page parameters of its own.
  export function hrefWith(ctx: Ctx, tab: string, extra: Record<string, string | number | undefined>, instance = ctx.instance): string {
