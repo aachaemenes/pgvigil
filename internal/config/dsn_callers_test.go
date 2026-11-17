@@ -47,6 +47,8 @@ func TestEveryInstanceDSNCallerIsKnown(t *testing.T) {
 		"internal/collect/patroni.go":      "the Patroni REST host from the dsn: no database dial",
 		"internal/mssql/backup_history.go": "openBackupFilePool: readSecret, the secret's login and password on the file check's pool",
 		"internal/mssql/verify_backup.go":  "the verify's read-login checks and watch: openMonitor with the door's Secret",
+		// task 7b (Save Table): the read login through connect with the door's Secret; Actions is the actions login's
+		"internal/actions/savetable.go": "SaveConns: connect(d.Monitor, d.Secret); Actions is the actions login's",
 	}
 	root := filepath.Join("..", "..")
 	use := regexp.MustCompile(`\bin\.DSN\(\)|\.Monitor\b`)

@@ -151,8 +151,10 @@ func (d Door) SaveConns(ctx context.Context, database string, budget time.Durati
 		return nil, nil, nil, err
 	}
 	closeAll = func() { _ = ac.Close(); _ = adb.Close(); _ = mc.Close(); _ = mdb.Close() }
-	// READ COMMITTED for the write (sessionSetup reads uncommitted for the DMVs)
-	if _, err := ac.ExecContext(ctx, `USE `+savetable.QuoteIdent(savetable.SQLServer, database)+`; SET TRANSACTION ISOLATION LEVEL READ COMMITTED;`); err != nil {
+	// READ COMMITTED for the write (sessionSetup reads uncommitted for the DMVs); NOCOUNT OFF: sessionSetup's NOCOUNT ON
+	// strips the row count from the bulk copy's DONE token, and go-mssqldb adds a DONE's RowCount only when it carries
+	// the count (v1.11.2 token.go L1240-1245) - the save then said 'Saved 0 rows' for rows it wrote (savetable-g2's C2 / K4)
+	if _, err := ac.ExecContext(ctx, `USE `+savetable.QuoteIdent(savetable.SQLServer, database)+`; SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SET NOCOUNT OFF;`); err != nil {
 		closeAll()
 		return nil, nil, nil, fmt.Errorf("the actions login could not open the database %s: %w", database, err)
 	}
