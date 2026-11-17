@@ -78,10 +78,28 @@ async function dbConfiguration(ctx: Ctx, db: string): Promise<HTMLElement> {
 // for this database (schema.ts schemaDbSection: the read, the range's changes with their diffs, the objects), the
 // database found by its name in the instance's schema read
 async function snapshotSummary(ctx: Ctx, db: string): Promise<HTMLElement> {
-  const d = await get<{ databases: Table | null }>('schema', { instance: ctx.instance, ...window_(ctx) });
-  const row = rowsOf(d.databases).find(r => String(r.datname) === db);
-  if (!row) return el('p', { class: 'empty' }, `No schema read of ${db} yet: the mssql_schema collection reads each database's objects and their changes (Schema tab).`);
-  return schemaDbSection(ctx, row.dbid as number);
+  // the name to its id through the collection's own row per database (part mssql_dbs: every database it has seen, the
+  // never-read and not-readable ones too, a gone one left out), so a database no longer read still shows its history,
+  // and the page says why a database has no read (review t11-4 SHOULD 4)
+  const [m, s] = await Promise.all([
+    get<{ mssql_dbs: Table | null }>('schema', { instance: ctx.instance, ...window_(ctx), part: 'mssql_dbs' }),
+    get<{ state: Table | null }>('schema', { instance: ctx.instance, ...window_(ctx), part: 'state' })]);
+  const row = rowsOf(m.mssql_dbs).find(r => String(r.datname) === db), st = rowsOf(s.state)[0];
+  if (!row) {
+    const why = !st ? 'the mssql_schema collection has not run on this instance yet'
+      : st.status === 'skipped' ? `the mssql_schema collection is off on this instance: ${String(st.note ?? '')}`
+      : st.status === 'error' ? `the mssql_schema collection's last run failed: ${String(st.note ?? '')}`
+      : 'the mssql_schema collection holds no current row for it - it never read it (it reads the databases of mssql_schema.databases), or the database is gone (its changes stay on the instance\'s Schema tab)';
+    return el('p', { class: 'empty' }, `No schema read of ${db}: ${why}.`);
+  }
+  const sec = await schemaDbSection(ctx, row.dbid as number);
+  if (row.state !== 'read' && row.state !== 'seen') {
+    const p = el('p', { class: 'meta' }, badge(String(row.state ?? 'not read'), 'warn'),
+      ` the collection's last pass of ${db}${row.note ? ': ' + String(row.note) : ''}.`);
+    const h = sec.firstElementChild;
+    if (h) h.after(p); else sec.prepend(p);
+  }
+  return sec;
 }
 
 // serviceBroker: DBA Dash's database Service Broker tab (P25 row 73; 0392, the mssql_service_broker collection every 5
