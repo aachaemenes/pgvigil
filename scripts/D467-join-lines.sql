@@ -18,9 +18,10 @@
                         'mssql_func_purge',
 
 -- 4. What a later slice reads: a rewrite of the Procedures reader (q_mssql_procs.go) takes with it procsParts'
---    three parts - func_state (the collection's state apart from 'state', whose first row the page reads as the
---    procedures'), functions (sqlMSSQLFuncs with the inline mark from mssql_func_inline) and triggers
---    (sqlMSSQLTriggers) - and web/src/mssql_procs.ts' two sections.
+--    four parts - func_state (the collection's state apart from 'state', whose first row the page reads as the
+--    procedures'), func_reads (sqlMSSQLFuncReads over mssql_func_read), functions (sqlMSSQLFuncs with the inline
+--    mark from mssql_func_inline) and triggers (sqlMSSQLTriggers) - the databases part's second arm (the databases of
+--    mssql_func_sample where no procedure ran, procs 0) and web/src/mssql_procs.ts' two sections.
 
 -- 5. The branch: rel-d467 was cut from rel-d421 (3b57f678, then rel-d421 c5303d9e merged), so it joins after D421 and
 --    takes D421's lines with it; 0343 names no object of a later migration.
