@@ -20,9 +20,9 @@
 # from disk again after it.
 #
 # Expected (written before the first run; the trial readings they rest on are SQL Server 2022 CU27's):
-#  S0. (Added after run 1, which stopped in its setup with no message.) A batch the server refuses - CREATE PROCEDURE
-#      behind sq's SET NOCOUNT ON, Msg 111 - comes back through sq with sqlcmd's exit and the server's message on
-#      stderr (the stop itself is set -e's and the ERR trap's, which S0 does not exercise).
+#  S0. A batch the server refuses - CREATE PROCEDURE behind sq's SET NOCOUNT ON, Msg 111 - comes back through sq
+#      with sqlcmd's exit and the server's message on stderr (the stop itself is set -e's and the ERR trap's, which
+#      S0 does not exercise).
 #  C1. The statement columns. Marked statements over cs_big (220,000 rows, about 11,600 pages), each one cached plan
 #      and a query hash of its own (the hash is the collector's key and leaves comments out, so the six scans
 #      differ by an aggregate pair each; no two marked statements, nor one and a statement of cs_p, share a hash),

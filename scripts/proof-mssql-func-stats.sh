@@ -36,8 +36,8 @@
 #      'inlining off', f_inl '' (inlineable and on: it ran without inlining for the call's hint), each equal to sa's
 #      sys.sql_modules flags; dbo.f_d2 in a second database where the monitoring login has no user (and no CONNECT
 #      ANY DATABASE): its calls stored (2), its mark 'not read', the run 'partial' with a note naming that database
-#      (a part not read, never 'error': the figures of every function and trigger stored). (Corrected after run 1,
-#      where f_d2 read f_off's mark: object ids repeat across databases, so each mark is found by database and id.)
+#      (a part not read, never 'error': the figures of every function and trigger stored). Object ids repeat across
+#      databases, so each mark is found by database and id.
 #  FS4. The page (scripts/func-stats-page.mjs, a headless Chromium, light and dark): the Procedures tab shows
 #      'Functions (scalar, run without inlining)' with its line about the table-valued and inlined functions, an
 #      'inlining' column holding the four forms, no spilled-pages column; 'Triggers' with a 'scope' column ('database',
@@ -265,7 +265,7 @@ echo "FS2: OK"
 
 echo "--- FS3. the marks against sa's sys.sql_modules"
 sq "SELECT o.name + '|' + CAST(m.is_inlineable AS varchar(1)) + '|' + CAST(m.inline_type AS varchar(1)) FROM sys.sql_modules m JOIN sys.objects o ON o.object_id = m.object_id WHERE o.name IN ('f_off', 'f_now', 'f_inl') ORDER BY o.name" "$D1" | sed 's/^/  sa: /'
-# mark <object id> <database id>: object ids repeat across databases (run 1: f_d2 read f_off's mark by its id alone)
+# mark <object id> <database id>: object ids repeat across databases, so an id alone can find another database's row
 mark() { jq -r --arg o "$1" --arg d "$2" '[.[] | select((.object_id | tostring) == $o and (.database_id | tostring) == $d) | .inline_mark // "NULL"] | first // "no row"' <<<"$FN"; }
 for pair in "f_now:not inlineable" "f_off:inlining off" "f_inl:"; do
   f=${pair%%:*}; want=${pair#*:}; got=$(mark "${OID[$f]}" "$DB1")
