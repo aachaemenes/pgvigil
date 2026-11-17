@@ -14,7 +14,7 @@ import { Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlProcsTab = 'mssqlprocs';
 
-type Parts = Record<'state' | 'reads' | 'databases' | 'totals' | 'procs' | 'series', Table | null>;
+type Parts = Record<'state' | 'reads' | 'databases' | 'totals' | 'procs' | 'series' | 'func_state' | 'functions' | 'triggers', Table | null>;
 const LIMIT = 2000;   // the grid's rows, as the API cuts them
 // a figure the API rounds to three decimals is shown with all three (the grids' own two would turn 0.004 into 0)
 const num3 = (v: unknown) => v == null ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
@@ -27,7 +27,8 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, `Procedures (${rangeLabel(ctx)})`));
   sec.append(el('p', { class: 'meta' }, 'Source: sys.dm_exec_procedure_stats, read every five minutes; a figure is what ran between two reads. '
     + 'The view counts per cached plan: a procedure compiled, run and dropped from the plan cache between two reads is in no read, '
-    + 'and the first read of an instance only sets the starting counters. Stored procedures only; triggers and functions are not here.'));
+    + 'and the first read of an instance only sets the starting counters. The scalar functions and the triggers follow the procedures, '
+    + 'from sys.dm_exec_function_stats and sys.dm_exec_trigger_stats read the same way.'));
   // the filter is a database of THIS instance: remembered per instance, by the database's id
   const store = `pgvigil.mssql.procs.db.${String(ctx.instance)}`;
   let database = (() => { try { return sessionStorage.getItem(store) ?? ''; } catch { return ''; } })();
@@ -72,6 +73,77 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
     }
   }
 
+  // the columns of the three grids (procedures, functions, triggers): spills only where the view has them - the
+  // function view has none at all, so its grid has no such column rather than "not read"
+  function statCols(name: Col['fmt'], spills: boolean): Col[] {
+    return [
+      { key: 'database' },
+      { key: 'schema_name', label: 'schema' },
+      { key: 'object_name', label: 'name', ...(name ? { fmt: name } : {}) },
+      { key: 'type_desc', label: 'type', fmt: v => String(v ?? '').replace(/_/g, ' ').toLowerCase() },
+      { key: 'duration_ms', label: 'total duration (sec)', num: true, fmt: secs },
+      { key: 'duration_ms_sec', label: 'duration (ms/sec)', num: true, fmt: num3 },
+      { key: 'avg_duration_ms', label: 'avg duration (ms)', num: true, fmt: num3 },
+      { key: 'executions', num: true },
+      { key: 'executions_min', label: 'executions /min', num: true },
+      { key: 'max_executions_min', label: 'max executions /min', num: true },
+      { key: 'cpu_ms', label: 'total CPU (sec)', num: true, fmt: secs },
+      { key: 'cpu_ms_sec', label: 'CPU (ms/sec)', num: true, fmt: num3 },
+      { key: 'avg_cpu_ms', label: 'avg CPU (ms)', num: true, fmt: num3 },
+      { key: 'logical_reads', label: 'logical reads', num: true },
+      { key: 'avg_logical_reads', label: 'avg logical reads', num: true },
+      { key: 'physical_reads', label: 'physical reads', num: true },
+      { key: 'avg_physical_reads', label: 'avg physical reads', num: true },
+      { key: 'logical_writes', label: 'writes', num: true },
+      { key: 'avg_logical_writes', label: 'avg writes', num: true },
+      // PerformanceMonitor's 'I/O and spills' (D10, 0126): total_spills, SQL Server 2016 SP2 / 2017 CU3 on
+      ...(spills ? [
+        { key: 'spills', label: 'Total spilled pages', num: true, fmt: (v: unknown, r: Row) => v == null ? 'not read' : Number(r.spill_reads) < Number(r.intervals) ? `${fmtNum(v)} (${fmtNum(r.spill_reads)} of ${fmtNum(r.intervals)} reads)` : fmtNum(v) },
+        { key: 'avg_spills', label: 'Avg spilled pages', num: true, fmt: (v: unknown) => v == null ? '' : fmtNum(v) },
+      ] as Col[] : []),
+      // the Extremes group (0342), off until its box is ticked: the smallest and the largest single execution the
+      // server kept for the plans that ran in the range, each since the plan was cached
+      ...(extremes ? [
+        { key: 'min_cpu_ms', label: 'min CPU (ms)', num: true, fmt: nr(num3) }, { key: 'max_cpu_ms', label: 'max CPU (ms)', num: true, fmt: nr(num3) },
+        { key: 'min_duration_ms', label: 'min duration (ms)', num: true, fmt: nr(num3) }, { key: 'max_duration_ms', label: 'max duration (ms)', num: true, fmt: nr(num3) },
+        { key: 'min_logical_reads', label: 'min logical reads', num: true, fmt: nr(fmtNum) }, { key: 'max_logical_reads', label: 'max logical reads', num: true, fmt: nr(fmtNum) },
+        { key: 'min_physical_reads', label: 'min physical reads', num: true, fmt: nr(fmtNum) }, { key: 'max_physical_reads', label: 'max physical reads', num: true, fmt: nr(fmtNum) },
+        { key: 'min_logical_writes', label: 'min writes', num: true, fmt: nr(fmtNum) }, { key: 'max_logical_writes', label: 'max writes', num: true, fmt: nr(fmtNum) },
+        ...(spills ? [{ key: 'min_spills', label: 'min spilled pages', num: true, fmt: nr(fmtNum) }, { key: 'max_spills', label: 'max spilled pages', num: true, fmt: nr(fmtNum) }] : []),
+      ] as Col[] : []),
+      { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
+    ];
+  }
+
+  // the scalar functions and the triggers (0343, the collection mssql_funcstats), under the procedures: the page's
+  // range and database, the busiest CPU first; a name opens nothing (the read-by-read view is the procedures')
+  function others(d: Parts): Node[] {
+    const fst = rowsOf(d.func_state)[0], fns = rowsOf(d.functions), trs = rowsOf(d.triggers);
+    const out: Node[] = [];
+    const most = (n: number) => n >= LIMIT ? `the ${fmtNum(LIMIT)} with the most CPU` : `${fmtNum(n)}, the most CPU first`;
+    if (!fst) out.push(el('p', { class: 'meta' }, 'The mssql_funcstats collection has not run on this instance: it reads every five minutes, needs VIEW SERVER STATE, and its first read only sets the starting counters.'));
+    else if (fst.status !== 'ok') out.push(el('p', { class: 'meta' }, `The mssql_funcstats collection's last run: ${String(fst.status)}${fst.note ? ' (' + String(fst.note) + ')' : ''}.`));
+    const fcols = statCols(undefined, false);
+    fcols.splice(4, 0, { key: 'inline_mark', label: 'inlining', fmt: v => String(v ?? ''),
+      title: '"not inlineable": the definition holds a construct SQL Server cannot inline. "inlining off": it could be inlined and its INLINE option is OFF. '
+        + 'Blank: it could be inlined and inlining is on, so it ran without it for the call\'s own reason (a hint, the database\'s setting or compatibility level, the form of the call). '
+        + '"not read": the server is older than SQL Server 2019, the login cannot see the module, or the read failed.' });
+    out.push(el('h3', {}, 'Functions (scalar, run without inlining)'),
+      el('p', { class: 'meta' }, `${most(fns.length)}. sys.dm_exec_function_stats lists no table-valued function and no scalar function the server inlined: `
+        + 'a function inlined into its callers is counted in their plans (the Plan cache tab). '
+        + 'Inlining is read from sys.sql_modules at most hourly (SQL Server 2019 on): "not inlineable" - a construct of the definition prevents it; '
+        + '"inlining off" - its INLINE option is OFF; blank - it could be inlined, and the call ran it without (a hint, the database\'s setting or level, the form of the call); '
+        + '"not read" - an older server, a module the login cannot see, or a failed read. The function view has no spilled pages.'),
+      grid(fns, fcols, 'No scalar function ran without inlining between the reads of this range.'));
+    const tcols = statCols(undefined, true);
+    tcols.splice(4, 0, { key: 'trigger_scope', label: 'scope', fmt: v => String(v ?? ''),
+      title: 'A DDL or logon trigger: server or database, named from its catalog. Blank: a DML trigger, under its table\'s database.' });
+    out.push(el('h3', {}, 'Triggers'),
+      el('p', { class: 'meta' }, `${most(trs.length)}. sys.dm_exec_trigger_stats: a DML trigger under its database; a DDL or logon trigger with its scope (server or database), a server one under master.`),
+      grid(trs, tcols, 'No trigger ran between the reads of this range.'));
+    return out;
+  }
+
   async function draw() {
     const mine = ++seq;
     drillSeq++;
@@ -101,7 +173,7 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
       out.push(el('p', { class: 'empty' }, Number(reads?.reads ?? 0) > 0
         ? `No stored procedure ran${picked ? ' in ' + picked : ''} between the ${fmtNum(reads?.reads)} reads of this range.`
         : 'No read took a difference in this range: the mssql_procstats collection runs every five minutes, needs VIEW SERVER STATE, and its first read only sets the starting counters.'));
-      body.replaceChildren(...out);
+      body.replaceChildren(...out, ...others(d));
       return;
     }
     // the tiles are the range's sums over every procedure, not only the rows the grid lists
@@ -121,41 +193,7 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
       b.addEventListener('click', () => { void intervals(r); });
       return b;
     };
-    const cols: Col[] = [
-      { key: 'database' },
-      { key: 'schema_name', label: 'schema' },
-      { key: 'object_name', label: 'name', fmt: open },
-      { key: 'type_desc', label: 'type', fmt: v => String(v ?? '').replace(/_/g, ' ').toLowerCase() },
-      { key: 'duration_ms', label: 'total duration (sec)', num: true, fmt: secs },
-      { key: 'duration_ms_sec', label: 'duration (ms/sec)', num: true, fmt: num3 },
-      { key: 'avg_duration_ms', label: 'avg duration (ms)', num: true, fmt: num3 },
-      { key: 'executions', num: true },
-      { key: 'executions_min', label: 'executions /min', num: true },
-      { key: 'max_executions_min', label: 'max executions /min', num: true },
-      { key: 'cpu_ms', label: 'total CPU (sec)', num: true, fmt: secs },
-      { key: 'cpu_ms_sec', label: 'CPU (ms/sec)', num: true, fmt: num3 },
-      { key: 'avg_cpu_ms', label: 'avg CPU (ms)', num: true, fmt: num3 },
-      { key: 'logical_reads', label: 'logical reads', num: true },
-      { key: 'avg_logical_reads', label: 'avg logical reads', num: true },
-      { key: 'physical_reads', label: 'physical reads', num: true },
-      { key: 'avg_physical_reads', label: 'avg physical reads', num: true },
-      { key: 'logical_writes', label: 'writes', num: true },
-      { key: 'avg_logical_writes', label: 'avg writes', num: true },
-      // PerformanceMonitor's 'I/O and spills' (D10, 0126): total_spills, SQL Server 2016 SP2 / 2017 CU3 on
-      { key: 'spills', label: 'Total spilled pages', num: true, fmt: (v, r) => v == null ? 'not read' : Number(r.spill_reads) < Number(r.intervals) ? `${fmtNum(v)} (${fmtNum(r.spill_reads)} of ${fmtNum(r.intervals)} reads)` : fmtNum(v) },
-      { key: 'avg_spills', label: 'Avg spilled pages', num: true, fmt: v => v == null ? '' : fmtNum(v) },
-      // the Extremes group (0342), off until its box is ticked: the smallest and the largest single execution the
-      // server kept for the plans that ran in the range, each since the plan was cached
-      ...(extremes ? [
-        { key: 'min_cpu_ms', label: 'min CPU (ms)', num: true, fmt: nr(num3) }, { key: 'max_cpu_ms', label: 'max CPU (ms)', num: true, fmt: nr(num3) },
-        { key: 'min_duration_ms', label: 'min duration (ms)', num: true, fmt: nr(num3) }, { key: 'max_duration_ms', label: 'max duration (ms)', num: true, fmt: nr(num3) },
-        { key: 'min_logical_reads', label: 'min logical reads', num: true, fmt: nr(fmtNum) }, { key: 'max_logical_reads', label: 'max logical reads', num: true, fmt: nr(fmtNum) },
-        { key: 'min_physical_reads', label: 'min physical reads', num: true, fmt: nr(fmtNum) }, { key: 'max_physical_reads', label: 'max physical reads', num: true, fmt: nr(fmtNum) },
-        { key: 'min_logical_writes', label: 'min writes', num: true, fmt: nr(fmtNum) }, { key: 'max_logical_writes', label: 'max writes', num: true, fmt: nr(fmtNum) },
-        { key: 'min_spills', label: 'min spilled pages', num: true, fmt: nr(fmtNum) }, { key: 'max_spills', label: 'max spilled pages', num: true, fmt: nr(fmtNum) },
-      ] as Col[] : []),
-      { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
-    ];
+    const cols = statCols(open, true);
     const cut = procs.length >= LIMIT;
     const gbox = el('div', {}, grid(procs, cols)), said = el('p', { class: 'meta', role: 'status' }); let pAsked = 0;   // a newer drag's answer wins
     const win = window_(ctx);
@@ -175,7 +213,7 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
         + (extremes ? 'Extremes: the smallest and the largest single execution the server kept for the plans that ran in the range, each since the plan was cached, not the range\'s own; "not read" as the spilled pages.' : '')),
       pstrip, said, gbox,
       compareSection(ctx, 'procs', { db: database || undefined }));
-    body.replaceChildren(...out);
+    body.replaceChildren(...out, ...others(d));
   }
 
   sel.addEventListener('change', () => {
