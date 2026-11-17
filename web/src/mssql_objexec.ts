@@ -106,7 +106,8 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
       const cols: Col[] = [
         ...(ids ? [{ key: 'instance', label: 'database (instance)' }] : []),
         { key: 'type_code', label: 'type', fmt: v => typeWords.get(String(v)) ?? String(v ?? '') }, { key: 'database' }, { key: 'schema_name', label: 'schema' },
-        { key: 'object_name', label: 'name', fmt: (v, r) => mssqlObjectCell(ctx, String(r.database), r.schema_name, v, undefined, inst(r)) },
+        // the name opens the object's page; under Compare To it carries the choice, so the page draws DBA Dash's compare chart
+        { key: 'object_name', label: 'name', fmt: (v, r) => mssqlObjectCell(ctx, String(r.database), r.schema_name, v, undefined, inst(r), { ocmp: cmpArg }) },
         { key: 'period_secs', label: 'Period Time (sec)', num: true, fmt: v => v == null ? '' : fmtNum(v) },
         { key: 'duration_ms', label: 'total duration (sec)', num: true, fmt: secs },
         { key: 'duration_ms_sec', label: 'duration (ms/sec)', num: true, fmt: num3 },

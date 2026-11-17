@@ -17,8 +17,8 @@ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 export const mssqlObjectTab = 'mssqlobject';
 
 // mssqlObjectHref: an object of a SQL Server instance's database, opened on its page (the tab given, else the first)
-export const mssqlObjectHref = (ctx: Ctx, db: string, obj: string, tab?: string, instance = ctx.instance) =>
-  hrefWith(ctx, mssqlObjectTab, { db, obj, otab: tab }, instance);
+export const mssqlObjectHref = (ctx: Ctx, db: string, obj: string, tab?: string, instance = ctx.instance, more: Record<string, string | undefined> = {}) =>
+  hrefWith(ctx, mssqlObjectTab, { db, obj, otab: tab, ...more }, instance);
 
 // mssqlObjectCell: an object's name as a link to its page (schema.name in its database; the tab given) - every
 // object-name cell of the app lands here (the cells in other slices' files: scripts/PARITY-S3-join-lines.sql line 13);
@@ -26,8 +26,8 @@ export const mssqlObjectHref = (ctx: Ctx, db: string, obj: string, tab?: string,
 const quotePart = (s: string) => /[.\[\]"]/.test(s) ? `[${s.replace(/]/g, ']]')}]` : s;
 export const mssqlObjectName = (schema: unknown, name: unknown): string =>
   schema == null || schema === '' ? quotePart(String(name ?? '')) : `${quotePart(String(schema))}.${quotePart(String(name ?? ''))}`;
-export const mssqlObjectCell = (ctx: Ctx, db: string, schema: unknown, name: unknown, tab?: string, instance = ctx.instance): Node =>
-  name == null || name === '' ? document.createTextNode('') : el('a', { href: mssqlObjectHref(ctx, db, mssqlObjectName(schema, name), tab, instance) }, String(name));
+export const mssqlObjectCell = (ctx: Ctx, db: string, schema: unknown, name: unknown, tab?: string, instance = ctx.instance, more: Record<string, string | undefined> = {}): Node =>
+  name == null || name === '' ? document.createTextNode('') : el('a', { href: mssqlObjectHref(ctx, db, mssqlObjectName(schema, name), tab, instance, more) }, String(name));
 
 // DBA Dash's tabs in its order (ObjectDetailControl.BuildTabs)
 const tabs: [string, string][] = [['objexec', 'Object Execution'], ['querystats', 'Query Stats'], ['running', 'Running Queries'], ['slow', 'Slow Queries'], ['qs', 'Query Store'], ['schema', 'Schema History']];
@@ -120,12 +120,17 @@ async function objexecTab(ctx: Ctx, o: Row | undefined): Promise<HTMLElement> {
   if (!o || o.object_id == null) return el('p', { class: 'empty' }, 'No execution statistics of this object in the range: no read of the procedure, function and trigger statistics held it.');
   const ids = { db_id: Number(o.database_id), object: String(o.object_id), kind: String(o.kind ?? 'procedure') };
   const charts = el('div');
+  // DBA Dash's compare chart (control audit E3): under Compare To (ocmp= on the address, the Object Execution grid's
+  // choice its name cell carried) the same charts over the compare window, titled '(Compare)'
+  const cmp = hashParam('ocmp') ?? undefined;
   let seq = 0;
   const draw = async (c: ChartChoice) => {
     const mine = ++seq, step = objStep(c.grouping);
     try {
-      const history = await procsPart(ctx, { part: 'history', ...ids, ...(step ? { step } : {}) });
-      if (mine === seq) charts.replaceChildren(layout(el('div', {}, ...measureCharts(history, objMeasures, c, 'Object Execution')), c.columns));
+      const [history, compare] = await Promise.all([procsPart(ctx, { part: 'history', ...ids, ...(step ? { step } : {}) }),
+        cmp ? procsPart(ctx, { part: 'history_compare', ...ids, cmp, ...(step ? { step } : {}) }) : Promise.resolve(null)]);
+      if (mine === seq) charts.replaceChildren(layout(el('div', {}, ...measureCharts(history, objMeasures, c, 'Object Execution'),
+        ...(compare ? measureCharts(compare, objMeasures, c, 'Object Execution (Compare)') : [])), c.columns));
     } catch (e) { if (mine === seq) charts.replaceChildren(errorBox(e)); }
   };
   const [intervals] = await Promise.all([procsPart(ctx, { part: 'intervals', ...ids }), draw(chartChoice('mssqlobject'))]);

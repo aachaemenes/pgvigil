@@ -720,6 +720,21 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 		}
 		parts = append(parts, part{"intervals", intervals, []any{id, from, to, dbID, obj}},
 			part{"history", history, []any{planEach, id, from, to, dbID, obj, step, base}})
+		// DBA Dash's compare chart (control audit E3): the same steps over the Compare To window (cmp=, objCompareWindow),
+		// its own step when none is chosen
+		cfrom, cto, cmpOn, err := objCompareWindow(q.Get("cmp"), from, to)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if cmpOn {
+			cstep, cbase, err := procHistoryStep(q.Get("step"), cto.Sub(cfrom))
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+			parts = append(parts, part{"history_compare", history, []any{planEach, id, cfrom, cto, dbID, obj, cstep, cbase}})
+		}
 	}
 	// the object page's Schema History (OBJ, q_mssql_object.go): its stored changes, when asked
 	if q.Get("part") == "object_schema" {
