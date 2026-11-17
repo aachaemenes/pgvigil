@@ -1064,8 +1064,37 @@ ORDER BY d.name`
 
 const confLogShippingSQL = `SELECT CAST(secondary_database AS nvarchar(256)) AS name FROM msdb.dbo.log_shipping_secondary_databases`
 
-// confScopedSQL runs inside one database (SQL Server 2016 and later have the view).
-const confScopedSQL = `EXEC %s.sys.sp_executesql N'SELECT CAST(value AS int) AS maxdop FROM sys.database_scoped_configurations WHERE name = N''MAXDOP'''`
+// confScopedSQL runs inside one database: every row of sys.database_scoped_configurations (SQL Server 2016 and later
+// have the view; its is_value_default column was added in SQL Server 2017 - Microsoft Learn's page for the view, read
+// 2026-11-17 - so the second %s is that column or a NULL on 2016). The values as text: the view's sql_variant.
+const confScopedSQL = `EXEC %s.sys.sp_executesql N'SELECT CAST(name AS nvarchar(60)) AS name, CAST(value AS nvarchar(4000)) AS value, CAST(value_for_secondary AS nvarchar(4000)) AS value_for_secondary, %s AS is_value_default FROM sys.database_scoped_configurations'`
+
+// scopedRows turns one database's sys.database_scoped_configurations rows into the payload's 'scoped_config' rows
+// (P25 row 2a, 0391's import: DBA Dash's database DB Configuration) and the MAXDOP the configuration checks read
+// (nil with a note: no MAXDOP row, or a value that is not a number).
+func scopedRows(database string, read []collect.Row) ([]collect.Row, any, string) {
+	out := make([]collect.Row, 0, len(read))
+	var maxdop any
+	note := "not read: the database lists no MAXDOP configuration"
+	for _, r := range read {
+		name, _ := r["name"].(string)
+		var def any
+		if d, ok := r["is_value_default"].(int64); ok {
+			def = d == 1
+		}
+		out = append(out, collect.Row{"kind": "scoped_config", "database_name": database, "name": name, "value": r["value"],
+			"value_for_secondary": r["value_for_secondary"], "is_value_default": def})
+		if name == "MAXDOP" {
+			v, _ := r["value"].(string)
+			if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+				maxdop, note = n, ""
+			} else {
+				note = fmt.Sprintf("not read: the MAXDOP value %q is not a number", v)
+			}
+		}
+	}
+	return out, maxdop, note
+}
 
 var confLinkedSQL = `SELECT s.server_id, CAST(s.name AS nvarchar(256)) AS name, CAST(s.product AS nvarchar(256)) AS product,
   CAST(s.provider AS nvarchar(256)) AS provider, CAST(s.data_source AS nvarchar(1024)) AS data_source, CAST(s.catalog AS nvarchar(256)) AS catalog,
@@ -1236,7 +1265,8 @@ func numErrorLogsRows(platform string, kept int64, set bool, files int64, filesR
 	return []collect.Row{confPart("errorlog", false, "not read: errorlog.numerrorlogs is not set in mssql.conf, and SQL Server on "+platform+" shows no count without it")}
 }
 
-// confDatabaseRows reads every database's row and, where the login can enter, its database-scoped MAXDOP.
+// confDatabaseRows reads every database's row and, where the login can enter, its database-scoped configuration: the
+// MAXDOP the checks read, and every row as 'scoped_config' (a database not read: one 'scoped_unread' row with why).
 func confDatabaseRows(ctx context.Context, conn *sql.Conn, info Info) []collect.Row {
 	ag := "1 = 0"
 	// sys.fn_hadr_is_primary_replica asks VIEW SERVER STATE (2022's performance right alone is not enough)
@@ -1266,7 +1296,7 @@ func confDatabaseRows(ctx context.Context, conn *sql.Conn, info Info) []collect.
 		roles = append(roles, "availability group secondaries are not told apart: the login lacks VIEW SERVER STATE")
 	}
 	notes = append(notes, roles...)
-	var out []collect.Row
+	var out, scoped []collect.Row
 	stop, hasStop := ctx.Deadline()
 	cut := 0
 	for _, db := range dbs {
@@ -1294,14 +1324,25 @@ func confDatabaseRows(ctx context.Context, conn *sql.Conn, info Info) []collect.
 			cut++
 			row["scoped_note"] = "not read: the run's deadline came before this database's turn"
 		default:
-			if sc, serr := QueryRows(ctx, conn, fmt.Sprintf(confScopedSQL, quoted)); serr != nil {
+			def := "CAST(is_value_default AS int)"
+			if info.Major > 0 && info.Major < 14 && info.Kind != KindAzureMI && info.Kind != KindAzureDB {
+				def = "CAST(NULL AS int)" // SQL Server 2016: no is_value_default
+			}
+			if sc, serr := QueryRows(ctx, conn, fmt.Sprintf(confScopedSQL, quoted, def)); serr != nil {
 				row["scoped_note"] = "not read: " + serr.Error()
-			} else if len(sc) == 1 {
-				row["scoped_maxdop"] = sc[0]["maxdop"]
 			} else {
-				row["scoped_note"] = "not read: the database lists no MAXDOP configuration"
+				rows, maxdop, note := scopedRows(name, sc)
+				row["scoped_maxdop"] = maxdop
+				if note != "" {
+					row["scoped_note"] = note
+				}
+				scoped = append(scoped, rows...)
+				out = append(out, row)
+				continue
 			}
 		}
+		// a database whose scoped configuration was not read: 0391's import keeps its rows as they were, with why
+		scoped = append(scoped, collect.Row{"kind": "scoped_unread", "database_name": name, "note": row["scoped_note"]})
 		out = append(out, row)
 	}
 	if cut > 0 {
@@ -1311,7 +1352,7 @@ func confDatabaseRows(ctx context.Context, conn *sql.Conn, info Info) []collect.
 	if len(roles) > 0 {
 		head = append(head, confFact("secondary_roles_unread", strings.Join(roles, "; ")))
 	}
-	return append(head, out...)
+	return append(append(head, out...), scoped...)
 }
 
 // confLinkedSeesAllSQL: whether the login sees every linked server in sys.servers (Microsoft's sys.servers page names
