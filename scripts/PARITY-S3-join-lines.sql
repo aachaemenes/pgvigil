@@ -25,3 +25,15 @@
 --    D467's own join lines already apply (0343, scripts/D467-join-lines.sql 1-7, scripts/D467-wiring.patch; D421's
 --    likewise). The merge's one conflict: web/src/mssql_plancache.ts, D467's page kept whole and the database page's
 --    fix (mssqlPlanCacheView's onlyDb) put back on it.
+
+-- 3. web/src/tree.ts (the lead's file): the OBJECT NODES under each SQL Server database node of line 1 (DBA Dash's
+--    database node: Tables, Views, Programmability - Stored Procedures, Functions, Triggers - and the other objects).
+--    Their data is the schema snapshot's (0058 / 0267, the collection mssql_schema): /api/schema?instance=N&db=
+--    <database_id>&part=objects lists the database's present objects - kind, identity, schema_name, object_name -
+--    and part=databases gives each database's id (dbid) beside its name (datname), so line 1's Databases folder can
+--    read part=databases instead of /api/dbspace and carry the id. The line: under each database node, one folder per
+--    kind group, lazy (loaded() on open, as the PostgreSQL Tables folder at tree.ts L330-345), each object a leaf -
+--    a table or a view to the instance's Schema tab on that database (#/schema?i=N&db=<dbid>), a procedure, function
+--    or trigger to the database page's Object Execution tab searched by its name
+--    (mssqlDbLink(ctx, datname, 'objexec') + '&oesearch=<name>' once mssql_objexec.ts reads it), at most
+--    TABLES_SHOWN per folder with 'all N ...' to the Schema tab, as the Tables folder does.
