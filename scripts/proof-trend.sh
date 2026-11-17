@@ -48,9 +48,9 @@
 #     pgvigil.trend_series('latency', NULL, ...) with serve's session settings (read only, statement_timeout 15000, jit
 #     off) over the newest 1 day and over 3 days, twice each, each EXPLAIN ANALYZE's time printed, then one GET
 #     /api/trend of the fleet latency end to end (its curl time);
-#     [inferred: box jobs A2's raw read 4.0-4.6 s at 1 day] 1 day under 10 s on both reads; 3 days [inferred: about
-#     6 s] - the window the build takes (the lead 18:1x: 3 days if both reads under 10 s, else 1 day) printed as
-#     'F: the window: <1 day|3 days>'; then C's words name that window.
+#     [inferred: box jobs A2's raw read 4.0-4.6 s at 1 day] the BUILT window - the one C's words name - under 10 s on
+#     both of its reads (the lead 11-16 19:3x: 1 day kept; the row grades the built window only, so it no longer
+#     flips with the box's load); both windows' reads printed beside it as information, never graded.
 #   The last line: 'proof-trend: <n> FAIL' and rc 1 when n > 0.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -389,10 +389,13 @@ else
     res=$(curl -s -o "$WORK/f-api.json" -w '%{http_code} %{time_total}' "$U2/api/trend?metric=latency&engine=sqlserver&bucket=hour&stat=p95&top=5&from=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ)&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
     echo "F: GET /api/trend, the fleet latency end to end: $res s (series $(jq "$WORK/f-api.json" "len(d.get('series') or [])"))"
     under() { for x in $1; do [[ $x == *none* ]] && return 1; python3 -c "import sys; sys.exit(0 if float('$x') < 10 else 1)" || return 1; done; return 0; }
-    if under "${TIMES[1]}"; then ok "F: 1 day under 10 s on both reads (${TIMES[1]} s)"; else bad "F: 1 day: ${TIMES[1]} s (10 s the bar)"; fi
-    if under "${TIMES[3]}"; then FW="3 days"; else FW="1 day"; fi
-    echo "F: the window: $FW (3 days: ${TIMES[3]} s; the lead 18:1x: 3 days if both reads under 10 s, else 1 day)"
-    [[ -n $WIN && $WIN == "$FW" ]] && ok "F: C's words name the window the timing gives ($FW)" || bad "F: C's words name '${WIN:-none}', the timing gives $FW"
+    # the lead 11-16 19:3x: the BUILT window (the one C's words name) is graded, both of its reads under 10 s; the
+    # other window's reads are printed as information, so the row does not flip with the box's load
+    case ${WIN:-} in "1 day") BW=1 ;; "3 days") BW=3 ;; *) BW="" ;; esac
+    if [[ -z $BW ]]; then bad "F: C's words name no window"
+    elif under "${TIMES[$BW]}"; then ok "F: the built window ($WIN) under 10 s on both reads (${TIMES[$BW]} s)"
+    else bad "F: the built window ($WIN): ${TIMES[$BW]} s (10 s the bar)"; fi
+    echo "F: for information, not graded: 1 day${TIMES[1]} s, 3 days${TIMES[3]} s (the built window: ${WIN:-none})"
   fi
 fi
 echo "proof-trend: $FAILS FAIL"
