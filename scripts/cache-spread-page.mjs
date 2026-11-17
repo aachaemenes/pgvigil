@@ -76,7 +76,11 @@ for (const theme of ['light', 'dark']) {
   await cmd('Page.navigate', { url: U + '#/summary' }); await sleep(500);
   await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); sessionStorage.clear(); 'ok'`);
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
-  await cmd('Page.navigate', { url: `${U}#/mssqlplancache?i=${inst}` }); await cmd('Page.reload'); await sleep(300);
+  // a full load of the page (from about:blank, so the theme just set is read at the start): a hash change followed
+  // by Page.reload can reload the page before the hash is committed (the dark pass of run 3 stayed on the Summary)
+  await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200);
+  await cmd('Page.navigate', { url: `${U}#/mssqlplancache?i=${inst}` }); await sleep(300);
+  check(await until(`location.hash.startsWith('#/mssqlplancache')`, 5000), `${theme} Plan cache: the page's address is the Plan cache's`);
   const stmts = gridOf('Statements over the range');
   if (!check(await until(`!!(${stmts})`), `${theme} Plan cache: the statements' grid drew`)) await stuck();
   let b = await ev(boxes), g = await ev(stmts);
