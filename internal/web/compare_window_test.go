@@ -23,6 +23,16 @@ func TestCompareShiftFreeWindow(t *testing.T) {
 			t.Errorf("%q: no error, want a refusal (a start before the range, as a time)", bad)
 		}
 	}
+	// review part 5's NIT 10: a start further back than the longest window the API takes (maxWindow) is refused, so
+	// time.Duration's 292-year cap never moves the second window (at:1700 read as 1734)
+	for _, old := range []string{"at:1700-01-01T00:00:00Z", "at:2025-11-15T07:00:00Z"} {
+		if _, _, err := compareShift(old, from, to); err == nil {
+			t.Errorf("%q: no error, want a refusal (more than maxWindow before the range)", old)
+		}
+	}
+	if _, on, err := compareShift("at:2025-11-17T08:00:00Z", from, to); err != nil || !on {
+		t.Errorf("a year before: on %v err %v, want true nil (inside maxWindow)", on, err)
+	}
 	if shift, on, err := compareShift("prev", from, to); err != nil || !on || shift != 7200 {
 		t.Errorf("prev: shift %v on %v err %v, want 7200 true nil", shift, on, err)
 	}
