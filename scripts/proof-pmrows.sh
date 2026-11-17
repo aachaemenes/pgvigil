@@ -45,8 +45,8 @@
 #                the words say per-table settings are not read
 #   P1-P4        tps, qps, avg_query_ms (0.001), avg_wait_ms (0.001) per stats read, the pool rows never counted
 #   P5 traffic   recv_bps and sent_bps per stats read
-#   I1 io        t1's points: each change as stored, hit_pct within 0.05
-#   I2 reset     t0's read after its reset: its counts null, the words 'reset'
+#   I1 io        t1's points: each change as stored, hit_pct within 0.05, no reset (the seed's counters never fall)
+#   I2 reset     t0's read after its reset: its counts null, the words 'reset', exactly one reset
 #   I3 io_top    the tables in this script's order with its sums, top=3 three of them
 #   I4 quiet     t6 (in pgvigil.tables, no table_activity read): no point, the words name its database's busiest 100
 # 'proof-pmrows: <n> FAIL' last; exit 1 on any FAIL.
@@ -114,7 +114,7 @@ q "select pgvigil.ensure_month_partition('table_activity', d) from generate_seri
 q "insert into pgvigil.table_activity (instance_id, snapshot_at, dbid, relid, datname, schema_name, table_name, seq_scan, idx_scan, n_tup_ins, n_tup_upd, n_tup_del,
      heap_blks_read, heap_blks_hit, idx_blks_read, idx_blks_hit, toast_blks_read, toast_blks_hit)
    select $P1, $AT, 1, 100 + i, 'app', 'public', 't' || i,
-     case when i = 0 and k >= 20 then k - 20 else 5 * k * (i + 1) end, 11 * k * (i + 1), 3 * k * i, 2 * k, k % 3 + k,
+     case when i = 0 and k >= 20 then k - 20 else 5 * k * (i + 1) end, 11 * k * (i + 1), 3 * k * i, 2 * k, k / 3 + k,
      case when i = 0 and k >= 20 then 2 * (k - 20) else 40 * k * (i + 1) + (k * k) % 7 end, 900 * k * (i + 1), 13 * k * i, 400 * k, 2 * k * (i % 2), 0
    from generate_series(0, 35) k, generate_series(0, 5) i" >> "$WORK/seed-io.log" 2>&1 || bad "the table I/O seed: $(grep -m1 -i 'error' "$WORK/seed-io.log")"
 
@@ -249,7 +249,7 @@ for name, n, rel in (('I1 io', 'a-io1', 101), ('I2 reset', 'a-io0', 100)):
         if any(g.get(x) != w[x] for x in ('seq_scan', 'idx_scan', 'ins', 'upd', 'del')) or not near(g.get('hit_pct'), w['hit_pct'], 0.05): diff.append(f"{k} {g} want {w}")
     words = ' '.join(a.get('words') or [])
     resets = sum(1 for w in want.values() if w is None)
-    ok = not diff and len(got) == len(want) and len(want) > 0 and (resets == 0 or 'reset' in words) and (name != 'I2 reset' or resets == 1)
+    ok = not diff and len(got) == len(want) and len(want) > 0 and (resets == 0 or 'reset' in words) and resets == (1 if name == 'I2 reset' else 0)
     say(ok, name, f"{len(got)} points for {len(want)} changes, {resets} reset(s), words {words[:120]!r}; {diff[:3] or 'every point as stored'}")
 a = api('a-top')
 if a is None: say(False, 'I3 io_top', f"GET /api/tables/io_top answered {code('a-top')} with no JSON object")
