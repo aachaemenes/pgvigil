@@ -9,10 +9,17 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	mssql "github.com/microsoft/go-mssqldb"
+
+	"github.com/aachaemenes/pgvigil/internal/engines"
 )
 
 // reportVisibility: a report is listed on an instance that is included, or that is not excluded and meets the engine
@@ -26,10 +33,138 @@ type reportVisibility struct {
 }
 
 // reportView is custom_reports.view. Every later key of set 3 (result sets, the pair, the URL label, the layout, the
-// links, the charts) is added here with its own check in validView.
+// links, the charts) is added here with its own check in validView (a picker sits on its parameter, in params).
 type reportView struct {
 	Visibility *reportVisibility `json:"visibility,omitempty"`
 	Access     []string          `json:"access,omitempty"` // role names; empty = every role
+	// StatusFromMessages: the run's own messages - PostgreSQL's RAISE NOTICE / INFO, SQL Server's PRINT and an ad hoc
+	// RAISERROR (50000) - are the page's status in place of 'Completed' (DBA Dash's ShowInfoMessages, L90); the
+	// engine's own warnings are left out as DBA Dash leaves them
+	StatusFromMessages bool `json:"status_from_messages,omitempty"`
+	// Collections: the collections the report's data comes from, which its Trigger Collection button names (DBA Dash's
+	// Associate Collection, L98)
+	Collections []string `json:"collections,omitempty"`
+}
+
+// reportPicker is a parameter's picker (DBA Dash's Pickers, L95): a list of values (a select), a text box (Enter
+// runs the report) or a query whose first column is the value and whose second, when it has one, the words shown. A
+// picker on the menu bar sits on the run's own toolbar; the others under Parameters.
+type reportPicker struct {
+	Kind   string   `json:"kind"`             // list | text | query
+	Values []string `json:"values,omitempty"` // list: the values in order
+	Query  string   `json:"query,omitempty"`  // query: one read-only statement, run as the report runs, on its target
+	Menu   bool     `json:"menu,omitempty"`
+}
+
+// validPicker checks a parameter's picker: a list's values (and its default) are values of the parameter's type
+func validPicker(p reportParam) error {
+	x := p.Picker
+	if x == nil {
+		return nil
+	}
+	switch x.Kind {
+	case "list":
+		if len(x.Values) == 0 || len(x.Values) > 1000 || x.Query != "" {
+			return fmt.Errorf("parameter %q: a list picker has 1 to 1000 values and no query", p.Name)
+		}
+		for _, v := range x.Values {
+			if len(v) > 400 || strings.ContainsRune(v, 0) {
+				return fmt.Errorf("parameter %q: a picker value is at most 400 characters and holds no NUL", p.Name)
+			}
+			if strings.TrimSpace(v) == "" {
+				continue // the empty item: the parameter's default (DBA Dash's empty key)
+			}
+			if _, err := paramValue(reportParam{Name: p.Name, Type: p.Type}, &v); err != nil {
+				return fmt.Errorf("parameter %q: the picker value %w", p.Name, err)
+			}
+		}
+		if p.Default != nil && strings.TrimSpace(*p.Default) != "" && !slices.Contains(x.Values, *p.Default) {
+			return fmt.Errorf("parameter %q: its default %q is not one of its picker's values", p.Name, *p.Default)
+		}
+	case "text":
+		if len(x.Values) > 0 || x.Query != "" {
+			return fmt.Errorf("parameter %q: a text picker has no values and no query", p.Name)
+		}
+	case "query":
+		if strings.TrimSpace(x.Query) == "" || len(x.Query) > 20000 || len(x.Values) > 0 {
+			return fmt.Errorf("parameter %q: a query picker has its query (at most 20000 characters) and no values", p.Name)
+		}
+	default:
+		return fmt.Errorf("parameter %q: a picker's kind is list, text or query", p.Name)
+	}
+	return nil
+}
+
+// validCollections checks the collections a report names: each one pgvigil collects, of the report's engine (a report
+// on the repository may name either engine's)
+func validCollections(engine string, names []string) error {
+	if len(names) > 50 {
+		return errors.New("a report names at most 50 collections")
+	}
+	for _, c := range names {
+		e, ok := engines.EngineOf(c)
+		switch {
+		case !ok:
+			return fmt.Errorf("collections: %q is no collection of pgvigil's", c)
+		case engine != "store" && e != engine:
+			return fmt.Errorf("collections: %q is a %s collection and the report runs on %s", c, e, engine)
+		}
+	}
+	return nil
+}
+
+// noteList keeps a run's own messages when its report asks (status_from_messages): the last maxNotes, each cut at
+// noteMax characters; PostgreSQL's arrive on the connection's reader, so the list is locked
+type noteList struct {
+	mu sync.Mutex
+	l  []string
+}
+
+const (
+	maxNotes = 20
+	noteMax  = 1000
+)
+
+func (n *noteList) add(s string) {
+	if r := []rune(s); len(r) > noteMax {
+		s = string(r[:noteMax]) + "..."
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.l = append(n.l, s)
+	if len(n.l) > maxNotes {
+		n.l = n.l[len(n.l)-maxNotes:]
+	}
+}
+
+// list is the messages kept (nil for a run whose report does not ask)
+func (n *noteList) list() []string {
+	if n == nil {
+		return nil
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return slices.Clone(n.l)
+}
+
+// pg is a PostgreSQL connection's notice handler: RAISE NOTICE and RAISE INFO (the severity as the server names it,
+// never localized), not the engine's WARNING or DEBUG lines
+func (n *noteList) pg(_ *pgconn.PgConn, x *pgconn.Notice) {
+	sev := x.SeverityUnlocalized
+	if sev == "" {
+		sev = x.Severity
+	}
+	if sev == "NOTICE" || sev == "INFO" {
+		n.add(x.Message)
+	}
+}
+
+// ms keeps a SQL Server message: PRINT (0) and an ad hoc RAISERROR (50000) at a severity that is no error, as DBA Dash
+// keeps them (the engine's own warnings - 'Null value is eliminated by an aggregate' - are no note for the reader)
+func (n *noteList) ms(msg any) {
+	if e, ok := msg.(mssql.Error); ok && (e.Number == 0 || e.Number == 50000) {
+		n.add(e.Message)
+	}
 }
 
 // validView checks a view's keys as validReport checks params / columns / rules.

@@ -57,6 +57,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/golang-sql/sqlexp"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -74,6 +75,8 @@ type reportParam struct {
 	Label    string  `json:"label,omitempty"`
 	Default  *string `json:"default,omitempty"`
 	Required bool    `json:"required,omitempty"`
+	// Picker: how the page offers the value (set 3, L95: q_customreports_view.go); nil = a plain field as before
+	Picker *reportPicker `json:"picker,omitempty"`
 }
 
 type reportColumn struct {
@@ -131,6 +134,9 @@ func validReport(d *reportDef) error {
 	if err := validView(&d.View); err != nil {
 		return err
 	}
+	if err := validCollections(d.Engine, d.View.Collections); err != nil {
+		return err
+	}
 	d.Name = strings.TrimSpace(d.Name)
 	switch {
 	case d.Name == "" || len([]rune(d.Name)) > 200:
@@ -185,6 +191,9 @@ func validReport(d *reportDef) error {
 			return fmt.Errorf("parameter %q: a label is at most 200 characters", p.Name)
 		}
 		seen[k] = true
+		if err := validPicker(*p); err != nil {
+			return err
+		}
 		if p.Default != nil && strings.TrimSpace(*p.Default) != "" {
 			if _, err := paramValue(*p, p.Default); err != nil {
 				return fmt.Errorf("parameter %q: its default %w", p.Name, err)
@@ -348,7 +357,9 @@ type instanceRun struct {
 	DurationMS int         `json:"duration_ms"`
 	Rows       int         `json:"rows"`
 	Sets       []resultSet `json:"sets"`
-	Statement  string      `json:"-"`
+	// Messages: the run's own messages, kept only when its report asks (view.status_from_messages)
+	Messages  []string `json:"messages,omitempty"`
+	Statement string   `json:"-"`
 	// the door the run used: 'file' (pgvigil.yaml's instance), 'page' (Admin > Instances') or 'store' (the
 	// repository), and the inventory generation its door set was built from - the audit row names both
 	Door    string `json:"-"`
@@ -549,31 +560,12 @@ func readMSWith(rows *sql.Rows, maxRows int, z *sizer, stop func(), exact bool) 
 				stop()
 				return sets, true, nil
 			}
-			cols := make([]colType, len(cts))
-			for i, c := range cts {
-				cols[i] = c
+			set, capped, err := readMSSet(rows, cts, maxRows, z, exact)
+			if capped {
+				stop()
+				return append(sets, set), false, nil // the cancel's own error is not the run's
 			}
-			set := msSet(cols, exact)
-			for rows.Next() {
-				if len(set.Rows) >= maxRows || z.over() {
-					set.Truncated = true
-					stop()
-					return append(sets, set), false, nil // the cancel's own error is not the run's
-				}
-				vals := make([]any, len(cts))
-				ptrs := make([]any, len(cts))
-				for i := range vals {
-					ptrs[i] = &vals[i]
-				}
-				if err := rows.Scan(ptrs...); err != nil {
-					return append(sets, set), false, err
-				}
-				for i, v := range vals {
-					vals[i] = z.cell(msCell(v, cts[i].DatabaseTypeName()))
-				}
-				set.Rows = append(set.Rows, vals)
-			}
-			if err := rows.Err(); err != nil {
+			if err != nil {
 				return append(sets, set), false, err
 			}
 			sets = append(sets, set)
@@ -583,6 +575,88 @@ func readMSWith(rows *sql.Rows, maxRows int, z *sizer, stop func(), exact bool) 
 		}
 	}
 	return sets, false, rows.Err()
+}
+
+// readMSSet reads the rows of the result set rows is on (cts its columns); capped = it stopped at maxRows or at the
+// run's bytes (the set Truncated), and the caller stops the batch
+func readMSSet(rows *sql.Rows, cts []*sql.ColumnType, maxRows int, z *sizer, exact bool) (set resultSet, capped bool, err error) {
+	cols := make([]colType, len(cts))
+	for i, c := range cts {
+		cols[i] = c
+	}
+	set = msSet(cols, exact)
+	for rows.Next() {
+		if len(set.Rows) >= maxRows || z.over() {
+			set.Truncated = true
+			return set, true, nil
+		}
+		vals := make([]any, len(cts))
+		ptrs := make([]any, len(cts))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return set, false, err
+		}
+		for i, v := range vals {
+			vals[i] = z.cell(msCell(v, cts[i].DatabaseTypeName()))
+		}
+		set.Rows = append(set.Rows, vals)
+	}
+	return set, false, rows.Err()
+}
+
+// readMSNotes is readMS for a report that keeps its own messages (status_from_messages): the batch read through
+// go-mssqldb's message reader (rows opened with retmsg among the arguments), each PRINT / ad hoc RAISERROR into notes
+// in the order the server sent them; a server error the reader hands over is the run's error, as readMS's rows.Err()
+func readMSNotes(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage, maxRows int, z *sizer, stop func(), notes *noteList) (sets []resultSet, err error) {
+	defer func() { _ = rows.Close() }()
+	var first error
+	for active := true; active; {
+		switch m := retmsg.Message(ctx).(type) {
+		case sqlexp.MsgNotice:
+			notes.ms(m.Message)
+		case sqlexp.MsgError:
+			if first == nil {
+				first = m.Error
+			}
+		case sqlexp.MsgNext:
+			cts, err := rows.ColumnTypes()
+			if err != nil {
+				return sets, err
+			}
+			if len(cts) == 0 {
+				continue
+			}
+			if len(sets) >= maxSets {
+				stop()
+				return sets, nil
+			}
+			set, capped, err := readMSSet(rows, cts, maxRows, z, false)
+			if capped {
+				stop()
+				return append(sets, set), nil
+			}
+			if err != nil {
+				return append(sets, set), err
+			}
+			sets = append(sets, set)
+		case sqlexp.MsgNextResultSet:
+			active = rows.NextResultSet()
+		case nil:
+			active = false
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return sets, err
+	}
+	if first != nil {
+		return sets, first
+	}
+	return sets, ctx.Err()
 }
 
 // ---- running ----------------------------------------------------------------------------------------------------
@@ -776,6 +850,13 @@ func reportFence(ctx context.Context, conn *sql.Conn) (string, error) {
 // runMSWith is runMS with a fence read on the connection before the batch (nil = the sysadmin check of openMS alone).
 func runMSWith(ctx context.Context, dsn, stmt string, args []any, timeout time.Duration, maxRows int, rollback bool,
 	fence func(context.Context, *sql.Conn) (string, error)) (sets []resultSet, refused string, err error) {
+	return runMSNotes(ctx, dsn, stmt, args, timeout, maxRows, rollback, fence, nil)
+}
+
+// runMSNotes is runMSWith that keeps the batch's own messages in notes (nil = not asked: the batch read as it always
+// was, through readMS)
+func runMSNotes(ctx context.Context, dsn, stmt string, args []any, timeout time.Duration, maxRows int, rollback bool,
+	fence func(context.Context, *sql.Conn) (string, error), notes *noteList) (sets []resultSet, refused string, err error) {
 	db, conn, why, err := openMS(ctx, dsn, "pgvigil-report")
 	if err != nil || why != "" {
 		return nil, why, err
@@ -792,12 +873,23 @@ func runMSWith(ctx context.Context, dsn, stmt string, args []any, timeout time.D
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	z := &sizer{}
+	var retmsg *sqlexp.ReturnMessage
+	if notes != nil {
+		retmsg = &sqlexp.ReturnMessage{}
+		args = append([]any{retmsg}, args...)
+	}
+	read := func(rows *sql.Rows) ([]resultSet, error) {
+		if notes != nil {
+			return readMSNotes(rctx, rows, retmsg, maxRows, z, cancel, notes)
+		}
+		return readMS(rows, maxRows, z, cancel)
+	}
 	if !rollback {
 		rows, err := conn.QueryContext(rctx, stmt, args...)
 		if err != nil {
 			return nil, "", err
 		}
-		sets, err = readMS(rows, maxRows, z, cancel)
+		sets, err = read(rows)
 		return sets, "", err
 	}
 	tx, err := conn.BeginTx(rctx, nil)
@@ -809,7 +901,7 @@ func runMSWith(ctx context.Context, dsn, stmt string, args []any, timeout time.D
 	if err != nil {
 		return nil, "", err
 	}
-	sets, err = readMS(rows, maxRows, z, cancel)
+	sets, err = read(rows)
 	return sets, "", err
 }
 
@@ -989,8 +1081,10 @@ type reportWriteBody struct {
 	Timeout *int `json:"timeout_secs"`
 	Rows    *int `json:"max_rows"`
 	// the view's settings as the page sends them, kept in custom_reports.view (0372)
-	Visibility *reportVisibility `json:"visibility"`
-	Access     []string          `json:"access"`
+	Visibility         *reportVisibility `json:"visibility"`
+	Access             []string          `json:"access"`
+	StatusFromMessages bool              `json:"status_from_messages"`
+	Collections        []string          `json:"collections"`
 }
 
 // CustomReportWrite is POST /api/customreports: a save, a move, a delete or a folder change.
@@ -1022,7 +1116,7 @@ func (s *Server) CustomReportWrite(w http.ResponseWriter, r *http.Request) {
 		if in.Rows != nil {
 			in.MaxRows = *in.Rows
 		}
-		in.View = reportView{Visibility: in.Visibility, Access: in.Access}
+		in.View = reportView{Visibility: in.Visibility, Access: in.Access, StatusFromMessages: in.StatusFromMessages, Collections: in.Collections}
 		if err := validReport(&in.reportDef); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
@@ -1086,7 +1180,13 @@ type reportRunBody struct {
 	From       string             `json:"from"`
 	To         string             `json:"to"`
 	Params     map[string]*string `json:"params"`
+	// Picker: run the named parameter's query picker (its values) instead of the report, on the same target, audited
+	// as a run of the report (set 3, L95)
+	Picker string `json:"picker"`
 }
+
+// pickerRows caps a query picker's values
+const pickerRows = 1000
 
 // runTarget is one instance a run goes to.
 type runTarget struct {
@@ -1245,6 +1345,20 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 		refuse(err)
 		return
 	}
+	// a query picker's values: its query runs as the report would, on the same target and login, with @from / @to (and
+	// on the repository @instance_ids) and none of the report's own parameters - the run below, with the picker's query
+	// as the report's SQL
+	if in.Picker != "" {
+		i := slices.IndexFunc(d.Params, func(p reportParam) bool { return strings.EqualFold(p.Name, in.Picker) })
+		if i < 0 || d.Params[i].Picker == nil || d.Params[i].Picker.Kind != "query" {
+			refuse(fmt.Errorf("the report has no query picker %q", in.Picker))
+			return
+		}
+		pd := *d
+		pd.Kind, pd.Body, pd.Params, pd.MaxRows = "sql", d.Params[i].Picker.Query, nil, min(d.MaxRows, pickerRows)
+		pd.View.StatusFromMessages = false
+		d = &pd
+	}
 	// every declared parameter is bound (NULL when empty): a SQL report may name each one; a procedure report passes
 	// only those with a value (procCall)
 	given := map[string]any{}
@@ -1325,8 +1439,15 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 			}
 			run.finish(t0, nil, off, nil)
 		} else {
-			sets, why, err := runPG(ctx, s.reports.cfg, stmt, args, timeout, d.MaxRows, s.reports.refusal)
+			cfg, notes := s.reports.cfg, (*noteList)(nil)
+			if d.View.StatusFromMessages {
+				notes = &noteList{}
+				cfg = cfg.Copy()
+				cfg.OnNotice = notes.pg
+			}
+			sets, why, err := runPG(ctx, cfg, stmt, args, timeout, d.MaxRows, s.reports.refusal)
 			run.finish(t0, sets, why, err)
+			run.Messages = notes.list()
 		}
 		runs = append(runs, run)
 	default:
@@ -1367,6 +1488,9 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 		row := map[string]any{"op": "run", "ui_user": user, "client": clientIP(r), "report_id": d.ID, "report_name": d.Name,
 			"instance": run.Instance, "outcome": run.Outcome, "detail": run.Error, "rows": run.Rows, "duration_ms": run.DurationMS,
 			"statement": run.Statement, "params": map[string]any{"values": in.Params, "from": from, "to": to, "target": in.Target, "tag": in.Tag}}
+		if in.Picker != "" {
+			row["params"].(map[string]any)["picker"] = in.Picker
+		}
 		if run.InstanceID > 0 {
 			row["instance_id"] = run.InstanceID
 		}
@@ -1443,6 +1567,10 @@ func (s *Server) runOnInstance(ctx context.Context, ds *doorSet, d *reportDef, t
 		run.finish(t0, nil, no.Why, nil)
 		return run
 	}
+	var notes *noteList
+	if d.View.StatusFromMessages {
+		notes = &noteList{}
+	}
 	if t.engine == "sqlserver" {
 		args := []any{sql.Named("from", from), sql.Named("to", to)}
 		for _, p := range d.Params {
@@ -1450,8 +1578,9 @@ func (s *Server) runOnInstance(ctx context.Context, ds *doorSet, d *reportDef, t
 				args = append(args, sql.Named(p.Name, v))
 			}
 		}
-		sets, why, err := runMSWith(ctx, dsn, stmt, args, timeout, d.MaxRows, true, reportFence)
+		sets, why, err := runMSNotes(ctx, dsn, stmt, args, timeout, d.MaxRows, true, reportFence, notes)
 		run.finish(t0, sets, why, err)
+		run.Messages = notes.list()
 		return run
 	}
 	cfg, err := pgx.ParseConfig(dsn)
@@ -1463,7 +1592,11 @@ func (s *Server) runOnInstance(ctx context.Context, ds *doorSet, d *reportDef, t
 	for k, v := range given {
 		args[k] = v
 	}
+	if notes != nil {
+		cfg.OnNotice = notes.pg
+	}
 	sets, why, err := runPG(ctx, cfg, stmt, args, timeout, d.MaxRows, nil)
 	run.finish(t0, sets, why, err)
+	run.Messages = notes.list()
 	return run
 }
