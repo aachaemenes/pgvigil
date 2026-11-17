@@ -51,7 +51,7 @@ var testedProc = map[string]string{
 	"sp_blitz": "8.34", "sp_blitzfirst": "8.34", "sp_blitzcache": "8.34", "sp_blitzindex": "8.34", "sp_blitzlock": "8.34", "sp_blitzwho": "8.34",
 	"sp_pressuredetector": "6.11", "sp_quickiestore": "6.11", "sp_humaneventsblockviewer": "5.11", "sp_healthparser": "3.11",
 	"sp_loghunter": "3.11", "sp_indexcleanup": "2.11",
-	"sp_whoisactive": "2200.20260409",
+	"sp_whoisactive":   "2200.20260409",
 	"sp_dbpermissions": "7.0",
 }
 
