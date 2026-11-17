@@ -58,3 +58,16 @@ func TestExecPagesReview5Wired(t *testing.T) {
 		t.Error("PARITY-S3-wiring.patch's pageKeys has no 'oesearch' (a range change drops the tree's search)")
 	}
 }
+
+// TestAzureNodeObjexecSaysNoSource (the five node tabs' read, 13:1x): a logical server's or an elastic pool's Object
+// Execution lists Azure SQL Databases, where mssql_procstats and mssql_funcstats do not run yet (internal/mssql
+// procstats.go, funcstats.go): its empty words say that, never 'nothing ran'.
+func TestAzureNodeObjexecSaysNoSource(t *testing.T) {
+	b, err := os.ReadFile("../../web/src/mssql_objexec.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "not yet on Azure SQL Database") {
+		t.Error("mssql_objexec.ts: a node's empty Object Execution does not say its databases' statistics are not read on Azure SQL Database")
+	}
+}

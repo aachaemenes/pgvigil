@@ -29,9 +29,33 @@ func TestParityDemo(t *testing.T) {
 		seen := map[string]int{}
 		servers, objectives, pools := map[string]bool{}, map[string]bool{}, map[string]bool{}
 		var lastPeriods []Row
+		// the node tabs' sources (Running Queries, DB Space, Slow Queries): the collector runs mssql_requests,
+		// mssql_storage (sys.database_files) and mssql_xe (database-scoped sessions) on an Azure SQL Database; the
+		// connection's database is its only one, so every row names it
+		own := "ledger" + s.Name[len(s.Name)-2:]
+		requests, summaries, files, volumes, slow, slowState, otherDB := 0, 0, map[string]bool{}, 0, 0, false, map[string]bool{}
 		for _, b := range run(t, s, i, 7) {
 			seen[b.Collection] += len(b.Rows)
 			for _, r := range b.Rows {
+				if db, ok := r["database_name"].(string); ok && db != own && (b.Collection == "mssql_requests" || b.Collection == "mssql_storage" || b.Collection == "mssql_xe") {
+					otherDB[b.Collection+":"+db] = true
+				}
+				switch {
+				case b.Collection == "mssql_requests" && r["kind"] == "request":
+					requests++
+				case b.Collection == "mssql_requests" && r["kind"] == "summary":
+					summaries++
+				case b.Collection == "mssql_storage" && r["kind"] == "file":
+					files[fmt.Sprint(r["type_desc"])] = true
+				case b.Collection == "mssql_storage" && r["kind"] == "volume":
+					volumes++
+				case b.Collection == "mssql_xe" && r["kind"] == "slow":
+					slow++
+				case b.Collection == "mssql_xe" && r["kind"] == "state" && r["capture"] == "slow" && r["state"] == "running":
+					slowState = true
+				case b.Collection == "mssql_xe" && r["kind"] != "slow" && r["kind"] != "state":
+					otherDB["mssql_xe kind "+fmt.Sprint(r["kind"])] = true
+				}
 				switch {
 				case b.Collection == "mssql_instance" && r["kind"] == "server":
 					servers[fmt.Sprint(r["server_name"])] = true
@@ -56,10 +80,24 @@ func TestParityDemo(t *testing.T) {
 				t.Errorf("%s: no %s rows", s.Name, c)
 			}
 		}
-		for _, c := range []string{"mssql_requests", "mssql_ag", "mssql_jobs", "mssql_backups", "mssql_storage"} {
+		// procstats / funcstats: 'not yet on Azure SQL Database' (internal/mssql procstats.go, funcstats.go) - the
+		// node's Object Execution tab has no source there, and the demo never shows what the collector does not send
+		for _, c := range []string{"mssql_ag", "mssql_jobs", "mssql_backups", "mssql_procstats", "mssql_funcstats"} {
 			if seen[c] != 0 {
 				t.Errorf("%s: %d %s rows (an Azure SQL Database's collector does not run it)", s.Name, seen[c], c)
 			}
+		}
+		if requests == 0 || summaries == 0 {
+			t.Errorf("%s: mssql_requests %d request rows and %d summary rows, want both (the Running Queries tab)", s.Name, requests, summaries)
+		}
+		if !files["ROWS"] || !files["LOG"] || volumes != 0 {
+			t.Errorf("%s: mssql_storage files %v and %d volume rows, want a ROWS and a LOG file and no volume (sys.database_files: the DB Space tab)", s.Name, files, volumes)
+		}
+		if slow == 0 || !slowState {
+			t.Errorf("%s: mssql_xe %d slow completions, the slow capture running %v, want both (the Slow Queries tab)", s.Name, slow, slowState)
+		}
+		if len(otherDB) != 0 {
+			t.Errorf("%s: rows of another database or kind %v, want every row of %s (a database-scoped read; no blocked-process capture there)", s.Name, otherDB, own)
 		}
 		if len(servers) != 1 || !servers["demo-sqlsrv01"] {
 			t.Errorf("%s: the logical server %v, want demo-sqlsrv01 alone", s.Name, servers)
