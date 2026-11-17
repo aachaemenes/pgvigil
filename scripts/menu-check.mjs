@@ -990,7 +990,8 @@ await guard('G-filters', async () => {
   for (const [op, test] of Object.entries(ops)) {
     await gmOpen(vCell);
     const okk = await gmPick('All filters', op); await sleep(300); const was = okk ? await gPrompt(null) : null; await sleep(500);
-    const got = (await gCol('sessions')).length, want = ses0.filter(s => gNum(s) !== null && test(gNum(s))).length;
+    // '<>' keeps an empty cell (DBA Dash keeps a NULL row: task PGRID B11, the lead 11-16 22:51); a word that is no number stays out
+    const got = (await gCol('sessions')).length, want = ses0.filter(s => (op === '<>' && s === '') || (gNum(s) !== null && test(gNum(s)))).length;
     opRes.push(`${op} ${v}: ${got}/${want}${was === v ? '' : ` (prompt held '${was}')`}`);
     if (!okk || got !== want || was !== v) opRes.push('BAD');
     await gmOpen(`${GT}.querySelector('thead tr:first-child th')`); await gmPick('Clear filters'); await sleep(400);
@@ -1466,6 +1467,8 @@ await guard('P-editfilter', async () => {
   const f0 = await fields(), ids0 = await ids(), raw0 = await efOpen(cell), text0 = norm(raw0);
   // (the lead 22:51) Apply of the opening text unchanged changes nothing
   const a0 = raw0 === null ? null : await efApply(raw0), f0b = await fields(), ids0b = await ids();
+  // Apply closed the dialog (the unchanged text above too): it is opened again before the next text
+  await efOpen(cell);
   const a1 = await efApply('[column 5] =""'), f1 = await fields(), ids1 = await ids(), text1 = norm(await efOpen(cell));
   const a2 = await efApply('[column 5] <>"e7"\n[we]]ird"name] like "o1%"'), f2 = await fields(), ids2 = await ids(), text2 = norm(await efOpen(cell));
   // what it cannot read: refused in words naming the line, the dialog open, the filter row as it was
