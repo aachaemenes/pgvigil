@@ -114,7 +114,7 @@ SELECT p.database_id, coalesce(p.database_name, 'database ' || p.database_id) AS
   LEFT JOIN hh ON hh.database_id = p.database_id AND hh.query_key = p.query_key
   LEFT JOIN pgvigil.mssql_pc_text t ON t.instance_id = $1 AND t.query_key = p.query_key
   LEFT JOIN pgvigil.mssql_pc_database q ON q.instance_id = $1 AND q.database_id = p.database_id
- ORDER BY p.cpu_us DESC, p.query_key
+ ORDER BY p.cpu_us DESC, p.query_key, p.database_id
  LIMIT 1000`
 
 // sqlMSSQLPCExtremes: what the statements' plans kept as their smallest and largest single run (0342's
@@ -157,7 +157,7 @@ SELECT p.database_id, p.query_key, p.plan_generation, round(p.clr_us / 1000.0, 1
        to_timestamp(p.n[1]) AS judged_at, p.n[2] AS life_executions,
        pgvigil.mssql_pc_diagnostics(p.n[2], p.n[3], p.n[5], p.n[6], p.n[4], p.n[7], p.n[8], p.n[9], p.n[10], p.n[11], p.n[12]) AS diagnostics
   FROM p
- ORDER BY p.cpu_us DESC, p.query_key
+ ORDER BY p.cpu_us DESC, p.query_key, p.database_id
  LIMIT 1000`
 
 // pcFilter is dbatools' Get-DbaQueryExecutionTime filter (2.9.1, MIT, public/Get-DbaQueryExecutionTime.ps1: an
@@ -197,7 +197,7 @@ func pcFilterOf(q url.Values) (pcFilter, error) {
 }
 
 // pcFiltered puts the filter into top or extremes - a statement whose CTE p holds one row per key with its
-// executions and cpu_us and which ends 'FROM p ... ORDER BY p.cpu_us DESC, p.query_key LIMIT 1000': $6 the average
+// executions and cpu_us and which ends 'FROM p ... ORDER BY p.cpu_us DESC, p.query_key, p.database_id LIMIT 1000': $6 the average
 // CPU's floor in ms, $7 the executions' floor, $8 how many of each database, each NULL for none. The rank within the
 // database is by average CPU, as dbatools orders, and is taken BEFORE the 1,000 cap: on many databases the cap by
 // total CPU would else drop whole databases unseen; matched (the first column) is how many rows the filter kept,

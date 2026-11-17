@@ -372,6 +372,7 @@ var tables = []Table{
 	state("mssql_ola_commandlog").text("command", "error_message"),
 	state("mssql_orphan_files"),
 	state("mssql_pc_database"),
+	window("mssql_pc_extreme", "snapshot_at"),
 	out("mssql_pc_handles", whyBaseline),
 	state("mssql_pc_health"),
 	state("mssql_pc_health_state"),

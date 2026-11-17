@@ -42,7 +42,7 @@ func TestPCFilteredStatements(t *testing.T) {
 		plain, filtered := pair[0], pair[1]
 		for _, want := range []string{"), f AS (", "$6::numeric IS NULL", "$7::bigint IS NULL", "$8::int IS NULL OR f.db_rank <= $8",
 			"PARTITION BY p.database_id", "p.cpu_us::numeric / nullif(p.executions, 0) DESC NULLS LAST", "SELECT p.matched, p.database_id,",
-			"ORDER BY p.cpu_us DESC, p.query_key\n LIMIT 1000"} {
+			"ORDER BY p.cpu_us DESC, p.query_key, p.database_id\n LIMIT 1000"} {
 			if !strings.Contains(filtered, want) {
 				t.Errorf("%s filtered lacks %q", name, want)
 			}
@@ -52,7 +52,7 @@ func TestPCFilteredStatements(t *testing.T) {
 				t.Errorf("%s without a filter names %s", name, not)
 			}
 		}
-		if !strings.HasSuffix(plain, "ORDER BY p.cpu_us DESC, p.query_key\n LIMIT 1000") {
+		if !strings.HasSuffix(plain, "ORDER BY p.cpu_us DESC, p.query_key, p.database_id\n LIMIT 1000") {
 			t.Errorf("%s does not end in top's order and cap", name)
 		}
 	}
@@ -194,12 +194,13 @@ func TestPCDiagnosticsOnAStore(t *testing.T) {
 		{"rows 10 to 1000", "1, 10, 10, 10, 0, 0, 0, 10, 1000, NULL, NULL", "Row count variance (10 to 1000)"},
 		{"rows 0 to 1000 (no row at the least)", "1, 10, 10, 10, 0, 0, 0, 0, 1000, NULL, NULL", "NULL"},
 		{"CPU: 3 executions, any spread", "3, 300000, 1000, 290000, 0, 0, 0, 1, 1, NULL, NULL", "NULL"},
-		{"CPU: 4 executions, the least under 0.70", "4, 400000, 69999, 100000, 0, 0, 0, 1, 1, NULL, NULL", "Parameter sniffing (CPU 70-100 ms, avg 100 ms)"},
+		{"CPU: 4 executions, the least under 0.70 (the words truncate)", "4, 400000, 69999, 100000, 0, 0, 0, 1, 1, NULL, NULL", "Parameter sniffing (CPU 69-100 ms, avg 100 ms)"},
 		{"CPU: the least at 0.70, the most at 1.30", "4, 400000, 70000, 130000, 0, 0, 0, 1, 1, NULL, NULL", "NULL"},
 		{"CPU: the most over 1.30", "4, 400000, 100000, 130001, 0, 0, 0, 1, 1, NULL, NULL", "Parameter sniffing (CPU 100-130 ms, avg 100 ms)"},
 		{"CPU: an extreme not read", "4, 400000, NULL, 900000, 0, 0, 0, 1, 1, NULL, NULL", "NULL"},
 		{"no CPU at all: the reads' form", "4, 0, 0, 0, 4004, 0, 4004, 1, 1, NULL, NULL", "Parameter sniffing (physical reads 0-4004, avg 1001)"},
 		{"reads: an average of 1000", "4, 0, 0, 0, 4003, 0, 4003, 1, 1, NULL, NULL", "NULL"},
+		{"reads: 3 executions, any spread (the gate holds both forms)", "3, 0, 0, 0, 30000, 0, 30000, 1, 1, NULL, NULL", "NULL"},
 		{"reads: the CPU form first", "4, 400000, 1000, 100000, 4004, 0, 4004, 1, 1, NULL, NULL", "Parameter sniffing (CPU 1-100 ms, avg 100 ms)"},
 		{"reads: CPU inside the band", "4, 400000, 90000, 110000, 23284, 0, 11642, 1, 1, NULL, NULL", "Parameter sniffing (physical reads 0-11642, avg 5821)"},
 		{"a grant of 1 MB", "1, 10, 10, 10, 0, 0, 0, 1, 1, 1024, 0", "NULL"},
