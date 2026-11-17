@@ -265,7 +265,7 @@ func (g *Gen) azurePoolRows(prev, t time.Time) []Row {
 			"avg_data_io_percent": pct("data", 25), "avg_log_write_percent": pct("log", 18), "avg_edtu_percent": math.Max(cpu, pct("data", 25)),
 			// control audit A3 (0418): the minute's largest samples, said as demo data (each its average's 1.3 times, capped)
 			"max_data_io_percent": math.Min(100, math.Round(pct("data", 25)*130)/100), "max_log_write_percent": math.Min(100, math.Round(pct("log", 18)*130)/100),
-			"max_edtu_percent": math.Min(100, math.Round(math.Max(cpu, pct("data", 25))*130)/100),
+			"max_edtu_percent":   math.Min(100, math.Round(math.Max(cpu, pct("data", 25))*130)/100),
 			"max_worker_percent": pct("workers", 20), "max_session_percent": pct("sessions", 10),
 			"avg_instance_cpu_percent": nil, "avg_instance_memory_percent": nil, "instance_vcores": nil,
 			"used_storage_mb": math.Round(used), "allocated_storage_mb": math.Round(used * 1.2), "storage_limit_mb": limit,
