@@ -5,13 +5,13 @@
 // tier, hourly) and mssql_storage (the database's files). Every average over the window weighs each minute by its
 // samples (DBA Dash's average over the view's rows); a maximum is the largest 15-second figure.
 import { get, Row, rowsOf, Table } from './api';
-import { ChartChoice, chartChoice, chartToolbar, layout, pickRows } from './azure_charts';
+import { ChartChoice, chartChoice, chartToolbar, groupLabel, groupStep, layout, pickRows } from './azure_charts';
 import { lineChart } from './chart';
 import { mssqlPropertiesTab } from './mssql_properties';
 import { hrefWith } from './dbinfo';
 import { folderWords, tagWords } from './fleet';
 import { Ctx, href, window_ } from './router';
-import { badge, Col, el, fmtNum, fmtTime, grid } from './ui';
+import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const mb = (v: unknown) => v == null ? '' : fmtNum(v) + ' MB';
@@ -110,7 +110,7 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
   // laid one, two or three a row; the grid below follows the same grouping
   const days = rowsOf(d.days);
   // an hour's or a day's grid: its start, its minutes in the window (partial at an edge), its figures
-  const bucketCols = (key: 'hour' | 'day'): Col[] => [
+  const bucketCols = (key: string): Col[] => [
       { key, fmt: fmtTime }, n('minutes', 'minutes'), { key: 'partial', label: '', fmt: v => v === true ? 'partial' : '' }, n('samples', 'samples'),
       n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct),
       n('avg_data_io_percent', 'data IO avg', pct), n('max_data_io_percent', 'data IO max', pct),
@@ -125,10 +125,25 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
       'an hour at an edge of the window counts only its minutes inside it (marked partial).', 'No hour in the window.'],
     day: ['Days', 'Newest first (UTC days); each the average of its 15-second rows, the maximum their largest; ' +
       'a day at an edge of the window counts only its minutes inside it (marked partial).', 'No day in the window.'],
+    step: ['Buckets', 'Newest first (UTC; each bucket starts a whole number of steps after 1900-01-01, as DBA Dash counts them); each the average of ' +
+      'its 15-second rows, the maximum their largest; a bucket with fewer minutes than it spans (an edge of the window, or minutes not stored) is marked partial.', 'No bucket in the window.'],
   };
   const body = el('div');
+  // control audit A1: DBA Dash's other steps read part=grouped&step=; the newest answer only is drawn
+  let drawSeq = 0;
   const draw = (c: ChartChoice) => {
-    const { rows, unit } = pickRows(c.grouping, { minutes, hours, days }, byHour);
+    const mine = ++drawSeq, step = groupStep(c.grouping);
+    if (step == null) {
+      const { rows, unit } = pickRows(c.grouping, { minutes, hours, days }, byHour);
+      paint(c, rows, unit, '');
+      return;
+    }
+    body.replaceChildren(el('p', { class: 'meta' }, `Reading the ${groupLabel(c.grouping)} buckets...`));
+    get<{ grouped: Table | null }>('mssql/azuredb', { instance: ctx.instance, ...window_(ctx), part: 'grouped', step })
+      .then(g => { if (mine === drawSeq) paint(c, rowsOf(g.grouped), 'step', groupLabel(c.grouping)); })
+      .catch(e => { if (mine === drawSeq) body.replaceChildren(errorBox(e)); });
+  };
+  const paint = (c: ChartChoice, rows: Row[], unit: string, stepLabel: string) => {
     const asc = [...rows].reverse();
     const charts = layout(el('div', { class: 'charts' },
       lineChart('Resource use (% of the limit)', asc, [{ key: 'avg_cpu_percent', label: 'CPU avg %' }, { key: 'avg_data_io_percent', label: 'data IO avg %' },
@@ -136,7 +151,7 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
     lineChart('Largest 15-second sample (% of the limit)', asc, [{ key: 'max_cpu_percent', label: 'CPU max %' }, { key: 'max_data_io_percent', label: 'data IO max %' },
       { key: 'max_log_write_percent', label: 'log write max %' }, ...(dtu ? [{ key: 'max_dtu_percent', label: 'DTU max %' }] : [])], v => fmtNum(v) + ' %')), c.columns);
     const [head, meta, none] = words[unit];
-    body.replaceChildren(charts, el('h3', {}, head), el('p', { class: 'meta' }, meta),
+    body.replaceChildren(charts, el('h3', {}, stepLabel ? `${head} of ${stepLabel}` : head), el('p', { class: 'meta' }, meta),
       unit === 'minute' ? grid(minutes, [
       { key: 'minute', fmt: fmtTime }, n('samples', 'samples'),
       n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct),
@@ -145,7 +160,7 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
       n('avg_memory_usage_percent', 'memory', pct),
       ...(dtu ? [n('avg_dtu_percent', 'DTU avg', pct), n('max_dtu_percent', 'DTU max', pct)] : []),
       n('max_worker_percent', 'workers', pct), n('max_session_percent', 'sessions', pct),
-    ], none) : grid(unit === 'day' ? days : hours, bucketCols(unit), none));
+    ], none) : grid(unit === 'step' ? rows : unit === 'day' ? days : hours, bucketCols(unit === 'step' ? 'snapshot_at' : unit), none));
   };
   sec.append(chartToolbar('mssqlazure', draw), body);
   draw(chartChoice('mssqlazure'));

@@ -126,7 +126,13 @@ func (s *Server) MSSQLAzureDB(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	step, err := azureStep(r) // control audit A1: DBA Dash's other Date Grouping steps (q_azure_grouping.go)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	s.multiPart(w, r, []part{
+		{"grouped", azureGroupedDB(step), []any{id, from, to, step}},
 		{"tier", sqlAzureDBTier, []any{id}},
 		{"summary", sqlAzureDBSummary, []any{id, from, to}},
 		{"minutes", sqlAzureDBMinutes, []any{id, from, to}},

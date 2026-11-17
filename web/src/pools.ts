@@ -2,11 +2,11 @@
 // the database's pool, the pool grid of DBA Dash's Azure Summary (storage now, the window's averages and maxima), the
 // pool's databases pgvigil reads, and the pool's minutes (DBA Dash's Pool tab). Data from /api/mssql/pool (mssql_pool:
 // a minute a pool, from sys.dm_elastic_pool_resource_stats, which keeps about 40 minutes: a longer outage is a gap).
-import { get, rowsOf, Table } from './api';
-import { ChartChoice, chartChoice, chartToolbar, layout, pickRows } from './azure_charts';
+import { get, Row, rowsOf, Table } from './api';
+import { ChartChoice, chartChoice, chartToolbar, groupLabel, groupStep, layout, pickRows } from './azure_charts';
 import { lineChart } from './chart';
 import { Ctx, window_ } from './router';
-import { badge, Col, el, fmtNum, fmtTime, grid } from './ui';
+import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 
 type Parts = Record<'status' | 'summary' | 'members' | 'minutes' | 'hours' | 'days', Table | null>;
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
@@ -59,19 +59,33 @@ export async function mssqlPoolView(ctx: Ctx): Promise<HTMLElement> {
     minute: ['Minutes', 'Newest first, at most a day; each the average of the view\'s few-second rows (maximum CPU: the largest of them), stored by the first database read.', 'No minute in the window.'],
     hour: ['Hours', 'Newest first (UTC hours); the averages weighed by each minute\'s samples, the maxima the largest, the storage shares the hour\'s last minute\'s.', 'No hour in the window.'],
     day: ['Days', 'Newest first (UTC days); the averages weighed by each minute\'s samples, the maxima the largest, the storage shares the day\'s last minute\'s.', 'No day in the window.'],
+    step: ['Buckets', 'Newest first (UTC; each bucket starts a whole number of steps after 1900-01-01, as DBA Dash counts them); the averages weighed by each minute\'s samples, the maxima the largest, the storage shares the bucket\'s last minute\'s.', 'No bucket in the window.'],
   };
   const body = el('div');
+  // control audit A1: DBA Dash's other steps read part=grouped&step=; the newest answer only is drawn
+  let drawSeq = 0;
   const draw = (c: ChartChoice) => {
-    const { rows, unit } = pickRows(c.grouping, { minutes, hours, days }, long);
+    const mine = ++drawSeq, step = groupStep(c.grouping);
+    if (step == null) {
+      const { rows, unit } = pickRows(c.grouping, { minutes, hours, days }, long);
+      paint(c, rows, unit, '');
+      return;
+    }
+    body.replaceChildren(el('p', { class: 'meta' }, `Reading the ${groupLabel(c.grouping)} buckets...`));
+    get<{ grouped: Table | null }>('mssql/pool', { instance: ctx.instance, ...window_(ctx), part: 'grouped', step })
+      .then(g => { if (mine === drawSeq) paint(c, rowsOf(g.grouped), 'step', groupLabel(c.grouping)); })
+      .catch(e => { if (mine === drawSeq) body.replaceChildren(errorBox(e)); });
+  };
+  const paint = (c: ChartChoice, rows: Row[], unit: string, stepLabel: string) => {
     const asc = [...rows].reverse().map(r => ({ ...r, snapshot_at: r.snapshot_at ?? r.minute }));
     const charts = layout(el('div', { class: 'charts' },
       lineChart('The pool\'s resource use (% of its limits)', asc, [{ key: 'avg_cpu_percent', label: 'CPU avg %' }, { key: 'avg_data_io_percent', label: 'data IO avg %' },
         { key: 'avg_log_write_percent', label: 'log write avg %' }, { key: 'avg_edtu_percent', label: 'eDTU avg %' }], v => fmtNum(v) + ' %'),
       lineChart('Workers, sessions and storage (% of the limits)', asc, [{ key: 'max_worker_percent', label: 'workers max %' }, { key: 'max_session_percent', label: 'sessions max %' },
         { key: 'allocated_storage_percent', label: 'storage allocated %' }], v => fmtNum(v) + ' %')), c.columns);
-    const [head, meta, none] = words[unit];
+    const [head0, meta, none] = words[unit], head = stepLabel ? `${head0} of ${stepLabel}` : head0;
     const cols: Col[] = [
-      { key: unit === 'minute' ? 'minute' : 'snapshot_at', label: unit, fmt: fmtTime }, { key: 'avg_cpu_percent', label: 'CPU avg', fmt: pct }, { key: 'max_cpu_percent', label: 'CPU max', fmt: pct },
+      { key: unit === 'minute' ? 'minute' : 'snapshot_at', label: stepLabel || unit, fmt: fmtTime }, { key: 'avg_cpu_percent', label: 'CPU avg', fmt: pct }, { key: 'max_cpu_percent', label: 'CPU max', fmt: pct },
       { key: 'avg_data_io_percent', label: 'data IO', fmt: pct }, { key: 'avg_log_write_percent', label: 'log write', fmt: pct },
       { key: 'avg_edtu_percent', label: 'eDTU', fmt: pct }, { key: 'max_worker_percent', label: 'workers', fmt: pct },
       { key: 'max_session_percent', label: 'sessions', fmt: pct }, { key: 'allocated_storage_percent', label: 'allocated', fmt: pct },

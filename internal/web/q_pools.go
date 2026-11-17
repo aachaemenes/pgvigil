@@ -82,7 +82,13 @@ func (s *Server) MSSQLPool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	step, err := azureStep(r) // control audit A1: DBA Dash's other Date Grouping steps (q_azure_grouping.go)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	s.multiPart(w, r, []part{
+		{"grouped", azureGroupedPool(step), []any{id, from, to, step}},
 		{"status", sqlPoolStatus, []any{id}},
 		{"summary", sqlPoolSummary, []any{id, from, to}},
 		{"members", sqlPoolMembers, []any{id}},
