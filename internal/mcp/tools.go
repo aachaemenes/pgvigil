@@ -77,7 +77,7 @@ var (
 func tools() []tool {
 	return []tool{
 		{Name: "fleet_summary", Title: "Fleet summary",
-			Description: "Every monitored PostgreSQL instance (platform, version, sessions, failing collections) and the fleet's failing daily checks (critical first): the starting point.",
+			Description: "Every monitored instance, PostgreSQL and SQL Server (platform, version, sessions, failing collections), and the fleet's failing daily checks, critical first - a SQL Server instance's are its Summary cells at warning or critical: the starting point.",
 			args:        []arg{{name: "severity", typ: "string", desc: "only checks of this severity", enum: []string{"critical", "warning"}}},
 			run:         fleetSummary},
 		{Name: "instance_findings", Title: "Instance findings",
@@ -332,7 +332,13 @@ func fleetSummary(ctx context.Context, s *Server, a map[string]any) (any, error)
 	}
 	counts := map[string]int{}
 	checks := []map[string]any{}
-	for _, r := range append(records(ov), mssqlCellChecks(ctx, s, records(inst))...) {
+	ovr := records(ov)
+	all := append(ovr, mssqlCellChecks(ctx, s, records(inst), ovr)...)
+	// critical first, each severity in the order it came (the overview's, then the cells) - review-28 code S3
+	sort.SliceStable(all, func(i, j int) bool {
+		return fmt.Sprint(all[i]["severity"]) == "critical" && fmt.Sprint(all[j]["severity"]) != "critical"
+	})
+	for _, r := range all {
 		v := fmt.Sprint(r["severity"])
 		counts[v]++
 		if sev == "" || v == sev {
@@ -345,17 +351,28 @@ func fleetSummary(ctx context.Context, s *Server, a map[string]any) (any, error)
 // mssqlCellChecks: the SQL Server instances' Summary cells at warning or critical as checks (DAILY-SQL, Q3: the Daily
 // checks page's reader for that engine, GET /api/mssql/summary's cells) - one per cell, critical when the cell counts a
 // critical, else warning, whatever its read's state (said beside the count), as the page judges them (fleet.ts cells);
-// blocking (the state of one minute) left out, as on the page. A failed read is one check naming no instance.
-// Acknowledgements are the page's: the tool lists every cell, as it lists every overview row.
-func mssqlCellChecks(ctx context.Context, s *Server, inst []map[string]any) []map[string]any {
-	ms, err := s.get(ctx, "/api/mssql/summary", url.Values{"part": {"cells"}})
-	if err != nil {
-		return []map[string]any{{"severity": "critical", "instance": "", "instance_id": nil, "check_name": "check could not run",
-			"object": "SQL Server status cells", "detail": err.Error(), "check_group": "summary cell"}}
-	}
-	names := map[string]any{}
+// blocking (the state of one minute) and a cell not yet read (state never, drawn 'not yet' with no count) left out,
+// as on the page; and, for both engines, Collection Errors (24hrs) at warning - a collection that failed in the last
+// 24 hours and runs well now, a state no overview row holds (review-28 code S6, the lead 11-16 20:01): never beside the
+// overview's 'collection failing' for the same instance. A failed read is one check naming no instance, where the fleet
+// holds a SQL Server instance (review-28 code S4). Acknowledgements are the page's: the tool lists every cell, as it
+// lists every overview row.
+func mssqlCellChecks(ctx context.Context, s *Server, inst, ov []map[string]any) []map[string]any {
+	names, hasMSSQL := map[string]any{}, false
 	for _, r := range inst {
 		names[fmt.Sprint(r["instance_id"])] = r["name"]
+		hasMSSQL = hasMSSQL || fmt.Sprint(r["engine"]) == "sqlserver"
+	}
+	failed := func(what string, err error) []map[string]any {
+		if !hasMSSQL {
+			return nil
+		}
+		return []map[string]any{{"severity": "critical", "instance": "", "instance_id": nil, "check_name": "check could not run",
+			"object": "SQL Server status cells", "detail": what + ": " + err.Error(), "check_group": "summary cell"}}
+	}
+	ms, err := s.get(ctx, "/api/mssql/summary", url.Values{"part": {"cells"}})
+	if err != nil {
+		return failed("the cells", err)
 	}
 	num := func(v any) int { // the API's numbers arrive as json.Number (get decodes with UseNumber)
 		switch x := v.(type) {
@@ -370,7 +387,7 @@ func mssqlCellChecks(ctx context.Context, s *Server, inst []map[string]any) []ma
 	var out []map[string]any
 	for _, c := range records(field(ms, "cells")) {
 		crit, warn, key := num(c["critical"]), num(c["warning"]), fmt.Sprint(c["key"])
-		if (crit == 0 && warn == 0) || key == "blocking" {
+		if (crit == 0 && warn == 0) || key == "blocking" || fmt.Sprint(c["state"]) == "never" {
 			continue
 		}
 		sev, n := "critical", crit
@@ -391,6 +408,25 @@ func mssqlCellChecks(ctx context.Context, s *Server, inst []map[string]any) []ma
 		out = append(out, map[string]any{"severity": sev, "instance": names[fmt.Sprint(c["instance_id"])], "instance_id": c["instance_id"],
 			"check_name": "summary cell " + key, "object": fmt.Sprintf("%d %s%s", n, sev, late), "at": at,
 			"detail": strings.Join(detail, "; "), "check_group": "summary cell"})
+	}
+	co, err := s.get(ctx, "/api/mssql/summary", url.Values{"part": {"collect"}})
+	if err != nil {
+		return append(out, failed("the collection dates", err)...)
+	}
+	failing := map[string]bool{}
+	for _, r := range ov {
+		if fmt.Sprint(r["check_name"]) == "collection failing" {
+			failing[fmt.Sprint(r["instance_id"])] = true
+		}
+	}
+	for _, c := range records(field(co, "collect")) {
+		id, e := fmt.Sprint(c["instance_id"]), num(c["errors_24h"])
+		if e == 0 || num(c["failing"]) > 0 || failing[id] {
+			continue
+		}
+		out = append(out, map[string]any{"severity": "warning", "instance": names[id], "instance_id": c["instance_id"],
+			"check_name": "summary cell errors", "object": fmt.Sprintf("%d warning", e),
+			"detail": fmt.Sprintf("%d collection error(s) in the last 24 hours; every collection ran well at its last run", e), "check_group": "summary cell"})
 	}
 	return out
 }

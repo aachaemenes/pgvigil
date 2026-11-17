@@ -92,6 +92,14 @@ export function checkAcks(d: AckData): Map<string, Row> {
 export const ackHolds = (a: Row | undefined, now: string): boolean =>
   !!a && (!a.until_change || String(a.seen_state ?? '') === now);
 
+// cellAcked: the acknowledgement in force for one Summary cell - only a cell read with a count and not OK, and for
+// until-change still in the state it was given for (`state`: instheader's cellState). One rule for the Summary, the
+// instance header and the Daily checks page (review-28 code NIT: three copies before).
+export function cellAcked(acks: Map<string, Row>, instanceId: unknown, key: string, c: { none?: boolean; level: number }, state: string): Row | undefined {
+  const a = acks.get(`${String(instanceId)}|${key}`);
+  return a && !c.none && c.level > 0 && ackHolds(a, state) ? a : undefined;
+}
+
 // ackWords: who and when, and how long it stands
 export function ackWords(a: Row): string {
   const until = a.until ? `until ${fmtTime(a.until)}` : '';

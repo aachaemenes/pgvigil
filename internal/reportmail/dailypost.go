@@ -13,12 +13,14 @@ import (
 // instances and the page's link go to the webhook channels its setting names (once a day; a failed mail posts nothing).
 // The numbers are the drawn page's (web/src/checksorder.ts dailyPost, carried by the render), never read again.
 
-// DailyPost is what the drawn Daily checks page counted.
+// DailyPost is what the drawn Daily checks page counted. Acknowledged: the rows of its acknowledged grid (DAILY-SQL),
+// never among the counts; 0 from a page drawn before it.
 type DailyPost struct {
-	Instances int          `json:"instances"`
-	Critical  int          `json:"critical"`
-	Warnings  int          `json:"warnings"`
-	Worst     []DailyWorst `json:"worst"`
+	Instances    int          `json:"instances"`
+	Critical     int          `json:"critical"`
+	Warnings     int          `json:"warnings"`
+	Acknowledged int          `json:"acknowledged"`
+	Worst        []DailyWorst `json:"worst"`
 }
 
 // DailyWorst is one of the worst three instances, in the page's order.
@@ -36,7 +38,7 @@ const maxPostName = 200
 
 // Check says why numbers a page sent back cannot be posted (they come from a browser: bounded before they are queued).
 func (p DailyPost) Check() error {
-	if p.Instances < 0 || p.Critical < 0 || p.Warnings < 0 {
+	if p.Instances < 0 || p.Critical < 0 || p.Warnings < 0 || p.Acknowledged < 0 {
 		return errors.New("the post's counts are not counts")
 	}
 	if len(p.Worst) > 3 {
@@ -71,7 +73,11 @@ func plural(n int, one, many string) string {
 func (p DailyPost) Post(day string) alerts.Post {
 	title := fmt.Sprintf("%s %s: %s, %s on %s", DailyChecksName, day, plural(p.Critical, "critical", "critical"),
 		plural(p.Warnings, "warning", "warnings"), plural(p.Instances, "instance", "instances"))
-	if p.Critical == 0 && p.Warnings == 0 {
+	switch {
+	case p.Critical == 0 && p.Warnings == 0 && p.Acknowledged > 0:
+		// every failing row acknowledged is no green day (review-28 code S2, the lead 11-16 20:01)
+		title = fmt.Sprintf("%s %s: no open check on %s; %d acknowledged", DailyChecksName, day, plural(p.Instances, "instance", "instances"), p.Acknowledged)
+	case p.Critical == 0 && p.Warnings == 0:
 		title = fmt.Sprintf("%s %s: all checks pass on %s", DailyChecksName, day, plural(p.Instances, "instance", "instances"))
 	}
 	var lines []string
@@ -90,5 +96,5 @@ func (p DailyPost) Post(day string) alerts.Post {
 		worst = []DailyWorst{}
 	}
 	return alerts.Post{Kind: PostKind, Title: title, Lines: lines, Route: DailyChecksRoute,
-		Fields: map[string]any{"instances": p.Instances, "critical": p.Critical, "warnings": p.Warnings, "worst": worst, "day": day}}
+		Fields: map[string]any{"instances": p.Instances, "critical": p.Critical, "warnings": p.Warnings, "acknowledged": p.Acknowledged, "worst": worst, "day": day}}
 }

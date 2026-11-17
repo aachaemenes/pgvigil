@@ -34,10 +34,10 @@ import { whatIsThis } from './sqlview';
 import { logsGroupedView } from './logs_grouped';
 import type { AttentionBox } from './export';
 import { openDumpDialog, openUptimeDialog, summaryCellAction } from './uptimedialog';
-import { AckBody, AckData, ackDialog, ackHolds, ackOn, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
+import { AckBody, AckData, ackDialog, ackOn, ackWords, addAck, cellAcked, checkAcks, endButton, loadAck, loadAckSafe, writeButton } from './ack';
 import { healthCalendar } from './healthcal';
 import { dailyPost, worstFirst } from './checksorder';
-import { cellRows, DailyRow, failedRow, readerOrder, splitAcked } from './dailysql';
+import { cellRows, DailyRow, emptyWords, failedRows, readerOrder, splitAcked } from './dailysql';
 import { bandClass, cellState, Chip, chipTab, clockOf, freshness, serverNow, lastCollected, liveChips, measured, silenceButton, silencedMark, statusWord } from './instheader';
 
 export type { Ctx };
@@ -57,22 +57,38 @@ const instLink = (ctx: Ctx, text: string, id: unknown, tab = 'summary') => link(
 
 
 export async function checks(ctx: Ctx): Promise<HTMLElement> {
-  // the acknowledgements in force, as the Summary reads them (a server without the route: none - every row open)
-  const [f, ad] = await Promise.all([fleet(), loadAckSafe(['acks'])]);
+  // the acknowledgements in force, as the Summary reads them (a server without the route: none - every row open); a read
+  // that fails is said on the page and in the mail, never silent (review-28 code S5)
+  let ackFailed = '';
+  const [f, ad] = await Promise.all([fleet(), loadAck(['acks']).catch((e: unknown): AckData => {
+    ackFailed = e instanceof Error ? e.message : String(e);
+    return { writable: false, reason: ackFailed, user: '' };
+  })]);
   const insts = inTag(ctx, f.instances);
   const ids = new Set(insts.map(r => Number(r.instance_id)));
   // DAILY-SQL: a SQL Server instance's rows are its Summary's own cells (dailysql.ts) - the same reader, level rule,
   // words, landing and acknowledgement; its collection rows stay the overview's, as a PostgreSQL instance's do
   const cellsOf = new Map(insts.map(r => [Number(r.instance_id), cells(f, r)]));
-  const sqlRows: DailyRow[] = f.mssqlFailed ? [failedRow('the read of the status cells failed')] : insts.filter(r => isMssql(r.engine)).flatMap(r => {
+  // the failed read is a row where the fleet (not the scope: it shows under every scope) holds a SQL Server instance
+  const sqlRows: DailyRow[] = f.mssqlFailed ? failedRows(true, f.instances.map(r => r.engine), 'the read of the status cells failed') : insts.filter(r => isMssql(r.engine)).flatMap(r => {
     const c = cellsOf.get(Number(r.instance_id))!;
     const m = (k: string) => f.mssql.find(x => Number(x.instance_id) === Number(r.instance_id) && x.key === k);
     return cellRows({ id: Number(r.instance_id), name: String(r.name) }, groups.filter(g => g.mssql && !g.both).map(g => ({
       key: g.key, label: labelOf(g, false), level: c[g.key].level, none: c[g.key].none, text: cellText(c[g.key]), detail: c[g.key].detail,
       at: c[g.key].since ?? m(g.mssql![0])?.read_at ?? null })));
   });
+  // Collection Errors (24hrs) at warning, either engine: a collection that failed in the last 24 hours and runs well now -
+  // no overview row holds that state; never beside the overview's 'collection failing' for the instance (review-28 code
+  // S6, the lead 11-16 20:01)
+  const failingNow = new Set(f.checks.filter(r => r.check_name === 'collection failing').map(r => Number(r.instance_id)));
+  const errGroup = groups.find(g => g.key === 'errors')!;
+  const errRows: DailyRow[] = insts.filter(r => !failingNow.has(Number(r.instance_id))).flatMap(r => {
+    const c = cellsOf.get(Number(r.instance_id))!.errors;
+    return cellRows({ id: Number(r.instance_id), name: String(r.name) }, [{ key: 'errors', label: labelOf(errGroup, false), level: c.level,
+      none: c.none, text: cellText(c), detail: c.detail, at: null }]);
+  });
   // a check that could not run names no instance: it shows under every scope
-  const all = readerOrder([...f.checks.filter(r => r.instance_id == null || ids.has(Number(r.instance_id))) as DailyRow[], ...sqlRows]);
+  const all = readerOrder([...f.checks.filter(r => r.instance_id == null || ids.has(Number(r.instance_id))) as DailyRow[], ...sqlRows, ...errRows]);
   // a row's cell: its own (a SQL Server row), else the group whose checks hold its check_group (fleet.ts groups) -
   // an acknowledged cell (in force, and for until-change the same state it was given for) takes its rows out of the
   // counts, as the Summary counts it under Acknowledged only (one rule for both engines, the lead 11-16 18:47 Q1)
@@ -81,8 +97,8 @@ export async function checks(ctx: Ctx): Promise<HTMLElement> {
     : groups.find(g => g.checks.includes(String(r.check_group)) && (!g.names || g.names(String(r.check_name ?? ''), String(r.check_group))));
   const ackOf = (r: DailyRow): string | null => {
     const g = groupOf(r), c = g && r.instance_id != null ? cellsOf.get(Number(r.instance_id))?.[g.key] : undefined;
-    const a = g ? acks.get(`${String(r.instance_id)}|${g.key}`) : undefined;
-    return g && c && a && !c.none && c.level > 0 && ackHolds(a, cellState(c, g.key)) ? ackWords(a) : null;
+    const a = g && c ? cellAcked(acks, r.instance_id, g.key, c, cellState(c, g.key)) : undefined;
+    return a ? ackWords(a) : null;
   };
   const split = splitAcked(all, ackOf);
   // the rows worst first (B20-4: the rows naming no instance, then each instance's rows together by critical count,
@@ -115,13 +131,16 @@ export async function checks(ctx: Ctx): Promise<HTMLElement> {
     { key: 'detail', wide: true },
   ];
   // the mail's post (B20-4) says the drawn page's numbers: the section carries them for the mail builder (reportmail.ts)
-  return el('section', { 'data-daily-post': JSON.stringify(dailyPost(rows, insts.length)) }, el('h2', {}, 'Daily checks' + scopeLabel(ctx)),
+  // the post's acknowledged count: a day whose every failing row is acknowledged is no green day (review-28 code S2)
+  return el('section', { 'data-daily-post': JSON.stringify({ ...dailyPost(rows, insts.length), acknowledged: acked.length }) }, el('h2', {}, 'Daily checks' + scopeLabel(ctx)),
     el('p', { class: 'meta' }, 'The state now, the worst instance first; the time range applies to the instance tabs. A SQL Server instance\'s rows are the cells of its Summary at warning or critical (one row per cell; blocking is on its Activity, not here).'),
+    ...(ackFailed ? [el('p', { class: 'meta', 'data-part': 'ack-read-failed' }, `The acknowledgements could not be read (${ackFailed}): every row is drawn open and counted.`)] : []),
     await dailyMailControl(ctx), tiles,
-    grid(rows, cols, 'All checks pass: no failing or stale collections, replication problems, failed jobs, deadlocks or checksum failures, and no SQL Server status cell at warning or critical.'),
-    ...(acked.length ? [el('h3', {}, `Acknowledged (${acked.length})`),
+    grid(rows, cols, emptyWords(acked.length)),
+    // the acknowledged grid is not among the mail's counted rows (reportmail.ts buildMail: data-mail-uncounted - review-28 code S1)
+    ...(acked.length ? [el('div', { 'data-mail-uncounted': '' }, el('h3', {}, `Acknowledged (${acked.length})`),
       el('p', { class: 'meta' }, 'Acknowledged on the Summary: not counted in the tiles above, the mail\'s counts or its post.'),
-      grid(acked, [{ key: 'acknowledged' }, ...cols], '')] : []));
+      grid(acked, [{ key: 'acknowledged' }, ...cols], ''))] : []));
 }
 
 function groupTab(g: unknown): string { return groups.find(x => x.checks.includes(String(g)))?.tab ?? 'summary'; }
@@ -341,8 +360,8 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     // weight: it is counted as acknowledged, never as warning or critical
     const acked: Acked = {};
     for (const g of groups) {
-      const a = acks.get(`${String(r.instance_id)}|${g.key}`);
-      if (a && !c[g.key].none && c[g.key].level > 0 && ackHolds(a, cellState(c[g.key], g.key))) acked[g.key] = a;
+      const a = cellAcked(acks, r.instance_id, g.key, c[g.key], cellState(c[g.key], g.key));
+      if (a) acked[g.key] = a;
     }
     const lv = lives.get(Number(r.instance_id));
     const chips = liveChips(lv, nowMs);

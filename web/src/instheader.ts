@@ -22,7 +22,7 @@
 // interval (the footer's rule, q_frame.go), where PerformanceMonitor counts no success in 24 hours and a 2-minute
 // cadence; an acknowledged check does not make the band (the Summary's rule).
 import { Row, rowsOf, Table } from './api';
-import { AckData, ackDialog, ackHolds, ackOn, ackWhy, checkAcks, endButton, loadAckSafe, offBeside, pageNote, writeButton } from './ack';
+import { AckData, ackDialog, ackOn, ackWhy, cellAcked, checkAcks, endButton, loadAckSafe, offBeside, pageNote, writeButton } from './ack';
 import { Cell, cells, cellTarget, cellText, Fleet, fleet, groups, labelOf, sinceState, Target, withTarget } from './fleet';
 import { Ctx, href, isMssql } from './router';
 import { ownPageAction } from './rowjump';
@@ -205,7 +205,7 @@ export function instBand(f: Fleet, r: Row, ad: AckData, live: Row | undefined, n
   const c = cells(f, r);
   const acks = checkAcks(ad);
   const pg = r.engine !== 'sqlserver';
-  const held = (key: string) => { const a = acks.get(`${String(r.instance_id)}|${key}`); return !!a && ackHolds(a, cellState(c[key], key)); };
+  const held = (key: string) => !!cellAcked(acks, r.instance_id, key, c[key], cellState(c[key], key));
   const bad = groups.filter(g => !c[g.key].none && c[g.key].level > 0);
   const item = (g: typeof groups[number]): BandItem => ({ key: g.key, label: labelOf(g, pg), level: c[g.key].level, cell: c[g.key], target: cellTarget(g, r) });
   const items = bad.filter(g => !held(g.key)).sort((a, b) => c[b.key].level - c[a.key].level).map(item);

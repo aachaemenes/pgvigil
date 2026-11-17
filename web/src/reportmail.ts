@@ -164,7 +164,8 @@ function postOf(root: HTMLElement | null): unknown {
 export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<MailBody> {
   const m = await metaOf(ctx);
   const pb = await pageBook(ctx, root, m.tab), book = pb.items.map(f => f.sec);
-  const grids = pb.found.filter(f => !f.el.classList.contains('insight-cards'));   // a report's insight cards are no grid (B20-3)
+  // a report's insight cards are no grid (B20-3); an acknowledged grid is drawn but not counted (DAILY-SQL, review-28 code S1)
+  const grids = pb.found.filter(f => !f.el.classList.contains('insight-cards') && !f.el.closest('[data-mail-uncounted]'));
   if (!book.length) throw new Error('nothing to mail: no grid on this page');
   const body = bodySections(root!, m.tab);
   const win = `${m.window} (${stamp(m.from)} to ${stamp(m.to)}, ${zoneName()})`;

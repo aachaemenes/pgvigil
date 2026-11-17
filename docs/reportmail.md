@@ -114,21 +114,35 @@ checks, disks and the rest of the page's list, one row per failing object. For a
 of its Summary at warning or critical - Agent Jobs, Backup FULL, DIFF and LOG, Last Good Check DB, Drive Space, and every
 other column with a SQL Server read (Corruption, Database State, Is Agent Running, DB Mail, Memory Dump, Availability
 Groups, Log Shipping, Mirroring, File Space, % Max Size, Log Space, Elastic Pool Storage, Audit, SQL Agent Alerts,
-Identity Columns, QS, Instance Uptime and the deadlocks and blocked-process reports) - read and judged as the Summary
+Identity Columns, QS, Instance Uptime and Deadlocks / checksums) - read and judged as the Summary
 does: the same thresholds, the same words (`2 critical`, `1 warning, stale`), the column's name as the check, and the
 cell's own page as the instance's link. A cell is one row however many jobs or databases it counts (its detail names
 them, twelve at most), so a SQL Server instance ranks by its cells at warning or critical. Blocking (the Activity cell)
-has no row: it is the state of one minute, not of a day, and the page's **Lock waiters now** tile holds it. A cell
-with no count (stale, read failed, not yet, n/a) adds no row; the collection behind it is already a `collection stale`
-or `collection failing` row, for both engines. If the read of the SQL Server cells fails, the page draws one critical
-`check could not run` row for the SQL Server status cells.
+has no row: it is the state of one minute, not of a day, and the page's **Lock waiters now** tile holds it. Snapshot
+Age has no row either: its state is the `collection stale` row `/api/overview` already draws, for both engines. A cell
+with no count (stale, read failed, not yet, not read, n/a) adds no row: a stale or failed read is already a
+`collection stale` or `check could not run` row; one not yet or not read has nothing to judge. If the read of the SQL
+Server cells fails, the page draws one critical `check could not run` row for the SQL Server status cells, where the
+fleet holds a SQL Server instance.
+
+**Collection Errors (24hrs)** is a row for both engines in one state: a collection that failed in the last 24 hours and
+runs well now - the Summary's cell at warning, which no `/api/overview` row holds. Its row carries the cell's words
+(`3 warning`: the errors of the last 24 hours), the column's name and the cell's page (Collection dates). A collection
+failing now is the cell at critical and the overview's `collection failing` row, which is the row the page draws:
+never both for one instance.
 
 A row whose Summary cell is acknowledged - in force, and for "until the check changes" in the same state it was given
 for - is listed under **Acknowledged** below the grid with who acknowledged it and until when, and is not counted: not
 in the tiles, the mail's counts, the post or its worst three, as the Summary counts an acknowledged cell under
-Acknowledged only. The rule is one for both engines (a PostgreSQL row by the cell of its group). A scheduled mail is
-drawn by the server's own render of the page, from the acknowledgements the repository holds, so a cell acknowledged
-in one browser is drawn acknowledged in the mail.
+Acknowledged only. The rule is one for both engines (a PostgreSQL row by the cell of its group): an acknowledgement
+given until a time, not until the check changes, covers the group's cell - so a new failing object of that group
+(another job, another table) is listed under Acknowledged too until the acknowledgement ends, as the Summary shows its
+cell. A scheduled mail is drawn by the server's own render of the page, from the acknowledgements the repository
+holds, so a cell acknowledged in one browser is drawn acknowledged in the mail. If the acknowledgements cannot be
+read, the page and the mail say so above the tiles and every row is drawn open and counted. The send's row count is
+the open grid's rows; the acknowledged grid is in the mail but not counted. On a day whose every failing row is
+acknowledged the grid says *No open check: n acknowledged, listed below.*, not *All checks pass*, and the post says
+`no open check on N instances; n acknowledged`.
 
 With `post:` (or the dialog's webhook channels) each day's mail, once it is **sent**, also posts a short text through
 those webhook channels of the `alerts:` block (Slack, Teams, Discord, Google Chat or json): the counts the drawn page
@@ -141,8 +155,9 @@ showed, the worst three instances and a link to the page (`alerts_base_url` + `/
     3. sql07: 3 warnings
     https://pgvigil.example.org/#/checks?w=24h
 
-The json format carries the same numbers as keys (`kind: daily checks`, `instances`, `critical`, `warnings`, `worst`,
-`day`, `link`) for a program. The text is the page's own numbers as that turn drew them, never read again. A mail that
+A day with no open row says `all checks pass on N instances`, or `no open check on N instances; n acknowledged` when
+rows are acknowledged. The json format carries the same numbers as keys (`kind: daily checks`, `instances`,
+`critical`, `warnings`, `acknowledged`, `worst`, `day`, `link`) for a program. The text is the page's own numbers as that turn drew them, never read again. A mail that
 failed posts nothing; the post goes once a day per schedule, the day being the turn's own in the schedule's zone (a
 turn mailed late - past midnight, after an outage - posts under the day it was due; a second turn of the same day - a
 schedule brought due by hand - posts nothing and its send says why; a test never posts; nothing is posted for a day the
