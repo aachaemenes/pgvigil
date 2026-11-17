@@ -195,3 +195,22 @@
 --    wins. This branch marks the Azure Summary grid (web/src/azuredb.ts defaultHidden: the four histograms, allocated,
 --    used, max size) and its Elastic pools grid (the four pool histograms, control audit A5; Designer L930-957); a named
 --    check at the join: the Azure Summary opens with those eleven hidden, Columns... shows them.
+
+-- 15. THE SHARED DEMO FILES (task 11b's owed line; internal/demo is every slice's): this branch adds
+--    internal/demo/mssql_parity_demo.go and its test (new files: -sql01's database tabs, the two pooled Azure SQL
+--    Databases and their pool - the Azure sources, procstats for the object page, the pool minutes' maxima and buckets
+--    of control audit A3 / A5, the scoped configuration, Service Broker), and three hooks in shared files:
+--    (a) internal/demo/mssql_demo.go: in the instance step, 'if g.Spec.Platform == demoAzPlatform { return
+--        g.azureDBStep(t) }' first and 'out = append(out, g.mssqlParityBatches(t, first)...)' after the base batches;
+--        in the collection list, 'if g.Spec.Platform == demoAzPlatform { return azureDBCollections }';
+--    (b) internal/demo/schema_demo.go: the order_total function's stored definition carries its body under the hash
+--        line (the object page's Schema History shows a definition).
+--    At the join a slice that rewrites mssql_demo.go's step or list keeps the three hooks; the named check:
+--    TestParityDemo (internal/demo) passes, and the walker's 17 pages each have data.
+
+-- 16. THE BASE'S FIVE LINT ISSUES (not this branch's; the box jobs' lint root counts them): on linux
+--    internal/collect/jobs_mask_compose_test.go:69:40 QF1001 (staticcheck: De Morgan's law); on windows
+--    internal/config/inventory_windows.go:43:25 and :70:25 (errcheck: windows.LocalFree unchecked) and
+--    internal/export/lock_windows.go:21:10 (f.Close) and :27:38 (windows.UnlockFileEx) unchecked. Seen in t11-2's lint
+--    root (notes/teams/pdfp-relw2c-s3-t11-2.log) at main's code; this branch's own two (internal/mssql/rights.go's
+--    receiver names) were fixed here. They are main's: their owners' lines, never counted against this branch's rows.
