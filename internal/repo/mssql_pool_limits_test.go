@@ -91,3 +91,40 @@ func TestPoolLimitHistoryOnAStore(t *testing.T) {
 		t.Errorf("a deleted instance left %s periods", got)
 	}
 }
+
+// TestPoolLimitHistoryAfterAGap (review t11-1 NIT 9, coverage of 0395's else branch): a database's reads stop for more
+// than master's 14 days and the pool's limits changed meanwhile - the next read's first period has other limits than
+// the stored one, so the stored period keeps its end (least(valid_to, the read's start): no period is stretched across
+// the gap) and the read's periods follow from the read's window. Passes on 0395 as written (a row the review asked for,
+// not a fix).
+func TestPoolLimitHistoryAfterAGap(t *testing.T) {
+	s := newSpreadStore(t)
+	base := time.Now().UTC().Truncate(time.Hour)
+	at := func(n float64) time.Time { return base.Add(time.Duration(n * float64(time.Hour))) }
+	h := func(n float64) string { return at(n).Format(time.RFC3339) }
+	imp := func(when float64, rows ...map[string]any) {
+		t.Helper()
+		js, err := json.Marshal(rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.pool.Exec(s.ctx, `SELECT pgvigil.import_mssql_pool_limits($1, $2, $3::jsonb)`, s.id, at(when), string(js)); err != nil {
+			t.Fatalf("import_mssql_pool_limits at %+.1f h: %v", when, err)
+		}
+	}
+	read := func(from, to float64) map[string]any {
+		return map[string]any{"kind": "limit_read", "server": "srvg", "pool": "poolg", "state": "read", "window_from": h(from), "window_to": h(to)}
+	}
+	period := func(from, to float64, dtu, storage int) map[string]any {
+		return map[string]any{"kind": "limit_period", "server": "srvg", "pool": "poolg", "valid_from": h(from), "valid_to": h(to),
+			"dtu_limit": dtu, "storage_limit_mb": storage, "cpu_limit": nil}
+	}
+	imp(0, read(-336, 0), period(-336, 0, 50, 5120))
+	// 20 days later: master's window starts after the last read's end, the limits are others
+	imp(480, read(144, 480), period(144, 480, 100, 10240))
+	got := s.vals(`SELECT (extract(epoch FROM valid_from - $2::timestamptz) / 3600)::int, (extract(epoch FROM valid_to - $2::timestamptz) / 3600)::int,
+	                      dtu_limit, storage_limit_mb FROM pgvigil.mssql_pool_limit_history WHERE instance_id = $1 AND pool = 'poolg' ORDER BY valid_from`, s.id, at(0))
+	if want := "-336 0 50 5120 | 144 480 100 10240"; got != want {
+		t.Errorf("after a gap:\n got %s\nwant %s (the stored period keeps its end; the read's starts at its window)", got, want)
+	}
+}

@@ -1,6 +1,7 @@
 package mssql
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 )
@@ -86,5 +87,34 @@ func TestRightsPoolHistoryOptIn(t *testing.T) {
 	unsafe.guard(bad, Info{Kind: KindAzureDB, ServiceObjective: "ElasticPool"})
 	if unsafe.Script("now") != "" || unsafe.NoScript == "" {
 		t.Errorf("a login name with a line break: script %q, no-script %q - want none, said why", unsafe.Script("now"), unsafe.NoScript)
+	}
+}
+
+// TestRightStatesOptIn (review t11-1 SHOULD 4): ReadRights' per-right states (addStates) on a pooled Azure SQL Database
+// whose every right is held and whose opt-in reads NULL (CAST(NULL AS int): it is read in master by mssql_pool_limits,
+// not here) - the opt-in is listed with its Null words and its block as the grant, counted as an opt-in, never as
+// missing; without the opt-in branch the row would fall to its Null words with no block and the script would carry none.
+func TestRightStatesOptIn(t *testing.T) {
+	info := Info{Kind: KindAzureDB, Major: 12, ServiceObjective: "ElasticPool"}
+	answers := map[string]sql.NullInt64{}
+	for _, r := range Rights {
+		if r.On(info) == "" {
+			answers[r.Key] = sql.NullInt64{Int64: 1, Valid: true}
+		}
+	}
+	answers["azure_dbmanager_pool_history"] = sql.NullInt64{}
+	var out RightsRead
+	out.addStates(Rights, map[string]string{}, answers, rightsIdentity{login: "pgv", quoted: "[pgv]"}, func() []string { return nil })
+	if out.OptIns != 1 || out.Missing != 0 {
+		t.Errorf("opt-ins %d, missing %d: want 1 and 0", out.OptIns, out.Missing)
+	}
+	var st *RightState
+	for i := range out.Rights {
+		if out.Rights[i].Key == "azure_dbmanager_pool_history" {
+			st = &out.Rights[i]
+		}
+	}
+	if st == nil || !strings.Contains(st.Grant, "-- ALTER ROLE dbmanager ADD MEMBER [pgv];") || st.State == "missing" || st.State == "" {
+		t.Errorf("the opt-in's state %+v: want its Null words and its block for [pgv]", st)
 	}
 }
