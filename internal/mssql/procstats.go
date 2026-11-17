@@ -65,7 +65,7 @@ const procStateSQL = `SELECT 'state' AS kind,
 FROM sys.dm_os_sys_info`
 
 // procStatsSQL: one row per cached plan of a stored procedure, the most CPU first. {{schema}} and {{object}} are the
-// name expressions, or NULL in the second run. The handle rides as 0x text (QueryRows).
+// name expressions, or NULL in the second run; {{spread}} is procStatsSpread. The handle rides as 0x text (QueryRows).
 const procStatsSQL = `SELECT TOP ({{top}}) 'proc' AS kind, ps.plan_handle AS plan_handle, ps.cached_time AS cached_time,
   CAST(ps.database_id AS int) AS database_id, CAST(ps.object_id AS bigint) AS object_id,
   CAST(DB_NAME(ps.database_id) AS nvarchar(128)) AS database_name,
@@ -74,7 +74,8 @@ const procStatsSQL = `SELECT TOP ({{top}}) 'proc' AS kind, ps.plan_handle AS pla
   CAST(ps.execution_count AS bigint) AS execution_count,
   CAST(ps.total_worker_time AS bigint) AS worker_us, CAST(ps.total_elapsed_time AS bigint) AS elapsed_us,
   CAST(ps.total_logical_reads AS bigint) AS logical_reads, CAST(ps.total_physical_reads AS bigint) AS physical_reads,
-  CAST(ps.total_logical_writes AS bigint) AS logical_writes, {{spills}} AS spills
+  CAST(ps.total_logical_writes AS bigint) AS logical_writes, {{spills}} AS spills,
+  {{spread}}
 FROM sys.dm_exec_procedure_stats ps
 WHERE ps.database_id <> 32767
 ORDER BY ps.total_worker_time DESC, ps.plan_handle`
@@ -86,8 +87,26 @@ func procStatsQuery(names bool) string {
 	if names {
 		schema, object = "OBJECT_SCHEMA_NAME(ps.object_id, ps.database_id)", "OBJECT_NAME(ps.object_id, ps.database_id)"
 	}
+	spread := make([]string, 0, len(procStatsSpread))
+	for _, c := range procStatsSpread {
+		spread = append(spread, procSpillsNone+" AS "+c.key)
+	}
 	return strings.NewReplacer("{{top}}", fmt.Sprint(procStatsCap+1), "{{schema}}", schema, "{{object}}", object,
-		"{{spills}}", procSpillsNone).Replace(procStatsSQL)
+		"{{spills}}", procSpillsNone, "{{spread}}", strings.Join(spread, ", ")).Replace(procStatsSQL)
+}
+
+// procStatsSpread is what D421 reads beside the totals: the payload's key and sys.dm_exec_procedure_stats' column
+// (Microsoft Learn, sys.dm_exec_procedure_stats: the smallest and the largest single execution since the plan was
+// cached - worker and elapsed time in microseconds, logical and physical reads, logical writes, spills). They are
+// not counters: nothing is subtracted from them. A column the server lacks is NULL, never 0 (the spills pair
+// arrived with total_spills, SQL Server 2016 SP2 and 2017 CU3).
+var procStatsSpread = []struct{ key, col string }{
+	{"min_worker_us", "min_worker_time"}, {"max_worker_us", "max_worker_time"},
+	{"min_elapsed_us", "min_elapsed_time"}, {"max_elapsed_us", "max_elapsed_time"},
+	{"min_logical_reads", "min_logical_reads"}, {"max_logical_reads", "max_logical_reads"},
+	{"min_physical_reads", "min_physical_reads"}, {"max_physical_reads", "max_physical_reads"},
+	{"min_logical_writes", "min_logical_writes"}, {"max_logical_writes", "max_logical_writes"},
+	{"min_spills", "min_spills"}, {"max_spills", "max_spills"},
 }
 
 // procStatsColsSQL lists the view's columns: total_spills arrived in SQL Server 2016 SP2 and 2017 CU3.
@@ -100,6 +119,17 @@ const procSpillsNone = "CAST(NULL AS bigint)"
 // procStatsWithSpills reads the server's own total_spills in a statement procStatsQuery wrote.
 func procStatsWithSpills(q string) string {
 	return strings.Replace(q, procSpillsNone+" AS spills", "CAST(ps.total_spills AS bigint) AS spills", 1)
+}
+
+// procStatsWithExtremes reads the server's own extremes in a statement procStatsQuery wrote: each column of
+// procStatsSpread the server has (have: sys.all_columns' names) takes its NULL's place.
+func procStatsWithExtremes(q string, have map[string]bool) string {
+	for _, c := range procStatsSpread {
+		if have[c.col] {
+			q = strings.Replace(q, procSpillsNone+" AS "+c.key, "CAST(ps."+c.col+" AS bigint) AS "+c.key, 1)
+		}
+	}
+	return q
 }
 
 // isLockTimeout says whether the server refused a statement because a lock was not granted in time.
@@ -133,10 +163,11 @@ func (procStatsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 		return nil, err
 	}
 	query := func(names bool) string {
+		q := procStatsQuery(names)
 		if have["total_spills"] {
-			return procStatsWithSpills(procStatsQuery(names))
+			q = procStatsWithSpills(q)
 		}
-		return procStatsQuery(names)
+		return procStatsWithExtremes(q, have)
 	}
 	var notes []collect.Row
 	named := true

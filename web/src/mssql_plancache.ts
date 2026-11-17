@@ -3,6 +3,12 @@
 // apart, with a scope for the databases that have no Query Store; and what the cache holds per database (single-use
 // plans, one statement compiled into many plans, how recent the plans are) with its two lists. Data from
 // /api/mssql/plancache; the route and the tab's entry are the shell's.
+//
+// Beside the statements' counters (0342): four column groups, each off until its box is ticked (PerformanceMonitor's
+// Top Queries groups: Times, Extremes, Memory grants, Parallelism) - the smallest and the largest single run the
+// server kept for the plans that ran in the range; a Diagnostics column with sp_QuickieCache's row-count variance,
+// parameter-sniffing and wasteful-grant words; and dbatools' Get-DbaQueryExecutionTime filter as one preset. The
+// extremes are a part of their own (part=extremes), asked beside the first read and joined by database and query key.
 import { get, post, Row, rowsOf, Table } from './api';
 import { mssqlActionsState } from './mssql_actions';
 import { openText } from './filedrop';
@@ -18,11 +24,20 @@ export const mssqlPlanCacheTab = 'mssqlplancache';
 
 type Parts = Record<'state' | 'reads' | 'databases' | 'totals' | 'top' | 'series' | 'health' | 'singles' | 'duplicates' | 'findings', Table | null>;
 const LIMIT = 1000;
+// dbatools 2.9.1's Get-DbaQueryExecutionTime defaults (MinExecMs, MinExecs, MaxResultsPerDb), on the range's figures
+const SLOW = { min_avg_cpu_ms: 500, min_executions: 100, per_db: 100 };
+const GROUPS: [string, string][] = [['times', 'Times'], ['extremes', 'Extremes'], ['grants', 'Memory grants'], ['parallelism', 'Parallelism']];
+// what part=extremes adds to a statement's row
+const EXT_KEYS = ['plan_generation', 'clr_ms', 'clr_reads', 'ext_intervals', 'peak_cpu_ms_s', 'min_cpu_ms', 'max_cpu_ms', 'min_duration_ms', 'max_duration_ms',
+  'min_physical_reads', 'max_physical_reads', 'min_rows', 'max_rows', 'min_spills', 'max_spills', 'min_grant_kb', 'min_ideal_grant_kb', 'max_ideal_grant_kb',
+  'min_dop', 'min_reserved_threads', 'max_reserved_threads', 'min_used_threads', 'max_used_threads', 'judged_at', 'life_executions', 'diagnostics'];
 const num3 = (v: unknown) => v == null ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
 const secs = (v: unknown) => v == null ? '' : num3(Math.round(Number(v)) / 1000);
 const pct = (v: unknown) => v == null ? '' : `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} %`;
 // over warn a warning; over info a note (N/A, as every info level); under it judged and fine (OK)
 const level = (v: unknown, warn: number, info: number) => v == null || v === '' ? '' : Number(v) > warn ? 'warn' : Number(v) > info ? 'status none' : 'status ok';
+// a figure of the extremes part: blank on a row the part had nothing for, "not read" where the stored figure is NULL
+const ext = (f: (v: unknown) => string) => (v: unknown, r: Row) => r.has_extremes === false ? '' : v == null ? 'not read' : f(v);
 // a statement's text, its first characters shown and the whole kept for the copy and the export
 const text = (v: unknown) => {
   const s = String(v ?? '');
@@ -38,8 +53,10 @@ export async function mssqlPlanCacheView(ctx: Ctx, onlyDb?: string): Promise<HTM
     + 'Only what stays in the cache between two reads is seen: a statement compiled, run and evicted in between is in no read, so on a cache that turns over fast these are a floor. '
     + 'The databases whose Query Store is on have a fuller history on the Query Store tab; the scope below keeps the ones without.'));
   const store = `pgvigil.mssql.plancache.${String(ctx.instance)}`;
-  const saved = (() => { try { return JSON.parse(sessionStorage.getItem(store) ?? '{}') as { db?: string; noqs?: boolean }; } catch { return {}; } })();
-  let database = onlyDb ? '' : saved.db ?? '', noqs = onlyDb ? false : saved.noqs ?? false;
+  const saved = (() => { try { return JSON.parse(sessionStorage.getItem(store) ?? '{}') as { db?: string; noqs?: boolean; groups?: string[]; slow?: boolean; diag?: boolean }; } catch { return {}; } })();
+  let database = onlyDb ? '' : saved.db ?? '', noqs = onlyDb ? false : saved.noqs ?? false, slow = saved.slow ?? false, onlyDiag = saved.diag ?? false;
+  const groupsOn = new Set<string>((saved.groups ?? []).filter(g => GROUPS.some(([k]) => k === g)));
+  let last: { d: Parts; x: Row[]; xerr: unknown } | null = null;
   const sel = el('select', { 'aria-label': 'Database' }, el('option', { value: '' }, 'every database'));
   const chk = el('input', { type: 'checkbox' }) as HTMLInputElement;
   chk.checked = noqs;
@@ -48,15 +65,29 @@ export async function mssqlPlanCacheView(ctx: Ctx, onlyDb?: string): Promise<HTM
 
   async function draw() {
     const mine = ++seq;
+    last = null;   // a box ticked while this read runs, or after it fails, paints nothing of an older read
     body.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
     let d: Parts;
+    const q = { instance: ctx.instance, ...window_(ctx), db: database || undefined, scope: noqs ? 'noqs' : undefined, ...(slow ? SLOW : {}) };
+    // the extremes: a part of their own, asked beside the first read; without them the statements stand as they are
+    const ext = get<{ extremes: Table | null }>('mssql/plancache', { ...q, part: 'extremes' })
+      .then(r => ({ x: rowsOf(r.extremes), xerr: null as unknown }), (e: unknown) => ({ x: [] as Row[], xerr: e }));
     try {
-      d = await get<Parts>('mssql/plancache', { instance: ctx.instance, ...window_(ctx), db: database || undefined, scope: noqs ? 'noqs' : undefined });
+      d = await get<Parts>('mssql/plancache', q);
     } catch (e) {
       if (mine === seq) body.replaceChildren(errorBox(e));
       return;
     }
+    const x = await ext;
     if (mine !== seq) return;
+    last = { d, ...x };
+    paint();
+  }
+
+  // paint draws the last read: a column group's box redraws without reading again
+  function paint() {
+    if (!last) return;
+    const { d, x, xerr } = last;
     const dbs = rowsOf(d.databases), top = rowsOf(d.top), reads = rowsOf(d.reads)[0], tot = rowsOf(d.totals)[0] ?? {};
     if (onlyDb && !database) {
       const hit = dbs.find(r => String(r.database_name) === onlyDb);
@@ -65,6 +96,13 @@ export async function mssqlPlanCacheView(ctx: Ctx, onlyDb?: string): Promise<HTM
       void draw();
       return;
     }
+    const byKey = new Map(x.map(r => [`${String(r.database_id)}|${String(r.query_key)}`, r]));
+    for (const r of top) {
+      const e = byKey.get(`${String(r.database_id)}|${String(r.query_key)}`);
+      r.has_extremes = e != null;
+      if (e) { e.ext_intervals = e.intervals; for (const k of EXT_KEYS) r[k] = e[k]; }
+    }
+    const shown = onlyDiag ? top.filter(r => r.diagnostics) : top;
     // a database remembered from before that the instance no longer lists stays in the list, so it can be left
     const opts = dbs.map(r => [String(r.database_id), `${String(r.database_name)}${r.query_store_on ? ' (Query Store on)' : ''}`] as [string, string]);
     if (database && !opts.some(o => o[0] === database)) opts.push([database, `database ${database} (not listed now)`]);
@@ -128,6 +166,32 @@ export async function mssqlPlanCacheView(ctx: Ctx, onlyDb?: string): Promise<HTM
         { key: 'max_grant_kb', label: 'max grant (KB)', num: true },
         { key: 'grant_used_pct', label: 'grant used', num: true, fmt: pct },
         { key: 'max_dop', label: 'max DOP', num: true },
+        { key: 'diagnostics', label: 'diagnostics', wide: true, fmt: v => v ? String(v) : '',
+          title: 'sp_QuickieCache\'s rules on the statement\'s newest read of the range, its figures since the plans were compiled: row count variance (the largest run returned 100 times the smallest or more), parameter sniffing (over 3 executions; a run under 0.70 or over 1.30 of the average CPU, else of the average physical reads over 1,000), wasteful grant (over 1 MB granted, under 10 % used). It counts the plans that ran in that read; sp_QuickieCache counts every cached plan of the hash.' },
+        ...(groupsOn.has('times') ? [
+          { key: 'plan_generation', label: 'plan generation', num: true, fmt: ext(fmtNum), title: 'plan_generation_num: how often the plan was recompiled, the largest of the plans that ran' },
+          { key: 'clr_ms', label: 'CLR time (ms)', num: true, fmt: (v: unknown, r: Row) => r.has_extremes === false ? '' : v == null ? 'not read'
+            : Number(r.clr_reads) < Number(r.ext_intervals) ? `${num3(v)} (${fmtNum(r.clr_reads)} of ${fmtNum(r.ext_intervals)} reads)` : num3(v),
+            title: 'total_clr_time over the range\'s reads that had the figure: time inside CLR code (a CLR module, FORMAT(), a hierarchyid or spatial method)' },
+          { key: 'peak_cpu_ms_s', label: 'peak CPU (ms/s)', num: true, fmt: ext(num3), title: 'The statement\'s busiest single read of the range: its CPU over that read\'s own seconds' },
+        ] as Col[] : []),
+        ...(groupsOn.has('extremes') ? [
+          { key: 'min_cpu_ms', label: 'min CPU (ms)', num: true, fmt: ext(num3) }, { key: 'max_cpu_ms', label: 'max CPU (ms)', num: true, fmt: ext(num3) },
+          { key: 'min_duration_ms', label: 'min duration (ms)', num: true, fmt: ext(num3) }, { key: 'max_duration_ms', label: 'max duration (ms)', num: true, fmt: ext(num3) },
+          { key: 'min_physical_reads', label: 'min physical reads', num: true, fmt: ext(fmtNum) }, { key: 'max_physical_reads', label: 'max physical reads', num: true, fmt: ext(fmtNum) },
+          { key: 'min_rows', label: 'min rows', num: true, fmt: ext(fmtNum) }, { key: 'max_rows', label: 'max rows', num: true, fmt: ext(fmtNum) },
+          { key: 'min_spills', label: 'min spilled pages', num: true, fmt: ext(fmtNum) }, { key: 'max_spills', label: 'max spilled pages', num: true, fmt: ext(fmtNum) },
+        ] as Col[] : []),
+        ...(groupsOn.has('grants') ? [
+          { key: 'min_grant_kb', label: 'min grant (KB)', num: true, fmt: ext(fmtNum) },
+          { key: 'max_used_grant_kb', label: 'max used grant (KB)', num: true, fmt: (v: unknown) => v == null ? '' : fmtNum(v) },
+          { key: 'min_ideal_grant_kb', label: 'min ideal grant (KB)', num: true, fmt: ext(fmtNum) }, { key: 'max_ideal_grant_kb', label: 'max ideal grant (KB)', num: true, fmt: ext(fmtNum) },
+        ] as Col[] : []),
+        ...(groupsOn.has('parallelism') ? [
+          { key: 'min_dop', label: 'min DOP', num: true, fmt: ext(fmtNum) },
+          { key: 'min_reserved_threads', label: 'min reserved threads', num: true, fmt: ext(fmtNum) }, { key: 'max_reserved_threads', label: 'max reserved threads', num: true, fmt: ext(fmtNum) },
+          { key: 'min_used_threads', label: 'min used threads', num: true, fmt: ext(fmtNum) }, { key: 'max_used_threads', label: 'max used threads', num: true, fmt: ext(fmtNum) },
+        ] as Col[] : []),
         { key: 'plans', label: 'plans', num: true },
         { key: 'query_key', label: 'query hash' },
         { key: 'every', label: 'every instance', fmt: (_, r) => /^0x[0-9A-F]{1,16}$/i.test(String(r.query_key ?? ''))
@@ -141,10 +205,16 @@ export async function mssqlPlanCacheView(ctx: Ctx, onlyDb?: string): Promise<HTM
       ];
       const hist = el('div', { class: 'pc-history' });
       const at = top.find(r => r.handles_at != null)?.handles_at;
-      out.push(el('p', { class: 'meta' }, `${top.length >= LIMIT ? `The ${fmtNum(LIMIT)} with the most CPU.` : `${fmtNum(top.length)} statements, the most CPU first.`} `
+      const matched = Number(top[0]?.matched ?? top.length);
+      out.push(el('p', { class: 'meta' }, `${slow ? `Slow and frequent: an average CPU of ${fmtNum(SLOW.min_avg_cpu_ms)} ms or more over ${fmtNum(SLOW.min_executions)} executions or more in the range, of each database the first ${fmtNum(SLOW.per_db)} by average CPU (dbatools' Get-DbaQueryExecutionTime defaults; it reads the counts since compile, this the range). `
+          + (matched > top.length ? `${fmtNum(matched)} statements match: the ${fmtNum(top.length)} with the most CPU. ` : `${fmtNum(top.length)} statements match, the most CPU first. `)
+        : top.length >= LIMIT ? `The ${fmtNum(LIMIT)} with the most CPU. ` : `${fmtNum(top.length)} statements, the most CPU first. `}`
+        + (onlyDiag ? `${fmtNum(shown.length)} of them carry a diagnostic. ` : '')
         + `Per second over the ${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))} the reads cover. Max grant and DOP are the largest since the plans were compiled. `
+        + 'The column groups hold the smallest and the largest single run the server kept for the plans that ran in the range, each since its compile, not the range\'s own; "not read": the server has no such column, or the reads came before pgvigil stored it; blank: no extremes for this statement in the range (its reads came before pgvigil stored them, or, in a range that reaches back before the upgrade, it ranks past the extremes\' first 1,000). '
         + `The hashes and handles are the query's statements in the cache at the last read${at ? ' (' + fmtTime(at) + ')' : ''}, one of each (PerformanceMonitor's): none for a query no longer cached.`),
-        grid(top, cols), hist,
+        xerr ? el('div', {}, el('p', { class: 'meta' }, 'The extremes and the diagnostics were not read:'), errorBox(xerr)) : '',
+        grid(shown, cols), hist,
         compareSection(ctx, 'plancache', { db: database || undefined, scope: noqs ? 'noqs' : undefined }));
     }
 
@@ -179,11 +249,22 @@ export async function mssqlPlanCacheView(ctx: Ctx, onlyDb?: string): Promise<HTM
     body.replaceChildren(...out);
   }
 
-  const remember = () => { if (onlyDb) return; try { sessionStorage.setItem(store, JSON.stringify({ db: database, noqs })); } catch { /* private window */ } };
+  const remember = () => { if (onlyDb) return; try { sessionStorage.setItem(store, JSON.stringify({ db: database, noqs, groups: [...groupsOn], slow, diag: onlyDiag })); } catch { /* private window */ } };
   if (onlyDb) { sel.disabled = true; chk.disabled = true; }
   sel.addEventListener('change', () => { database = sel.value; remember(); void draw(); });
   chk.addEventListener('change', () => { noqs = chk.checked; remember(); void draw(); });
-  sec.append(el('div', { class: 'toolbar' }, el('label', {}, 'Database ', sel), el('label', {}, chk, ' only databases without Query Store')), body);
+  const box = (on: boolean, words: string, change: (on: boolean) => void) => {
+    const c = el('input', { type: 'checkbox' }) as HTMLInputElement;
+    c.checked = on;
+    c.addEventListener('change', () => { change(c.checked); remember(); });
+    return el('label', {}, c, ` ${words}`);
+  };
+  sec.append(el('div', { class: 'toolbar' }, el('label', {}, 'Database ', sel), el('label', {}, chk, ' only databases without Query Store')),
+    el('div', { class: 'toolbar', role: 'group', 'aria-label': 'Statement columns and filters' }, el('span', { class: 'meta' }, 'Columns:'),
+      ...GROUPS.map(([k, words]) => box(groupsOn.has(k), words, on => { if (on) groupsOn.add(k); else groupsOn.delete(k); paint(); })),
+      box(slow, 'Slow and frequent', on => { slow = on; void draw(); }),
+      box(onlyDiag, 'with a diagnostic', on => { onlyDiag = on; paint(); })),
+    body);
   await draw();
   return sec;
 }

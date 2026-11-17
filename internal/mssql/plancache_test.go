@@ -165,3 +165,62 @@ func TestNoReservedAlias(t *testing.T) {
 		}
 	}
 }
+
+// planCacheSpreadCols is D421's list as the test spells it, apart from the collector's own: the payload key and
+// sys.dm_exec_query_stats' column behind it.
+var planCacheSpreadCols = map[string]string{
+	"min_worker_us": "min_worker_time", "max_worker_us": "max_worker_time",
+	"min_elapsed_us": "min_elapsed_time", "max_elapsed_us": "max_elapsed_time",
+	"min_physical_reads": "min_physical_reads", "max_physical_reads": "max_physical_reads",
+	"min_rows": "min_rows", "max_rows": "max_rows", "min_spills": "min_spills", "max_spills": "max_spills",
+	"min_grant_kb": "min_grant_kb", "min_ideal_grant_kb": "min_ideal_grant_kb", "max_ideal_grant_kb": "max_ideal_grant_kb",
+	"min_dop": "min_dop", "min_reserved_threads": "min_reserved_threads", "max_reserved_threads": "max_reserved_threads",
+	"min_used_threads": "min_used_threads", "max_used_threads": "max_used_threads",
+	"plan_generation": "plan_generation_num", "clr_us": "total_clr_time",
+}
+
+// The extremes, the plan's generation and the CLR time (D421): the server's own column where it has one, NULL where
+// it has none - never a 0, which would read as an extreme of nothing - and every key leaves the statement.
+func TestPlanCacheSpread(t *testing.T) {
+	old := planCacheQuery(map[string]bool{})
+	all := map[string]bool{"max_grant_kb": true, "max_used_grant_kb": true, "total_spills": true, "max_dop": true}
+	for _, col := range planCacheSpreadCols {
+		all[col] = true
+	}
+	with := planCacheQuery(all)
+	// SQL Server 2016 SP1: every column but the spills pair (2016 SP2 / 2017 CU3)
+	sp1 := map[string]bool{}
+	for k, v := range all {
+		sp1[k] = v
+	}
+	delete(sp1, "min_spills")
+	delete(sp1, "max_spills")
+	delete(sp1, "total_spills")
+	mixed := planCacheQuery(sp1)
+	for key, col := range planCacheSpreadCols {
+		null, own, out := "CAST(NULL AS bigint) AS "+key, "CAST(qs."+col+" AS bigint) AS "+key, "k."+key+" AS "+key
+		if !strings.Contains(old, null) || strings.Contains(old, "qs."+col+" ") {
+			t.Errorf("%s: a server without %s must send NULL and not read it", key, col)
+		}
+		if !strings.Contains(with, own) || strings.Contains(with, null) {
+			t.Errorf("%s: a server with %s must send its own column", key, col)
+		}
+		if strings.Contains(with, "ISNULL(qs."+col) {
+			t.Errorf("%s: read with a 0 form", key)
+		}
+		for name, q := range map[string]string{"none": old, "all": with, "2016 SP1": mixed} {
+			if !strings.Contains(q, out) {
+				t.Errorf("%s does not leave the statement (%s)", key, name)
+			}
+		}
+		wantNull := key == "min_spills" || key == "max_spills"
+		if strings.Contains(mixed, null) != wantNull || strings.Contains(mixed, own) == wantNull {
+			t.Errorf("%s on 2016 SP1: NULL form %v, want %v", key, strings.Contains(mixed, null), wantNull)
+		}
+	}
+	for name, q := range map[string]string{"none": old, "all": with, "2016 SP1": mixed} {
+		if strings.Contains(q, "{{") {
+			t.Errorf("a token was left unfilled (%s)", name)
+		}
+	}
+}
