@@ -372,13 +372,13 @@ func TestGrantFindingOnAStore(t *testing.T) {
 	}
 }
 
-// The diagnostics read no table and call only built-in functions that are parallel safe: they are marked PARALLEL
-// SAFE, or every statement that calls them - the Plan cache page's extremes over a week of reads among them - is
-// planned with no parallel worker at all (the proof's C11).
+// The diagnostics read no table and call only built-in functions that are parallel safe (format() and concat_ws() are
+// STABLE, so the diagnostics are too): they are marked PARALLEL SAFE, or every statement that calls them - the Plan
+// cache page's extremes over a week of reads among them - is planned with no parallel worker at all (the proof's C11).
 func TestPCDiagnosticsParallelSafe(t *testing.T) {
 	s := newSpreadStore(t)
 	if got := s.vals(`SELECT p.provolatile::text, p.proparallel::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-	                   WHERE n.nspname = 'pgvigil' AND p.proname = 'mssql_pc_diagnostics'`); got != "i s" {
-		t.Errorf("mssql_pc_diagnostics: volatility and parallel safety %q, want \"i s\" (IMMUTABLE PARALLEL SAFE)", got)
+	                   WHERE n.nspname = 'pgvigil' AND p.proname = 'mssql_pc_diagnostics'`); got != "s s" {
+		t.Errorf("mssql_pc_diagnostics: volatility and parallel safety %q, want \"s s\" (STABLE PARALLEL SAFE)", got)
 	}
 }

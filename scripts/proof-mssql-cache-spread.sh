@@ -16,13 +16,13 @@
 #                            from this tree first - npm run build in web/ - so the binary built here carries it).
 # It makes, and drops on every exit path the shell can catch: its repository database (pgvigil_cs_<n>), on the SQL
 # Server one database and one login (random suffix and password), its own container. No server setting is changed;
-# C6 empties the server's buffer pool six times (DBCC DROPCLEANBUFFERS): on a shared sandbox every database reads
+# C6 empties the server's buffer pool eight times (DBCC DROPCLEANBUFFERS): on a shared sandbox every database reads
 # from disk again after it.
 #
 # Expected (written before the first run; the trial readings they rest on are SQL Server 2022 CU27's):
 #  S0. (Added after run 1, which stopped in its setup with no message.) A batch the server refuses - CREATE PROCEDURE
 #      behind sq's SET NOCOUNT ON, Msg 111 - comes back through sq with sqlcmd's exit and the server's message on
-#      stderr: a failing setup statement stops the proof with its message, never silently.
+#      stderr (the stop itself is set -e's and the ERR trap's, which S0 does not exercise).
 #  C1. The statement columns. Marked statements over cs_big (220,000 rows, about 11,600 pages), each one cached plan
 #      and a query hash of its own (the hash is the collector's key and leaves comments out, so the six scans
 #      differ by an aggregate pair each; no two marked statements, nor one and a statement of cs_p, share a hash),
@@ -39,7 +39,9 @@
 #      idle plan's extremes stay out of its key's interval; the CLR time is NULL, never 0, where the read before had
 #      none; an older collector's payload stores NULL; the procedures the same; the rules' edges (100 times and not
 #      99.9; over 3 executions; under 0.70, over 1.30 and not at them; no CPU leaves the reads' form, over an average
-#      of 1,000; over 1 MB under 10 %); extremes names top's keys in top's order under every filter.
+#      of 1,000; over 1 MB under 10 %; the reads' form held by the gate at 3 executions; the words truncated to
+#      whole ms); extremes names top's keys in top's order under every filter; the diagnostics read back STABLE
+#      PARALLEL SAFE (each row run with -v and counted: five repo rows, four web rows).
 #  C3. The procedure cs_p, run once before the first read and twice after it (10 rows, then every row): its
 #      mssql_proc_sample row of the second read holds sa's min / max worker, elapsed, logical reads, physical reads,
 #      logical writes and spills of sys.dm_exec_procedure_stats.
@@ -50,9 +52,11 @@
 #      sniffing' - the rule's gate. (cseven, four even runs, is printed, not graded: its CPU band is the box's.)
 #  C6. Its physical-reads form: csreads1-3, each every row cold, warm, cold, warm (DROPCLEANBUFFERS before a cold
 #      run): at least one reads 'Parameter sniffing (physical reads 0-' (the form shows only while the CPU stays
-#      inside its band, which a loaded box can break for one of them; all three are printed).
+#      inside its band, which a loaded box can break for one of them; all three are printed). csrgate (every row cold,
+#      warm, cold: exactly 3 executions, its physical reads inside the rule's band) has no 'Parameter sniffing' - the
+#      gate holds the reads' form too.
 #  C7. The grant finding: csgrant (a sort planned for every row, run for ten rows) holds a grant over 1 MB with under
-#      10 % used; mssql_plancache_grant_findings has ONE row for the instance - info, 'wasteful memory grants',
+#      10 % used; mssql_plancache_grant_findings' row for the instance (one at most: it groups by instance) - info, 'wasteful memory grants',
 #      'plan cache' - whose detail says 'in the last 3 hours' and names csgrant's hash; the API's findings part
 #      carries it. With the proof's rows moved four hours back in the repository the view and the part hold none.
 #  C8. The filter. On the live rows: min_executions=4 keeps exactly the keys a hand read of the sample's sums keeps,
@@ -70,9 +74,9 @@
 #  P.  The API: /api/mssql/plancache answers with exactly its ten parts as before (no extremes); part=extremes with
 #      exactly that one.
 #  C10. The finding's cost: five instances with 35 reads of 3,000 statements in the last three hours (525,000 rows,
-#      one statement in fifty with a wasteful grant): the view read for every instance at once, five times - each
-#      instance's finding counts its 60 statements; the median under 10 s (the page reads' line; expected far
-#      under: the partial index holds one row in fifty).
+#      every statement with a grant over 1 MB, one in fifty of them wasteful): the view read for every instance at
+#      once, five times - each instance's finding counts its 60 statements; the median under 10 s (the page reads'
+#      line; expected far under: the partial index holds the rule's rows alone, one in fifty).
 #  C11. The timings at the collector's cap over seven days (2,016 reads of 3,000 statements = 6.05 million rows of
 #      mssql_pc_extreme): part=extremes five times, the median under the 10 s line; the procedures' part over 2,016
 #      reads of 2,000 procedures with their extremes, three times, the median under the pool's 15 s (a first
@@ -177,7 +181,8 @@ objs() { jq -c --arg p "$2" '.[$p] as $t | [$t.rows[] | [$t.columns, .] | transp
 # differ in a comment alone), so a marker does not make a statement its own key: each scan also adds an aggregate
 # pair of its own, which changes no result and costs nothing beside the hashing. C1 checks the hashes are distinct.
 declare -A SCANX=([cssniff]="MAX(id) - MAX(id)" [csgate]="MIN(id) - MIN(id)" [cseven]="COUNT_BIG(id) - COUNT_BIG(id)"
-  [csreads1]="MAX(id) - MIN(id) + MIN(id) - MAX(id)" [csreads2]="SUM(CAST(id AS bigint)) - SUM(CAST(id AS bigint))" [csreads3]="MAX(id + id) - MAX(id + id)")
+  [csreads1]="MAX(id) - MIN(id) + MIN(id) - MAX(id)" [csreads2]="SUM(CAST(id AS bigint)) - SUM(CAST(id AS bigint))" [csreads3]="MAX(id + id) - MAX(id + id)"
+  [csrgate]="MIN(id + id) - MIN(id + id)")
 scan() { echo "SELECT @r = COUNT_BIG(*) + (${SCANX[$1]}) FROM dbo.cs_big WHERE id <= @n AND HASHBYTES(''SHA2_256'', pad) <> 0x00 OPTION (MAXDOP 1)"; }
 # runscan <marker> <value>...: the scan once per value; a value 'cold:<n>' empties the buffer pool first
 runscan() {
@@ -210,6 +215,7 @@ runscan cssniff 10 10 220000 220000
 runscan csgate 10 220000 220000
 runscan cseven 220000 220000 220000 220000
 for k in 1 2 3; do runscan "csreads$k" cold:220000 220000 cold:220000 220000; done
+runscan csrgate cold:220000 220000 cold:220000
 sq "CREATE TABLE #s (id int, pad char(400)); DECLARE @i int = 0; WHILE @i < 2 BEGIN EXEC sys.sp_executesql N'INSERT #s SELECT TOP (2000000000) id, pad FROM dbo.cs_big WHERE id <= @n ORDER BY pad, id OPTION (OPTIMIZE FOR (@n = 220000), MAXDOP 1) /*csgrant*/', N'@n int', @n = 10; SET @i += 1; END" "$DPC" >/dev/null
 runclr 2
 sq "DECLARE @r bigint, @i int = 0; WHILE @i < 2 BEGIN EXEC sys.sp_executesql N'SELECT @r = COUNT_BIG(DISTINCT HASHBYTES(''SHA2_256'', pad)) FROM dbo.cs_big WHERE id <= @n OPTION (USE HINT(''ENABLE_PARALLEL_PLAN_PREFERENCE'')) /*cspar*/', N'@n int, @r bigint OUTPUT', @n = 220000, @r = @r OUTPUT; SET @i += 1; END" "$DPC" >/dev/null
@@ -219,7 +225,7 @@ collect mssql_plancache "$N"; collect mssql_procstats "$N"
 
 echo "--- C1. the statement columns against sa's read"
 declare -A HASHOF
-MARKS="csrows cssniff csgate csgrant csreads1 csreads2 csreads3 cseven csclr cspar"
+MARKS="csrows cssniff csgate csgrant csreads1 csreads2 csreads3 csrgate cseven csclr cspar"
 # each marked statement its own key: no two share a query hash, nor does one share it with a statement of cs_p
 ALLH=$(for m in $MARKS; do X=$(XS "$m"); echo "${X%%|*} $m"; done
   sq "SELECT CONVERT(varchar(20), qs.query_hash, 1) + ' cs_p' FROM sys.dm_exec_procedure_stats ps JOIN sys.dm_exec_query_stats qs ON qs.plan_handle = ps.plan_handle WHERE ps.database_id = DB_ID('$DPC') AND ps.object_id = OBJECT_ID('$DPC.dbo.cs_p')")
@@ -284,7 +290,12 @@ echo "--- C6. parameter sniffing by physical reads"
 hit=0
 for k in 1 2 3; do d=$(diag "csreads$k"); echo "  csreads$k: $d"; grep -q '^Parameter sniffing (physical reads 0-' <<<"$d" && hit=$((hit + 1)); done
 [ "$hit" -ge 1 ] || fail "C6: none of the three cold / warm statements reads the physical-reads form"
-echo "C6: OK ($hit of 3)"
+RG=$(q "select life_executions || '|' || life_physical_reads || '|' || min_physical_reads || '|' || max_physical_reads from pgvigil.mssql_pc_extreme where instance_id=$iid and query_key='${HASHOF[csrgate]}' order by snapshot_at desc limit 1")
+echo "  csrgate (3 executions; executions|reads|min|max $RG): '$(diag csrgate)'"
+IFS='|' read -r rge rgr rgmin rgmax <<<"$RG"
+[ "$rge" = 3 ] && [ $(( rgr / rge )) -gt 1000 ] && [ "$(( rgmin * 10 < 7 * (rgr / rge) ))" = 1 ] || fail "C6: csrgate is not a 3-execution statement inside the reads' band ($RG): it would not show the gate"
+grep -q 'Parameter sniffing' <<<"$(diag csrgate)" && fail "C6: csrgate reads '$(diag csrgate)' at 3 executions"
+echo "C6: OK ($hit of 3; csrgate held by the gate)"
 
 echo "--- C7. the grant finding"
 GH=${HASHOF[csgrant]}
@@ -292,7 +303,6 @@ echo "  csgrant: $(diag csgrant)"
 grep -q 'Wasteful grant (' <<<"$(diag csgrant)" || fail "C7: csgrant's diagnostics read '$(diag csgrant)'"
 F=$(q "select severity || '|' || check_name || '|' || object || '|' || detail from pgvigil.mssql_plancache_grant_findings where instance_id=$iid")
 echo "  $F" | cut -c1-330
-[ "$(grep -c . <<<"$F")" = 1 ] || fail "C7: the view holds $(grep -c . <<<"$F") rows for the instance, want 1"
 grep -q '^info|wasteful memory grants|plan cache|' <<<"$F" && grep -q 'in the last 3 hours' <<<"$F" && grep -qF "$GH" <<<"$F" || fail "C7: the finding's words: $F"
 [ "$(objs "$WORK/pc.json" findings | jq '[.[] | select(.check_name == "wasteful memory grants")] | length')" = 1 ] || fail "C7: the API's findings part lacks the finding"
 
@@ -333,10 +343,11 @@ q "update pgvigil.mssql_pc_extreme set snapshot_at = snapshot_at - interval '4 h
 echo "C7: OK"
 
 echo "--- C2. the repository rows (go test)"
-(cd "$ROOT" && PGVIGIL_REPO_TEST_DSN="$PGVIGIL_ADMIN_DSN dbname=postgres" go test -count=1 -run 'TestImports0342AreTheBasePlusTheD421Arms|TestPlanCacheExtremesOnAStore|TestProcExtremesOnAStore|TestGrantFindingOnAStore' ./internal/repo > "$WORK/t1" 2>&1) || { tail -20 "$WORK/t1" >&2; fail "C2: the repo rows"; }
+(cd "$ROOT" && PGVIGIL_REPO_TEST_DSN="$PGVIGIL_ADMIN_DSN dbname=postgres" go test -count=1 -v -run 'TestImports0342AreTheBasePlusTheD421Arms|TestPlanCacheExtremesOnAStore|TestProcExtremesOnAStore|TestGrantFindingOnAStore|TestPCDiagnosticsParallelSafe' ./internal/repo > "$WORK/t1" 2>&1) || { grep -E '^(---|FAIL|ok)|_test.go' "$WORK/t1" | head -20 >&2; fail "C2: the repo rows"; }
+[ "$(grep -c '^--- PASS' "$WORK/t1")" = 5 ] && ! grep -q '^--- SKIP' "$WORK/t1" || fail "C2: the repo rows did not all run: $(grep -E '^--- ' "$WORK/t1" | tr '\n' ' ')"
 (cd "$ROOT" && PGVIGIL_REPO_TEST_DSN="$PGVIGIL_REPO_DSN" go test -count=1 -v -run 'TestPCFilterOf|TestPCFilteredStatements|TestPCDiagnosticsOnAStore|TestPlanCacheSpreadPartsOnAStore' ./internal/web > "$WORK/t2" 2>&1) || { grep -E '^(---|FAIL|ok)|_test.go' "$WORK/t2" | head -20 >&2; fail "C2: the web rows"; }
 [ "$(grep -c '^--- PASS' "$WORK/t2")" = 4 ] && ! grep -q '^--- SKIP' "$WORK/t2" || fail "C2: the web rows did not all run: $(grep -E '^--- ' "$WORK/t2" | tr '\n' ' ')"
-echo "C2: OK ($(tail -1 "$WORK/t1"); 4 web rows)"
+echo "C2: OK ($(tail -1 "$WORK/t1"), 5 repo rows; 4 web rows)"
 
 echo "--- C8. the filter at the cap, on stored rows"
 cap=$(q "select pgvigil.ensure_instance('proof-cs-cap-$SUF', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
@@ -374,7 +385,7 @@ psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 <<SQL
 select pgvigil.ensure_month_partition('mssql_pc_extreme', now() - interval '3 hours');
 insert into pgvigil.mssql_pc_extreme (instance_id, snapshot_at, database_id, query_key, executions, cpu_us, interval_secs, max_grant_kb, max_used_grant_kb, life_executions, life_cpu_us, life_physical_reads)
 select i.id, date_trunc('minute', now()) - r * interval '5 minutes', 5 + k % 4, 'F' || k, 10, 1000 * k, 300,
-       case when k % 50 = 0 then 200000 + k else 512 end, case when k % 50 = 0 then 100 else 400 end, 10 * r, 1000 * k, 0
+       case when k % 50 = 0 then 200000 + k else 4096 end, case when k % 50 = 0 then 100 else 2048 end, 10 * r, 1000 * k, 0
   from (select pgvigil.ensure_instance('proof-cs-cost-$SUF-' || n, 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver') as id from generate_series(1, 5) n) i,
        generate_series(1, 35) r, generate_series(1, 3000) k;
 analyze pgvigil.mssql_pc_extreme;

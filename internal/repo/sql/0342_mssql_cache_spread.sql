@@ -78,7 +78,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_pc_extreme (
 ) PARTITION BY RANGE (snapshot_at);
 
 -- the finding reads every instance's last three hours: only the rows with a grant over 1 MB can raise it
-CREATE INDEX IF NOT EXISTS mssql_pc_extreme_grant_idx ON pgvigil.mssql_pc_extreme (snapshot_at) WHERE max_grant_kb > 1024;
+CREATE INDEX IF NOT EXISTS mssql_pc_extreme_grant_idx ON pgvigil.mssql_pc_extreme (snapshot_at)
+  WHERE max_grant_kb > 1024 AND max_used_grant_kb < 0.10 * max_grant_kb;
 
 -- payload: 0092's; a 'stmt' row also carries min_ / max_worker_us, _elapsed_us, _physical_reads, _rows and _spills,
 -- min_grant_kb, min_ / max_ideal_grant_kb, min_dop, min_ / max_reserved_threads and _used_threads, plan_generation
@@ -470,19 +471,20 @@ END $$;
 --                        (a whole number, as the procedure divides) is over 1,000
 --   Wasteful grant       the largest grant over 1 MB, the largest use under 10 % of it
 -- The procedure compares milliseconds and megabytes kept to two decimals; these are the microseconds and kilobytes
--- the server counts in. PARALLEL SAFE: it reads no table, and a function not so marked keeps every statement that
--- calls it (the extremes' read over a week of reads) to one process.
+-- the server counts in; the CPU words truncate to whole milliseconds, as the procedure's CONVERT(bigint, ...) does.
+-- STABLE, as format() and concat_ws() are. PARALLEL SAFE: it reads no table, and a function not so marked keeps every
+-- statement that calls it (the extremes' read over a week of reads) to one process.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_pc_diagnostics(p_executions bigint, p_cpu_us bigint, p_min_cpu_us bigint, p_max_cpu_us bigint,
     p_physical_reads bigint, p_min_physical_reads bigint, p_max_physical_reads bigint, p_min_rows bigint, p_max_rows bigint,
     p_max_grant_kb bigint, p_max_used_grant_kb bigint)
-RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+RETURNS text LANGUAGE sql STABLE PARALLEL SAFE AS $$
   SELECT nullif(concat_ws('; ',
     CASE WHEN p_min_rows > 0 AND p_max_rows::numeric / p_min_rows >= 100
          THEN format('Row count variance (%s to %s)', p_min_rows, p_max_rows) END,
     CASE WHEN p_executions > 3 AND p_min_cpu_us IS NOT NULL AND p_max_cpu_us IS NOT NULL AND p_cpu_us > 0
               AND (p_min_cpu_us < 0.70 * p_cpu_us / p_executions OR p_max_cpu_us > 1.30 * p_cpu_us / p_executions)
-         THEN format('Parameter sniffing (CPU %s-%s ms, avg %s ms)', round(p_min_cpu_us / 1000.0), round(p_max_cpu_us / 1000.0),
-                     round(p_cpu_us / 1000.0 / p_executions))
+         THEN format('Parameter sniffing (CPU %s-%s ms, avg %s ms)', trunc(p_min_cpu_us / 1000.0), trunc(p_max_cpu_us / 1000.0),
+                     trunc(p_cpu_us / 1000.0 / p_executions))
          WHEN p_executions > 3 AND p_min_physical_reads IS NOT NULL AND p_max_physical_reads IS NOT NULL
               AND p_physical_reads / p_executions > 1000
               AND (p_min_physical_reads < 0.70 * (p_physical_reads / p_executions) OR p_max_physical_reads > 1.30 * (p_physical_reads / p_executions))

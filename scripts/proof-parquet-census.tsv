@@ -285,6 +285,7 @@ mssql_monitor_app	state							app_name
 mssql_ola_commandlog	state			command,error_message				database_name,db,schema_name,object_name,object_type,index_name,statistics_name,command_type,backup_kind,error_message,command,status
 mssql_orphan_files	state							path,note
 mssql_pc_database	state							database_name,database_state
+mssql_pc_extreme	window	snapshot_at						query_key
 mssql_pc_handles	left-out							
 mssql_pc_health	state							database_name
 mssql_pc_health_state	state							

@@ -193,7 +193,6 @@ For each database the read stores:
 `scripts/proof-mssql-plancache-indexes.sh` runs against a SQL Server 2022 container that it starts and removes (or an existing sandbox it is given). It shows:
 
 - A seeded workload's top statement equals a hand read of `sys.dm_exec_query_stats`.
-- (`scripts/proof-mssql-cache-spread.sh`) Every extreme stored for a statement, and for a procedure, equals a hand read of the server's own view; the three diagnostics appear on statements made to show them and stay off a statement held under the rule's 3 executions; the grant finding appears, and is gone once its interval is over three hours old; the filter keeps what a hand read keeps and ranks each database before the 1,000-row cap.
 - An exact duplicate and a key subset are found on a fresh server, and an unused index is **not**: the guard says "too early".
 - Once the stored window is moved back 10 days in the proof's own repository, the unused index is found, with its DISABLE line.
 - The stored modification count of a NORECOMPUTE statistic equals the DMV's. Moved back 40 days, the statistic is stale.
@@ -208,3 +207,7 @@ It does not show:
 - An availability group, or a memory-optimized table.
 - The per-day missing-index finding (it needs days of uptime).
 - The pages in a browser.
+
+`scripts/proof-mssql-cache-spread.sh` runs against a SQL Server 2022 container in the same way. It shows:
+
+- Every extreme stored for a statement, and for a procedure, equals a hand read of the server's own view; the three diagnostics appear on statements made to show them and stay off a statement held under the rule's 3 executions; the grant finding appears, and is gone once its interval is over three hours old; the filter keeps what a hand read keeps and ranks each database before the 1,000-row cap.

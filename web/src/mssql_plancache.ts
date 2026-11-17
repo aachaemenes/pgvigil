@@ -63,6 +63,7 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
 
   async function draw() {
     const mine = ++seq;
+    last = null;   // a box ticked while this read runs, or after it fails, paints nothing of an older read
     body.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
     let d: Parts;
     const q = { instance: ctx.instance, ...window_(ctx), db: database || undefined, scope: noqs ? 'noqs' : undefined, ...(slow ? SLOW : {}) };
@@ -201,7 +202,7 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
         : top.length >= LIMIT ? `The ${fmtNum(LIMIT)} with the most CPU. ` : `${fmtNum(top.length)} statements, the most CPU first. `}`
         + (onlyDiag ? `${fmtNum(shown.length)} of them carry a diagnostic. ` : '')
         + `Per second over the ${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))} the reads cover. Max grant and DOP are the largest since the plans were compiled. `
-        + 'The column groups hold the smallest and the largest single run the server kept for the plans that ran in the range, each since its compile, not the range\'s own; "not read": the server has no such column, or the reads came before pgvigil stored it; blank: the range\'s reads came before pgvigil stored any. '
+        + 'The column groups hold the smallest and the largest single run the server kept for the plans that ran in the range, each since its compile, not the range\'s own; "not read": the server has no such column, or the reads came before pgvigil stored it; blank: no extremes for this statement in the range (its reads came before pgvigil stored them, or, in a range that reaches back before the upgrade, it ranks past the extremes\' first 1,000). '
         + `The hashes and handles are the query's statements in the cache at the last read${at ? ' (' + fmtTime(at) + ')' : ''}, one of each (PerformanceMonitor's): none for a query no longer cached.`),
         xerr ? el('div', {}, el('p', { class: 'meta' }, 'The extremes and the diagnostics were not read:'), errorBox(xerr)) : '',
         grid(shown, cols), hist,

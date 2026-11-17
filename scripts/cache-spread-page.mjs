@@ -77,7 +77,7 @@ for (const theme of ['light', 'dark']) {
   await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); sessionStorage.clear(); 'ok'`);
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
   // a full load of the page (from about:blank, so the theme just set is read at the start): a hash change followed
-  // by Page.reload can reload the page before the hash is committed (the dark pass of run 3 stayed on the Summary)
+  // by Page.reload can reload the page before the hash is committed, and the page stays where it was
   await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200);
   await cmd('Page.navigate', { url: `${U}#/mssqlplancache?i=${inst}` }); await sleep(300);
   check(await until(`location.hash.startsWith('#/mssqlplancache')`, 5000), `${theme} Plan cache: the page's address is the Plan cache's`);
