@@ -97,6 +97,10 @@ h3 { margin: var(--sp-5) 0 var(--sp-2); font-size: var(--fs-lg); font-weight: va
 main { padding: var(--sp-4) var(--sp-5); max-width: 1800px; }
 .meta, .empty { color: var(--text-muted); }
 .error { color: var(--crit); font-weight: var(--fw-strong); }
+.error-box { margin: var(--sp-3) 0; }
+.error-box > .error { margin: 0; }
+.error-tools { margin: var(--sp-2) 0 0; font-size: 12px; }
+.error-details { margin: var(--sp-2) 0 0; padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-sm); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 pre.sql, code, .grid td.wide, .mono { font-family: var(--font-mono); }
 pre.sql, code { font-size: var(--fs-sm); white-space: pre-wrap; word-break: break-word; }
 pre.sql { margin: var(--sp-2) 0; padding: var(--sp-2); background: var(--surface-card); border-radius: var(--r-sm); }

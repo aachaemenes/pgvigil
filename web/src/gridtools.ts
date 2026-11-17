@@ -869,6 +869,9 @@ function transpose(t: HTMLTableElement, rows: number[] | 'all', back: HTMLElemen
 
 // gridMenu: the grid's whole menu, DBA Dash's order. td: the clicked cell, th: the clicked header cell, neither: the grid
 // itself. Every item acts or says why it cannot, in words in the item.
+// STMT: a statement cell's element - it carries the whole text as data-full (the copies and the export take it)
+const STMT = '.sqlcell[data-full], [data-stmt][data-full]';
+
 export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | null, back: HTMLElement | null): MenuItem[] {
   const ns = names(t), hs = heads(t), p = load(t), plain = !t.classList.contains('grid');   // plain: the group panel's table
   const j = td && td.parentElement ? colOf(td) : th ? hs.indexOf(th as HTMLTableCellElement) : -1;
@@ -894,6 +897,12 @@ export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | 
       const row = [...td.parentElement!.children].filter((_, k) => keep[k]).map(c => cellText(c).replace(/[\t\r\n]+/g, ' ')).join('\t');
       void copyText(x.cols.join('\t') + '\n' + row).then(tell('the row'));
     } });
+    // Query text (PerformanceMonitor's Copy Query Text): the row's WHOLE statement from any of its cells, on a grid
+    // that draws a statement cell - sqlview.ts sqlCell, or a page's own shortened cell marked data-stmt
+    if (t.tBodies[0]?.querySelector(STMT)) {
+      const q = td.parentElement?.querySelector(STMT)?.getAttribute('data-full') ?? '';
+      copy.push({ label: 'Query text', off: q ? undefined : 'this row holds no statement text', act: () => { void copyText(q).then(tell('the query text')); } });
+    }
   }
   if (td || th) copy.push({ label: 'Selected', off: none ?? (sel.length ? undefined : 'no cell is selected'), act: () => {
     const x = g(true);

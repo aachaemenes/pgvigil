@@ -105,7 +105,7 @@ function cols(onOpen: (r: Row) => void, byRole: Map<string, Row[]> | null, out: 
     { key: 'usenames', label: 'roles' },
     { key: 'sets', label: 'session SETs of its roles in its database (window)', fmt: setsCell(byRole, out), cls: setsCls(byRole) },
     // cut to one line here (23 columns squeeze a wrapping cell into a tall row); the whole text in the title and the history
-    { key: 'query', fmt: v => { const t = String(v ?? ''); return el('span', { title: t }, t.length > 80 ? t.slice(0, 80) + '...' : t); } },
+    { key: 'query', fmt: v => { const t = String(v ?? ''); return t === '' ? '' : el('span', { title: t, 'data-full': t, 'data-stmt': '' }, t.length > 80 ? t.slice(0, 80) + '...' : t); } },
   ];
 }
 

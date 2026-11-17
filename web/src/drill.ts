@@ -17,7 +17,13 @@ type Parts<K extends string> = Record<K, Table | null>;
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const yesNo = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
 const ms = (v: unknown) => v == null ? '' : fmtNum(Math.round(Number(v) * 10) / 10) + ' ms';
-const qtext = (v: unknown) => { const s = v == null ? '(no statement text: the query-text policy, or not read yet)' : String(v); return s.length > 600 ? s.slice(0, 600) + '...' : s; };
+// a statement's first 600 characters; the whole text travels as data-full (the grid's copies, Copy > Query text and
+// the export take it, never the shortened one)
+const qtext = (v: unknown) => {
+  if (v == null) return '(no statement text: the query-text policy, or not read yet)';
+  const s = String(v);
+  return el('span', { 'data-full': s, 'data-stmt': '', ...(s.length > 600 ? { title: s } : {}) }, s.length > 600 ? s.slice(0, 600) + '...' : s);
+};
 const pre = (v: unknown) => el('pre', { class: 'sql' }, String(v ?? ''));
 
 // jobLink and indexLink open the job and index pages (the Jobs, Job report and Indexes tabs and the tree use them).

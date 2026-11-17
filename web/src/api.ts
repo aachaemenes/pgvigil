@@ -37,6 +37,16 @@ export function onCutRead(f: (c: CutRead) => void) { cutHeard.push(f); }
 // LoginRequired is thrown on a 401: the shell shows the sign-in form.
 export class LoginRequired extends Error { constructor() { super('login required'); } }
 
+// ApiError is a read or a write the server answered with an error: what was asked and what came back, kept for the
+// error box's details (ui.ts errorDetails). Never the request's body: a sign-in or a setting's write holds a secret.
+export class ApiError extends Error {
+  readonly at = new Date();
+  constructor(message: string, readonly method: string, readonly url: string, readonly status: number, readonly statusText: string) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function body(res: Response): Promise<unknown> {
   if (res.status === 204) return null;
   return res.json().catch(() => ({ error: res.statusText }));
@@ -51,7 +61,7 @@ export async function get<T = Table>(path: string, params: Record<string, string
   const res = await fetch(url, { headers: { Accept: 'application/json' }, credentials: 'same-origin', signal });
   if (res.status === 401) throw new LoginRequired();
   const b = await body(res);
-  if (!res.ok) throw new Error((b as { error?: string }).error ?? res.statusText);
+  if (!res.ok) throw new ApiError((b as { error?: string }).error ?? res.statusText, 'GET', url, res.status, res.statusText);
   const rf = res.headers.get('X-Pgvigil-Read-From');
   if (rf) {
     const c: CutRead = { path, asked: res.headers.get('X-Pgvigil-Window-From') ?? '', from: rf, to: res.headers.get('X-Pgvigil-Read-To') ?? '' };
@@ -72,7 +82,7 @@ export async function post<T = unknown>(path: string, data: unknown = {}): Promi
     body: JSON.stringify(data),
   });
   const b = await body(res);
-  if (!res.ok) throw new Error((b as { error?: string })?.error ?? res.statusText);
+  if (!res.ok) throw new ApiError((b as { error?: string })?.error ?? res.statusText, 'POST', '/api/' + path, res.status, res.statusText);
   return b as T;
 }
 

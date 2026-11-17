@@ -35,7 +35,13 @@ function fmtSecsShort(s: number): string {
 // a read's time exactly as the API wrote it (microseconds kept): at= must name the read itself, not a millisecond before it
 const iso = (v: unknown) => String(v ?? '');
 // a long text on one line, the whole of it as the title (a statement, a resource as read)
-const oneLine = (v: unknown, n = 120) => { const s = String(v ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? el('span', { title: s }, s.slice(0, n) + '...') : s; };
+// a statement on one line, its first n characters; the whole text travels as data-full (the grid's copies, Copy >
+// Query text and the export take it, never the shortened one)
+const oneLine = (v: unknown, n = 120) => {
+  const s = String(v ?? '').replace(/\s+/g, ' ').trim();
+  if (!s) return s;
+  return el('span', { 'data-full': String(v).trim(), 'data-stmt': '', ...(s.length > n ? { title: s } : {}) }, s.length > n ? s.slice(0, n) + '...' : s);
+};
 // blocked by another session (a parallel request's exchange waits name its own session: not a block)
 const byOther = (r: Row) => r.blocking_session_id != null && Number(r.blocking_session_id) !== Number(r.session_id);
 

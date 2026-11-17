@@ -163,7 +163,8 @@ copies off, `No data to copy`; Export Excel writes its header). An item that can
 dialog. In DBA Dash's order:
 
 - **Copy** > **Grid** (the header and the rows, tab-separated), **Column** (a value a line), **Cell**, **Row** (the
-  header and the row), **Selected** (the selected cells, tab-separated, with an HTML table in the colours beside them
+  header and the row), **Query text** (on a grid that shows statements: the row's whole statement, from any cell of the
+  row; a statement the page shortens on screen is copied and exported whole, as far as the page holds it), **Selected** (the selected cells, tab-separated, with an HTML table in the colours beside them
   for a mail or a document), **As Markdown** > Standard / Prettified (every column padded to its widest), **As JSON**
   > Compact / Prettified (an array of objects keyed by the header, a repeated header numbered `name_1`).
 - **Export Excel**: this grid's workbook (its own sheet, then 'About').

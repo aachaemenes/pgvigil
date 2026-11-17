@@ -134,6 +134,13 @@ ui.ts and tiles.ts hold the parts every page builds from; a page calls them and 
   (the page's own 'Loading...' line too; both carry `.empty`, which the proofs' settle checks wait on), stale a
   warning-tinted line 'Last collected <time>'; `markStale(box, at)` greys every child of a part whose newest read is old
   but that line, which goes under the part's heading. An empty grid stays DBA Dash's header row alone.
+- `errorBox(e)`: a part that could not be read says 'Error: ' and the error's words, and under them **Show details** and
+  **Copy details** (DBA Dash's error dialog). The details are, for a read or a write the server refused, the request's
+  method and address, the HTTP status, the server's words and the time; for any other error its name, its message and
+  where it was thrown; and the page's address. They are the viewer's own browser's - never a request's body - and are
+  drawn only while shown.
+- A row that opens its link on a click anywhere (the fleet's Running queries) opens it in a new tab with Ctrl, the
+  Command key or Shift held, or by the middle button, as the link itself does.
 
 ## The rule for a new page
 

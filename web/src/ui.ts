@@ -1,5 +1,5 @@
 // DOM helpers and formatters. Data is always set as text, never parsed as HTML.
-import { ReadWindow, readWindowOf } from './api';
+import { ApiError, ReadWindow, readWindowOf } from './api';
 import { fmt } from './tz';
 
 export function el<K extends keyof HTMLElementTagNameMap>(
@@ -618,8 +618,41 @@ export function offControl(c: HTMLElement, reason: string | null, reasonEl?: HTM
   return note;
 }
 
+// errorDetails: the text an error box shows on Show details and gives to Copy details (DBA Dash 3.25's error dialog:
+// Show Error Details / Copy Error Details). For a read or a write the server refused: the request's method and
+// address, the HTTP status, the server's words and the time; for any other error its name, its message and where it
+// was thrown. All of it is the viewer's own browser's - the address it asked and the answer it got - and never a
+// request's body.
+export function errorDetails(e: unknown, page = location.hash || '#/'): string {
+  const out: string[] = [];
+  if (e instanceof ApiError) out.push(`${e.method} ${e.url}`, `HTTP ${e.status}${e.statusText ? ' ' + e.statusText : ''}`, `The server's words: ${e.message}`, `At ${e.at.toISOString()}`);
+  else if (e instanceof Error) {
+    out.push(`${e.name}: ${e.message}`);
+    for (const l of (e.stack ?? '').split('\n').slice(1, 7)) if (l.trim()) out.push(l.trim());
+  } else out.push(String(e));
+  out.push(`Page ${page}`);
+  return out.join('\n');
+}
+
+// errorBox: the message as it always was (a p.error: 'Error: ' and the error's words), and under it Show details /
+// Copy details. The details are drawn only while shown, so the box's text is the message until they are asked for.
+let errorSeq = 0;
 export function errorBox(e: unknown): HTMLElement {
-  return el('p', { class: 'error' }, 'Error: ' + (e instanceof Error ? e.message : String(e)));
+  const text = errorDetails(e), id = `error-details-${++errorSeq}`;
+  const pre = el('pre', { class: 'error-details', id, hidden: '' });
+  const show = el('button', { type: 'button', class: 'link', 'aria-expanded': 'false', 'aria-controls': id }, 'Show details');
+  show.addEventListener('click', () => {
+    const open = show.getAttribute('aria-expanded') !== 'true';
+    show.setAttribute('aria-expanded', String(open));
+    show.textContent = open ? 'Hide details' : 'Show details';
+    pre.textContent = open ? text : '';
+    pre.toggleAttribute('hidden', !open);
+  });
+  const said = el('span', { class: 'meta', role: 'status' });
+  const copy = el('button', { type: 'button', class: 'link' }, 'Copy details');
+  copy.addEventListener('click', () => { void copyText(text).then(ok => { said.textContent = ok ? 'Copied.' : 'The browser refused the copy: show the details and copy them by hand.'; }); });
+  return el('div', { class: 'error-box' }, el('p', { class: 'error' }, 'Error: ' + (e instanceof Error ? e.message : String(e))),
+    el('p', { class: 'error-tools' }, show, ' ', copy, ' ', said), pre);
 }
 
 export function dot(level: number, title = ''): HTMLElement {

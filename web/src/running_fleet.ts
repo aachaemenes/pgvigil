@@ -90,11 +90,20 @@ export async function runningFleet(ctx: Ctx): Promise<HTMLElement> {
     draw();
   });
   // a click anywhere on a row opens what its instance link opens (the link itself is the keyboard's way in)
-  holder.addEventListener('click', ev => {
+  // with Ctrl, the Command key or Shift, or by the middle button, the row opens in a new tab as its link would
+  const rowLink = (ev: MouseEvent) => {
     const t = ev.target as HTMLElement;
-    if (t.closest('a, button, th')) return;
-    const a = t.closest('tr')?.querySelector<HTMLAnchorElement>('a.row-open');
-    if (a) location.hash = a.getAttribute('href')!;
+    return t.closest('a, button, th') ? null : t.closest('tr')?.querySelector<HTMLAnchorElement>('a.row-open')?.getAttribute('href') ?? null;
+  };
+  holder.addEventListener('click', ev => {
+    const to = rowLink(ev);
+    if (!to) return;
+    if (ev.ctrlKey || ev.metaKey || ev.shiftKey) window.open(to, '_blank');
+    else location.hash = to;
+  });
+  holder.addEventListener('auxclick', ev => {
+    const to = ev.button === 1 ? rowLink(ev) : null;
+    if (to) { ev.preventDefault(); window.open(to, '_blank'); }
   });
   draw();
   return el('section', {}, el('h2', {}, 'Running queries' + (ctx.tag ? ` - ${tagWords(ctx.tag)}` : '')),
