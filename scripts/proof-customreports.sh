@@ -12,7 +12,8 @@
 #   PGVIGIL_COMMUNITY_DIR   a folder with the community scripts to install on the SQL Server: frk-install-all.sql
 #                           (the First Responder Kit's Install-All-Scripts.sql), darlingdata.sql (DarlingData's
 #                           Install-All/DarlingData.sql) and sp_WhoIsActive.sql. This script fetches nothing. A file
-#                           missing: its tools' runs are NOT PROVEN, said so.
+#                           missing: its tools' runs are NOT PROVEN, said so; part N's SQL Server rows and U2's live
+#                           page rows need all three (each tool not installed has a hard need there).
 #   PGVIGIL_BIN             a binary with the wiring (the routes /api/customreports and /api/community); default: built
 #                           here. The web bundle must carry the pages (internal/web/dist/app.js names 'Custom reports'):
 #                           the page part U fails without.
@@ -678,7 +679,14 @@ ok "Q: 10 reads; running, settings, table sizes (t); the superuser refused"
 
 # ---- N: before the click (task B3 DONE-1) ----------------------------------------------------------------------------------
 fresh() { getc "community?instance=$1&fresh=1${2:+&database=$2}"; }   # past the 60 s keep: the checks run again
-if [[ -z "$SKIP_MSSQL" ]]; then
+# N's SQL Server rows read every tool's state with all three kits in master (a tool not installed has a hard need, so a
+# kit missing turns them red by the kit, not by the code): a kit missing = NOT PROVEN, said with the kits it lacks
+N_MSSQL=""
+if [[ -z "$SKIP_MSSQL" && ${#INSTALLED[@]} != 3 ]]; then
+  nmiss=""; for f in frk-install-all.sql darlingdata.sql sp_WhoIsActive.sql; do [[ " ${INSTALLED[*]} " == *" $f "* ]] || nmiss+="${nmiss:+, }$f"; done
+  NOTPROVEN+=("N (the three community kits not installed: $nmiss): its SQL Server rows")
+elif [[ -z "$SKIP_MSSQL" ]]; then
+  N_MSSQL=1
   [[ $(fresh "$MRID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "d['enabled']") == True && $(tl "d['checked_at'] is not None") == True ]] || fail "N: $MSR's instance needs: $(head -c 600 "$WORK/body")"
   [[ $(tl "[(n['hard'], n['state']) for n in t['sp_LogHunter']['needs']]") == "[(True, 'needs')]" && $(tl "t['sp_LogHunter']['state']") == needs && $(tl "t['sp_LogHunter']['on']") == False \
      && $(tl "t['sp_LogHunter']['needs'][0]['what']") == *xp_readerrorlog* && $(tl "t['sp_LogHunter']['needs'][0]['how']") == "USE [master]; GRANT EXECUTE ON sys.xp_readerrorlog TO [pgcr_reader];" ]] \
@@ -1676,7 +1684,7 @@ console.log(JSON.stringify(out));
 ws.close(); process.exit(0);
 JS
   SHOTS=${PGVIGIL_SHOTS:-$WORK/shots}
-  if [[ -z "$SKIP_MSSQL" ]]; then
+  if [[ -n "$N_MSSQL" ]]; then   # the live rows read the state N's SQL Server rows leave ($XES, the grant, threshold 5)
     timeout 1500 node "$WORK/buttons.mjs" live "$CDP" "$U/" "$COOKIE" "$U2/" "$MRID" "$MAID" "$AID" "$SREP" "$WORK/glenn.sql" "$SHOTS" > "$WORK/buttons.json" 2>"$WORK/buttons.err" || { rc=$?; fail "U2: the live driver ended $rc$([[ $rc == 124 ]] && echo ' (killed at its 1500 s cap)'): $(tail -5 "$WORK/buttons.err")"; }
     VIEWBAD="$WORK/view-bad.txt" python3 - "$WORK/buttons.json" "$XES" <<'PY' || fail "U2: see above"
 import json, sys
@@ -1805,6 +1813,7 @@ assert not T(u)['sp_WhoIsActive']['off'] and u['looks'] < 6, f"U3: unpaused: {u[
 print(f"ok   U3: unpaused: sp_WhoIsActive on again after {u['looks']} Look again click(s)")
 PY
     sq "EXEC sys.sp_configure 'blocked process threshold (s)', 5; RECONFIGURE;" >/dev/null || true
+  elif [[ -z "$SKIP_MSSQL" ]]; then NOTPROVEN+=("U2: the live page rows need part N's SQL Server rows (the three community kits)")
   else NOTPROVEN+=("U2: the live page rows need the SQL Server part"); fi
   # U3 on PostgreSQL: the stopped instance on its page and on the picker; 55000 beside 42P01 on the cluster that does not
   # load pg_stat_statements
