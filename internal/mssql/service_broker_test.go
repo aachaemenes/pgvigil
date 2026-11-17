@@ -33,8 +33,10 @@ func TestServiceBrokerShapes(t *testing.T) {
 	for _, r := range unread {
 		why = append(why, fmt.Sprint(r["database_name"], ": ", r["note"]))
 	}
-	if got := strings.Join(why, " | "); !strings.Contains(got, "Ledger: the login cannot enter Ledger") || !strings.Contains(got, "Ops: over the cap of 2 databases a run") || len(unread) != 2 {
-		t.Errorf("unread rows %q, want Ledger's and Ops's with their words (none for Replica or Off)", got)
+	// review t11-8 item 7: every database not visited says why - Replica and Off too
+	if got := strings.Join(why, " | "); !strings.Contains(got, "Ledger: ") || !strings.Contains(got, "Ops: over the cap of 2 databases a run") ||
+		!strings.Contains(got, "Replica: ") || !strings.Contains(got, "Off: the broker is off") || len(unread) != 4 {
+		t.Errorf("unread rows %q, want Ledger's, Replica's, Off's and Ops's with their words", got)
 	}
 
 	raw := []collect.Row{
@@ -44,7 +46,9 @@ func TestServiceBrokerShapes(t *testing.T) {
 		{"schema_name": "app", "queue_name": "SqlQueryNotificationService-1a2b", "object_id": int64(14), "is_retention_enabled": int64(0), "internal_rows": int64(2), "activated_tasks": int64(1)},
 		{"schema_name": "app", "queue_name": "SqlQueryNotificationService-3c4d", "object_id": int64(15), "is_retention_enabled": int64(0), "internal_rows": int64(5), "activated_tasks": int64(0)},
 	}
-	ready := map[int64]brokerReady{11: {count: 3, oldest: time.Date(2026, 11, 17, 18, 0, 0, 0, time.UTC)}, 13: {count: 4}}
+	// review t11-8 NIT 14: OrderQueue's ready count (2) differs from its internal rows (3), so the depth shown is the
+	// internal table's
+	ready := map[int64]brokerReady{11: {count: 2, oldest: time.Date(2026, 11, 17, 18, 0, 0, 0, time.UTC)}, 13: {count: 4}}
 	var got []string
 	for _, r := range brokerQueueRows("Sales", raw, ready) {
 		got = append(got, fmt.Sprint(r["schema_name"], ".", r["queue_name"], " ", r["object_id"], " ", r["message_count"], " ", r["activated_tasks"]))
@@ -69,10 +73,14 @@ func TestServiceBrokerLive(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	exec(fmt.Sprintf("CREATE DATABASE [%s]; ALTER DATABASE [%s] SET ENABLE_BROKER WITH ROLLBACK IMMEDIATE;", db, db))
+	// review t11-8 item 13: the drop is registered before the database is made (a failed ALTER no longer leaks it), its
+	// error logged
 	t.Cleanup(func() {
-		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("USE master; ALTER DATABASE [%s] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [%s];", db, db))
+		if _, err := conn.ExecContext(context.Background(), fmt.Sprintf("USE master; IF DB_ID(N'%s') IS NOT NULL BEGIN ALTER DATABASE [%s] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [%s]; END", db, db, db)); err != nil {
+			t.Logf("dropping %s: %v", db, err)
+		}
 	})
+	exec(fmt.Sprintf("CREATE DATABASE [%s]; ALTER DATABASE [%s] SET ENABLE_BROKER WITH ROLLBACK IMMEDIATE;", db, db))
 	exec(fmt.Sprintf(`EXEC [%s].sys.sp_executesql N'CREATE QUEUE dbo.TargetQ; CREATE SERVICE [//pgv/target] ON QUEUE dbo.TargetQ ([DEFAULT]);
 		CREATE QUEUE dbo.InitQ; CREATE SERVICE [//pgv/init] ON QUEUE dbo.InitQ; CREATE QUEUE dbo.OffQ WITH STATUS = OFF;'`, db))
 	exec(fmt.Sprintf(`EXEC [%s].sys.sp_executesql N'DECLARE @h uniqueidentifier;
@@ -106,10 +114,28 @@ func TestServiceBrokerLive(t *testing.T) {
 	if got := brokerDepth(rows, db, "TargetQ"); got != "3" {
 		t.Errorf("TargetQ's depth %s, want 3 (three messages on one dialog)", got)
 	}
+	// review t11-8 item 13: OffQ's row must be there (a missing row no longer passes), and TargetQ's oldest ready message
+	// is read, as UTC (items 1 / 9: the container runs in UTC, so the zone itself is NOT PROVEN here)
+	off := false
 	for _, r := range rows {
-		if r["kind"] == "queue" && r["database_name"] == db && r["queue_name"] == "OffQ" && r["is_receive_enabled"] != false {
-			t.Errorf("OffQ's is_receive_enabled %v, want false (STATUS = OFF)", r["is_receive_enabled"])
+		if r["kind"] != "queue" || r["database_name"] != db {
+			continue
 		}
+		if r["queue_name"] == "OffQ" {
+			off = true
+			if r["is_receive_enabled"] != false {
+				t.Errorf("OffQ's is_receive_enabled %v, want false (STATUS = OFF)", r["is_receive_enabled"])
+			}
+		}
+		if r["queue_name"] == "TargetQ" {
+			ts, ok := r["oldest_message_time"].(time.Time)
+			if !ok || time.Since(ts) > 10*time.Minute || time.Until(ts) > time.Minute {
+				t.Errorf("TargetQ's oldest_message_time %v (%T), want a time within minutes of now", r["oldest_message_time"], r["oldest_message_time"])
+			}
+		}
+	}
+	if !off {
+		t.Errorf("no queue row for OffQ in %s", db)
 	}
 	conv := false
 	for _, r := range rows {
