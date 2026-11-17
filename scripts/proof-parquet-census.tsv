@@ -228,6 +228,11 @@ mssql_fixed_drives	state							drive,drive_type
 mssql_fk_columns	state							database_name,fk_name,parent_schema,parent_table,ref_schema,ref_table,columns
 mssql_fragmentation_read	state			note		ui_user,client		instance,database_name,mode,ui_user,client,serve_id,state,note
 mssql_fragmentation_row	state							schema_name,table_name,index_name,index_type,alloc_unit
+mssql_func_inline	state							
+mssql_func_last	left-out							
+mssql_func_read	window	snapshot_at						
+mssql_func_sample	window	snapshot_at						kind,database_name,schema_name,object_name,type_desc,trigger_scope
+mssql_func_state	state							kinds
 mssql_georepl_events	window	at						link_guid,kind,old_value,new_value,partner
 mssql_georepl_hour	window	snapshot_at						link_guid
 mssql_georepl_hour_dirty	left-out							
