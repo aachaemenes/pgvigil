@@ -8,7 +8,9 @@
 #   PGVIGIL_ADMIN_DSN="host=127.0.0.1 port=5432 user=postgres" bash scripts/proof-gridmenu.sh
 #   PGVIGIL_GRIDMENU_OUT  the folder for the logs and the pictures (default: a new temporary folder, named at the end)
 #   PGVIGIL_MENU_ONLY     the cases (default G); PGVIGIL_MENU_SHOTS the pictures (default <out>/shots)
-#   PGVIGIL_GRIDMENU_NO_MSSQL=1  no container (G-sql then fails, saying so)
+#                         P = the parity rows of P01 / P02 / P04 alone (P-chooser .. P-opengrid); G,P = both
+#   PGVIGIL_GRIDMENU_NO_MSSQL=1  no container (G-sql then fails, saying so); a run whose cases name neither G nor G-sql
+#                         starts none by itself (the container serves G-sql alone)
 # Needs node 22+, npm, go, psql, chromium and docker. Exit: menu-check's (0 = every case ok), 1 = the build or the
 # container failed, 2 = no DSN.
 #
@@ -19,6 +21,14 @@
 # G-in, G-bars, G-keys (Tab lands on the grid's scroll box), G-grouped, G-empty0, G-dialog, G-sql (no SQL file),
 # G-stmt, G-plain, G-mssql, G-big, G-themes (no menu background) - each '(no .tm-menu)' or the item absent;
 # 'FAIL: 25 case(s)', rc 1.
+#
+# Expected of the P rows' red run (PGVIGIL_MENU_ONLY=P on rel-j16-last 65083820 with this file and menu-check.mjs
+# copied in; written 11-16 before it): the build green; no container; P-opengrid ok (Open Grid reads the grid's own JSON
+# on the base); the eight others FAIL, each in its own words - P-chooser (the panel's buttons hold no None and no Toggle
+# selected, no undrawn name listed), P-rowhead (Row Headers null on the header and on a cell, 'Row numbers' still at
+# the top), P-freeze (Freeze Column null), P-editfilter (no Edit Filter dialog), P-groupby (Group By... on the header
+# false, the one-click 'Group by ...' items left), P-bars (the submenu's five items of the base), P-script (Save Table
+# false), P-copysum (the toolbar's Copy is not there, for both scopes); no case 'threw'; 'FAIL: 8 case(s)', rc 1.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 [[ -n "${PGVIGIL_ADMIN_DSN:-}" ]] || { echo "FAIL: PGVIGIL_ADMIN_DSN is not set"; exit 2; }
@@ -28,6 +38,8 @@ cleanup() { [[ -n "$SQLC" ]] && docker rm -fv "$SQLC" >/dev/null 2>&1; [[ -n "$E
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 echo "== proof-gridmenu: node $(node --version), go $(go env GOVERSION 2>/dev/null), $(chromium --version 2>/dev/null | head -1); out $OUT"
+# the container serves case G-sql alone: a run that names its cases, none of them G or G-sql, starts none
+case ",${PGVIGIL_MENU_ONLY:-G}," in *,G,*|*,G-sql,*) ;; *) PGVIGIL_GRIDMENU_NO_MSSQL=1 ;; esac
 if [[ "${PGVIGIL_GRIDMENU_NO_MSSQL:-}" != 1 ]]; then
   # the sa password in a file of its own (never on a command line), the container on no published port
   SQLC="gridmenu-mssql-$$"; ENVF=$(mktemp); PW="Gm$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')!a1"

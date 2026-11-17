@@ -145,18 +145,97 @@
 //   P-chooser         B05, the Columns... panel (DBA Dash's Columns dialog: All, None, Toggle Selected): its buttons hold
 //                     'All', 'None' and 'Toggle selected'; None unticks every column but the grid's first, which stays
 //                     with the words 'a grid keeps one column' (a grid is never drawn with none); All ticks every drawn
-//                     column again; two names picked in the list (a click, then Ctrl+click) and Toggle selected: those
-//                     two columns hidden, pressed again shown; the instances grid's rows carry keys its columns do not
-//                     draw - each is listed after the drawn ones, unticked, marked 'not drawn by this page'; ticked, the
-//                     grid gains a column of that key holding each row's own value (instance_id: the API's ids in the
-//                     grid's order), in the copies too; unticked, it is gone; Reset this grid removes it
+//                     column again; two names picked in the list (a click, then Ctrl+click: aria-selected on those
+//                     two alone) and Toggle selected: those two columns hidden, pressed again shown; a click on the
+//                     first name and a Shift+click on the third: the three picked. BY KEYS, once (the lead 11-16 22:25:
+//                     no mouse-only control), in a panel opened again, where no name is picked: the list (.gt-cols) is
+//                     ONE tab stop (one element of it, itself counted, with tabindex 0); from it Down moves to the
+//                     next name, Space picks it, Shift+Down picks the one after it too (those two alone), Enter on
+//                     Toggle selected hides those two columns and Enter again shows them, Ctrl+A picks every listed
+//                     name. The instances grid's rows carry keys its columns do not draw - each is listed after the
+//                     drawn ones, unticked, marked 'not drawn by this page'; ticked, the grid gains a column of that
+//                     key holding each row's own value (instance_id: the API's ids in the grid's order), in the copies
+//                     too; unticked, it is gone.
+//                     HELD BACK (the lead 22:25): never a key starting '_', never a key of the grid's 'never offered'
+//                     list - the table's data-gt-never, a JSON array of keys a page sets as it sets data-grid-name;
+//                     no grid has one by default, so the check declares 'engine' itself on the Summary's Instances
+//                     grid and holds it there while the page draws the grid again. That grid's rows carry _worst,
+//                     _cells, _acked (pages.ts) and every key of the instances read: no listed name starts with '_';
+//                     'engine', listed before it is declared, is not listed after; and a kept choice that names them
+//                     (instance_id ticked, then "_worst" and "engine" written beside it in the browser's stored
+//                     choice - the ticked keys are kept as a JSON array of their names - and the page drawn again)
+//                     draws instance_id alone: neither is a column, a listed name, in Copy > Grid, in Copy > As JSON,
+//                     in the CSV file or in the JSON file; Reset this grid removes instance_id
 //   P-rowhead         B07, Row Headers > Hide / Show / Show with Row Numbers on the header's and a cell's menu, exactly
 //                     those three, one ticked (Hide on a fresh grid; the single 'Row numbers' item is gone); Show with
 //                     Row Numbers: the CSS counter of G-rownum, ticked on reopening; Show: a row header with no number
-//                     (table.gt-rowhead, no counter); Hide: neither class; kept after a reload
+//                     (table.gt-rowhead, no counter); Hide: neither class; kept after a reload; A SAVED CHOICE (the
+//                     lead 22:25: none lost): the grid's stored choice written as the build before this one wrote
+//                     'Row numbers' on ({"hidden":[],"frozen":0,"bars":{},"rownum":true} under the grid's own key)
+//                     opens after a reload with the counter and Show with Row Numbers ticked
 //   P-freeze          B09, on platform's header: 'Freeze Column' unticked; picked - the columns up to platform frozen
 //                     (table[data-gt-frozen], platform's th sticky), the item ticked on reopening, 'Unfreeze Column'
 //                     offered; Unfreeze Column - nothing frozen, Freeze Column unticked again, no Unfreeze Column item
+//   (the six rows below are written on this pane's recommendations, asked of the lead as 'PGRID ROW CALLS 2' 11-16
+//   22:5x: an answer that differs changes the row before any build)
+//   P-editfilter      B11, 'Edit Filter...' on a cell's and a header's menu, on the hostile fixture's grid: a dialog
+//                     whose text field holds the grid's filter as one text - one line per column that has a filter,
+//                     '[<the column's name, a ] in it doubled>] <its filter as the filter row holds it>', in the
+//                     columns' order (txt 'like "R%"' and num '>=13' set in the filter row, 2 rows left: '[txt] like
+//                     "R%"' then '[num] >=13'). Apply writes each line into its column's filter field and empties
+//                     every column with no line: the filter row stays the one place a filter lives, the lines are
+//                     ANDed. '[column 5] =""' leaves the six rows whose cell is empty (DBA Dash's IS NULL);
+//                     '[column 5] <>"e7"' with '[we]]ird"name] like "o1%"' leaves ids 1, 10, 14, 15, 16, 17, 18 (id
+//                     1's empty cell kept by <>, as DBA Dash keeps NULL rows), and the dialog opened again shows the
+//                     two lines in the columns' order. A text it cannot read is refused in words that name the line,
+//                     the dialog still open and the filter row as it was: a line with no '[column]' ('line 1'), a
+//                     column the grid does not have ('line 1' and 'nosuch'), a column on two lines ('line 2'). An
+//                     empty text clears every filter (18 rows); the filter row is still there
+//   P-groupby         B10, 'Group By...' on a cell's and a header's menu (the one-click 'Group by <column>' is gone): a
+//                     dialog with a row per shown column and its ticks by name - 'Group By <c>', 'Count Distinct <c>',
+//                     'Min <c>', 'Max <c>', and on a number column 'Sum <c>', 'Sum % <c>', 'Avg <c>' (a text column
+//                     has no Sum tick, or one that is off) -, 'Include Count' (ticked) and 'Count % of Total', OK and
+//                     Cancel; opened on platform's header, 'Group By platform' is ticked. With Count Distinct name,
+//                     Sum, Sum %, Avg, Min and Max of sessions and both counts, OK draws the group panel (.gt-groups),
+//                     its header: 'platform', 'Count', 'Count %', 'name | Count Distinct', 'sessions | Sum', 'sessions
+//                     | Sum %', 'sessions | Avg', 'sessions | Min', 'sessions | Max' (DBA Dash's names), a row per
+//                     platform, every number the one worked out from the grid's own rows (a count exactly, a percent
+//                     within 0.1, the others within 0.01; no number where no row of the group has one). OK with no
+//                     Group By ticked is refused in words ('at least one column'), the dialog still open
+//   P-bars            a number column's Data bar submenu: 'Behind value', 'Under value', the two traffic lights,
+//                     'Options...', 'Copy to All Numeric Columns', 'Remove', 'Remove All Data Bars' (DBA Dash's
+//                     order); on a grid with no bar Copy to All and Remove All are off with their words ('no data bar
+//                     on sessions', 'no data bar on this grid'). Under value on sessions, then Copy to All Numeric
+//                     Columns: the stored choice holds every number column at 'under', sessions and active each draw
+//                     the bar on their own scale (the column's largest cell at 100 %), kept after a reload.
+//                     Options... on sessions: a dialog with Style, Minimum and Maximum (empty = the grid's own
+//                     values) and OK, Cancel, Remove; Maximum at twice the column's largest value: its largest cell
+//                     at 50 %, the field holding that number when the dialog opens again; 'abc' refused in words
+//                     ('Maximum'), the dialog still open, the bar as it was; emptied: 100 % again. Remove All Data
+//                     Bars: no bar in the grid and none after a reload
+//   P-script          B04, 'Save Table' on a cell's and a header's menu: 'From Data Table', 'From Grid', 'Script Data
+//                     Table', 'Script Grid' (DBA Dash's order); the two From items off with their words (pgvigil
+//                     writes no table on a monitored server: 'not built'); the two Script items open the code viewer
+//                     (dialog.sqlview, its Copy) with CREATE TABLE and INSERT in the dialect of the page's engine: a
+//                     PostgreSQL instance's grid (Statements) pg_temp.pgvigil_grid; a SQL Server instance's (the
+//                     first of its Files, DB Space, Jobs, Backups, SQL Server errors and TempDB pages that draws
+//                     rows, named in the line) #pgvigil_grid; a fleet page PostgreSQL's. Script Grid = the rows the
+//                     filters leave and the columns shown, as Export file's SQL writes them (Instances filtered to its
+//                     first name: that many value rows, no instance_id). Script Data Table = every row the page holds whatever the filter
+//                     and every column the chooser offers, drawn or not (every instance; instance_id among the
+//                     columns) - and nothing the chooser holds back: on the Summary's Instances grid with 'engine'
+//                     declared never offered, the script names instance_id and no _worst, _cells, _acked, _live,
+//                     _chips or engine column
+//   P-copysum         D20, the Summary's toolbar: a 'Copy' drop-down holding exactly 'Copy Summary' and 'Copy Test
+//                     Summary'. Copy Summary puts the Instances grid on the clipboard as the grid's own Copy > Grid
+//                     does - the words tab-separated (the header, first 'Instance', and a line per instance drawn)
+//                     and beside them an HTML table with the status fills (data-status) -, Copy Test Summary the Test
+//                     Summary grid the same way (first 'Test', a line per test listed); each says 'Copied ...' on the
+//                     page. On a PostgreSQL scope and on a SQL Server scope (the tag most instances of one engine
+//                     alone carry, as the wording walk picks it)
+//   P-opengrid        Open Grid's round trip (built on the base: expected ok there): Instances' Export file > JSON,
+//                     that file given to Tools > Open Grid or Data Set: 'Grid: <the file>', the same header names in
+//                     the same order, as many rows, and each row's name, platform and version the grid's own
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1178,42 +1257,114 @@ const gmTicks = () => ev(`[...document.querySelectorAll('.tm-menu')].map(m => [.
 const PANEL = `document.querySelector('.gt-panel')`;
 const pButtons = () => ev(`[...(${PANEL}?.querySelectorAll('button') ?? [])].map(b => b.textContent.trim())`);
 const pPress = label => ev(`(() => { const b = [...(${PANEL}?.querySelectorAll('button') ?? [])].find(x => x.textContent.trim() === ${JSON.stringify(label)}); if (!b || b.getAttribute('aria-disabled') === 'true') return false; b.click(); return true; })()`);
-const pList = () => ev(`[...(${PANEL}?.querySelectorAll('.gt-col') ?? [])].map(r => ({ name: (r.querySelector('label:first-child')?.textContent ?? '').trim(), ticked: !!r.querySelector('label:first-child input')?.checked, undrawn: r.hasAttribute('data-gt-undrawn'), words: r.textContent.replace(/\\s+/g, ' ').trim() }))`);
+const pList = () => ev(`[...(${PANEL}?.querySelectorAll('.gt-col') ?? [])].map(r => ({ name: (r.querySelector('label:first-child')?.textContent ?? '').trim(), ticked: !!r.querySelector('label:first-child input')?.checked, undrawn: r.hasAttribute('data-gt-undrawn'),
+  picked: r.matches('[aria-selected="true"]') || !!r.querySelector('[aria-selected="true"]'), words: r.textContent.replace(/\\s+/g, ' ').trim() }))`);
+const pPicked = async () => (await pList()).filter(x => x.picked).map(x => x.name);
+// the list's tab stops (.gt-cols itself counted): the first one focused; pAt: the name the focus is on (the focused row
+// or cell, or the list's aria-activedescendant)
+const pStops = () => ev(`(() => { const L = ${PANEL}?.querySelector('.gt-cols'); if (!L) return { stops: -1, focus: false }; const ss = [L, ...L.querySelectorAll('*')].filter(e => e.tabIndex === 0);
+  ss[0]?.focus(); return { stops: ss.length, focus: !!ss[0] && document.activeElement === ss[0] }; })()`);
+const pAt = () => ev(`(() => { const a = document.activeElement; const r = a?.closest?.('.gt-col') ?? document.getElementById(a?.getAttribute?.('aria-activedescendant') || '-')?.closest('.gt-col');
+  return r && ${PANEL}?.contains(r) ? (r.querySelector('label:first-child')?.textContent ?? '').trim() : null; })()`);
+// pEnter: a button of the panel focused and pressed by Enter
+const pEnter = async label => { const f = await ev(`(() => { const b = [...(${PANEL}?.querySelectorAll('button') ?? [])].find(x => x.textContent.trim() === ${JSON.stringify(label)}); if (!b || b.getAttribute('aria-disabled') === 'true') return false; b.focus(); return document.activeElement === b; })()`);
+  if (f) await key('Enter', 'Enter', 13, 0, '\r'); await sleep(250); return f; };
+// the Summary's Instances grid (pages.ts drawLower names it): its rows carry _worst, _cells, _acked and every key of the
+// instances read
+const ST = `document.querySelector('main table.grid[data-grid-name="Instances"]')`;
+// pNever: a grid's 'never offered' keys as a page declares them (the table's data-gt-never, a JSON array), held on the
+// grid while the page draws it again: this observer answers a new table before the next frame, when the tools draw a
+// grid's kept choices (gridtools.ts installGridTools: requestAnimationFrame)
+const pNever = (t, keys) => ev(`(() => { window.__gtNever?.disconnect(); const v = ${JSON.stringify(JSON.stringify(keys))};
+  const set = () => { const t = ${t}; if (t && t.getAttribute('data-gt-never') !== v) t.setAttribute('data-gt-never', v); };
+  set(); window.__gtNever = new MutationObserver(set); window.__gtNever.observe(document.body, { childList: true, subtree: true }); return !!${t}; })()`);
+const pNeverOff = () => ev(`(() => { window.__gtNever?.disconnect(); delete window.__gtNever; document.querySelectorAll('[data-gt-never]').forEach(t => t.removeAttribute('data-gt-never')); })()`);
 const pTick = name => ev(`(() => { const r = [...(${PANEL}?.querySelectorAll('.gt-col') ?? [])].find(x => (x.querySelector('label:first-child')?.textContent ?? '').trim() === ${JSON.stringify(name)}); const i = r?.querySelector('label:first-child input'); if (!i) return false; i.click(); return true; })()`);
 const pName = (name, mods = {}) => ev(`(() => { const r = [...(${PANEL}?.querySelectorAll('.gt-col') ?? [])].find(x => (x.querySelector('label:first-child')?.textContent ?? '').trim() === ${JSON.stringify(name)}); const n = r?.querySelector('.gt-col-name'); if (!n) return false; n.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ...${JSON.stringify(mods)} })); return true; })()`);
 const thOf = async label => `${GT}.querySelectorAll('thead tr:first-child th')[${await ev(gIx(label))}]`;
 
 await guard('P-chooser', async () => {
   await gFresh();
-  const heads0 = await gHeads();
-  await gmOpen(await thOf('sessions')); const opened = await gmPick('Columns...'); await sleep(300);
-  const btns = await pButtons(), list0 = await pList();
+  const heads0 = await gHeads(), same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+  const openC = async () => { await gmOpen(await thOf('sessions')); const o = await gmPick('Columns...'); await sleep(300); return o; };
+  const opened = await openC();
+  const btns = await pButtons(), list0 = await pList(), names0 = list0.map(x => x.name);
   const none = await pPress('None'); await sleep(200);
   const headsNone = await gHeads(), wordsNone = await ev(`${PANEL}?.textContent.includes('a grid keeps one column') ?? false`);
   const all = await pPress('All'); await sleep(200);
   const headsAll = await gHeads();
-  const sel = await pName('platform') && await pName('sessions', { ctrlKey: true });
+  // by the mouse: a click and a Ctrl+click, Toggle selected twice; then a click and a Shift+click (a range)
+  const sel = await pName('platform') && await pName('sessions', { ctrlKey: true }), mPicked = await pPicked();
   const tog1 = await pPress('Toggle selected'); await sleep(200); const headsTog = await gHeads();
   const tog2 = await pPress('Toggle selected'); await sleep(200); const headsBack = await gHeads();
-  // a key the rows carry and the page does not draw: listed unticked, drawn on a tick with each row's own value
+  const rng = await pName(names0[0] ?? '') && await pName(names0[2] ?? '', { shiftKey: true }), rPicked = await pPicked();
+  // by keys, once, in a panel opened again (no name picked): one tab stop, Down, Space, Shift+Down, Enter on Toggle
+  // selected twice, Ctrl+A
+  await pPress('Close'); await openC();
+  const kPicked0 = await pPicked(), kb = await pStops();
+  const k0 = await pAt(); await key('ArrowDown', 'ArrowDown', 40); const k1 = await pAt();
+  await key(' ', 'Space', 32, 0, ' '); await key('ArrowDown', 'ArrowDown', 40, 8);
+  const k2 = await pAt(), kPicked = await pPicked(), i0 = names0.indexOf(k0 ?? '');
+  const kt1 = await pEnter('Toggle selected'), headsK1 = await gHeads();
+  const kt2 = await pEnter('Toggle selected'), headsK2 = await gHeads();
+  await pStops(); await key('a', 'KeyA', 65, 2); const kAll = (await pPicked()).length;
+  const mouseOk = sel && same(mPicked, ['platform', 'sessions']) && tog1 && !headsTog.includes('platform') && !headsTog.includes('sessions') && headsTog.length === heads0.length - 2
+    && tog2 && same(headsBack, heads0) && rng && names0.length > 2 && same(rPicked, names0.slice(0, 3));
+  const keysOk = kPicked0.length === 0 && kb.stops === 1 && kb.focus && i0 >= 0 && i0 + 2 < heads0.length && k1 === names0[i0 + 1] && k2 === names0[i0 + 2] && same(kPicked, [k1, k2])
+    && kt1 && headsK1.length === heads0.length - 2 && !headsK1.includes(k1) && !headsK1.includes(k2) && kt2 && same(headsK2, heads0) && kAll === list0.length && list0.length > heads0.length;
+  // a key the rows carry and the page does not draw: listed after the drawn ones, unticked, drawn on a tick with each
+  // row's own value
   const ids = (await api('instances')).rows?.length ?? 0;
   const und = list0.filter(x => x.undrawn), idRow = und.find(x => x.name === 'instance_id');
   const ticked = await pTick('instance_id'); await sleep(300);
   const headsId = await gHeads(), colId = headsId.includes('instance_id') ? await gCol('instance_id') : [];
   const copyId = headsId.includes('instance_id') ? await gmCopy(gCell('instance_id'), 'Copy', 'Column') : null;
-  await gmOpen(await thOf('sessions')); await gmPick('Columns...'); await sleep(300);
+  await openC();
   const unt = await pTick('instance_id'); await sleep(300); const headsGone = await gHeads();
-  await gmClose(); await gReset();
+  const undOk = !!idRow && !idRow.ticked && /not drawn by this page/.test(idRow.words) && und.length > 0 && und.every(x => !x.ticked) && list0.slice(0, heads0.length).every(x => !x.undrawn) && und.length === list0.length - heads0.length
+    && ticked && headsId.includes('instance_id') && colId.length === ids && ids > 0 && colId.every(v => /^\d+$/.test(v))
+    && (copyId ?? '').split('\n').filter(Boolean).length === ids && unt && !headsGone.includes('instance_id');
+  // HELD BACK, on the Summary's Instances grid: a '_' key and a never-offered key ('engine', declared here) are in no
+  // list, and a kept choice that names them draws neither - not as a column, not in a copy, not in a file
+  await pPress('Close'); await gmClose(); await gReset(); await go('#/summary');
+  for (let k = 0; k < 20 && !await ev(`!!${ST}`); k++) await sleep(250);
+  const sth = `${ST}?.querySelector('thead tr:first-child th')`, std = `${ST}?.querySelector('tbody td')`;
+  const openS = async () => { await gmOpen(sth); const o = await gmPick('Columns...'); await sleep(300); return o; };
+  const oS = await openS(), listS = await pList();
+  const never = await pNever(ST, ['engine']);
+  await openS(); const listN = await pList();
+  const tickS = await pTick('instance_id'); await sleep(300); const headsS = await gHeads(ST);
+  const kept = await ev(`(() => { const ks = Object.keys(localStorage).filter(k => k.startsWith('pgvigil.grid.summary.') && (localStorage.getItem(k) ?? '').includes('"instance_id"'));
+    if (ks.length !== 1) return ks.length; localStorage.setItem(ks[0], localStorage.getItem(ks[0]).replace('"instance_id"', '"instance_id","_worst","engine"')); return localStorage.getItem(ks[0]); })()`);
+  await pPress('Close'); await go('#/about'); await go('#/summary');   // drawn again in the same document: the declaration is still held
+  for (let k = 0; k < 20 && !await ev(`!!${ST}`); k++) await sleep(250);
+  await sleep(300);
+  const headsK = await gHeads(ST);
+  await openS(); const listK = await pList(); await pPress('Close');
+  const cGrid = await gmCopy(std, 'Copy', 'Grid'), cJson = await gmCopy(std, 'Copy', 'As JSON', 'Compact');
+  const fCsv = await gmFile(std, 'CSV', 'csv'), fJson = await gmFile(std, 'JSON', 'json');
+  const keys0 = t => { try { const v = JSON.parse(t ?? 'null'); return Array.isArray(v) && v[0] && typeof v[0] === 'object' ? Object.keys(v[0]) : null; } catch { return null; } };
+  const forms = { 'Copy > Grid': (cGrid ?? '').split('\n').map(l => l.split('\t')).find(c => c.includes('instance_id')) ?? null, 'Copy > As JSON': keys0(cJson),
+    'the CSV': csvRows(fCsv?.text ?? '').find(r => r.includes('instance_id')) ?? null, 'the JSON file': keys0(fJson?.text) };
+  const heldIn = Object.entries(forms).filter(([, c]) => !c || !c.includes('instance_id') || c.includes('_worst') || c.includes('engine'))
+    .map(([k, c]) => `${k} ${c ? JSON.stringify(c.filter(x => x === 'instance_id' || x === '_worst' || x === 'engine')) : 'has no instance_id column'}`);
+  await openS(); const rst = await pPress('Reset this grid'); await sleep(300); const headsR = await gHeads(ST);
+  await pNeverOff(); await pPress('Close'); await gmClose(); await gReset();
+  const undS = listS.filter(x => x.undrawn).map(x => x.name), undN = listN.filter(x => x.undrawn).map(x => x.name);
+  const heldOk = oS && undS.includes('instance_id') && undS.includes('engine') && !listS.some(x => x.name.startsWith('_'))
+    && never && undN.includes('instance_id') && !listN.some(x => x.name === 'engine')
+    && tickS && headsS.includes('instance_id') && typeof kept === 'string'
+    && headsK.includes('instance_id') && !headsK.includes('_worst') && !headsK.includes('engine') && !listK.some(x => x.name === '_worst' || x.name === 'engine') && listK.length > 0
+    && heldIn.length === 0 && rst && !headsR.includes('instance_id');
   check('P-chooser', opened && ['All', 'None', 'Toggle selected'].every(b => btns.includes(b))
     && none && headsNone.length === 1 && headsNone[0] === heads0[0] && wordsNone
-    && all && JSON.stringify(headsAll) === JSON.stringify(heads0)
-    && sel && tog1 && !headsTog.includes('platform') && !headsTog.includes('sessions') && headsTog.length === heads0.length - 2
-    && tog2 && JSON.stringify(headsBack) === JSON.stringify(heads0)
-    && !!idRow && !idRow.ticked && /not drawn by this page/.test(idRow.words) && und.every(x => !x.ticked)
-    && ticked && headsId.includes('instance_id') && colId.length === ids && ids > 0 && colId.every(v => /^\d+$/.test(v))
-    && (copyId ?? '').split('\n').filter(Boolean).length === ids + 1
-    && unt && !headsGone.includes('instance_id'),
-    `the panel's buttons ${JSON.stringify(btns)}; None left ${JSON.stringify(headsNone)} (words ${wordsNone}); All ${headsAll.length} of ${heads0.length}; Toggle selected hid platform and sessions ${tog1 && !headsTog.includes('platform') && !headsTog.includes('sessions')}, then showed them ${tog2 && JSON.stringify(headsBack) === JSON.stringify(heads0)}; undrawn keys listed ${JSON.stringify(und.map(x => x.name)).slice(0, 200)}; instance_id ticked: ${colId.length} of ${ids} cells, in Copy > Column ${(copyId ?? '').split('\n').filter(Boolean).length} lines; unticked gone ${unt && !headsGone.includes('instance_id')}`);
+    && all && same(headsAll, heads0) && mouseOk && keysOk && undOk && heldOk,
+    `the panel's buttons ${JSON.stringify(btns)}; None left ${JSON.stringify(headsNone)} (words ${wordsNone}); All ${headsAll.length} of ${heads0.length}`
+    + `; MOUSE ${mouseOk}: picked ${JSON.stringify(mPicked)}, Toggle selected hid them ${tog1 && !headsTog.includes('platform') && !headsTog.includes('sessions')}, then showed them ${tog2 && same(headsBack, heads0)}, a Shift+click's range ${JSON.stringify(rPicked)}`
+    + `; KEYS ${keysOk}: picked in a new panel ${kPicked0.length}, tab stops in the list ${kb.stops} (focused ${kb.focus}), the focus '${k0}' -> Down '${k1}' -> Space, Shift+Down '${k2}', picked ${JSON.stringify(kPicked)}, Enter on Toggle selected ${kt1}: ${headsK1.length} of ${heads0.length} columns, again ${kt2}: ${headsK2.length}, Ctrl+A picked ${kAll} of ${list0.length}`
+    + `; UNDRAWN ${undOk}: listed ${JSON.stringify(und.map(x => x.name)).slice(0, 200)}; instance_id ticked: ${colId.length} of ${ids} cells, in Copy > Column ${(copyId ?? '').split('\n').filter(Boolean).length} lines; unticked gone ${unt && !headsGone.includes('instance_id')}`
+    + `; HELD BACK ${heldOk}: the Summary grid's undrawn names ${JSON.stringify(undS).slice(0, 160)} ('_' names ${listS.filter(x => x.name.startsWith('_')).length}); 'engine' declared ${never}, listed after ${listN.some(x => x.name === 'engine')}; instance_id ticked ${tickS && headsS.includes('instance_id')}; the stored choice ${typeof kept === 'string' ? kept.slice(0, 160) : `${kept} entries naming instance_id`}`
+    + `; drawn again: columns of the three ${JSON.stringify(headsK.filter(x => x === 'instance_id' || x === '_worst' || x === 'engine'))}, listed ${JSON.stringify(listK.filter(x => x.name === '_worst' || x.name === 'engine').map(x => x.name))}; ${heldIn.join('; ') || 'no copy and no file holds _worst or engine'}; Reset this grid ${rst}: instance_id ${headsR.includes('instance_id') ? 'still drawn' : 'gone'}`);
 });
 
 await guard('P-rowhead', async () => {
@@ -1228,14 +1379,20 @@ await guard('P-rowhead', async () => {
   await gmOpen(gCell('sessions')); const p1 = await gmPick('Row Headers', 'Show with Row Numbers'); await sleep(300); const t1 = await ticks(), l1 = await look();
   await gmOpen(gCell('sessions')); const p2 = await gmPick('Row Headers', 'Show'); await sleep(300); const t2 = await ticks(), l2 = await look();
   await send('Page.reload'); await sleep(1500); await go('#/instances'); const l2b = await look();
+  // a saved choice of the build before this one ('Row numbers' on: rownum true) under the grid's own key - the one entry
+  // Show left for this tab - then a reload: no saved choice is lost
+  const oldForm = JSON.stringify({ hidden: [], frozen: 0, bars: {}, rownum: true });
+  const oldKey = await ev(`(() => { const ks = Object.keys(localStorage).filter(k => k.startsWith('pgvigil.grid.instances.')); if (ks.length !== 1) return ks.length; localStorage.setItem(ks[0], ${JSON.stringify(oldForm)}); return ks[0]; })()`);
+  await send('Page.reload'); await sleep(1500); await go('#/instances'); const lOld = await look(), tOld = await ticks();
   await gmOpen(gCell('sessions')); const p3 = await gmPick('Row Headers', 'Hide'); await sleep(300); const t3 = await ticks(), l3 = await look();
   await gReset();
   check('P-rowhead', JSON.stringify(subH) === JSON.stringify(want) && JSON.stringify(subC) === JSON.stringify(want) && !top.includes('Row numbers')
     && JSON.stringify(t0) === '["Hide"]' && !!l0 && !l0.rownum && !l0.rowhead
     && p1 && JSON.stringify(t1) === '["Show with Row Numbers"]' && !!l1 && l1.counter
     && p2 && JSON.stringify(t2) === '["Show"]' && !!l2 && l2.rowhead && !l2.counter && !!l2b && l2b.rowhead && !l2b.counter
+    && typeof oldKey === 'string' && !!lOld && lOld.counter && JSON.stringify(tOld) === '["Show with Row Numbers"]'
     && p3 && JSON.stringify(t3) === '["Hide"]' && !!l3 && !l3.rownum && !l3.rowhead && !l3.counter,
-    `Row Headers on the header ${JSON.stringify(subH)}, on a cell ${JSON.stringify(subC)}; 'Row numbers' still at the top ${top.includes('Row numbers')}; ticked fresh ${JSON.stringify(t0)}; Show with Row Numbers ${JSON.stringify(t1)} ${JSON.stringify(l1)}; Show ${JSON.stringify(t2)} ${JSON.stringify(l2)}, after a reload ${JSON.stringify(l2b)}; Hide ${JSON.stringify(t3)} ${JSON.stringify(l3)}`);
+    `Row Headers on the header ${JSON.stringify(subH)}, on a cell ${JSON.stringify(subC)}; 'Row numbers' still at the top ${top.includes('Row numbers')}; ticked fresh ${JSON.stringify(t0)}; Show with Row Numbers ${JSON.stringify(t1)} ${JSON.stringify(l1)}; Show ${JSON.stringify(t2)} ${JSON.stringify(l2)}, after a reload ${JSON.stringify(l2b)}; a saved 'rownum: true' (${typeof oldKey === 'string' ? 'written under the grid\'s key' : `${oldKey} stored entries for this tab, none written`}) opens ${JSON.stringify(tOld)} ${JSON.stringify(lOld)}; Hide ${JSON.stringify(t3)} ${JSON.stringify(l3)}`);
 });
 
 await guard('P-freeze', async () => {
@@ -1253,6 +1410,218 @@ await guard('P-freeze', async () => {
     && p1 && !!f1 && f1.ticked && !!u1 && !!s1 && s1.on && s1.sticky
     && p2 && !!f2 && !f2.ticked && !u2 && !!s2 && !s2.on,
     `platform's header: Freeze Column ${JSON.stringify(f0)}, Unfreeze Column ${JSON.stringify(u0)}, frozen ${JSON.stringify(s0)}; after Freeze Column ${JSON.stringify(f1)} / ${JSON.stringify(u1)} / ${JSON.stringify(s1)}; after Unfreeze Column ${JSON.stringify(f2)} / ${JSON.stringify(u2)} / ${JSON.stringify(s2)}`);
+});
+
+// ---- the P rows' dialogs: the newest open dialog (a tool's dialog inside the file viewer's is the later one), a field
+// of it by its name (its aria-label, else its label's words), a button of it pressed: whether the dialog stayed open and
+// what it said (role alert, or .error)
+const DLG = `[...document.querySelectorAll('dialog[open]')].pop()`;
+const dField = name => `[...(${DLG}?.querySelectorAll('input, select, textarea') ?? [])].find(x => { const n = (x.getAttribute('aria-label') ?? x.closest('label')?.textContent ?? '').replace(/\\s+/g, ' ').trim(); return n === ${JSON.stringify(name)} || n.startsWith(${JSON.stringify(name + ' ')}); })`;
+const dGet = name => ev(`(() => { const x = ${dField(name)}; return x ? (x.type === 'checkbox' ? x.checked : x.tagName === 'SELECT' ? (x.selectedOptions[0]?.textContent ?? '').trim() : x.value) : null; })()`);
+const dSet = (name, v) => ev(`(() => { const x = ${dField(name)}; if (!x || x.disabled || x.getAttribute('aria-disabled') === 'true') return false;
+  if (x.type === 'checkbox') { if (x.checked !== ${JSON.stringify(v)}) x.click(); } else { x.value = ${JSON.stringify(v)}; x.dispatchEvent(new Event('input', { bubbles: true })); x.dispatchEvent(new Event('change', { bubbles: true })); } return true; })()`);
+const dPress = async label => { const r = await ev(`(async () => { const d = ${DLG}; const b = d && [...d.querySelectorAll('button')].find(x => x.textContent.trim() === ${JSON.stringify(label)}); if (!b || b.getAttribute('aria-disabled') === 'true') return null;
+  b.click(); await new Promise(r => setTimeout(r, 400)); const open = d.isConnected && d.open; return { open, said: open ? [...d.querySelectorAll('[role=alert], .error')].map(x => x.textContent.trim()).filter(Boolean).join(' ') : '' }; })()`); await sleep(400); return r; };
+const said = r => r ? (r.open ? `open, '${r.said}'` : 'closed') : 'no such dialog or button';
+
+await guard('P-editfilter', async () => {
+  await dropHostile();
+  const cell = gCell('txt', 0, GV), th = `${GV}.querySelectorAll('thead tr:first-child th')[1]`;
+  const fields = () => ev(`(() => { const t = ${GV}; if (!t) return null; const ins = [...t.querySelectorAll('thead tr.filters td')].map(td => td.querySelector('input')?.value ?? '');
+    return Object.fromEntries([...t.querySelectorAll('thead tr:first-child th')].map((h, i) => [h.textContent.trim() || 'column ' + (i + 1), ins[i] ?? ''])); })()`);
+  const ids = async () => (await gCol('id', GV)).join(',');
+  const efOpen = async sel => { await gmOpen(sel); if (!await gmPick('Edit Filter')) return null; await sleep(300); return ev(`${DLG}?.querySelector('textarea')?.value ?? null`); };
+  const efApply = async text => { const set = await ev(`(() => { const a = ${DLG}?.querySelector('textarea'); if (!a) return false; a.value = ${JSON.stringify(text)}; a.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+    const r = set ? await dPress('Apply') : null; await sleep(600); return r; };
+  const norm = x => (x ?? '(no Edit Filter dialog)').replace(/\r/g, '').trim(), holds = (f, want) => !!f && Object.entries(f).every(([k, v]) => v === (want[k] ?? ''));
+  const onHead = ((await gmOpen(th))[0] ?? []).some(x => x.label.replace(/\.\.\.$/, '') === 'Edit Filter'); await gmClose();
+  await gFilter('txt', 'like "R%"', GV); await gFilter('num', '>=13', GV);
+  const ids0 = await ids(), text0 = norm(await efOpen(cell));
+  const a1 = await efApply('[column 5] =""'), f1 = await fields(), ids1 = await ids(), text1 = norm(await efOpen(cell));
+  const a2 = await efApply('[column 5] <>"e7"\n[we]]ird"name] like "o1%"'), f2 = await fields(), ids2 = await ids(), text2 = norm(await efOpen(cell));
+  // what it cannot read: refused in words naming the line, the dialog open, the filter row as it was
+  const bad = [];
+  for (const [t, want] of [['txt like "R%"', /line 1/i], ['[nosuch] ="x"', /^(?=[^]*line 1)(?=[^]*nosuch)/i], ['[id] >1\n[id] <5', /line 2/i]]) {
+    const r = await efApply(t), f = await fields();
+    bad.push({ t: t.replace(/\n/g, ' / '), r, ok: !!r && r.open && want.test(r.said) && JSON.stringify(f) === JSON.stringify(f2) });
+  }
+  const a3 = await efApply(''), f3 = await fields(), ids3 = await ids();
+  const rowThere = await ev(`!!${GV}?.querySelector('thead tr.filters')`);
+  await closeDialogs();
+  check('P-editfilter', onHead && ids0 === '13,14' && text0 === '[txt] like "R%"\n[num] >=13'
+    && !!a1 && !a1.open && holds(f1, { 'column 5': '=""' }) && ids1 === '1,2,3,4,5,6' && text1 === '[column 5] =""'
+    && !!a2 && !a2.open && holds(f2, { 'we]ird"name': 'like "o1%"', 'column 5': '<>"e7"' }) && ids2 === '1,10,14,15,16,17,18' && text2 === '[we]]ird"name] like "o1%"\n[column 5] <>"e7"'
+    && bad.every(b => b.ok) && !!a3 && !a3.open && holds(f3, {}) && ids3.split(',').length === hostile.length && rowThere,
+    `Edit Filter on the header ${onHead}; txt like "R%" and num >=13 leave ids ${ids0}, the text '${text0.replace(/\n/g, ' / ')}'; '[column 5] =""' applied (${said(a1)}): fields ${JSON.stringify(f1)}, ids ${ids1}, the text again '${text1.replace(/\n/g, ' / ')}'`
+    + `; two lines applied (${said(a2)}): fields ${JSON.stringify(f2)}, ids ${ids2}, the text again '${text2.replace(/\n/g, ' / ')}'; refusals: ${bad.map(b => `'${b.t}' -> ${said(b.r)}${b.ok ? '' : ' NOT AS EXPECTED'}`).join('; ')}`
+    + `; an empty text (${said(a3)}): ${ids3 === '' ? 0 : ids3.split(',').length} rows of ${hostile.length}, fields ${JSON.stringify(f3)}; the filter row there ${rowThere}`);
+});
+
+await guard('P-groupby', async () => {
+  await gFresh();
+  const thP = await thOf('platform');
+  const topH = ((await gmOpen(thP))[0] ?? []).map(x => x.label), topC = ((await gmOpen(gCell('sessions')))[0] ?? []).map(x => x.label); await gmClose();
+  const has = top => top.some(x => x.replace(/\.\.\.$/, '') === 'Group By'), old = [...new Set([...topH, ...topC].filter(x => /^Group by /.test(x)))];
+  const plats = await gCol('platform'), ses = (await gCol('sessions')).map(gNum), names = await gCol('name');
+  await gmOpen(thP); const opened = await gmPick('Group By'); await sleep(300);
+  const pre = { key: await dGet('Group By platform'), count: await dGet('Include Count'), pct: await dGet('Count % of Total'),
+    sumText: await ev(`(() => { const x = ${dField('Sum platform')}; return !x ? 'absent' : x.disabled || x.getAttribute('aria-disabled') === 'true' ? 'off' : 'on'; })()`) };
+  // OK with no Group By ticked: refused in words, the dialog still open
+  await dSet('Group By platform', false); const none = await dPress('OK');
+  const unset = [];
+  for (const n of ['Group By platform', 'Count Distinct name', 'Sum sessions', 'Sum % sessions', 'Avg sessions', 'Min sessions', 'Max sessions', 'Include Count', 'Count % of Total']) if (!await dSet(n, true)) unset.push(n);
+  const done = await dPress('OK');
+  const got = await ev(`(() => { const t = document.querySelector('.gt-groups table'); return t ? { heads: [...t.querySelectorAll('thead th')].map(h => h.textContent.replace(/\\s+/g, ' ').trim()),
+    rows: [...t.querySelectorAll('tbody tr')].map(tr => [...tr.children].map(c => c.textContent.replace(/\\s+/g, ' ').trim())) } : null; })()`);
+  await closeDialogs(); await gReset();
+  // by hand, from the grid's own rows
+  const wantHeads = ['platform', 'Count', 'Count %', 'name | Count Distinct', 'sessions | Sum', 'sessions | Sum %', 'sessions | Avg', 'sessions | Min', 'sessions | Max'];
+  const total = plats.length, grand = ses.reduce((a, b) => a + (b ?? 0), 0), numIn = x => { const t = String(x ?? '').replace(/[^0-9.-]/g, ''); return t === '' || t === '-' ? null : Number(t); };
+  const diffs = [];
+  for (const p of [...new Set(plats)]) {
+    const ix = plats.map((x, i) => x === p ? i : -1).filter(i => i >= 0), xs = ix.map(i => ses[i]).filter(v => v !== null), sum = xs.reduce((a, b) => a + b, 0);
+    const want = [ix.length, ix.length / total * 100, new Set(ix.map(i => names[i])).size, xs.length ? sum : null, xs.length && grand ? sum / grand * 100 : null, xs.length ? sum / xs.length : null, xs.length ? Math.min(...xs) : null, xs.length ? Math.max(...xs) : null];
+    const r = (got?.rows ?? []).find(x => x[0] === (p || '(empty)'));
+    if (!r) { diffs.push(`${p}: no row`); continue; }
+    want.forEach((w, k) => { const g = numIn(r[k + 1]), tol = k === 0 || k === 2 ? 0 : k === 1 || k === 4 ? 0.1 : 0.01;
+      if (w === null ? g !== null : g === null || Math.abs(g - w) > tol + 1e-9) diffs.push(`${p} ${wantHeads[k + 1]}: '${r[k + 1] ?? ''}' (by hand ${w === null ? 'none' : Math.round(w * 100) / 100})`); });
+  }
+  check('P-groupby', has(topH) && has(topC) && old.length === 0 && opened && pre.key === true && pre.count === true && pre.pct === false && pre.sumText !== 'on'
+    && !!none && none.open && /at least one column/i.test(none.said) && unset.length === 0 && !!done && !done.open
+    && !!got && JSON.stringify(got.heads) === JSON.stringify(wantHeads) && got.rows.length === new Set(plats).size && total > 0 && diffs.length === 0,
+    `Group By... on the header ${has(topH)}, on a cell ${has(topC)}; the one-click items left ${JSON.stringify(old)}; the dialog opened ${opened}: ${JSON.stringify(pre)}; OK with no Group By: ${said(none)}; ticks not found ${JSON.stringify(unset)}; OK: ${said(done)}`
+    + `; the panel's header ${got ? JSON.stringify(got.heads) : '(no .gt-groups table)'}, ${got?.rows.length ?? 0} rows for ${new Set(plats).size} platforms of ${total} instances; against the grid's rows: ${diffs.slice(0, 6).join('; ') || 'every number as worked out by hand'}${diffs.length > 6 ? ` (+${diffs.length - 6} more)` : ''}`);
+});
+
+await guard('P-bars', async () => {
+  await gFresh();
+  const cell = gCell('sessions');
+  const sub = async () => { await gmOpen(cell); const o = await gmPick('Data bar'); const lv = o ? (await gmLevels())[1] ?? [] : []; await gmClose(); return lv; };
+  const offOf = (lv, l) => { const x = lv.find(y => y.label === l); return x ? (x.off ?? 'ON') : 'absent'; };
+  const wantSub = ['Behind value', 'Under value', 'Traffic light (higher is worse)', 'Traffic light (higher is better)', 'Options...', 'Copy to All Numeric Columns', 'Remove', 'Remove All Data Bars'];
+  // a column's bars as drawn: the cells that carry one under the value, the cells with a number above zero, and the
+  // share of the largest of those
+  const barOf = label => ev(`(() => { const j = ${gIx(label)}; const tds = ${gRows}.map(tr => tr.children[j]).filter(Boolean); const val = td => { const x = td.textContent.replace(/,/g, '').trim(); return /^-?\\d+(\\.\\d+)?$/.test(x) ? Number(x) : null; };
+    const pos = tds.filter(td => val(td) !== null && val(td) > 0), top = [...pos].sort((a, b) => val(b) - val(a))[0];
+    return { under: tds.filter(td => td.classList.contains('gt-bar-under')).length, positive: pos.length, max: top ? val(top) : null, share: top ? (top.style.getPropertyValue('--gt-share') || getComputedStyle(top).getPropertyValue('--gt-share')).trim() : '' }; })()`);
+  const stored = () => ev(`(() => { const ks = Object.keys(localStorage).filter(k => k.startsWith('pgvigil.grid.instances.')); try { return ks.length === 1 ? JSON.parse(localStorage.getItem(ks[0])).bars ?? null : null; } catch { return null; } })()`);
+  const lights = () => ev(`${GT}.querySelectorAll('td.gt-bar, td.gt-tl-r, td.gt-tl-a, td.gt-tl-g').length`);
+  const sub0 = await sub(), labels0 = sub0.map(x => x.label);
+  const numCols = await ev(`[...${GT}.querySelectorAll('thead tr:first-child th')].filter(h => h.classList.contains('num')).map(h => h.textContent.trim())`);
+  await gmOpen(cell); const p1 = await gmPick('Data bar', 'Under value'); await sleep(300);
+  await gmOpen(cell); const p2 = await gmPick('Data bar', 'Copy to All Numeric Columns'); await sleep(300);
+  const st2 = await stored(), s2 = await barOf('sessions'), a2 = await barOf('active');
+  await send('Page.reload'); await sleep(1500); await go('#/instances'); const s2b = await barOf('sessions'), a2b = await barOf('active');
+  // Options...: Style, Minimum, Maximum; a Maximum of twice the largest value halves the largest bar
+  const max = s2.max ?? 0;
+  await gmOpen(cell); const o1 = await gmPick('Data bar', 'Options'); await sleep(300);
+  const opt = { style: await dGet('Style'), min: await dGet('Minimum'), max: await dGet('Maximum') }, optBtns = await ev(`[...(${DLG}?.querySelectorAll('button') ?? [])].map(b => b.textContent.trim())`);
+  await dSet('Maximum', String(max * 2)); const ok1 = await dPress('OK'), s3 = await barOf('sessions');
+  await gmOpen(cell); await gmPick('Data bar', 'Options'); await sleep(300); const kept = await dGet('Maximum');
+  await dSet('Maximum', 'abc'); const badMax = await dPress('OK'), s4 = await barOf('sessions');
+  await dSet('Maximum', ''); const ok2 = await dPress('OK'), s5 = await barOf('sessions');
+  await closeDialogs();
+  await gmOpen(cell); const p3 = await gmPick('Data bar', 'Remove All Data Bars'); await sleep(300);
+  const none1 = await lights(), st3 = await stored();
+  await send('Page.reload'); await sleep(1500); await go('#/instances');
+  const none2 = await lights(), sub9 = await sub();
+  await gReset();
+  check('P-bars', JSON.stringify(labels0) === JSON.stringify(wantSub) && offOf(sub0, 'Copy to All Numeric Columns') === 'no data bar on sessions' && offOf(sub0, 'Remove All Data Bars') === 'no data bar on this grid'
+    && p1 && p2 && numCols.length > 1 && numCols.every(n => st2?.[n] === 'under') && s2.positive > 0 && s2.under === s2.positive && s2.share === '100%' && (a2.positive === 0 || (a2.under === a2.positive && a2.share === '100%'))
+    && s2b.under === s2.under && s2b.share === '100%' && a2b.under === a2.under
+    && o1 && opt.style === 'Under value' && opt.min === '' && opt.max === '' && ['OK', 'Cancel', 'Remove'].every(b => optBtns.includes(b))
+    && !!ok1 && !ok1.open && max > 0 && s3.share === '50%' && kept !== null && kept !== '' && Number(kept) === max * 2
+    && !!badMax && badMax.open && /Maximum/.test(badMax.said) && s4.share === '50%' && !!ok2 && !ok2.open && s5.share === '100%'
+    && p3 && none1 === 0 && (st3 === null || Object.keys(st3).length === 0) && none2 === 0 && offOf(sub9, 'Remove All Data Bars') === 'no data bar on this grid',
+    `Data bar on sessions: ${JSON.stringify(labels0)}; with no bar Copy to All '${offOf(sub0, 'Copy to All Numeric Columns')}', Remove All '${offOf(sub0, 'Remove All Data Bars')}'; Under value ${p1}, Copy to All Numeric Columns ${p2}: stored ${JSON.stringify(st2)} for the number columns ${JSON.stringify(numCols)}, sessions ${JSON.stringify(s2)}, active ${JSON.stringify(a2)}; after a reload ${JSON.stringify(s2b)} / ${JSON.stringify(a2b)}`
+    + `; Options... ${o1}: ${JSON.stringify(opt)}, buttons ${JSON.stringify(optBtns)}; Maximum ${max * 2}: ${said(ok1)}, the largest cell ${s3.share || 'no bar'}, the field again '${kept}'; 'abc': ${said(badMax)}, ${s4.share || 'no bar'}; emptied: ${said(ok2)}, ${s5.share || 'no bar'}`
+    + `; Remove All Data Bars ${p3}: ${none1} cells with a bar, stored ${JSON.stringify(st3)}, after a reload ${none2}, the item then '${offOf(sub9, 'Remove All Data Bars')}'`);
+});
+
+await guard('P-script', async () => {
+  const viewer = () => ev(`(() => { const d = document.querySelector('dialog.sqlview[open]'); return d ? { head: d.querySelector('h3')?.textContent ?? '', text: d.querySelector('pre')?.textContent ?? '', copy: !!d.querySelector('button.sqlview-copy') } : null; })()`);
+  const shut = () => ev(`document.querySelector('dialog.sqlview')?.close()`);
+  const script = async (sel, item) => { await shut(); await gmOpen(sel); if (!await gmPick('Save Table', item)) return null; await sleep(400); const v = await viewer(); await shut(); return v; };
+  const dialect = v => !v ? 'no script' : /pg_temp\.pgvigil_grid/.test(v.text) && !/#pgvigil_grid/.test(v.text) ? 'postgres' : /#pgvigil_grid/.test(v.text) && !/pg_temp\.pgvigil_grid/.test(v.text) ? 'sqlserver' : 'neither';
+  // a column the script names: outside its value rows (a value may hold any word)
+  const namesCol = (v, k) => !!v && new RegExp(`(^|[^A-Za-z0-9_])${k}([^A-Za-z0-9_]|$)`).test(v.text.split('\n').filter(l => !/^\s*,?\s*\(/.test(l)).join('\n'));
+  // the fleet's Instances, filtered to its first name
+  await gFresh();
+  const all = (await gCol('name')).length, first = (await gCol('name'))[0] ?? '';
+  await gFilter('name', first); const shownN = (await gCol('name')).length;
+  await gmOpen(gCell('sessions')); const okSub = await gmPick('Save Table'); const lv = okSub ? (await gmLevels())[1] ?? [] : []; await gmClose();
+  const onHead = ((await gmOpen(await thOf('sessions')))[0] ?? []).some(x => x.label === 'Save Table'); await gmClose();
+  const sg = await script(gCell('sessions'), 'Script Grid'), sd = await script(gCell('sessions'), 'Script Data Table');
+  await gReset();
+  // an instance of each engine: the dialect is the page's
+  await go(`#/statements?i=${erpId}`); await sleep(500);
+  const pg = await script(`document.querySelector('main table.grid tbody td')`, 'Script Grid');
+  const sqlId = idOf('demo-onprem-sql01'); let msTab = '', ms = null;
+  for (const tab of ['dbfiles', 'dbspace', 'jobs', 'backups', 'mssqlerrors', 'mssqltempdb']) { await go(`#/${tab}?i=${sqlId}`); await sleep(500); if (await ev(`!!document.querySelector('main table.grid tbody td')`)) { msTab = tab; break; } }
+  if (msTab) ms = await script(`document.querySelector('main table.grid tbody td')`, 'Script Grid');
+  // held back: the Summary's Instances grid, 'engine' declared never offered
+  await go('#/summary'); for (let k = 0; k < 20 && !await ev(`!!${ST}`); k++) await sleep(250);
+  const never = await pNever(ST, ['engine']);
+  const sum = await script(`${ST}?.querySelector('tbody td')`, 'Script Data Table');
+  await pNeverOff(); await gmClose();
+  const held = ['_worst', '_cells', '_acked', '_live', '_chips', 'engine'].filter(k => namesCol(sum, k));
+  const wantSub = ['From Data Table', 'From Grid', 'Script Data Table', 'Script Grid'], subL = lv.map(x => x.label), offs = lv.filter(x => /^From /.test(x.label)).map(x => x.off ?? 'ON');
+  check('P-script', okSub && onHead && JSON.stringify(subL) === JSON.stringify(wantSub) && offs.length === 2 && offs.every(o => /not built/.test(o))
+    && dialect(sg) === 'postgres' && sg.copy && /CREATE TEMP TABLE/.test(sg.text) && tuples(sg.text) === shownN && shownN > 0 && shownN < all && !namesCol(sg, 'instance_id')
+    && dialect(sd) === 'postgres' && tuples(sd.text) === all && namesCol(sd, 'instance_id')
+    && dialect(pg) === 'postgres' && msTab !== '' && dialect(ms) === 'sqlserver'
+    && never && !!sum && namesCol(sum, 'instance_id') && held.length === 0,
+    `Save Table on a cell ${okSub}, on the header ${onHead}: ${JSON.stringify(subL)}, the From items ${JSON.stringify(offs)}; Instances filtered to '${first}' (${shownN} of ${all} rows): Script Grid ${dialect(sg)}, ${sg ? tuples(sg.text) : 0} value rows, instance_id ${namesCol(sg, 'instance_id') ? 'named' : 'not named'}, the viewer's Copy ${!!sg?.copy}`
+    + `; Script Data Table ${dialect(sd)}, ${sd ? tuples(sd.text) : 0} value rows, instance_id ${namesCol(sd, 'instance_id') ? 'named' : 'not named'}; a PostgreSQL instance's Statements: ${dialect(pg)}; a SQL Server instance's ${msTab || 'pages (none of the six drew rows)'}: ${dialect(ms)}`
+    + `; the Summary's Instances grid with 'engine' never offered (${never}): Script Data Table ${sum ? `names instance_id ${namesCol(sum, 'instance_id')}, held-back columns named ${JSON.stringify(held)}` : 'not opened'}`);
+});
+
+await guard('P-copysum', async () => {
+  // the tag most instances of one engine alone carry (the wording walk's pick)
+  const tagsOf = r => (Array.isArray(r.tags) ? r.tags : String(r.tags ?? '').split(/[\s,{}]+/)).filter(Boolean), tagCount = new Map();
+  for (const r of rowsOf(inst)) for (const t of tagsOf(r)) { const c = tagCount.get(t) ?? { n: 0, engines: new Set() }; c.n++; c.engines.add(r.engine === 'sqlserver' ? 'sqlserver' : 'postgres'); tagCount.set(t, c); }
+  const oneTag = e => [...tagCount.entries()].filter(([t, c]) => c.engines.size === 1 && c.engines.has(e) && t !== 'demo').sort((a, b) => b[1].n - a[1].n || a[0].localeCompare(b[0]))[0]?.[0];
+  const UT = `document.querySelector('main table.grid[data-grid-name="Test Summary"]')`, out = [];
+  const open = async () => { await gmClose(); const b = await ev(`(() => { const b = [...document.querySelectorAll('.summary-toolbar button')].find(x => x.textContent.replace(/[^A-Za-z ]/g, '').trim() === 'Copy'); if (!b) return false; b.click(); return true; })()`); await sleep(250); return b; };
+  const one = async label => { await gmClip(); if (!await open() || !await clickItem(label)) { await gmClose(); return null; } const plain = await gmCopied(), htm = await gmCopied('text/html');
+    return { plain: plain ?? '', htm: htm ?? '', said: await ev(`[...document.querySelectorAll('main [role=status], main .gt-stats, main .meta')].some(e => /^Copied/.test(e.textContent.trim()))`) }; };
+  const judge = (c, first, n) => { if (!c) return 'the item is not there'; const ls = c.plain.split('\n').filter(l => l !== ''), trs = (c.htm.match(/<tr[ >]/g) ?? []).length, fills = /data-status=/.test(c.htm);
+    return ls.length === n + 1 && n > 0 && ls[0].split('\t')[0] === first && /<table/.test(c.htm) && trs === n + 1 && fills && c.said ? 'ok' : `${ls.length} lines for ${n} rows, first '${(ls[0] ?? '').split('\t')[0]}', ${trs} HTML rows, fills ${fills}, said Copied ${c.said}`; };
+  for (const [eng, tag] of [['PostgreSQL', oneTag('postgres')], ['SQL Server', oneTag('sqlserver')]]) {
+    if (!tag) { out.push({ eng, ok: false, why: 'no tag holds only its instances' }); continue; }
+    await go(`#/summary?tag=${encodeURIComponent(tag)}`); for (let k = 0; k < 20 && !await ev(`!!${ST}`); k++) await sleep(250);
+    const nL = await ev(`${ST} ? ${gRowsOf(ST)}.length : -1`), nU = await ev(`${UT} ? ${gRowsOf(UT)}.length : -1`);
+    const there = await open(), items = await ev(`[...document.querySelectorAll('.menu button')].map(b => b.textContent.trim())`); await gmClose();
+    const s = judge(await one('Copy Summary'), 'Instance', nL), t = judge(await one('Copy Test Summary'), 'Test', nU);
+    out.push({ eng, tag, ok: there && JSON.stringify(items) === '["Copy Summary","Copy Test Summary"]' && s === 'ok' && t === 'ok',
+      why: `the toolbar's Copy ${there ? JSON.stringify(items) : 'is not there'}; Copy Summary (${nL} instances): ${s}; Copy Test Summary (${nU} tests): ${t}` });
+  }
+  await gmClose();
+  check('P-copysum', out.length === 2 && out.every(o => o.ok), out.map(o => `${o.eng}${o.tag ? ` (tag ${o.tag})` : ''}: ${o.why}`).join('; '));
+});
+
+await guard('P-opengrid', async () => {
+  // built on the base: the grid's own JSON file opens through Tools > Open Grid or Data Set with the same rows
+  await gFresh();
+  const heads = await gHeads(), cols = { name: await gCol('name'), platform: await gCol('platform'), version: await gCol('version') };
+  const file = await gmFile(gCell('sessions'), 'JSON', 'json');
+  let v = null;
+  if (file) {
+    await ev(`[...document.querySelectorAll('#bar button')].find(b => b.textContent === 'Tools').click()`);
+    await send('Page.setInterceptFileChooserDialog', { enabled: true });
+    const chooser = event('Page.fileChooserOpened');
+    await clickItem('Open Grid or Data Set');
+    const fc = await chooser;
+    await send('DOM.setFileInputFiles', { files: [path.join(dl, file.name)], backendNodeId: fc.backendNodeId });
+    await sleep(1000);
+    v = await ev(`(() => { const d = document.querySelector('dialog.fd-viewer[open]'), t = d?.querySelector('table.grid'); if (!t) return d ? { title: d.getAttribute('aria-label') } : null;
+      const hs = [...t.querySelectorAll('thead tr:first-child th')].map(h => h.textContent.trim()), col = n => [...t.querySelectorAll(':scope > tbody > tr')].map(tr => tr.children[hs.indexOf(n)]?.textContent.trim() ?? '');
+      return { title: d.getAttribute('aria-label'), heads: hs, name: col('name'), platform: col('platform'), version: col('version') }; })()`);
+    await closeDialogs();
+  }
+  const differ = v?.heads ? ['name', 'platform', 'version'].filter(k => JSON.stringify(v[k]) !== JSON.stringify(cols[k])) : ['(no grid)'];
+  check('P-opengrid', !!file && !!v && v.title === 'Grid: ' + file.name && JSON.stringify(v.heads) === JSON.stringify(heads) && cols.name.length > 0 && differ.length === 0,
+    `${file ? `the JSON file ${file.name}` : 'no JSON file'}; opened as '${v?.title ?? 'nothing'}': ${v?.heads ? `${v.heads.length} columns (the grid ${heads.length}${JSON.stringify(v.heads) === JSON.stringify(heads) ? ', the same names' : ', NOT the same names: ' + JSON.stringify(v.heads).slice(0, 200)}), ${v.name.length} rows (the grid ${cols.name.length}); columns that differ: ${differ.join(', ') || 'none of name, platform, version'}` : 'no grid in the viewer'}`);
 });
 
 if (shots) await guard('G-themes', async () => {
