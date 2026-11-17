@@ -21,6 +21,17 @@ export interface Rule { set: number; column: string; eval?: string; cond: string
 export interface ReportDef {
   report_id?: number; name: string; description?: string; folder: string; engine: string; kind: string; body: string;
   params: Param[]; columns: ColFmt[]; rules: Rule[]; timeout_secs: number; max_rows: number; version?: number;
+  visibility?: Visibility; access?: string[];   // 0372's view: who sees it, which roles open it (a list: Q160 is open)
+}
+export interface Visibility { engines?: string[]; tags?: string[]; include?: string[]; exclude?: string[] }
+// matches: whether an instance meets a report's visibility rules (the server's visibleOn, internal/web/q_customreports_view.go)
+export function matches(v: Visibility | undefined, i: { name: string; engine: string; tags: string[] }): boolean {
+  if (!v) return true;
+  if (v.include?.includes(i.name)) return true;
+  if (v.exclude?.includes(i.name)) return false;
+  if (v.engines?.length && !v.engines.includes(i.engine)) return false;
+  if (v.tags?.length && !i.tags.some(t => v.tags!.includes(t))) return false;
+  return true;
 }
 export interface ResultSet { columns: string[]; types: string[]; rows: unknown[][]; truncated?: boolean }
 export interface InstanceRun { instance_id?: number; instance: string; engine: string; outcome: string; error?: string; duration_ms: number; rows: number; sets: ResultSet[]; declined?: boolean }
@@ -189,6 +200,14 @@ export function resultView(runs: InstanceRun[], def?: Pick<ReportDef, 'columns' 
 
 // ---- reading the definitions ------------------------------------------------------------------------------------
 
+// viewOf: 0372's view column as the definition's own keys (an empty view, '{}': none of them - the report as before)
+function viewOf(v: unknown): Pick<ReportDef, 'visibility' | 'access'> {
+  const o = v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+  const out: Pick<ReportDef, 'visibility' | 'access'> = {};
+  if (o.visibility && typeof o.visibility === 'object') out.visibility = o.visibility as Visibility;
+  if (Array.isArray(o.access) && o.access.length) out.access = o.access.map(String);
+  return out;
+}
 function defOf(r: Row): ReportDef {
   const arr = <T>(v: unknown): T[] => Array.isArray(v) ? v as T[] : [];
   return {
@@ -196,6 +215,7 @@ function defOf(r: Row): ReportDef {
     folder: String(r.folder ?? ''), engine: String(r.engine), kind: String(r.kind), body: String(r.body ?? ''),
     params: arr<Param>(r.params), columns: arr<ColFmt>(r.columns), rules: arr<Rule>(r.rules),
     timeout_secs: Number(r.timeout_secs ?? 30), max_rows: Number(r.max_rows ?? 5000), version: Number(r.version ?? 1),
+    ...viewOf(r.view),
   };
 }
 
@@ -254,7 +274,8 @@ function folderTree(folders: string[]): string[] {
 }
 
 async function treePage(ctx: Ctx): Promise<HTMLElement> {
-  const d = await get<{ state: State; folders: Table | null; reports: Table | null; log: Table | null }>('customreports');
+  // 0372: the list as this scope sees it (an instance's or a tag folder's: the reports' visibility rules)
+  const d = await get<{ state: State; folders: Table | null; reports: Table | null; log: Table | null }>('customreports', { i: ctx.instance, tag: tagQ(ctx) ? ctx.tag : undefined });
   const reports = rowsOf(d.reports).map(defOf);
   const folders = folderTree(rowsOf(d.folders).map(r => String(r.folder)));
   const sec = el('section', {}, el('h2', {}, 'Custom reports' + (tagQ(ctx) ? ` - ${tagWords(ctx.tag!)}` : '')));
@@ -563,6 +584,39 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
   }, { set: 0, cond: 'gt', status: 'warn' });
   sec.append(params.box, columns.box, rules.box);
 
+  // who sees the report (DBA Dash's Visibility..., L84) and who opens it (its access, L85: a list of role names)
+  const insts = await instances().catch(() => [] as Inst[]);
+  const vis = def.visibility ?? {};
+  const box = (label: string, on: boolean) => { const c = el('input', { type: 'checkbox', 'aria-label': label }) as HTMLInputElement; c.checked = on; return c; };
+  const engBoxes = [['postgres', 'PostgreSQL'], ['sqlserver', 'SQL Server']].map(([k, l]) => ({ k, c: box(l, !!vis.engines?.includes(k)), l }));
+  const allTags = [...new Set(insts.flatMap(i => i.tags))].sort();
+  const tagBoxes = allTags.map(t => ({ k: t, c: box('Tag ' + t, !!vis.tags?.includes(t)), l: t }));
+  const multi = (label: string, chosen: string[] = []) => { const s = el('select', { multiple: '', size: '6', 'aria-label': label }) as HTMLSelectElement;
+    for (const i of insts) { const o = el('option', { value: i.name }, i.name) as HTMLOptionElement; o.selected = chosen.includes(i.name); s.append(o); } return s; };
+  const inc = multi('Include instances', vis.include), exc = multi('Exclude instances', vis.exclude);
+  const filterBox = el('input', { type: 'search', 'aria-label': 'Filter the instance lists', size: '20' }) as HTMLInputElement;
+  filterBox.addEventListener('input', () => { for (const s of [inc, exc]) for (const o of s.options) o.hidden = !!filterBox.value && !o.value.toLowerCase().includes(filterBox.value.toLowerCase()); });
+  const picked = (s: HTMLSelectElement) => [...s.selectedOptions].map(o => o.value);
+  const readVis = (): Visibility | undefined => {
+    const v: Visibility = { engines: engBoxes.filter(b => b.c.checked).map(b => b.k), tags: tagBoxes.filter(b => b.c.checked).map(b => b.k), include: picked(inc), exclude: picked(exc) };
+    return v.engines!.length || v.tags!.length || v.include!.length || v.exclude!.length ? v : undefined;
+  };
+  const warn = el('p', { class: 'meta warn', role: 'status' });
+  const recheck = () => { const v = readVis(); warn.textContent = v && !insts.some(i => matches(v, i)) ? 'These rules match no instance: the report is listed on none of them (only on the fleet).' : ''; };
+  const clear = el('button', { type: 'button' }, 'Clear Rules');
+  clear.addEventListener('click', () => { for (const b of [...engBoxes, ...tagBoxes]) b.c.checked = false; for (const s of [inc, exc]) for (const o of s.options) o.selected = false; recheck(); });
+  const visField = el('fieldset', {}, el('legend', {}, 'Visibility (where the report is listed; no rule = everywhere)'),
+    el('p', {}, 'Instance types ', ...engBoxes.flatMap(b => [el('label', {}, b.c, ' ' + b.l), ' '])),
+    allTags.length ? el('p', {}, 'Tags (any value of the tag) ', ...tagBoxes.flatMap(b => [el('label', {}, b.c, ' ' + b.l), ' '])) : el('p', { class: 'meta' }, 'No instance carries a tag.'),
+    el('p', {}, el('label', {}, 'Filter ', filterBox)),
+    el('div', { class: 'toolbar' }, el('label', {}, 'Include (always listed) ', inc), el('label', {}, 'Exclude (never listed) ', exc)),
+    el('p', {}, clear), warn);
+  visField.addEventListener('change', recheck); recheck();
+  const roles = [['viewer', 'Viewer'], ['operator', 'Operator'], ['admin', 'Admin']].map(([k, l]) => ({ k, c: box('Access ' + l, !!def.access?.includes(k)), l }));
+  const accField = el('fieldset', {}, el('legend', {}, 'Access (the roles that open and run it; none ticked = every role; an admin always may)'),
+    el('p', {}, ...roles.flatMap(b => [el('label', {}, b.c, ' ' + b.l), ' '])));
+  sec.append(visField, accField);
+
   const msg = el('p', { class: 'meta', role: 'status' });
   const save = markNeed(el('button', { type: 'button' }, 'Save'), 'customreports');
   if (saveOff) offControl(save, saveWhy || 'saving is off on this server', saveOff);
@@ -571,6 +625,7 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
       op: id ? 'edit' : 'add', report_id: id || undefined, version: def.version, name: name.value, description: desc.value, folder: fold.value,
       engine: engine.value, kind: kind.value, body: body.value, params: params.read(), columns: columns.read(), rules: rules.read(),
       timeout_secs: Number(timeout.value || 30), max_rows: Number(maxRows.value || 5000),
+      visibility: readVis(), access: roles.filter(b => b.c.checked).map(b => b.k),
     };
     try {
       const r = await post<{ detail: string; report_id: number }>('customreports', out);
