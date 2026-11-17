@@ -215,7 +215,13 @@ SELECT st.step AS snapshot_at, st.reads, coalesce(p.e, 0)::bigint AS executions,
 
 // procHistoryBucket: the start of the $6-second step a time falls in, counted from $7 (seconds from the Unix epoch)
 func procHistoryBucket(col string) string {
-	return `to_timestamp(floor((extract(epoch FROM ` + col + `) - $7::bigint) / $6::bigint) * $6::bigint + $7::bigint)`
+	return stepBucket(col, "$6", "$7")
+}
+
+// stepBucket: the start of the step (seconds, the parameter step) a time falls in, counted from base (seconds from the
+// Unix epoch, a parameter): 0 = the Unix epoch's steps, 1900-01-01 = DBA Dash's dbo.DateGroupingMins
+func stepBucket(col, step, base string) string {
+	return `to_timestamp(floor((extract(epoch FROM ` + col + `) - ` + base + `::bigint) / ` + step + `::bigint) * ` + step + `::bigint + ` + base + `::bigint)`
 }
 
 // procHistorySteps: DBA Dash's Date Groupings in minutes (DateHelper.cs DateGroups; its None, the 15-second rows, is not

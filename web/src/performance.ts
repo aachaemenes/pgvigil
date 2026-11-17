@@ -9,6 +9,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { chartPlaceholder, zoomBack, zoomReset } from './chartkit';
+import { dateGroupings, groupMinutes } from './azure_charts';
 import { mssqlCpuTab, mssqlFileIOTab, mssqlMemoryTab, mssqlTempdbTab } from './mssql_perf';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { fmt } from './tz';
@@ -94,40 +95,51 @@ function titled(chart: HTMLElement, text: string, link: string): HTMLElement {
   return chart;
 }
 
-// the Execution Stats strip (DBA Dash's SQL Server Performance > Execution Stats: Duration ms/sec of the top 5
-// objects, its measure and Top N menus; P25 task 5): the procedures, functions and triggers, one line each keyed by
+// the Execution Stats strip (DBA Dash's SQL Server Performance > Execution Stats: its measure, Top, Include Other and
+// Date Grouping menus; P25 task 5, control audit E6 - its Legend Position is chart.ts' option, its owner's row): the procedures, functions and triggers, one line each keyed by
 // database_id:object_id (one object, one line, whatever names its reads stored), on the strip's OWN steps (the
 // server's: never finer than the collections' five minutes, a 0 where an object did not run), drawn by the shared
 // lineChart (no axis or scale of its own); on a database's page that database's objects. Read apart
 // (part=execstats) so a menu change reads only the strip.
-const esMeasures: [string, string, string][] = [['duration', 'Duration', 'ms/sec'], ['cpu', 'CPU', 'ms/sec'], ['executions', 'Executions', '/sec'],
-  ['logical_reads', 'Logical reads', '/sec'], ['physical_reads', 'Physical reads', '/sec'], ['writes', 'Writes', '/sec']];
+// DBA Dash's Execution Stats measures in its order and words, Total Duration its default (ObjectExecution.cs L255-271,
+// ObjectExecutionStats_Get's columns; control audit E6): [the read's measure, its words, its unit]
+const esMeasures: [string, string, string][] = [['TotalDuration', 'Total Duration', 'sec'], ['duration_ms_per_sec', 'Duration (ms/sec)', 'ms/sec'],
+  ['AvgDuration', 'Avg Duration', 'sec'], ['TotalCPU', 'Total CPU', 'sec'], ['cpu_ms_per_sec', 'CPU (ms/sec)', 'ms/sec'], ['AvgCPU', 'Avg CPU', 'sec'],
+  ['ExecutionCount', 'Execution Count', 'executions'], ['ExecutionsPerMin', 'Executions Per Min', '/min'],
+  ['MaxExecutionsPerMin', 'Max Executions Per Min', '/min'], ['TotalLogicalReads', 'Total Logical Reads', 'pages'],
+  ['AvgLogicalReads', 'Avg Logical Reads', 'pages'], ['TotalPhysicalReads', 'Total Physical Reads', 'pages'],
+  ['AvgPhysicalReads', 'Avg Physical Reads', 'pages'], ['TotalWrites', 'Total Writes', 'pages'], ['AvgWrites', 'Avg Writes', 'pages']];
 function execStatsStrip(ctx: Ctx, link: string, db?: string): HTMLElement {
   const mSel = el('select', { id: 'perf-es-measure', 'aria-label': 'Execution Stats measure' }, ...esMeasures.map(([k, l]) => el('option', { value: k }, l)));
-  const tSel = el('select', { id: 'perf-es-top', 'aria-label': 'Execution Stats objects shown' }, ...[5, 10, 20].map(n => el('option', { value: String(n) }, `Top ${n}`)));
+  // DBA Dash's Top menu and its Include Other (on by default), and its Date Grouping (Auto: the strip's own step)
+  const tSel = el('select', { id: 'perf-es-top', 'aria-label': 'Execution Stats objects shown' }, ...[5, 10, 20, 40].map(n => el('option', { value: String(n) }, `Top ${n}`)));
+  const other = el('input', { type: 'checkbox', id: 'perf-es-other', checked: 'checked' }) as HTMLInputElement;
+  const gSel = el('select', { id: 'perf-es-group', 'aria-label': 'Execution Stats date grouping' }, ...dateGroupings.map(([g, l]) => el('option', { value: g }, l)));
   const body = el('div');
-  const box = el('div', {}, el('p', { class: 'meta' }, 'Execution Stats: ', mSel, ' ', tSel), body);
+  const box = el('div', {}, el('p', { class: 'meta' }, 'Execution Stats: ', mSel, ' ', tSel, ' ', el('label', {}, other, ' ', 'Include Other'), ' Date Grouping ', gSel), body);
   let seq = 0;
   async function draw() {
     const mine = ++seq;
     const [k, label, unit] = esMeasures.find(m => m[0] === mSel.value) ?? esMeasures[0];
     try {
       const d = await get<{ execstats: Table | null; execstats_state: Table | null }>('performance',
-        { instance: ctx.instance, ...window_(ctx), part: 'execstats', measure: k, top: tSel.value, db });
+        { instance: ctx.instance, ...window_(ctx), part: 'execstats', measure: k, top: tSel.value, db,
+          include_other: other.checked ? '1' : undefined, step: groupMinutes(gSel.value) ?? undefined });
       if (mine !== seq) return;
-      // one line per object by its ids; its label the server's one name for it
+      // one line per object by its ids, its label the server's one name for it; the objects outside the top summed
+      // into '{Other}' (ids -1), DBA Dash's Include Other
       const rows = rowsOf(d.execstats), key = (r: Row) => `${String(r.database_id)}:${String(r.object_id)}`;
       const series = new Map<string, string>();
-      for (const r of rows) if (!series.has(key(r))) series.set(key(r), String(r.object));
+      for (const r of rows) if (!series.has(key(r))) series.set(key(r), Number(r.object_id) === -1 ? '{Other}' : String(r.object));
       // the strip's own steps, as the server returns them (every covered step, each object 0 where it did not run)
       const by = new Map<number, Row>();
       for (const r of rows) {
         const t = new Date(String(r.snapshot_at)).getTime();
         if (!by.has(t)) by.set(t, { snapshot_at: r.snapshot_at });
-        by.get(t)![key(r)] = r.per_sec;
+        by.get(t)![key(r)] = r.value;
       }
       const pts = [...by.keys()].sort((a, b) => a - b).map(t => by.get(t)!);
-      const title = `Execution Stats: ${label} (${unit}), the top ${tSel.value} objects${db ? ` of ${db}` : ''}`;
+      const title = `Execution Stats: ${label} (${unit}), the top ${tSel.value} objects${other.checked ? ' and the others' : ''}${db ? ` of ${db}` : ''}`;
       body.replaceChildren(rows.length
         ? titled(lineChart('Execution Stats', pts, [...series].map(([id, name]) => ({ key: id, label: name })), v => `${fmtNum(v)} ${unit}`), title, link)
         : emptyChart(title, link, esEmpty(rowsOf(d.execstats_state))));
@@ -137,6 +149,8 @@ function execStatsStrip(ctx: Ctx, link: string, db?: string): HTMLElement {
   }
   mSel.addEventListener('change', () => void draw());
   tSel.addEventListener('change', () => void draw());
+  other.addEventListener('change', () => void draw());
+  gSel.addEventListener('change', () => void draw());
   void draw();
   return box;
 }

@@ -248,22 +248,27 @@ SELECT DISTINCT mf.filegroup
 
 // sqlPerfMSSQLExecStats: DBA Dash's Execution Stats on the SQL Server Performance page (P25 task 5, the sweep's L15):
 // the procedures', functions' and triggers' samples (0084, 0343), the top $6 objects by the measure $5 over the
-// window, each one's measure per second of the seconds its OWN kind's reads cover in the step (the procedures' reads,
-// the functions' and triggers' reads), 0 on a covered step where it did not run; duration and CPU in ms. $4 the
-// strip's step (procStep: never finer than the collections' five minutes, so the two kinds' reads share a step). One
-// label per object: its database's newest name (procDBNames' rule over both kinds' samples) and its own schema and
-// name (max() skips a read that gave up on a lock); each row carries database_id and object_id, the page's key. $7
-// one database by its newest name (its page), or empty: taken by its id, so its samples stored under an older name,
-// or with none, count.
-const sqlPerfMSSQLExecStats = `
+// window, each one's measure on each step of $4 seconds (counted from $9, seconds from the Unix epoch: 0 for the
+// strip's own step procStep, never finer than the collections' five minutes; 1900-01-01 for one of DBA Dash's Date
+// Groupings - step=, as dbo.DateGroupingMins counts), 0 on a step its OWN kind's reads cover where it did not run; a
+// per-second or per-minute measure is over the seconds its own kind's reads cover in the step (the procedures' reads,
+// the functions' and triggers' reads). One label per object: its database's newest name (procDBNames' rule over both
+// kinds' samples) and its own schema and name (max() skips a read that gave up on a lock); each row carries
+// database_id and object_id, the page's key. $7 one database by its newest name (its page), or empty: taken by its
+// id, so its samples stored under an older name, or with none, count. Control audit E6: $5 is one of DBA Dash's
+// fifteen measures (ObjectExecutionStats_Get's: value; the ranking by its total over the window, a rate by its raw
+// total as DBA Dash's one period time ranks it) or one of the strip's older six per-second measures (per_sec beside
+// value); $8 true = DBA Dash's Include Other: every object outside the top summed per step into one {Other} line (ids
+// -1; its rates the sum of each kind's over its own seconds, its averages over the line as a whole), listed last.
+var sqlPerfMSSQLExecStats = `
 WITH x AS (
   SELECT 'p'::text AS k, p.snapshot_at, p.database_id, p.object_id, p.database_name, p.schema_name, p.object_name,
-         p.duration_us, p.cpu_us, p.executions, p.logical_reads, p.physical_reads, p.logical_writes
+         p.duration_us, p.cpu_us, p.executions, p.logical_reads, p.physical_reads, p.logical_writes, p.interval_secs
     FROM pgvigil.mssql_proc_sample p
    WHERE p.instance_id = $1 AND p.snapshot_at > $2 AND p.snapshot_at <= $3
   UNION ALL
   SELECT 'f', f.snapshot_at, f.database_id, f.object_id, f.database_name, f.schema_name, f.object_name,
-         f.duration_us, f.cpu_us, f.executions, f.logical_reads, f.physical_reads, f.logical_writes
+         f.duration_us, f.cpu_us, f.executions, f.logical_reads, f.physical_reads, f.logical_writes, f.interval_secs
     FROM pgvigil.mssql_func_sample f
    WHERE f.instance_id = $1 AND f.snapshot_at > $2 AND f.snapshot_at <= $3
 ), dbn AS (
@@ -271,44 +276,92 @@ WITH x AS (
     FROM x
    ORDER BY x.database_id, (x.database_name IS NULL), x.snapshot_at DESC
 ), s AS (
-  SELECT x.k, to_timestamp(floor(extract(epoch FROM x.snapshot_at) / $4) * $4) AS step, x.database_id, x.object_id,
+  SELECT x.k, ` + stepBucket("x.snapshot_at", "$4", "$9") + ` AS step, x.database_id, x.object_id,
          n.database, x.schema_name, x.object_name,
-         CASE $5::text WHEN 'duration' THEN x.duration_us / 1000.0 WHEN 'cpu' THEN x.cpu_us / 1000.0
-                       WHEN 'executions' THEN x.executions WHEN 'logical_reads' THEN x.logical_reads
-                       WHEN 'physical_reads' THEN x.physical_reads ELSE x.logical_writes END::float8 AS v
+         x.duration_us::float8 AS d, x.cpu_us::float8 AS c, x.executions::float8 AS e, x.logical_reads::float8 AS lr,
+         x.physical_reads::float8 AS pr, x.logical_writes::float8 AS lw, x.executions * 60.0 / nullif(x.interval_secs, 0) AS mx
     FROM x JOIN dbn n ON n.database_id = x.database_id
    WHERE $7::text = '' OR n.database = $7::text
-), top AS (
-  SELECT s.k, s.database_id, s.object_id,
-         s.database || '.' || coalesce(max(s.schema_name), '') || '.' || coalesce(max(s.object_name), 'object ' || s.object_id) AS name
+), o AS (
+  SELECT s.k, s.database_id, s.object_id, s.database, max(s.schema_name) AS schema_name, max(s.object_name) AS object_name,
+         sum(s.d) AS d, sum(s.c) AS c, sum(s.e) AS e, sum(s.lr) AS lr, sum(s.pr) AS pr, sum(s.lw) AS lw, max(s.mx) AS mx
     FROM s
    GROUP BY s.k, s.database_id, s.object_id, s.database
-   ORDER BY sum(s.v) DESC NULLS LAST, s.database_id, s.object_id, s.k
+), top AS (
+  SELECT o.k, o.database_id, o.object_id,
+         o.database || '.' || coalesce(o.schema_name, '') || '.' || coalesce(o.object_name, 'object ' || o.object_id) AS name
+    FROM o
+   ORDER BY ` + execStatsRank + ` DESC NULLS LAST, o.database_id, o.object_id, o.k
    LIMIT $6
 ), cover AS (
-  SELECT 'p'::text AS k, to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4) AS step, sum(r.interval_secs)::float8 AS secs
+  SELECT 'p'::text AS k, ` + stepBucket("r.snapshot_at", "$4", "$9") + ` AS step, sum(r.interval_secs)::float8 AS secs
     FROM pgvigil.mssql_proc_read r
    WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
    GROUP BY 2
   UNION ALL
-  SELECT 'f', to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4), sum(r.interval_secs)::float8
+  SELECT 'f', ` + stepBucket("r.snapshot_at", "$4", "$9") + `, sum(r.interval_secs)::float8
     FROM pgvigil.mssql_func_read r
    WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
    GROUP BY 2
 ), w AS (
-  SELECT s.k, s.step, s.database_id, s.object_id, sum(s.v) AS v
-    FROM s JOIN top t ON t.k = s.k AND t.database_id = s.database_id AND t.object_id = s.object_id
+  SELECT s.k, s.step, coalesce(t.database_id, -1) AS database_id, coalesce(t.object_id, -1) AS object_id,
+         sum(s.d) AS d, sum(s.c) AS c, sum(s.e) AS e, sum(s.lr) AS lr, sum(s.pr) AS pr, sum(s.lw) AS lw, max(s.mx) AS mx
+    FROM s LEFT JOIN top t ON t.k = s.k AND t.database_id = s.database_id AND t.object_id = s.object_id
+   WHERE t.object_id IS NOT NULL OR $8::bool
    GROUP BY 1, 2, 3, 4
+), lines AS (
+  SELECT t.k, t.database_id, t.object_id, t.name FROM top t
+  UNION ALL
+  SELECT kk.k, -1, -1, '{Other}' FROM (VALUES ('p'::text), ('f')) kk(k)
+   WHERE $8::bool AND EXISTS (SELECT 1 FROM o WHERE NOT EXISTS (
+           SELECT 1 FROM top t WHERE t.k = o.k AND t.database_id = o.database_id AND t.object_id = o.object_id))
+), r AS (
+  SELECT c.step, l.database_id, l.object_id, l.name, c.secs, coalesce(w.d, 0) AS d, coalesce(w.c, 0) AS c, coalesce(w.e, 0) AS e,
+         coalesce(w.lr, 0) AS lr, coalesce(w.pr, 0) AS pr, coalesce(w.lw, 0) AS lw, w.mx
+    FROM lines l
+    JOIN cover c ON c.k = l.k AND c.secs > 0
+    LEFT JOIN w ON w.k = l.k AND w.step = c.step AND w.database_id = l.database_id AND w.object_id = l.object_id
 )
-SELECT c.step AS snapshot_at, t.database_id, t.object_id, t.name AS object,
-       round((coalesce(w.v, 0) / c.secs)::numeric, 3) AS per_sec
-  FROM top t
-  JOIN cover c ON c.k = t.k AND c.secs > 0
-  LEFT JOIN w ON w.k = t.k AND w.step = c.step AND w.database_id = t.database_id AND w.object_id = t.object_id
- ORDER BY 1, 4, 2, 3`
+SELECT r.step AS snapshot_at, r.database_id, r.object_id, r.name AS object,
+       round((` + execStatsValue + `)::numeric, 6) AS value, round((` + execStatsValue + `)::numeric, 3) AS per_sec
+  FROM r
+ GROUP BY r.step, r.database_id, r.object_id, r.name
+ ORDER BY 1, (r.object_id = -1), 4, 2, 3`
 
-// execStatsMeasures: the Execution Stats strip's measures (DBA Dash's chooser), the default first
-var execStatsMeasures = map[string]bool{"duration": true, "cpu": true, "executions": true, "logical_reads": true, "physical_reads": true, "writes": true}
+// execStatsRank: an object's rank over the window (alias o: its raw sums): DBA Dash's measure over the window, a rate
+// by its raw total (DBA Dash ranks it over one period time)
+const execStatsRank = `CASE $5::text
+         WHEN 'AvgDuration' THEN o.d / nullif(o.e, 0) WHEN 'AvgCPU' THEN o.c / nullif(o.e, 0)
+         WHEN 'MaxExecutionsPerMin' THEN o.mx
+         WHEN 'AvgLogicalReads' THEN o.lr / nullif(o.e, 0) WHEN 'AvgPhysicalReads' THEN o.pr / nullif(o.e, 0) WHEN 'AvgWrites' THEN o.lw / nullif(o.e, 0)
+         WHEN 'TotalDuration' THEN o.d WHEN 'duration_ms_per_sec' THEN o.d WHEN 'duration' THEN o.d
+         WHEN 'TotalCPU' THEN o.c WHEN 'cpu_ms_per_sec' THEN o.c WHEN 'cpu' THEN o.c
+         WHEN 'ExecutionCount' THEN o.e WHEN 'ExecutionsPerMin' THEN o.e WHEN 'executions' THEN o.e
+         WHEN 'TotalLogicalReads' THEN o.lr WHEN 'logical_reads' THEN o.lr
+         WHEN 'TotalPhysicalReads' THEN o.pr WHEN 'physical_reads' THEN o.pr
+         ELSE o.lw END`
+
+// execStatsValue: a line's measure on a step (alias r: its rows, one per kind - {Other}'s two kinds - each with its
+// kind's covered seconds): DBA Dash's ObjectExecutionStats_Get columns, and the older six per second
+const execStatsValue = `CASE $5::text
+         WHEN 'TotalDuration' THEN sum(r.d) / 1000000.0 WHEN 'duration_ms_per_sec' THEN sum(r.d / 1000.0 / r.secs)
+         WHEN 'AvgDuration' THEN sum(r.d) / nullif(sum(r.e), 0) / 1000000.0
+         WHEN 'TotalCPU' THEN sum(r.c) / 1000000.0 WHEN 'cpu_ms_per_sec' THEN sum(r.c / 1000.0 / r.secs)
+         WHEN 'AvgCPU' THEN sum(r.c) / nullif(sum(r.e), 0) / 1000000.0
+         WHEN 'ExecutionCount' THEN sum(r.e) WHEN 'ExecutionsPerMin' THEN sum(r.e * 60.0 / r.secs) WHEN 'MaxExecutionsPerMin' THEN max(r.mx)
+         WHEN 'TotalLogicalReads' THEN sum(r.lr) WHEN 'AvgLogicalReads' THEN sum(r.lr) / nullif(sum(r.e), 0)
+         WHEN 'TotalPhysicalReads' THEN sum(r.pr) WHEN 'AvgPhysicalReads' THEN sum(r.pr) / nullif(sum(r.e), 0)
+         WHEN 'TotalWrites' THEN sum(r.lw) WHEN 'AvgWrites' THEN sum(r.lw) / nullif(sum(r.e), 0)
+         WHEN 'duration' THEN sum(r.d / 1000.0 / r.secs) WHEN 'cpu' THEN sum(r.c / 1000.0 / r.secs) WHEN 'executions' THEN sum(r.e / r.secs)
+         WHEN 'logical_reads' THEN sum(r.lr / r.secs) WHEN 'physical_reads' THEN sum(r.pr / r.secs)
+         ELSE sum(r.lw / r.secs) END`
+
+// execStatsMeasures: the Execution Stats strip's measures - DBA Dash's fifteen (control audit E6) and the strip's older
+// six per-second ones
+var execStatsMeasures = map[string]bool{"duration": true, "cpu": true, "executions": true, "logical_reads": true, "physical_reads": true, "writes": true,
+	"TotalDuration": true, "duration_ms_per_sec": true, "AvgDuration": true, "TotalCPU": true, "cpu_ms_per_sec": true, "AvgCPU": true,
+	"ExecutionCount": true, "ExecutionsPerMin": true, "MaxExecutionsPerMin": true, "TotalLogicalReads": true, "AvgLogicalReads": true,
+	"TotalPhysicalReads": true, "AvgPhysicalReads": true, "TotalWrites": true, "AvgWrites": true}
 
 // Performance is GET /api/performance?instance=N[&from=&to=][&db=<database>[&filegroup=<name>]][&part=...]: one
 // instance's Performance page.
@@ -340,7 +393,15 @@ func (s *Server) Performance(w http.ResponseWriter, r *http.Request) {
 				measure = "duration"
 			}
 			if !execStatsMeasures[measure] {
-				writeErr(w, http.StatusBadRequest, errors.New("measure must be one of duration, cpu, executions, logical_reads, physical_reads, writes"))
+				writeErr(w, http.StatusBadRequest, errors.New("measure must be one of DBA Dash's TotalDuration, duration_ms_per_sec, AvgDuration, TotalCPU, "+
+					"cpu_ms_per_sec, AvgCPU, ExecutionCount, ExecutionsPerMin, MaxExecutionsPerMin, TotalLogicalReads, AvgLogicalReads, "+
+					"TotalPhysicalReads, AvgPhysicalReads, TotalWrites, AvgWrites, or duration, cpu, executions, logical_reads, physical_reads, writes"))
+				return
+			}
+			// DBA Dash's Date Grouping (control audit E6) or the strip's own step
+			esStep, esBase, err := procHistoryStep(q.Get("step"), to.Sub(from))
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err)
 				return
 			}
 			if v := q.Get("top"); v != "" {
@@ -352,7 +413,7 @@ func (s *Server) Performance(w http.ResponseWriter, r *http.Request) {
 				top = n
 			}
 			// the strip's own step (procStep), and the two collections' state for its empty words
-			parts = append(parts, part{"execstats", sqlPerfMSSQLExecStats, []any{id, from, to, procStep(to.Sub(from).Seconds()), measure, top, q.Get("db")}},
+			parts = append(parts, part{"execstats", sqlPerfMSSQLExecStats, []any{id, from, to, esStep, measure, top, q.Get("db"), q.Get("include_other") == "1", esBase}},
 				part{"execstats_state", sqlMssqlRunningState, []any{id, []string{"mssql_procstats", "mssql_funcstats"}}})
 		}
 		if db := r.URL.Query().Get("db"); db != "" {

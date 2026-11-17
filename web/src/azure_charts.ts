@@ -64,7 +64,7 @@ export function measureCharts(rows: Row[], list: Measure[], c: ChartChoice, titl
 
 // DBA Dash's Date Grouping list in its order and words (DBADashGUI/DateHelper.cs DateGroups; control audit A1) after
 // pgvigil's Auto; its None (the 15-second rows) is not offered - pgvigil stores minutes - and the toolbar says so
-const groupings: [Grouping, string][] = [['auto', 'Auto'], ['minute', '1min'], ['2', '2min'], ['5', '5min'], ['10', '10min'], ['15', '15min'], ['30', '30min'],
+export const dateGroupings: [Grouping, string][] = [['auto', 'Auto'], ['minute', '1min'], ['2', '2min'], ['5', '5min'], ['10', '10min'], ['15', '15min'], ['30', '30min'],
   ['hour', '1hr'], ['120', '2hrs'], ['240', '4hrs'], ['360', '6hrs'], ['720', '12hrs'], ['day', '1 Day'], ['2880', '2 Days'], ['10080', '7 Days'], ['20160', '14 Days']];
 
 // groupStep: a grouping that the pages read as part=grouped&step=<minutes> (null for auto, minute, hour and day)
@@ -72,9 +72,15 @@ export function groupStep(g: Grouping): number | null {
   return /^[0-9]+$/.test(g) ? Number(g) : null;
 }
 
+// groupMinutes: a grouping's minutes for a read that takes DBA Dash's every grouping as step= (the object chart, the
+// Execution Stats strip; control audit E5 / E6): auto none (the read's own step)
+export function groupMinutes(g: Grouping): number | null {
+  return g === 'minute' ? 1 : g === 'hour' ? 60 : g === 'day' ? 1440 : groupStep(g);
+}
+
 // groupLabel: a grouping's words
 export function groupLabel(g: Grouping): string {
-  return groupings.find(x => x[0] === g)?.[1] ?? g;
+  return dateGroupings.find(x => x[0] === g)?.[1] ?? g;
 }
 const columnChoices = [1, 2, 3];
 
@@ -86,7 +92,7 @@ export function chartChoice(page: string): ChartChoice {
   try {
     const v = JSON.parse(lsGet(`pgvigil.azureCharts.${page}`) ?? '{}') as Partial<ChartChoice>;
     return {
-      grouping: groupings.some(g => g[0] === v.grouping) ? v.grouping as Grouping : 'auto',
+      grouping: dateGroupings.some(g => g[0] === v.grouping) ? v.grouping as Grouping : 'auto',
       columns: columnChoices.includes(Number(v.columns)) ? Number(v.columns) : 2,
       measures: Array.isArray(v.measures) ? v.measures.filter((k: unknown): k is string => typeof k === 'string') : undefined,
     };
@@ -119,7 +125,7 @@ export function chartToolbar(page: string, redraw: (c: ChartChoice) => void, mea
   };
   const save = () => { lsSet(`pgvigil.azureCharts.${page}`, JSON.stringify(cur)); redraw({ ...cur }); };
   return el('div', { class: 'toolbar', role: 'group', 'aria-label': 'Chart options' },
-    pick(`${page}-grouping`, 'Date Grouping', groupings, cur.grouping, v => { cur.grouping = v as Grouping; save(); }),
+    pick(`${page}-grouping`, 'Date Grouping', dateGroupings, cur.grouping, v => { cur.grouping = v as Grouping; save(); }),
     el('span', { class: 'meta', style: 'margin-right:1rem' }, 'DBA Dash\'s None (its 15-second rows) is not offered: pgvigil stores minutes.'),
     pick(`${page}-columns`, 'Columns per chart', columnChoices.map(n => [String(n), String(n)] as [string, string]), String(cur.columns), v => { cur.columns = Number(v); save(); }),
     measures ? measurePicker(page, measures, cur, save) : '');

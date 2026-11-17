@@ -11,7 +11,7 @@ import { lineChart } from './chart';
 import { hashParam, hrefWith } from './dbinfo';
 import { Ctx, window_ } from './router';
 import { compareCell } from './schema';
-import { chartChoice, ChartChoice, chartToolbar, groupStep, layout, Measure, measureCharts } from './azure_charts';
+import { chartChoice, ChartChoice, chartToolbar, groupMinutes, layout, Measure, measureCharts } from './azure_charts';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 
 export const mssqlObjectTab = 'mssqlobject';
@@ -112,7 +112,7 @@ export const objMeasures: Measure[] = [
 ];
 
 // objStep: a Date Grouping's minutes for part=history's step= (auto: none - the page's own step)
-const objStep = (g: string): number | null => g === 'minute' ? 1 : g === 'hour' ? 60 : g === 'day' ? 1440 : groupStep(g);
+const objStep = (g: string): number | null => groupMinutes(g);
 
 // objexecTab: DBA Dash's Object Execution of the object (E5) - its kind's statistics by its ids: the range's steps on
 // DBA Dash's chart (its measures and Date Grouping: the toolbar, kept for the page) and its reads, newest first
