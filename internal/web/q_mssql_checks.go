@@ -62,6 +62,21 @@ SELECT d.database_name, d.database_id, d.state, d.is_system, d.is_snapshot, d.op
  WHERE d.instance_id = $1 AND ($2::text = '' OR d.database_name = $2::text)
  ORDER BY d.is_present DESC, d.is_system DESC, lower(d.database_name)`
 
+// sqlMSSQLChecksScopedConfig / Changes: one database's scoped configuration (0391, P25 row 2a: DBA Dash's database
+// DB Configuration) - each row as last read, and the changes the reads saw, the newest first. $2 the database's name.
+const sqlMSSQLChecksScopedConfig = `
+SELECT c.name, c.value, c.value_for_secondary, c.is_default, c.is_present, c.note, c.first_seen, c.snapshot_at
+  FROM pgvigil.mssql_db_scoped_config c
+ WHERE c.instance_id = $1 AND c.database_name = $2::text
+ ORDER BY c.is_present DESC, c.name`
+
+const sqlMSSQLChecksScopedChanges = `
+SELECT x.name, x.changed_at, x.old_value, x.new_value
+  FROM pgvigil.mssql_db_scoped_config_change x
+ WHERE x.instance_id = $1 AND x.database_name = $2::text
+ ORDER BY x.changed_at DESC, x.name
+ LIMIT 500`
+
 const sqlMSSQLChecksColumns = `
 SELECT c.ord, c.value->>'key' AS key, c.value->>'label' AS label, c.value->>'best' AS best
   FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY c(value, ord)
@@ -157,6 +172,9 @@ func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
 		{"alerting", sqlMSSQLChecksAlerting, []any{id}},
 		{"identity", sqlMSSQLChecksIdentity, []any{id}},
 		{"identity_scan", sqlMSSQLChecksIdentityScan, []any{id}},
+		// db=: one database's scoped configuration and its changes (P25 row 2a; none without db=)
+		{"scoped_config", sqlMSSQLChecksScopedConfig, []any{id, r.URL.Query().Get("db")}},
+		{"scoped_changes", sqlMSSQLChecksScopedChanges, []any{id, r.URL.Query().Get("db")}},
 	})
 }
 

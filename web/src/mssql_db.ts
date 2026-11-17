@@ -45,6 +45,29 @@ async function dbOptions(ctx: Ctx, db: string): Promise<HTMLElement> {
       { key: 'status', label: 'check', fmt: v => v ? badge(String(v), v === 'critical' ? 'crit' : 'warn') : '' }], 'No option column.'));
 }
 
+// dbConfiguration: one database's scoped configuration (DBA Dash's DB Configuration; 0391, /api/mssql/checks
+// part=scoped_config and scoped_changes cut by db=): each setting as last read, a value not the default marked, then
+// the changes the hourly reads saw
+async function dbConfiguration(ctx: Ctx, db: string): Promise<HTMLElement> {
+  const [c, x] = await Promise.all([
+    get<{ scoped_config: Table | null }>('mssql/checks', { instance: ctx.instance, part: 'scoped_config', db }),
+    get<{ scoped_changes: Table | null }>('mssql/checks', { instance: ctx.instance, part: 'scoped_changes', db })]);
+  const rows = rowsOf(c.scoped_config);
+  if (!rows.length) return el('p', { class: 'empty' }, `No scoped configuration read for ${db}: the mssql_confcheck collection reads sys.database_scoped_configurations hourly (SQL Server 2016 and later).`);
+  const note = rows.find(r => r.note);
+  return el('div', {},
+    note ? el('p', { class: 'meta' }, `The last read did not read ${db}: ${String(note.note)} - these are the values read before.`) : '',
+    grid(rows, [
+      { key: 'name' }, { key: 'value' },
+      { key: 'value_for_secondary', label: 'for secondaries', fmt: v => v == null ? 'as the primary' : String(v) },
+      { key: 'is_default', label: 'default', fmt: v => v == null ? 'not read' : v ? 'yes' : badge('changed', 'warn') },
+      { key: 'is_present', label: 'in the view', fmt: v => v ? 'yes' : 'no longer' },
+    ], 'No setting.'),
+    el('h3', {}, 'Changes'),
+    grid(rowsOf(x.scoped_changes), [{ key: 'changed_at', label: 'seen at' }, { key: 'name' }, { key: 'old_value', label: 'from' },
+      { key: 'new_value', label: 'to', fmt: v => v == null ? 'left the view' : String(v) }], 'No change seen since the first read.'));
+}
+
 export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
   const db = hashParam('db');
   if (!db) return el('section', {}, el('h2', {}, 'Database'), el('p', { class: 'empty' }, 'No database named (db=).'));
@@ -75,6 +98,9 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
     case 'slow':
       // the instance's Slow queries read with db= (/api/mssql/xe: the events that ran in this database)
       body = await mssqlSlow(ctx);
+      break;
+    case 'dbconfig':
+      body = await dbConfiguration(ctx, db);
       break;
     case 'dboptions':
       body = await dbOptions(ctx, db);
