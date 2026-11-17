@@ -72,8 +72,8 @@
 #     folder_delete Team: done, no folder under Team left. Folders a_b, axb and axb/x: renaming a_b to c_d leaves axb and
 #     axb/x as they are (the folders read: axb, axb/x, c_d). [review 1 fold] Up/B/B/x renamed up: Up/B -> Up leaves Up,
 #     Up/B, Up/B/x.
-#  M. SQL Server 2022 (community): the instance's tools: 14 (13 procedures and Glenn Berry's), every procedure installed
-#     in master, enabled; in tempdb: every procedure not installed, each with its URL. sp_WhoIsActive's form: @filter in
+#  M. SQL Server 2022 (community): the instance's tools: 14 (13 procedures and Glenn Berry's), the given kits' procedures
+#     installed in master (all 13 with the three scripts, none with no kit), enabled; in tempdb: every procedure not installed, each with its URL. sp_WhoIsActive's form: @filter in
 #     the parameters with a help text, @destination_table, @return_schema, @schema and @help left out. Runs, each one log
 #     row: sp_WhoIsActive (show_own_spid 1): done, one set, at least 1 row; sp_Blitz: done, at least 1 set with rows;
 #     sp_BlitzFirst (Seconds 1): done, at least 1 set; sp_PressureDetector: done, at least 1 set; sp_BlitzIndex
@@ -575,6 +575,7 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   # the procedures installed in master are exactly the given kits' own (a fresh container: none with no kit), and the
   # line says how many, never 'installed' where none are
   kg=""; for f in "${INSTALLED[@]}"; do case $f in frk-install-all.sql) kg+="First Responder Kit|" ;; darlingdata.sql) kg+="Darling Data|" ;; sp_WhoIsActive.sql) kg+="sp_WhoIsActive|" ;; esac; done
+  [[ $(js "sum(1 for t in d['tools'] if t['kind']=='proc' and t['installed'] is None)") == 0 ]] || fail "M: master's procedures not read (installed null): $(js "[t['name'] for t in d['tools'] if t['kind']=='proc' and t['installed'] is None]")"
   mins=$(js "sorted(t['name'] for t in d['tools'] if t['kind']=='proc' and t['installed'])")
   mwant=$(js "sorted(t['name'] for t in d['tools'] if t['kind']=='proc' and t['group'] in '$kg'.split('|')[:-1])")
   [[ $mins == "$mwant" ]] || fail "M: the procedures installed in master are not the given kits' own: installed $mins, the kits' $mwant"
@@ -814,7 +815,7 @@ elif [[ -z "$SKIP_MSSQL" ]]; then
 fi
 # the rows below need no kit (the instance's own reason, the -no-login serve, the pause): they run on every SQL Server run
 if [[ -z "$SKIP_MSSQL" ]]; then
-  [[ $(fresh "$MAID") == 200&& $(tl "d['enabled']") == False && $(tl "[n['hard'] for n in d['needs']]") == "[True]" && $(tl "d['needs'][0]['what']") == *sysadmin* \
+  [[ $(fresh "$MAID") == 200 && $(tl "d['enabled']") == False && $(tl "[n['hard'] for n in d['needs']]") == "[True]" && $(tl "d['needs'][0]['what']") == *sysadmin* \
      && $(tl "d['needs'][0]['how']") == *"not a sysadmin"* && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 ]] || fail "N: the sa instance: $(tl "d['needs']")"
   [[ $(code "$U2/api/community?instance=$MRID") == 200 && $(tl "d['needs'][0]['what']") == "Running a tool needs a signed-in user: this server runs without the UI login (pgvigil serve -no-login, or pgvigil demo -serve)." \
      && $(tl "d['needs'][0]['how']") == *"pgvigil user add"* && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 ]] || fail "N: the -no-login serve: $(head -c 600 "$WORK/body")"
