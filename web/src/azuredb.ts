@@ -5,8 +5,7 @@
 // tier, hourly) and mssql_storage (the database's files). Every average over the window weighs each minute by its
 // samples (DBA Dash's average over the view's rows); a maximum is the largest 15-second figure.
 import { get, Row, rowsOf, Table } from './api';
-import { ChartChoice, chartChoice, chartToolbar, groupLabel, groupStep, layout, pickRows } from './azure_charts';
-import { lineChart } from './chart';
+import { ChartChoice, chartChoice, chartToolbar, dbMeasures, groupLabel, groupStep, layout, measureCharts, pickRows } from './azure_charts';
 import { mssqlPropertiesTab } from './mssql_properties';
 import { hrefWith } from './dbinfo';
 import { folderWords, tagWords } from './fleet';
@@ -145,11 +144,9 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
   };
   const paint = (c: ChartChoice, rows: Row[], unit: string, stepLabel: string) => {
     const asc = [...rows].reverse();
-    const charts = layout(el('div', { class: 'charts' },
-      lineChart('Resource use (% of the limit)', asc, [{ key: 'avg_cpu_percent', label: 'CPU avg %' }, { key: 'avg_data_io_percent', label: 'data IO avg %' },
-      { key: 'avg_log_write_percent', label: 'log write avg %' }, ...(dtu ? [{ key: 'avg_dtu_percent', label: 'DTU avg %' }] : [])], v => fmtNum(v) + ' %'),
-    lineChart('Largest 15-second sample (% of the limit)', asc, [{ key: 'max_cpu_percent', label: 'CPU max %' }, { key: 'max_data_io_percent', label: 'data IO max %' },
-      { key: 'max_log_write_percent', label: 'log write max %' }, ...(dtu ? [{ key: 'max_dtu_percent', label: 'DTU max %' }] : [])], v => fmtNum(v) + ' %')), c.columns);
+    // control audit A2: DBA Dash's measures, the ones chosen in the toolbar's Columns (its defaults Max CPU / Data / Log
+    // Write %), one chart per axis
+    const charts = layout(el('div', { class: 'charts' }, ...measureCharts(asc, dbMeasures, c, 'Resource use')), c.columns);
     const [head, meta, none] = words[unit];
     body.replaceChildren(charts, el('h3', {}, stepLabel ? `${head} of ${stepLabel}` : head), el('p', { class: 'meta' }, meta),
       unit === 'minute' ? grid(minutes, [
@@ -162,7 +159,7 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
       n('max_worker_percent', 'workers', pct), n('max_session_percent', 'sessions', pct),
     ], none) : grid(unit === 'step' ? rows : unit === 'day' ? days : hours, bucketCols(unit === 'step' ? 'snapshot_at' : unit), none));
   };
-  sec.append(chartToolbar('mssqlazure', draw), body);
+  sec.append(chartToolbar('mssqlazure', draw, dbMeasures), body);
   draw(chartChoice('mssqlazure'));
   return sec;
 }

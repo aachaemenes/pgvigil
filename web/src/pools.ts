@@ -3,7 +3,7 @@
 // pool's databases pgvigil reads, and the pool's minutes (DBA Dash's Pool tab). Data from /api/mssql/pool (mssql_pool:
 // a minute a pool, from sys.dm_elastic_pool_resource_stats, which keeps about 40 minutes: a longer outage is a gap).
 import { get, Row, rowsOf, Table } from './api';
-import { ChartChoice, chartChoice, chartToolbar, groupLabel, groupStep, layout, pickRows } from './azure_charts';
+import { ChartChoice, chartChoice, chartToolbar, groupLabel, groupStep, layout, measureCharts, pickRows, poolMeasures } from './azure_charts';
 import { lineChart } from './chart';
 import { Ctx, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
@@ -78,11 +78,10 @@ export async function mssqlPoolView(ctx: Ctx): Promise<HTMLElement> {
   };
   const paint = (c: ChartChoice, rows: Row[], unit: string, stepLabel: string) => {
     const asc = [...rows].reverse().map(r => ({ ...r, snapshot_at: r.snapshot_at ?? r.minute }));
-    const charts = layout(el('div', { class: 'charts' },
-      lineChart('The pool\'s resource use (% of its limits)', asc, [{ key: 'avg_cpu_percent', label: 'CPU avg %' }, { key: 'avg_data_io_percent', label: 'data IO avg %' },
-        { key: 'avg_log_write_percent', label: 'log write avg %' }, { key: 'avg_edtu_percent', label: 'eDTU avg %' }], v => fmtNum(v) + ' %'),
-      lineChart('Workers, sessions and storage (% of the limits)', asc, [{ key: 'max_worker_percent', label: 'workers max %' }, { key: 'max_session_percent', label: 'sessions max %' },
-        { key: 'allocated_storage_percent', label: 'storage allocated %' }], v => fmtNum(v) + ' %')), c.columns);
+    // control audit A2 / A3: DBA Dash's pool measures chosen in the toolbar's Columns, one chart per axis; the storage
+    // allocated (pgvigil's own, not a DBA Dash measure) beside them
+    const charts = layout(el('div', { class: 'charts' }, ...measureCharts(asc, poolMeasures, c, 'The pool\'s resource use'),
+      lineChart('Storage allocated (% of the pool\'s maximum data size)', asc, [{ key: 'allocated_storage_percent', label: 'storage allocated %' }], v => fmtNum(v) + ' %')), c.columns);
     const [head0, meta, none] = words[unit], head = stepLabel ? `${head0} of ${stepLabel}` : head0;
     const cols: Col[] = [
       { key: unit === 'minute' ? 'minute' : 'snapshot_at', label: stepLabel || unit, fmt: fmtTime }, { key: 'avg_cpu_percent', label: 'CPU avg', fmt: pct }, { key: 'max_cpu_percent', label: 'CPU max', fmt: pct },
@@ -93,7 +92,7 @@ export async function mssqlPoolView(ctx: Ctx): Promise<HTMLElement> {
     ];
     body.replaceChildren(charts, el('h3', {}, head), el('p', { class: 'meta' }, meta), grid(rows, cols, none));
   };
-  sec.append(chartToolbar('mssqlpool', draw), body);
+  sec.append(chartToolbar('mssqlpool', draw, poolMeasures), body);
   draw(chartChoice('mssqlpool'));
   return sec;
 }

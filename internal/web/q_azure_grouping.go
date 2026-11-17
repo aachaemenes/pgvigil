@@ -45,6 +45,10 @@ SELECT ` + azureBucket("s.snapshot_at") + ` AS snapshot_at,
        round(sum(s.memory_usage_total) / nullif(sum(s.memory_usage_counted), 0), 2) AS avg_memory_usage_percent,
        round(sum(s.dtu_percent_total) / nullif(sum(s.dtu_percent_counted), 0), 2) AS avg_dtu_percent, max(s.max_dtu_percent) AS max_dtu_percent,
        max(s.max_worker_percent) AS max_worker_percent, max(s.max_session_percent) AS max_session_percent,
+       round(sum(s.xtp_storage_total) / nullif(sum(s.xtp_storage_counted), 0), 2) AS xtp_storage_percent,
+       round(sum(s.instance_cpu_total) / nullif(sum(s.instance_cpu_counted), 0), 2) AS avg_instance_cpu_percent, max(s.max_instance_cpu_percent) AS max_instance_cpu_percent,
+       round(sum(s.instance_memory_total) / nullif(sum(s.instance_memory_counted), 0), 2) AS avg_instance_memory_percent, max(s.max_instance_memory_percent) AS max_instance_memory_percent,
+       round(sum(s.dtu_total) / nullif(sum(s.dtu_counted), 0), 2) AS avg_dtu, max(s.max_dtu) AS max_dtu, max(s.max_dtu_limit) AS dtu_limit, max(s.max_cpu_limit) AS cpu_limit,
        sum(s.minutes) < $4::int AS partial
   FROM s
  GROUP BY 1
@@ -60,7 +64,13 @@ WITH s AS (
          a.avg_log_write_percent * a.samples AS log_write_total, CASE WHEN a.avg_log_write_percent IS NOT NULL THEN a.samples END AS log_write_counted, a.max_log_write_percent,
          a.avg_memory_usage_percent * a.samples AS memory_usage_total, CASE WHEN a.avg_memory_usage_percent IS NOT NULL THEN a.samples END AS memory_usage_counted,
          a.avg_dtu_percent * a.samples AS dtu_percent_total, CASE WHEN a.avg_dtu_percent IS NOT NULL THEN a.samples END AS dtu_percent_counted, a.max_dtu_percent,
-         a.max_worker_percent, a.max_session_percent
+         a.max_worker_percent, a.max_session_percent,
+         a.avg_xtp_storage_percent * a.samples AS xtp_storage_total, CASE WHEN a.avg_xtp_storage_percent IS NOT NULL THEN a.samples END AS xtp_storage_counted,
+         a.avg_instance_cpu_percent * a.samples AS instance_cpu_total, CASE WHEN a.avg_instance_cpu_percent IS NOT NULL THEN a.samples END AS instance_cpu_counted,
+         a.max_instance_cpu_percent, a.avg_instance_memory_percent * a.samples AS instance_memory_total,
+         CASE WHEN a.avg_instance_memory_percent IS NOT NULL THEN a.samples END AS instance_memory_counted, a.max_instance_memory_percent,
+         a.avg_dtu * a.samples AS dtu_total, CASE WHEN a.avg_dtu IS NOT NULL THEN a.samples END AS dtu_counted, a.max_dtu,
+         a.dtu_limit AS max_dtu_limit, a.cpu_limit AS max_cpu_limit
     FROM pgvigil.mssql_azuredb_minute a
    WHERE a.instance_id = $1 AND a.snapshot_at >= $2 AND a.snapshot_at < $3
 )` + sqlAzureDBGroupedSelect
@@ -70,7 +80,10 @@ var sqlAzureDBGroupedHours = `
 WITH s AS (
   SELECT w.snapshot_at, w.minutes, w.samples, w.cpu_total, w.cpu_counted, w.max_cpu_percent, w.data_io_total, w.data_io_counted,
          w.max_data_io_percent, w.log_write_total, w.log_write_counted, w.max_log_write_percent, w.memory_usage_total,
-         w.memory_usage_counted, w.dtu_percent_total, w.dtu_percent_counted, w.max_dtu_percent, w.max_worker_percent, w.max_session_percent
+         w.memory_usage_counted, w.dtu_percent_total, w.dtu_percent_counted, w.max_dtu_percent, w.max_worker_percent, w.max_session_percent,
+         w.xtp_storage_total, w.xtp_storage_counted, w.instance_cpu_total, w.instance_cpu_counted, w.max_instance_cpu_percent,
+         w.instance_memory_total, w.instance_memory_counted, w.max_instance_memory_percent, w.dtu_total, w.dtu_counted, w.max_dtu,
+         w.max_dtu_limit, w.max_cpu_limit
     FROM pgvigil.mssql_azuredb_window(ARRAY[$1::int], $2, $3) w
 )` + sqlAzureDBGroupedSelect
 

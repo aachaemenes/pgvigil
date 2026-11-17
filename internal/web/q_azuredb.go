@@ -81,7 +81,9 @@ SELECT ` + azdbWindowCols + `
 const sqlAzureDBMinutes = `
 SELECT a.snapshot_at AS minute, a.snapshot_at, a.samples, a.avg_cpu_percent, a.max_cpu_percent, a.avg_data_io_percent, a.max_data_io_percent,
        a.avg_log_write_percent, a.max_log_write_percent, a.avg_memory_usage_percent, a.max_worker_percent, a.max_session_percent,
-       a.avg_dtu_percent, a.max_dtu_percent, a.avg_dtu, a.max_dtu, a.dtu_limit, a.cpu_limit, a.replica_role
+       a.avg_dtu_percent, a.max_dtu_percent, a.avg_dtu, a.max_dtu, a.dtu_limit, a.cpu_limit, a.replica_role,
+       a.avg_xtp_storage_percent AS xtp_storage_percent, a.avg_instance_cpu_percent, a.max_instance_cpu_percent,
+       a.avg_instance_memory_percent, a.max_instance_memory_percent  -- control audit A2: DBA Dash's DB chart's measures
   FROM pgvigil.mssql_azuredb_minute a
  WHERE a.instance_id = $1 AND a.snapshot_at >= $2 AND a.snapshot_at < $3
  ORDER BY a.snapshot_at DESC
@@ -99,6 +101,10 @@ SELECT date_trunc('hour', a.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' A
        round(sum(a.memory_usage_total) / nullif(sum(a.memory_usage_counted), 0), 2) AS avg_memory_usage_percent,
        round(sum(a.dtu_percent_total) / nullif(sum(a.dtu_percent_counted), 0), 2) AS avg_dtu_percent, max(a.max_dtu_percent) AS max_dtu_percent,
        max(a.max_worker_percent) AS max_worker_percent, max(a.max_session_percent) AS max_session_percent,
+       round(sum(a.xtp_storage_total) / nullif(sum(a.xtp_storage_counted), 0), 2) AS xtp_storage_percent,
+       round(sum(a.instance_cpu_total) / nullif(sum(a.instance_cpu_counted), 0), 2) AS avg_instance_cpu_percent, max(a.max_instance_cpu_percent) AS max_instance_cpu_percent,
+       round(sum(a.instance_memory_total) / nullif(sum(a.instance_memory_counted), 0), 2) AS avg_instance_memory_percent, max(a.max_instance_memory_percent) AS max_instance_memory_percent,
+       round(sum(a.dtu_total) / nullif(sum(a.dtu_counted), 0), 2) AS avg_dtu, max(a.max_dtu) AS max_dtu, max(a.max_dtu_limit) AS dtu_limit, max(a.max_cpu_limit) AS cpu_limit,
        sum(a.minutes) < 60 AS partial
   FROM pgvigil.mssql_azuredb_window(ARRAY[$1::int], $2, $3) a
  GROUP BY 1
