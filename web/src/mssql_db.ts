@@ -12,8 +12,9 @@ import { mssqlPlanCacheView } from './mssql_plancache';
 import { mssqlSlow } from './mssql_xe';
 import { objectExecutionSection } from './mssql_objexec';
 import { schemaDbSection } from './schema';
-import { get, rowsOf, Table } from './api';
-import { badge, el, fmtTime, grid } from './ui';
+import { get, Row, rowsOf, Table } from './api';
+import { lineChart } from './chart';
+import { badge, el, fmtNum, fmtTime, grid } from './ui';
 
 export const mssqlDbTab = 'mssqldb';
 
@@ -21,7 +22,7 @@ export const mssqlDbTab = 'mssqldb';
 const tabs: [string, string][] = [
   ['performance', 'Performance'], ['objexec', 'Object Execution'], ['querystats', 'Query Stats'], ['slow', 'Slow Queries'],
   ['files', 'Files'], ['snapshots', 'Snapshot Summary'], ['dbspace', 'DB Space'], ['dbconfig', 'DB Configuration'],
-  ['dboptions', 'DB Options'], ['qs', 'QS'], ['topqueries', 'Top Queries'], ['forcedplans', 'Forced Plans'], ['tuning', 'Tuning Recommendations'],
+  ['dboptions', 'DB Options'], ['qs', 'QS'], ['topqueries', 'Top Queries'], ['forcedplans', 'Forced Plans'], ['tuning', 'Tuning Recommendations'], ['servicebroker', 'Service Broker'],
 ];
 
 // mssqlDbLink: a database of a SQL Server instance, opened on its page (the tab given, else Performance)
@@ -80,6 +81,68 @@ async function snapshotSummary(ctx: Ctx, db: string): Promise<HTMLElement> {
   return schemaDbSection(ctx, row.dbid as number);
 }
 
+// serviceBroker: DBA Dash's database Service Broker tab (P25 row 73; 0392, the mssql_service_broker collection every 5
+// minutes): the user queues as last read (receive disabled = DBA Dash's poison mark; a missing activation procedure),
+// each queue's depth over the window, the transmission queue's groups, the conversations by state, the instance's
+// endpoint and the Broker counters as rates. DBA Dash shows the tab only when the database has the broker; this page
+// keeps it last and says so in words when there is nothing to show.
+async function serviceBroker(ctx: Ctx, db: string): Promise<HTMLElement> {
+  const part = <T extends string>(p: T, win = false) =>
+    get<Record<T, Table | null>>('mssql/checks', { instance: ctx.instance, part: p, db, ...(win ? window_(ctx) : {}) }).then(d => rowsOf(d[p]));
+  const [queues, depth, trans, convs, eps, counters, state] = await Promise.all([part('broker_queues'), part('broker_depth', true),
+    part('broker_transmission'), part('broker_conversations'), part('broker_endpoint'), part('broker_counters', true), part('broker_state')]);
+  const st = state[0];
+  if (!queues.length && !trans.length && !convs.length) {
+    return el('p', { class: 'empty' }, `No Service Broker read of ${db}: the mssql_service_broker collection reads, every 5 minutes, each database ` +
+      `with the broker on that the login may enter (none here, or not read yet)` + (st?.note ? ` - its last run: ${String(st.note)}` : '') + '.');
+  }
+  const yes = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
+  const note = queues.find(r => r.note);
+  // the depth per queue over the window: one series a queue (by its schema and name)
+  const names = [...new Set(depth.map(r => `${String(r.schema_name)}.${String(r.queue_name)}`))];
+  const at = new Map<string, Row>();
+  for (const r of depth) {
+    const k = String(r.snapshot_at);
+    const row = at.get(k) ?? { snapshot_at: r.snapshot_at };
+    row[`${String(r.schema_name)}.${String(r.queue_name)}`] = r.message_count;
+    at.set(k, row);
+  }
+  const cNames = [...new Set(counters.map(r => String(r.counter_name) + (r.instance_name ? ` (${String(r.instance_name)})` : '')))];
+  const cAt = new Map<string, Row>();
+  for (const r of counters) {
+    const k = String(r.snapshot_at);
+    const row = cAt.get(k) ?? { snapshot_at: r.snapshot_at };
+    row[String(r.counter_name) + (r.instance_name ? ` (${String(r.instance_name)})` : '')] = r.per_sec;
+    cAt.set(k, row);
+  }
+  return el('div', {},
+    note ? el('p', { class: 'meta' }, `The last read did not read ${db}: ${String(note.note)} - these are the values read before.`) : '',
+    el('h3', {}, 'Queues'),
+    grid(queues, [
+      { key: 'schema_name', label: 'schema' }, { key: 'queue_name', label: 'queue' },
+      { key: 'is_receive_enabled', label: 'receive', fmt: v => v === false ? badge('disabled (a poison message?)', 'crit') : yes(v) },
+      { key: 'is_enqueue_enabled', label: 'enqueue', fmt: v => v === false ? badge('disabled', 'warn') : yes(v) },
+      { key: 'message_count', label: 'messages', num: true, fmt: (v, r) => v == null ? (r.is_retention_enabled ? el('span', { class: 'meta', title: 'a RETENTION queue also holds received messages: its count is read from the queue, and was not this time' }, 'not read') : '') : fmtNum(v) },
+      { key: 'oldest_message_at', label: 'oldest ready message', fmt: fmtTime },
+      { key: 'activated_tasks', label: 'readers running', num: true }, { key: 'max_readers', label: 'max readers', num: true },
+      { key: 'activation_procedure', label: 'activation', fmt: (v, r) => v == null ? (r.is_activation_enabled ? 'on, no procedure' : '') : r.activation_procedure_exists === false ? badge(`${String(v)} (missing)`, 'crit') : String(v) },
+      { key: 'monitor_state', label: 'monitor' }, { key: 'monitor_last_activated', label: 'last activated', fmt: fmtTime },
+      { key: 'is_present', label: 'in the database', fmt: v => v ? 'yes' : 'no longer' }, { key: 'snapshot_at', label: 'read', fmt: fmtTime },
+    ], 'No user queue in this database.'),
+    names.length ? lineChart('Queue depth (messages)', [...at.values()], names.map(n => ({ key: n, label: n })), v => fmtNum(v)) : '',
+    el('h3', {}, 'Transmission queue'),
+    grid(trans, [{ key: 'to_service_name', label: 'to service' }, { key: 'transmission_status', label: 'status', fmt: v => v ? String(v) : 'not sent yet' },
+      { key: 'message_count', label: 'messages', num: true }, { key: 'oldest_enqueue_at', label: 'oldest', fmt: fmtTime }], 'Nothing waits to be sent.'),
+    el('h3', {}, 'Conversations'),
+    grid(convs, [{ key: 'state' }, { key: 'conversation_count', label: 'conversations', num: true }], 'No conversation endpoint.'),
+    el('h3', {}, 'Endpoint (the instance)'),
+    grid(eps, [{ key: 'endpoint_name', label: 'endpoint' }, { key: 'state_desc', label: 'state' }, { key: 'port', num: true },
+      { key: 'connection_count', label: 'connections', num: true }, { key: 'connected_count', label: 'connected', num: true },
+      { key: 'login_failed_count', label: 'login failed', num: true }, { key: 'last_activity_at', label: 'last activity', fmt: fmtTime }],
+      'No Service Broker endpoint on this instance (messages stay within it), or the endpoint was not read.'),
+    cNames.length ? lineChart('Broker counters (per second)', [...cAt.values()], cNames.map(n => ({ key: n, label: n })), v => fmtNum(v)) : '');
+}
+
 export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
   const db = hashParam('db');
   if (!db) return el('section', {}, el('h2', {}, 'Database'), el('p', { class: 'empty' }, 'No database named (db=).'));
@@ -136,6 +199,9 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
       body = await mssqlQueryStoreView(ctx);
       break;
     }
+    case 'servicebroker':
+      body = await serviceBroker(ctx, db);
+      break;
     default:
       body = el('p', { class: 'empty' }, `${tabs.find(([k]) => k === tab)![1]} for ${db}: not on this page yet.`);
   }

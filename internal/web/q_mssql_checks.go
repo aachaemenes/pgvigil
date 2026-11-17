@@ -70,6 +70,56 @@ SELECT c.name, c.value, c.value_for_secondary, c.is_default, c.is_present, c.not
  WHERE c.instance_id = $1 AND c.database_name = $2::text
  ORDER BY c.is_present DESC, c.name`
 
+// the database's Service Broker (0392, P25 row 73: DBA Dash's database Service Broker tab). $2 the database's name;
+// the depth and the counters over the window ($3 / $4).
+const sqlMSSQLChecksBrokerQueues = `
+SELECT q.schema_name, q.queue_name, q.is_receive_enabled, q.is_enqueue_enabled, q.is_retention_enabled, q.is_activation_enabled,
+       q.is_poison_handling, q.activation_procedure, q.activation_procedure_exists, q.max_readers, q.message_count, q.activated_tasks,
+       q.monitor_state, q.monitor_tasks_waiting, q.monitor_last_activated, q.monitor_last_empty, q.oldest_message_at,
+       q.note, q.is_present, q.first_seen, q.snapshot_at
+  FROM pgvigil.mssql_broker_queue q
+ WHERE q.instance_id = $1 AND q.database_name = $2::text
+ ORDER BY q.is_present DESC, q.schema_name, q.queue_name`
+
+const sqlMSSQLChecksBrokerDepth = `
+SELECT s.snapshot_at, s.schema_name, s.queue_name, s.message_count, s.activated_tasks
+  FROM pgvigil.mssql_broker_queue_sample s
+ WHERE s.instance_id = $1 AND s.database_name = $2::text AND s.snapshot_at > $3 AND s.snapshot_at <= $4
+ ORDER BY s.snapshot_at, s.schema_name, s.queue_name
+ LIMIT 20000`
+
+const sqlMSSQLChecksBrokerTransmission = `
+SELECT t.to_service_name, t.transmission_status, t.message_count, t.oldest_enqueue_at, t.snapshot_at
+  FROM pgvigil.mssql_broker_transmission t
+ WHERE t.instance_id = $1 AND t.database_name = $2::text
+ ORDER BY t.message_count DESC NULLS LAST, t.to_service_name`
+
+const sqlMSSQLChecksBrokerConversations = `
+SELECT c.state, c.conversation_count, c.snapshot_at
+  FROM pgvigil.mssql_broker_conversation c
+ WHERE c.instance_id = $1 AND c.database_name = $2::text
+ ORDER BY c.conversation_count DESC NULLS LAST, c.state`
+
+const sqlMSSQLChecksBrokerEndpoint = `
+SELECT e.endpoint_name, e.state_desc, e.port, e.connection_count, e.connected_count, e.login_failed_count, e.last_activity_at, e.snapshot_at
+  FROM pgvigil.mssql_broker_endpoint e
+ WHERE e.instance_id = $1
+ ORDER BY e.endpoint_name`
+
+// the counters as rates: each sample's difference from the sample before, over the seconds between them; none where
+// the value fell (the instance restarted: the counters start again) or for the window's first sample
+const sqlMSSQLChecksBrokerCounters = `
+SELECT x.snapshot_at, x.object, x.instance_name, x.counter_name,
+       round(((x.cntr_value - x.prev_value) / nullif(extract(epoch FROM x.snapshot_at - x.prev_at), 0))::numeric, 2)::float8 AS per_sec
+  FROM (SELECT c.snapshot_at, c.object, c.instance_name, c.counter_name, c.cntr_value,
+               lag(c.cntr_value) OVER w AS prev_value, lag(c.snapshot_at) OVER w AS prev_at
+          FROM pgvigil.mssql_broker_counter_sample c
+         WHERE c.instance_id = $1 AND c.snapshot_at > $3 AND c.snapshot_at <= $4
+        WINDOW w AS (PARTITION BY c.object, c.instance_name, c.counter_name ORDER BY c.snapshot_at)) x
+ WHERE x.prev_value IS NOT NULL AND x.cntr_value >= x.prev_value AND ($2::text = '' OR x.object = 'Broker Statistics' OR x.instance_name = $2::text)
+ ORDER BY x.snapshot_at, x.object, x.counter_name, x.instance_name
+ LIMIT 20000`
+
 const sqlMSSQLChecksScopedChanges = `
 SELECT x.name, x.changed_at, x.old_value, x.new_value
   FROM pgvigil.mssql_db_scoped_config_change x
@@ -135,7 +185,7 @@ SELECT d.build_url, d.build_url_words, d.newest_build, d.newest_url, d.newest_ur
 
 // MSSQLChecks is GET /api/mssql/checks?instance=N[&part=...]: the state as last read; no window.
 func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
-	id, _, _, err := params(r, true)
+	id, from, to, err := params(r, true)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -175,6 +225,14 @@ func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
 		// db=: one database's scoped configuration and its changes (P25 row 2a; none without db=)
 		{"scoped_config", sqlMSSQLChecksScopedConfig, []any{id, r.URL.Query().Get("db")}},
 		{"scoped_changes", sqlMSSQLChecksScopedChanges, []any{id, r.URL.Query().Get("db")}},
+		// db=: one database's Service Broker (P25 row 73); the depth and the counters over the window
+		{"broker_state", sqlMssqlRunningState, []any{id, []string{"mssql_service_broker"}}},
+		{"broker_queues", sqlMSSQLChecksBrokerQueues, []any{id, r.URL.Query().Get("db")}},
+		{"broker_depth", sqlMSSQLChecksBrokerDepth, []any{id, r.URL.Query().Get("db"), from, to}},
+		{"broker_transmission", sqlMSSQLChecksBrokerTransmission, []any{id, r.URL.Query().Get("db")}},
+		{"broker_conversations", sqlMSSQLChecksBrokerConversations, []any{id, r.URL.Query().Get("db")}},
+		{"broker_endpoint", sqlMSSQLChecksBrokerEndpoint, []any{id}},
+		{"broker_counters", sqlMSSQLChecksBrokerCounters, []any{id, r.URL.Query().Get("db"), from, to}},
 	})
 }
 
