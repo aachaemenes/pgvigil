@@ -248,6 +248,43 @@ SELECT mp.server, mp.pool, mp.databases, count(w.snapshot_at) AS minutes,
  GROUP BY mp.server, mp.pool, mp.databases
  ORDER BY max(w.avg_edtu_percent) DESC NULLS LAST, max(w.max_cpu_percent) DESC NULLS LAST, mp.server, mp.pool`
 
+// sqlAzurePoolHistory: DBA Dash's Pool history (P25 task 9b): each change of an elastic pool's DTU or storage limit -
+// a period of 0395's that follows another of the same pool with another limit - once, however many of the pool's
+// databases keep a copy (DISTINCT: the copies differ only in their first period's start, which no change has), with
+// the old and new limits and when it changed, the newest first. A database's copy counts for the pool it is in now
+// (the scope's az_server / az_pool); a change of the CPU limit alone is not one (Microsoft: elastic_pool_cpu_limit
+// 'informational purposes only. Not supported.' - never shown). $1 <= $2 only types the window's parameters (the
+// history is not cut by the window, as the Service Objectives changes are not).
+var sqlAzurePoolHistory = sqlAzureScope + `, p AS (
+  SELECT h.server, h.pool, h.valid_from, h.dtu_limit, h.storage_limit_mb,
+         lag(h.valid_from) OVER w AS prev_from, lag(h.dtu_limit) OVER w AS old_dtu, lag(h.storage_limit_mb) OVER w AS old_storage
+    FROM pgvigil.mssql_pool_limit_history h
+    JOIN inst ON inst.instance_id = h.instance_id AND upper(h.server) = upper(inst.az_server) AND upper(h.pool) = upper(inst.az_pool)
+  WINDOW w AS (PARTITION BY h.instance_id, h.server, h.pool ORDER BY h.valid_from)
+)
+SELECT DISTINCT p.server, p.pool, p.valid_from AS changed_at, p.old_dtu AS old_dtu_limit, p.dtu_limit AS new_dtu_limit,
+       p.old_storage AS old_storage_limit_mb, p.storage_limit_mb AS new_storage_limit_mb
+  FROM p
+ WHERE p.prev_from IS NOT NULL AND (p.old_dtu IS DISTINCT FROM p.dtu_limit OR p.old_storage IS DISTINCT FROM p.storage_limit_mb)
+   AND $1::timestamptz <= $2::timestamptz
+ ORDER BY changed_at DESC, p.server, p.pool
+ LIMIT 2000`
+
+// sqlAzurePoolHistoryState: per elastic pool of the scope's databases, when one of them last read master's view
+// (0395's mssql_pool_limit_read) and, where a database's mssql_pool_limits run was skipped (no dbmanager, no way into
+// master), the newest skip's words - the page's words for a pool with no history.
+var sqlAzurePoolHistoryState = sqlAzureScope + `
+SELECT inst.az_server AS server, inst.az_pool AS pool,
+       max(rd.read_at) FILTER (WHERE rd.state = 'read') AS last_read,
+       (array_agg(cd.note ORDER BY cd.snapshot_at DESC) FILTER (WHERE cd.status = 'skipped'))[1] AS skip_note,
+       max(cd.snapshot_at) FILTER (WHERE cd.status = 'skipped') AS skipped_at
+  FROM inst
+  LEFT JOIN pgvigil.mssql_pool_limit_read rd ON rd.instance_id = inst.instance_id
+  LEFT JOIN pgvigil.collection_dates cd ON cd.instance_id = inst.instance_id AND cd.collection = 'mssql_pool_limits'
+ WHERE inst.platform = 'azuresqldb' AND inst.az_server IS NOT NULL AND inst.az_pool IS NOT NULL AND $1::timestamptz <= $2::timestamptz
+ GROUP BY inst.az_server, inst.az_pool
+ ORDER BY inst.az_server, inst.az_pool`
+
 // AzureDBSummary is GET /api/azuredb/summary?[from=&to=][&tag=][&server=[&pool=]]: the fleet's Azure SQL Databases
 // (DBA Dash's Azure Summary), or one logical server's (server=) or one of its elastic pools' (pool=, with its server:
 // a pool's name is its server's) - DBA Dash's server and pool nodes (P25 task 7).
@@ -276,5 +313,7 @@ func (s *Server) AzureDBSummary(w http.ResponseWriter, r *http.Request) {
 	s.multiPart(w, r, []part{{"databases", sqlAzureDBFleet, args},
 		{"pools", sqlAzurePools, args},            // P25 task 8: the Elastic Pool grid
 		{"slo_history", sqlAzureSLOHistory, args}, // P25 task 9
-		{"governance", sqlAzureGovernance, args}})
+		{"governance", sqlAzureGovernance, args},
+		{"pool_history", sqlAzurePoolHistory, args}, // P25 task 9b
+		{"pool_history_state", sqlAzurePoolHistoryState, args}})
 }

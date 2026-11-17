@@ -133,7 +133,8 @@ const poolHref = (ctx: Ctx, server: string, pool: string) => hrefWith(ctx, 'azur
 // pool nodes' pages, P25 task 7). On a pool's page the section carries one member database's instance in
 // data-member: the pool is read through its databases (pools.ts).
 export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTMLElement> {
-  const d = await get<{ databases: Table | null; pools: Table | null; slo_history: Table | null; governance: Table | null }>('azuredb/summary', { ...window_(ctx),
+  const d = await get<{ databases: Table | null; pools: Table | null; slo_history: Table | null; governance: Table | null; pool_history: Table | null;
+    pool_history_state: Table | null }>('azuredb/summary', { ...window_(ctx),
     ...(ctx.tag ? { tag: ctx.tag } : {}), ...(node ? { server: node.server, ...(node.pool ? { pool: node.pool } : {}) } : {}) });
   const rows = rowsOf(d.databases);
   // the read lists every Azure SQL Database of the scope (read or not): none = the scope holds none, so no grid of
@@ -194,6 +195,30 @@ export async function azureSummaryView(ctx: Ctx, node?: AzureNode): Promise<HTML
     n('used_storage_percent', 'storage used', pct), n('allocated_storage_percent', 'storage allocated', pct),
     n('minutes', 'minutes'), { key: 'last_minute', label: 'last minute', fmt: fmtTime },
   ], 'No database of this scope is in an elastic pool pgvigil reads.'));
+  // DBA Dash's Pool history (P25 task 9b): each change of a pool's DTU or storage limit, from master's
+  // sys.elastic_pool_resource_stats through mssql_pool_limits - a read that needs dbmanager in master, an opt-in; a
+  // pool none of whose databases read it gets the words, never an empty grid (the CPU limit is never shown: Microsoft
+  // calls it informational, not supported)
+  const states = rowsOf(d.pool_history_state), unread = states.filter(r => r.last_read == null);
+  if (states.length) {
+    sec.append(el('h3', {}, 'Pool history'));
+    if (states.length > unread.length) {
+      sec.append(grid(rowsOf(d.pool_history), [
+        { key: 'pool', label: 'elastic pool', fmt: (v, r) => el('a', { href: poolHref(ctx, String(r.server), String(v)) }, String(v)) },
+        { key: 'server', label: 'logical server' }, { key: 'changed_at', label: 'changed', fmt: fmtTime },
+        n('old_dtu_limit', 'DTU limit from'), n('new_dtu_limit', 'DTU limit to'),
+        n('old_storage_limit_mb', 'storage limit from', mb), n('new_storage_limit_mb', 'storage limit to', mb),
+      ], 'No change of a read pool\'s DTU or storage limit in what pgvigil has read (master keeps 14 days; pgvigil keeps what it read).'));
+    }
+    if (unread.length) {
+      sec.append(el('p', { class: 'meta', role: 'note' }, 'Pool history - the pool\'s DTU and storage limits over time - is read from master\'s ' +
+        'sys.elastic_pool_resource_stats, which needs the dbmanager role in the logical server\'s master: an opt-in, since that role can create and drop ' +
+        'databases, which can cost money. Its block, commented out, is in the instance\'s rights script (Admin > Instances). That view keeps 14 days; ' +
+        'pgvigil keeps what it read. The limits\' shares (CPU, data IO, log write, eDTU, workers, sessions, storage) are above, read through each pooled database.'),
+      el('ul', {}, ...unread.map(r => el('li', {}, `${String(r.pool)} on ${String(r.server)}: ` +
+        (r.skip_note ? `${String(r.skip_note)} (${fmtTime(r.skipped_at)})` : 'not read yet - mssql_pool_limits runs hourly on each pooled database')))));
+    }
+  }
   // DBA Dash's Azure Service Objectives and Resource Governance (P25 task 9): each tier change of these databases
   // (the governance history pgvigil keeps since it first read each one), and each database's governance row as last
   // read, its whole row in the viewer below the grid
