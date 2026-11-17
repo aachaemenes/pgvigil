@@ -539,7 +539,7 @@ const configureWhy = 'Backup thresholds are not set from this page: they are eac
   + 'and reach the repository with the collector.';
 
 const byInstanceCols = (ctx: Ctx): Col[] => [
-  { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
+  { key: 'instance', title: 'The SQL Server instance; the link opens its own Backups page, every database listed', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
   { key: 'findings', fmt: (v, r) => !n0(v) ? '' : badge(`${fmtNum(v)} ${String(r.worst)}`, r.worst === 'critical' ? 'crit' : r.worst === 'warning' ? 'warn' : 'none') },
   { key: 'databases', ...count() },
   { key: 'full_ok', label: 'full ok', ...count() }, { key: 'full_late', label: 'full late', ...count('crit') },
@@ -551,8 +551,9 @@ const byInstanceCols = (ctx: Ctx): Col[] => [
   { key: 'nul_recent', label: 'backup to NUL', ...count('warn') },
   { key: 'model_full', label: 'full recovery', ...count() }, { key: 'model_bulk_logged', label: 'bulk-logged recovery', ...count() },
   { key: 'model_simple', label: 'simple recovery', ...count() },
-  { key: 'oldest_full', label: 'oldest full', fmt: fmtTime }, { key: 'oldest_diff', label: 'oldest differential', fmt: fmtTime },
-  { key: 'oldest_log', label: 'oldest log', fmt: fmtTime },
+  { key: 'oldest_full', label: 'oldest full', fmt: fmtTime, title: 'The oldest last full backup among its databases that are judged for full backups' },
+  { key: 'oldest_diff', label: 'oldest differential', fmt: fmtTime, title: 'The oldest last differential backup among its databases that are judged for differentials' },
+  { key: 'oldest_log', label: 'oldest log', fmt: fmtTime, title: 'The oldest last log backup among its databases that are judged for log backups' },
   { key: 'full_bytes', label: 'full size', num: true, fmt: fmtBytes },
   { key: 'full_compressed_bytes', label: 'compressed', num: true, fmt: (v, r) => v == null ? ''
     : fmtBytes(v) + (n0(r.full_bytes) > 0 ? ` (${fmtNum(Math.round((1 - n0(v) / n0(r.full_bytes)) * 100))} % saved)` : '') },
@@ -617,8 +618,8 @@ export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
       el('div', { id: 'mssql-backups-fleet-findings' }, grid(findings, [{ key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) }, ...mssqlFindingCols])));
 
     const fleetCols: Col[] = [
-      { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
-      { ...cols[0], fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', { db: String(v ?? '') }, Number(r.instance_id)) }, String(v ?? '')) },
+      { key: 'instance', title: 'The instance the database is on; the link opens that instance\'s Backups page', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
+      { ...cols[0], title: 'The database; the link opens its backup history on its instance\'s Backups page', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', { db: String(v ?? '') }, Number(r.instance_id)) }, String(v ?? '')) },
       ...cols.slice(1),
     ];
     const total = sum('databases');
