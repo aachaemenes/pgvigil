@@ -186,6 +186,13 @@ dialog. In DBA Dash's order:
   `bigint`; else `numeric` on PostgreSQL and `DECIMAL(38,10)` on SQL Server, which rounds past 10 decimals); a time is `timestamptz` / `DATETIMEOFFSET`, written with its offset, the zone named in the header; anything
   else text. Every file is named as the grid's workbook (below) with its own extension (`.pg.sql` and `.mssql.sql` for the two
   SQL forms). JSON objects list a header that is a whole number (`2026`) first: JavaScript orders such keys so.
+- **Save Table** > **From Data Table**, **From Grid**, **Script Data Table**, **Script Grid** (DBA Dash's four). Script
+  Grid opens the code viewer with what Export file's SQL writes (the rows the filters leave, the shown columns); Script
+  Data Table with every row the page gave the grid, whatever its filters, and every column the chooser offers, as the
+  values the page read. Each is in the page's engine's dialect (a fleet page: PostgreSQL's). From Data Table and From Grid
+  write a table on an instance through its actions door, an administrator's opt-in: until `doors: save_table: on` is set
+  in pgvigil.yaml they are off with the words 'off: an administrator turns on doors: save_table in pgvigil.yaml; the door
+  login needs CREATE in the database'.
 - **Transpose** > **This row**, **Selected rows**, **Grid**: the rows as columns in a dialog, with Copy; the grid form
   shows its first 50 rows and says so, its Copy takes every row.
 - **Select** > **Row**, **Column**, **All**; **Clear the selection**.
@@ -205,8 +212,12 @@ dialog. In DBA Dash's order:
   colour could fail one of them.
 - **Filter by value** and **Exclude value** (the clicked value, exactly), **Filter by these values** / **Exclude these
   values** (cells selected in one column), **All filters** > Like / Not like (a text column), `=` `<>` `>` `<` `>=` `<=`
-  (a prompt with the clicked value), **Clear filters**. A menu's filter is added to what the column's filter holds:
-  every condition must hold.
+  (a prompt with the clicked value), **Edit Filter** (DBA Dash's: the filter row as one text, a line per column - its
+  name in brackets, a `]` in it doubled, then its conditions exactly as its field holds them, such as `[name] like "a%"`
+  or `[sessions] >5 & <>"12"`; Apply writes each line into its column's field and empties the others, the text applied
+  unchanged changes nothing, and a text it cannot read is refused in words naming the line), **Clear filters**. A menu's
+  filter is added to what the column's filter holds: every condition must hold. `<>` keeps an empty cell, on a number
+  column too (DBA Dash keeps a NULL row).
 - `Rows: n | Cols: n` and the statistics: the selection's (count, numeric count, sum, average, min, max) or the clicked
   column's over every row the filters leave; a click copies the line.
 
@@ -236,18 +247,28 @@ and PageUp / PageDown move it (PageDown past the drawn rows reaches `Show more`)
 or button and Escape comes back; on a header cell Enter sorts and F2 opens the filter row; the menu key or Shift+F10
 opens the menu at the cell, Escape gives the focus back to it.
 
-**What the tools keep, and what they are not.** Hidden columns, frozen columns, data bars and their style, and the row
-numbers are kept in this browser per grid (localStorage: the tab, the heading above the grid and its column names), not
-on the server and not per user; a grouping and an open chooser hold while the page is loaded. Data bars and traffic
+**What the tools keep, and what they are not.** Hidden columns, frozen columns, data bars with their style and options,
+the row headers, and the undrawn data columns ticked in the chooser are kept in this browser per grid (localStorage: the
+tab, the heading above the grid and the page's own column names), not on the server and not per user; a grouping and an
+open chooser hold while the page is loaded. Data bars and traffic
 lights are a screen aid in their own colours: no file carries them, and the export never reads a traffic light as a
 status. A statement's masked text (the text policy) is masked when it is collected, so every copy and file carries the
 masked text.
 
-- **Columns...**: the chooser, with every column's tick, the number of frozen columns, data bars per number column,
-  the group-by and `Reset this grid`.
-- **Group by** a column: a panel above the grid with one line per value, its row count and one aggregate of every
-  number column (sum, average, min or max; a size stays a size, a duration a duration), the largest group first. It
-  follows the grid's filters; the grid itself stays as it is.
+- **Columns...**: the chooser (DBA Dash's Columns dialog), with every column's tick - the page's columns, then the keys
+  its rows carry that it does not draw ('not drawn by this page': ticked, one is drawn at the grid's end, in every copy
+  and file; `Reset this grid` removes it) -, **All** (every column of the page), **None** (all but the grid's first: a
+  grid keeps one column) and **Toggle selected** (ticks or unticks each picked name). Names are picked by a click,
+  Ctrl+click and Shift+click, or from the keyboard: the list is one tab stop, the arrows move, Space picks, Shift with
+  an arrow picks a range, Ctrl+A picks every name. A key starting with `_` (a page's own working value) is never
+  offered, nor a key a page holds back on purpose: the Summary's Instances grid holds back its `g_` and `m_` sort values
+  (the columns it hides itself). The chooser also holds the number of frozen columns, data bars per number column, a
+  quick group-by (the column, its row count and the sum of every other number column) and `Reset this grid`.
+- **Group By...** (the dialog above): a panel over the grid with one line per group, the largest first, each number in
+  its unit (a size stays a size, a duration a duration); it follows the grid's filters, the grid itself stays as it is.
+- **The Summary's toolbar Copy**: **Copy Summary** and **Copy Test Summary** copy the Instances grid and the Test
+  Summary grid as their own Copy > Grid does (the words and the HTML with the fills); the Test Summary also while View
+  hides it; the toolbar says what was copied.
 - **Selection statistics**: Ctrl+click (Cmd on a Mac) picks cells, Shift+click a rectangle, and the chooser's
   `Sum the cells of` picks a whole column from the keyboard; the line above the grid says their count, sum, average,
   min and max. A plain click clears it.
