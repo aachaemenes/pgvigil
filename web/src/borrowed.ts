@@ -97,6 +97,9 @@ export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLEleme
     let d: { tables: Table | null; meta: Table | null };
     try { d = await get<{ tables: Table | null; meta: Table | null }>('tables/top', { instance, ...window_(ctx), n: want }); }
     catch (e) { if (mine === seq) body.replaceChildren(errorBox(e)); return; }
+    // Most Disk I/O Reads (parity set 2, L46): the heap, index and TOAST blocks read from outside shared buffers over
+    // the window (0363's block counters of the same read); a failed read is its own error box, the rest stand
+    const io = await get<{ tables: Row[] }>('tables/io_top', { instance, ...window_(ctx), top: want }).catch((e: unknown) => e instanceof Error ? e : new Error(String(e)));
     if (mine !== seq) return;   // a newer choice was made while this one loaded
     const rows = rowsOf(d.tables), meta = rowsOf(d.meta)[0] ?? {};
     const part = (title: string, rank: string, lead: Col, extra: Col[]) => {
@@ -117,7 +120,11 @@ export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLEleme
         part('Most inserts', 'rank_ins', { key: 'n_tup_ins', label: 'rows inserted', num: true }, []),
         part('Most updates', 'rank_upd', { key: 'n_tup_upd', label: 'rows updated', num: true },
           [{ key: 'hot_pct', label: 'HOT', num: true, fmt: pctHot }]),
-        part('Most deletes', 'rank_del', { key: 'n_tup_del', label: 'rows deleted', num: true }, [])));
+        part('Most deletes', 'rank_del', { key: 'n_tup_del', label: 'rows deleted', num: true }, []),
+        el('div', {}, el('h4', {}, 'Most disk I/O reads'), io instanceof Error ? errorBox(io)
+          : grid(io.tables, [{ key: 'table', fmt: (v, r) => tableLink(ctx, String(v ?? ''), r.dbid, r.relid) },
+            { key: 'blks_read', label: 'blocks read', num: true, fmt: fmtNum }],
+            'No table read blocks from outside shared buffers in the window (reads before this version hold no block counters).'))));
   }
   sel.addEventListener('change', () => {
     n = Number(sel.value);

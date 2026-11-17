@@ -10,7 +10,7 @@ import { fleet } from './fleet';
 import { Ctx, href, window_, rangeLabel } from './router';
 import { dbLink, grownTxt, hashParam, hrefWith, link, tableLink } from './dbinfo';
 import { schemaDbSection } from './schema';
-import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 
 type Parts<K extends string> = Record<K, Table | null>;
 
@@ -155,6 +155,19 @@ export async function tablePage(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('div', { class: 'charts' },
     lineChart(`Size (${fmtTime(meta.from_at)} to ${fmtTime(meta.to_at)})`, s, [{ key: 'total_bytes', label: 'total' }, { key: 'bloat_bytes', label: 'bloat' }], v => fmtBytes(v), { ownSpan: true }),
     lineChart('Live and dead rows', s, [{ key: 'n_live_tup', label: 'live' }, { key: 'n_dead_tup', label: 'dead' }], v => fmtNum(v), { ownSpan: true })));
+  // scans, row changes and the buffer hit over the window (parity set 2, L46: pgwatch's table details) - each read's
+  // change from the table activity read (every 5 minutes, the busiest tables of each database); its own error box
+  const io = await get<{ points: Row[]; words: string[] }>('tables/io', { instance: ctx.instance, dbid: db, relid: rel, ...window_(ctx) })
+    .catch((e: unknown) => e instanceof Error ? e : new Error(String(e)));
+  if (io instanceof Error) sec.append(el('h3', {}, `Activity (${rangeLabel(ctx)})`), errorBox(io));
+  else {
+    const ps = io.points.map(p => ({ ...p, snapshot_at: p.at }));
+    sec.append(el('h3', {}, `Activity (${rangeLabel(ctx)})`), ...io.words.map(w => el('p', { class: 'meta' }, w.charAt(0).toUpperCase() + w.slice(1) + '.')));
+    if (ps.length) sec.append(el('div', { class: 'charts' },
+      lineChart('Scans per read', ps, [{ key: 'seq_scan', label: 'sequential' }, { key: 'idx_scan', label: 'index' }], v => fmtNum(v)),
+      lineChart('Rows changed per read', ps, [{ key: 'ins', label: 'inserted' }, { key: 'upd', label: 'updated' }, { key: 'del', label: 'deleted' }], v => fmtNum(v)),
+      lineChart('Buffer hit', ps, [{ key: 'hit_pct', label: 'heap and index blocks found in shared buffers' }], v => `${fmtNum(v)} %`)));
+  }
 
   sec.append(el('h3', {}, `Vacuum and analyze runs (${rangeLabel(ctx)})`), grid(rowsOf(d.vacuum), [
     { key: 'started_at', label: 'started', fmt: fmtTime }, { key: 'kind' }, { key: 'is_auto', label: 'auto', fmt: yesNo },

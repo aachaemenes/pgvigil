@@ -341,6 +341,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/pgaudit", s.PgAudit)
 	api.HandleFunc("GET /api/pooler", s.Pooler)
 	api.HandleFunc("GET /api/pooler/trend", s.PoolerTrend) // parity set 2, L47: the pooler's rates over time
+	api.HandleFunc("GET /api/tables/io", s.TableIO)        // parity set 2, L46: a table's scans, row changes and buffer hit over time
+	api.HandleFunc("GET /api/tables/io_top", s.TableIOTop) // parity set 2, L46: Most Disk I/O Reads
 	api.HandleFunc("GET /api/pooler/conns", s.PoolerConns)
 	api.HandleFunc("GET /api/schema", s.Schema)
 	api.HandleFunc("GET /api/host", s.Host)
