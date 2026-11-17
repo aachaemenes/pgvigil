@@ -334,9 +334,9 @@ await guard('CR-restore', async () => {
 await guard('CR-switch', async () => {
   const b = await addReport({ name: `cr-pair-b-${Date.now()}`, engine: 'store', body: 'SELECT @q::text AS q', params: [{ name: 'q', type: 'text', label: 'q', default: '' }] });
   const a = await addReport({ name: `cr-pair-a-${Date.now()}`, engine: 'store', body: 'SELECT @q::text AS q', params: [{ name: 'q', type: 'text', label: 'q', default: '' }], pair: { report_id: b.id, label: 'Charts' } });
-  await go(`#/customreports?report=${a.id}&q=carried`); await sleep(800);
+  await go(`#/customreports?report=${a.id}&p.q=carried`); await sleep(800);   // p.<name>: the page's own address of a parameter
   const sw = await clickButton('Charts'); await sleep(1000);
-  const at = await ev(`({ hash: location.hash, q: document.querySelector('main [aria-label=q]')?.value ?? '' })`);
+  const at = await ev(`({ hash: location.hash, q: document.querySelector('main [name=q]')?.value ?? '' })`);
   await ev('history.back()'); await sleep(1000);
   const back = await ev('location.hash');
   check('CR-switch', sw && at.hash.includes(`report=${b.id}`) && at.q === 'carried' && back.includes(`report=${a.id}`), `the switch button ${sw}; opened ${JSON.stringify(at)}; Back to ${back}`);
