@@ -196,6 +196,14 @@ SELECT st.step AS snapshot_at, st.reads, coalesce(p.e, 0)::bigint AS executions,
   FROM st LEFT JOIN p ON p.step = st.step
  ORDER BY 1`
 
+// sqlMSSQLFuncIntervals / sqlMSSQLFuncHistory: the two reads of one function or trigger (OBJ, the object page's Object
+// Execution) - the procedure's reads over 0343's statistics (an object id is unique in its database, so the kind needs
+// no filter)
+var (
+	sqlMSSQLFuncIntervals = strings.NewReplacer("pgvigil.mssql_proc_sample", "pgvigil.mssql_func_sample").Replace(sqlMSSQLProcIntervals)
+	sqlMSSQLFuncHistory   = strings.NewReplacer("pgvigil.mssql_proc_sample", "pgvigil.mssql_func_sample", "pgvigil.mssql_proc_read", "pgvigil.mssql_func_read").Replace(sqlMSSQLProcHistory)
+)
+
 // sqlMSSQLProcCompare: PerformanceMonitor's compare (top-compare.js, MIT, Erik Darling, Darling Data LLC) on the
 // procedures' stored reads, keyed as PerformanceMonitor keys them, by database and name ([database_name,
 // full_name]: a procedure dropped and created again between the windows is one row; one whose name was not read is
@@ -541,8 +549,18 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("db_id and object must both be given as the procedure's database id and object id"))
 			return
 		}
-		parts = append(parts, part{"intervals", sqlMSSQLProcIntervals, []any{id, from, to, dbID, obj}},
-			part{"history", sqlMSSQLProcHistory, []any{planEach, id, from, to, dbID, obj, procStep(to.Sub(from).Seconds())}})
+		// the object page (OBJ) reads a function or a trigger the same way, from its kind's statistics (kind=)
+		intervals, history := sqlMSSQLProcIntervals, sqlMSSQLProcHistory
+		switch q.Get("kind") {
+		case "", "procedure":
+		case "function", "trigger":
+			intervals, history = sqlMSSQLFuncIntervals, sqlMSSQLFuncHistory
+		default:
+			writeErr(w, http.StatusBadRequest, errors.New("kind must be procedure, function or trigger"))
+			return
+		}
+		parts = append(parts, part{"intervals", intervals, []any{id, from, to, dbID, obj}},
+			part{"history", history, []any{planEach, id, from, to, dbID, obj, procStep(to.Sub(from).Seconds())}})
 	}
 	// the object page's lookup (OBJ, q_mssql_object.go): read only when asked, its database by name (dbname=; db= stays
 	// the database id this endpoint's other parts read)
