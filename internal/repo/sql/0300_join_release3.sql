@@ -2465,14 +2465,15 @@ END $$;
 
 -- ====================================================================================================================
 -- pgvigil.import_cq_verify_open, pgvigil.import_cq_verify_sweep: base none (new in the join file)
---   #1 the join 0300 --------: J16-SWEEP (the lead's 16:04) - serve's verify sweep (internal/web/actions_verify.go
+--   #1 the join 0300 --------: J16-SWEEP - serve's verify sweep (internal/web/actions_verify.go
 --      SweepVerifies, at serve's start and hourly; 301b 462531e9) read pgvigil.actions_log directly on the actions door's
 --      audit pool, whose login is a member of pgvigil_collector, which apply_roles takes every pgvigil table from: 42501
 --      at every start and every hour, and a stopped serve's 'started' verify never ended. Its two reads are the
 --      collector's door here, both named import_* so apply_roles makes them SECURITY DEFINER with search_path pinned and
 --      grants EXECUTE to pgvigil_collector only. The instance's verify lock stays in Go (SweepVerifies takes it on a
---      session of its own around each instance's sweep). import_cq_verify_sweep is j17's CQ-VERIFY name and signature
---      (0332, CREATE OR REPLACE ... RETURNS integer): 0332's text replaces this one with its request-id pairing.
+--      session of its own around each instance's sweep). import_cq_verify_sweep has the name and signature a
+--      collector-queue verify will re-create (CREATE OR REPLACE ... RETURNS integer): its text then replaces this one
+--      with its request-id pairing.
 -- ====================================================================================================================
 -- [#1 the join 0300 --------]
 -- import_cq_verify_open: the SQL Server instances with a 'started' verify and no end of its own - an end: a later row

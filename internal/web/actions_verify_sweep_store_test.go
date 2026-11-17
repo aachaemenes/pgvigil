@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestVerifySweepAsTheAuditLoginOnAStore (J16-SWEEP, the lead's 16:04; a box row: PGVIGIL_REPO_TEST_DSN, a login that
+// TestVerifySweepAsTheAuditLoginOnAStore (J16-SWEEP; a box row: PGVIGIL_REPO_TEST_DSN, a login that
 // may CREATE ROLE): serve's sweep of the verifies a stopped serve left 'started' (SweepVerifies: at serve's start and
 // hourly) runs on the actions door's audit pool, whose login is a member of pgvigil_collector (docs/alerts.md: the
 // collector role is the actions door's audit login). apply_roles takes every pgvigil table from that role, so the

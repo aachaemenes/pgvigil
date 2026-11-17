@@ -95,7 +95,7 @@ func (s *Server) StopVerifies(limit time.Duration) {
 // is none - and no other 'started' row of the instance between them: one verify per instance; a row whose instance was
 // removed since is left alone); import_cq_verify_sweep(id) writes 'ended unknown' for each such row of one instance and
 // returns how many - run only while the sweep holds the instance's lock, so no verify is running there (whatever the
-// row's age: the lead's P3.4). Both are 0300's, SECURITY DEFINER through apply_roles' import_* rule.
+// row's age: decision P3.4). Both are 0300's, SECURITY DEFINER through apply_roles' import_* rule.
 const (
 	sqlVerifyOpen  = `SELECT pgvigil.import_cq_verify_open()`
 	sqlVerifySweep = `SELECT pgvigil.import_cq_verify_sweep($1)`
