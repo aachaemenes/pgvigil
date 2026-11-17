@@ -199,11 +199,14 @@ INSERT INTO #pl_epr VALUES
 		t.Logf("contained database authentication not read (%v): the no-master path not run", err)
 		return
 	}
-	defer func() {
+	// a cleanup, not a defer: a test's defers run before its cleanups, and SQL Server refuses to turn the setting off
+	// while a contained database exists (p11b-1: Msg 'existing contained databases'); registered before the database's
+	// own cleanup, it runs after the drop (cleanups run last registered first)
+	t.Cleanup(func() {
 		if _, err := conn.ExecContext(context.Background(), fmt.Sprintf("EXEC sp_configure 'contained database authentication', %d; RECONFIGURE;", oldCDA)); err != nil {
 			t.Errorf("contained database authentication not put back to %d: %v", oldCDA, err)
 		}
-	}()
+	})
 	if _, err := conn.ExecContext(ctx, "EXEC sp_configure 'contained database authentication', 1; RECONFIGURE;"); err != nil {
 		t.Logf("contained database authentication not set (%v): the no-master path not run", err)
 		return
