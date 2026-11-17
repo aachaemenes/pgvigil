@@ -331,7 +331,7 @@ func (g *Gen) mssqlPlanCacheRows(t time.Time) []Row {
 	rows := []Row{{"kind": "state", "server_utc": t.UTC().Format(time.RFC3339), "server_start": start.UTC().Format(time.RFC3339),
 		"server_local": local(t), "capped": false},
 		{"kind": "database", "database_id": 5, "database_name": "Sales", "database_state": "ONLINE", "query_store_on": 1},
-		{"kind": "database", "database_id": 6, "database_name": "Ledger", "database_state": "ONLINE", "query_store_on": 0}}
+		{"kind": "database", "database_id": 7, "database_name": "Orders", "database_state": "ONLINE", "query_store_on": 0}}
 	stmts := []struct {
 		key, object, query    string
 		start, end            int
@@ -393,7 +393,7 @@ func (g *Gen) mssqlScopedRows(t time.Time) []Row {
 		maxdop = "4"
 	}
 	var rows []Row
-	for _, db := range []string{"Sales", "Ledger"} {
+	for _, db := range []string{"Sales", "Orders"} { // review t11-6 SHOULD 7: -sql01's own databases
 		set := map[string]string{"MAXDOP": "0", "LEGACY_CARDINALITY_ESTIMATION": "0", "PARAMETER_SNIFFING": "1", "QUERY_OPTIMIZER_HOTFIXES": "0",
 			"OPTIMIZE_FOR_AD_HOC_WORKLOADS": "0", "ACCELERATED_PLAN_FORCING": "1", "LAST_QUERY_PLAN_STATS": "0", "LIGHTWEIGHT_QUERY_PROFILING": "1"}
 		if db == "Sales" {
@@ -425,7 +425,7 @@ func (g *Gen) mssqlSchemaRows(t time.Time) []Row {
 	for _, d := range []struct {
 		id            int
 		name, created string
-	}{{5, "Sales", "2023-04-11T08:12:40.370"}, {6, "Ledger", "2023-04-11T08:13:02.117"}} {
+	}{{5, "Sales", "2023-04-11T08:12:40.370"}, {7, "Orders", "2023-04-11T08:13:02.117"}} {
 		var objs []Row
 		obj := func(kind, schema, name, table, def string) {
 			identity, parent := schema+"."+name, any(nil)
@@ -525,7 +525,7 @@ func (g *Gen) mssqlFuncStatRows(t time.Time) []Row {
 	}{
 		{"function", "dbo", "fn_OrderTotal", "SQL_SCALAR_FUNCTION", "", 1013578649, 40, 180, 6},
 		{"function", "dbo", "fn_CustomerTier", "SQL_SCALAR_FUNCTION", "", 1029578706, 12, 950, 40},
-		{"trigger", "dbo", "tr_Orders_Audit", "SQL_TRIGGER", "OBJECT_OR_COLUMN", 1045578763, 6, 2200, 85},
+		{"trigger", "dbo", "tr_Orders_Audit", "SQL_TRIGGER", "" /* review t11-6 SHOULD 6: a DML trigger has no scope, sent as nil (funcstats.go) */, 1045578763, 6, 2200, 85},
 	}
 	secs := t.Sub(cached).Seconds()
 	for i, o := range objs {

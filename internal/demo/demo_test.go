@@ -100,6 +100,20 @@ func TestMSSQLDemo(t *testing.T) {
 			}
 		}
 	}
+	// review t11-6 NIT 13: the two Azure SQL Databases keep the SQL-Server-only checks (their own scenarios: TestParityDemo)
+	for i, s := range specs[15:] {
+		g := NewGen(s, 15+i, 7, Grid(anchor, 7)[0], anchor)
+		for _, c := range g.Collections() {
+			if !strings.HasPrefix(c, "mssql_") {
+				t.Fatalf("%s: collection %s", s.Name, c)
+			}
+		}
+		for _, b := range run(t, s, 15+i, 7) {
+			if !strings.HasPrefix(b.Collection, "mssql_") {
+				t.Fatalf("%s: batch %s", s.Name, b.Collection)
+			}
+		}
+	}
 	for i, s := range specs[12:15] { // the three servers (the Azure SQL Databases: TestParityDemo)
 		idx := 12 + i
 		g := NewGen(s, idx, 7, Grid(anchor, 7)[0], anchor)

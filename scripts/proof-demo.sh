@@ -10,8 +10,8 @@
 # the anchor is on a 5-minute mark, 2,066 when it is not), plus the seed's catch-up ticks (one a minute from the
 # anchor, which the seed prints, to the minute the seed returns).
 # Expected:
-#   instances    15 tagged demo: twelve PostgreSQL (onprem 3, rds 2, aurora 3, azure 2, cloudsql 2) and three SQL
-#                Server (sqlserver 2, azuresqlmi 1); the non-demo
+#   instances    17 tagged demo: twelve PostgreSQL (onprem 3, rds 2, aurora 3, azure 2, cloudsql 2) and five SQL
+#                Server (sqlserver 2, azuresqlmi 1, azuresqldb 2); the non-demo
 #                instance seeded before the run is untouched after two runs
 #   activity     N summaries per PostgreSQL instance, none on a SQL Server one; at the latest snapshot blocking_chains() gives
 #                onprem-erp01 3 waiters (depth up to 2, active head), rds-orders01 6 (depth up to 2,
@@ -40,10 +40,10 @@
 #                table keeps its last read: older than its database's read on an odd UTC hour, the same on an
 #                even one); table_checks = exactly the four table rows of the overview
 #   settings     one change each on onprem-erp01 (work_mem) and rds-orders01 (log_min_duration_statement)
-#   rerun        "15 replaced"; no instance_id of the first run is left in any table with an instance_id
+#   rerun        "17 replaced"; no instance_id of the first run is left in any table with an instance_id
 #                column (the dbadash_* tables aside: theirs is DBA Dash's InstanceID, not a pgvigil instance); the same counts; a non-demo instance named like a demo one (prefix trap-) makes
 #                the seed refuse with "exist without the demo tag" and stays as it was
-#   api          without a login: instances 15, overview the rows above, activity chains 3,
+#   api          without a login: instances 17, overview the rows above, activity chains 3,
 #                statements >= 10 rows over 7 days, counters db/server/io/sessions rows > 0, dms 2 tasks
 #   pgbin        initdb + start on a free port, seed, serve on -listen 127.0.0.1:0 (the logged URL answers);
 #                within 150 s a live snapshot newer than
@@ -92,7 +92,7 @@ got=$(P -c "select count(distinct snapshot_at) from pgvigil.activity_summary a j
 check_repo() {
   local got
   got=$(P -c "select string_agg(platform || ' ' || n, ', ' order by platform) from (select platform, count(*) n from pgvigil.instances where 'demo' = any(tags) group by 1) x")
-  [[ "$got" == "aurora 3, azure 2, azuresqlmi 1, cloudsql 2, onprem 3, rds 2, sqlserver 2" ]] || fail "platforms: $got"; ok "instances: $got"
+  [[ "$got" == "aurora 3, azure 2, azuresqldb 2, azuresqlmi 1, cloudsql 2, onprem 3, rds 2, sqlserver 2" ]] || fail "platforms: $got"; ok "instances: $got"
   got=$(P -c "select count(*) from pgvigil.instances where instance_id = $KEEP and not 'demo' = any(tags)")
   [[ "$got" == 1 ]] || fail "the non-demo instance is gone"; ok "non-demo instance kept"
   got=$(P -c "select count(*) filter (where n <> $N) from (select i.name, count(a.*) n from pgvigil.instances i left join pgvigil.activity_summary a using (instance_id) where 'demo' = any(i.tags) and i.engine = 'postgres' group by 1) x")
@@ -239,7 +239,7 @@ expected_overview() {
 check_api() {
   local got id
   got=$(api instances | python3 -c 'import json,sys; d=json.load(sys.stdin); n=d["columns"].index("tags"); print(sum(1 for r in d["rows"] if "demo" in (r[n] or [])))')
-  [[ "$got" == 15 ]] || fail "api instances: $got"; ok "api instances: 15 demo"
+  [[ "$got" == 17 ]] || fail "api instances: $got"; ok "api instances: 17 demo"
   local want want2; want=$(expected_overview)
   got=$(api overview | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["columns"]; print("\n".join(sorted(r[c.index("check_name")]+"@"+r[c.index("instance")] for r in d["rows"] if r[c.index("instance")].startswith("demo-") or r[c.index("check_name")]=="check could not run")))')
   want2=$(expected_overview)
@@ -296,7 +296,7 @@ acks=$(acks_real); [[ "$acks" == "1/1/0 true/true 9" ]] || fail "a real instance
 ok "a re-seed's acknowledgements stay on the demo fleet: the real user demo's silence and log kept, the real alert untouched, the rules tagged demo"
 DEMO_HIST=${got##* }
 echo "$OUT"
-grep -q "(15 replaced)" <<<"$OUT" || fail "rerun did not replace 15"
+grep -q "(17 replaced)" <<<"$OUT" || fail "rerun did not replace 17"
 LEFT=0; NT=0
 # the dbadash_* tables' instance_id is DBA Dash's own InstanceID, not a pgvigil instance (0052_dbadash.sql): the demo's
 # DBA Dash repository carries ids 1 to 3 on every run, so they are not part of this sweep

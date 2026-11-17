@@ -20,7 +20,7 @@ import (
 // Options shape a seed.
 type Options struct {
 	Prefix    string    // instance name prefix (default "demo-")
-	Instances int       // fleet size (default 15: twelve PostgreSQL and three SQL Server; more = copies of the twelve, for a scale run)
+	Instances int       // fleet size (default 17: twelve PostgreSQL and five SQL Server - three servers, two Azure SQL Databases; more = copies of the twelve, for a scale run)
 	Days      int       // history length (default 7)
 	Seed      uint64    // the random seed (same seed and anchor = same data)
 	Workers   int       // instances imported in parallel (default 8)

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Proof of the Performance summary (GET /api/perfsummary) and the instance Performance page (GET /api/performance),
-# plan task 108, on the demo: a scratch repository seeded with -days 2 (15 instances: 12 PostgreSQL, 3 SQL Server) and
+# plan task 108, on the demo: a scratch repository seeded with -days 2 (17 instances: 12 PostgreSQL, 5 SQL Server - three servers and two Azure SQL Databases) and
 # served on a loopback port, both dropped on every exit path.
 #   PGVIGIL_ADMIN_DSN  a superuser connection (creates and drops the scratch database)
 #   PGVIGIL_BIN        the binary (default bin/pgvigil)
 #   SCALE_N            optional: a second seed of SCALE_N instances (-days 1) for the timing of part D at that size
 # Expected (written before the first run):
-#  A. /api/perfsummary over the last hour: part pg 12 rows, all engine postgres; part mssql 3 rows, all sqlserver.
+#  A. /api/perfsummary over the last hour: part pg 12 rows, all engine postgres; part mssql 5 rows, all sqlserver.
 #     The 8 instances the demo gives a host collection (onprem x3, rds x2, aurora x3) carry cpu_avg, cpu_max and a
 #     cpu_hist of 10 buckets summing to cpu_samples; the 4 without (azure x2, cloudsql x2) carry none. Every SQL
 #     Server row: commits_s, rollbacks_s, temp_bytes_s NULL (the statement selects NULL for them); cpu_samples over
@@ -78,12 +78,16 @@ rows() { jq -r ".$2.columns as \$c | .$2.rows[] | [\$c, .] | transpose | map({(.
 # ---- A
 curl -fs "$U/perfsummary" > "$WORK/ps.json" || fail "perfsummary"
 [[ $(jq '.pg.rows | length' "$WORK/ps.json") == 12 ]] || fail "A: pg rows $(jq '.pg.rows | length' "$WORK/ps.json")"
-[[ $(jq '.mssql.rows | length' "$WORK/ps.json") == 3 ]] || fail "A: mssql rows"
+[[ $(jq '.mssql.rows | length' "$WORK/ps.json") == 5 ]] || fail "A: mssql rows"
 python3 - "$WORK/ps.json" <<'EOF' || fail "A/B: the row checks"
 import json, sys
 d = json.load(open(sys.argv[1]))
 def rows(p): return [dict(zip(d[p]['columns'], r)) for r in d[p]['rows']]
 pg, ms = rows('pg'), rows('mssql')
+# review t11-6 BLOCKER 3: the two Azure SQL Databases (task 11b) are SQL Server rows of their own - no host CPU or
+# wait sample there (the collector runs neither on Azure SQL Database), so they are checked apart: two, engine sqlserver
+az = [r for r in ms if r['instance'].removeprefix('demo-').startswith('azure-sqldb')]
+ms = [r for r in ms if r not in az]
 host = {'onprem-erp01', 'onprem-erp02', 'onprem-hr01', 'rds-orders01', 'rds-billing01', 'aurora-crm01', 'aurora-dms01', 'aurora-reporting01'}
 bad = []
 for r in pg:
@@ -104,13 +108,14 @@ for r in ms:
         bad.append(('mssql hist', n, r['cpu_hist'], r['cpu_samples']))
     elif float(r['cpu_avg']) > float(r['cpu_max']): bad.append(('mssql avg>max', n))
     if r['signal_pct'] is None or not 0 <= float(r['signal_pct']) <= 100: bad.append(('signal', n, r['signal_pct']))
+if len(az) != 2 or any(r['engine'] != 'sqlserver' for r in az): bad.append(('azure sql databases', [r['instance'] for r in az]))
 for r in pg + ms:
     if r['now_at'] is None: bad.append(('now_at', r['instance']))
     if r['total_ms_s'] is not None and r['lock_ms_s'] is not None and float(r['total_ms_s']) < float(r['lock_ms_s']): bad.append(('total<lock', r['instance']))
 # B
 over = {r['instance'] for r in pg + ms if r['cpu_max'] is not None and float(r['cpu_max']) > 75}
 if over != {'demo-onprem-erp01'} or float(next(r for r in pg if r['instance'] == 'demo-onprem-erp01')['cpu_max']) <= 90: bad.append(('thresholds', over))
-print('A/B bad:', bad) if bad else print('A/B: 15 rows as expected; erp01 cpu_max over 90, no other over 75')
+print('A/B bad:', bad) if bad else print('A/B: 17 rows as expected (the two Azure SQL Databases apart); erp01 cpu_max over 90, no other over 75')
 sys.exit(1 if bad else 0)
 EOF
 curl -fs "$U/perfsummary?tag=staging" > "$WORK/st.json"

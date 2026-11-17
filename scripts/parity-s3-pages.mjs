@@ -26,7 +26,6 @@ const pages = [
   ['performance-execstats', `#/performance?i=${sql01}`],
   ['procs-objexec', `#/mssqlprocs?i=${sql01}`],
   ['azuresummary', '#/azuresummary'],
-  ['azuresummary-pool', `#/azuresummary?server=${srv}&pool=${pool}`],
   ['azureserver', `#/azureserver?server=${srv}`],
   ['azurepool', `#/azurepool?server=${srv}&pool=${pool}`],
   ['mssqlazure', `#/mssqlazure?i=${db01}`],
@@ -89,6 +88,14 @@ for (const theme of ['light', 'dark']) {
     walked++;
     await cmd('Page.navigate', { url: U + hash }); await sleep(250); await cmd('Page.reload'); await sleep(250);
     if (!(await settled())) { failed++; console.log(`FAIL ${theme} ${name}: the page did not render in 15 s`); continue; }
+    // review t11-6 BLOCKER 1: an unknown tab renders the Summary under the asked address (router.ts parse) - fail it
+    const asked = hash.split('?')[0];
+    const landed = await ev(`(() => ${JSON.stringify(asked)} === '#/summary' || ![...document.querySelectorAll('a.on')].some(a => /#\/summary(\?|$)/.test(a.getAttribute('href') || '')))()`);
+    if (!landed) { failed++; console.log(`FAIL ${theme} ${name}: NOT LANDED - the router opened the Summary for ${asked}`); continue; }
+    // review t11-6 SHOULD 8: the strip's page counts its own part (E6's controls and its chart), not the page's other charts
+    if (name === 'performance-execstats' && !(await ev(`(() => { const s = document.querySelector('#perf-es-measure'); const box = s && s.closest('p') ? s.closest('p').parentElement : null; return !!(box && box.querySelector('.uplot, canvas')); })()`))) {
+      failed++; console.log(`FAIL ${theme} ${name}: the Execution Stats strip (#perf-es-measure) drew no chart`); continue;
+    }
     const seen = await ev(`(() => { const m = document.querySelector('main');
       const rowsDrawn = [...m.querySelectorAll('table tbody tr')].filter(tr => !tr.querySelector('td.empty, .empty')).length;
       const charts = m.querySelectorAll('.uplot, canvas, svg.chart').length;

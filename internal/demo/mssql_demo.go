@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// The demo's three SQL Server instances. Each runs only the mssql_ collections, handed to the repository through
+// The demo's three SQL Server servers (the two Azure SQL Databases: mssql_parity_demo.go). Each runs only the mssql_ collections, handed to the repository through
 // their import functions as the collector hands them:
 //
 //	-sql01  the busy primary of the availability group ag_sales: a parallel report, a blocking chain with a sleeping
@@ -176,7 +176,9 @@ func (g *Gen) mssqlCollections() []string {
 		c = append(c, "mssql_backups")
 	}
 	if g.is("-sql01") {
-		c = append(c, "mssql_jobs")
+		// review t11-6 SHOULD 5: and the collections its parity batches fill (mssql_parity_demo.go), so no page says one
+		// has not run above the rows it shows
+		c = append(c, "mssql_jobs", "mssql_procstats", "mssql_funcstats", "mssql_plancache", "mssql_schema", "mssql_db_scoped_config", "mssql_service_broker")
 	}
 	return c
 }

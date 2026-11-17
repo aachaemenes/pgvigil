@@ -30,7 +30,7 @@
 #      batch of over 80 characters, the head of 52 (LCK_M_U 90 s, running 95 s) and 53 (LCK_M_S 40 s, behind 52);
 #      54 running 200 s; 55 a request of 999 s waiting on idle background work (wait_is_benign); one blocking row
 #      (head 51, 2 victims, the longest wait 90 s)
-# A. /api/running/fleet: one row per active instance (the demo's fifteen and the proof's four), each once;
+# A. /api/running/fleet: one row per active instance (the demo's seventeen and the proof's four), each once;
 #    P1: postgres, sessions 9, active 8, idle_in_txn 1, blocked 5, heads 1, longest_wait_secs 120,
 #        longest_stmt_secs 300, longest_stmt_session 105 with 105's statement, oldest_txn_secs 600, age 15-120 s;
 #    P2: blocked 0, heads 0, longest_wait_secs null, age over 180 s; P3: snapshot_at null and every count null;
@@ -216,7 +216,7 @@ want = dict(engine='sqlserver', sessions=5, active=4, idle_in_txn=1, blocked=2, 
 check(all(m[k] == v for k, v in want.items()), 'A: M ' + ', '.join(f'{k} {m[k]}' for k in want))
 truth = json.load(open(work + '/truth.json'))
 bad_rows = [t for t in truth if by[t['id']]['blocked'] != t['blocked'] or by[t['id']]['heads'] != t['heads']]
-check(not bad_rows and len(truth) == 15, f"A: {len(truth)} demo rows agree with the independent read (blocked, heads); disagree: {bad_rows}")
+check(not bad_rows and len(truth) == 17, f"A: {len(truth)} demo rows agree with the independent read (blocked, heads); disagree: {bad_rows}")
 check(any(t['blocked'] for t in truth), 'A: the demo has at least one instance with a blocked session (the check above is not vacuous)')
 check(int(ms) < 1000, f'A: the fleet read took {ms} ms')
 st = [json.loads(l) for l in open(work + '/steps.json') if l.strip()]
