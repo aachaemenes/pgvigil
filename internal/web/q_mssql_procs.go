@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // The Procedures tab of a SQL Server instance (task 130; DBA Dash's Object Execution): what each stored procedure
@@ -285,6 +286,21 @@ func dbFilter(r *http.Request) (any, error) {
 	return n, nil
 }
 
+const sqlMSSQLFuncs = `SELECT $1::int AS database_id, $2::timestamptz AS f, $3::timestamptz AS t, $4::int AS db WHERE false`
+const sqlMSSQLTriggers = sqlMSSQLFuncs
+
+// procsParts: the tab's parts that every read asks for (database: db=, nil = every database).
+func procsParts(id int, from, to time.Time, database any) []part {
+	return []part{
+		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_procstats"}}},
+		{"reads", sqlMSSQLProcReads, []any{id, from, to}},
+		{"databases", sqlMSSQLProcDatabases, []any{id, from, to}},
+		{"totals", sqlMSSQLProcTotals, []any{id, from, to, database}},
+		{"procs", sqlMSSQLProcs, []any{id, from, to, database}},
+		{"series", sqlMSSQLProcSeries, []any{id, from, to, database, procStep(to.Sub(from).Seconds())}},
+	}
+}
+
 // MSSQLProcs is GET /api/mssql/procs?instance=N[&from=&to=][&db=][&db_id=&object=][&part=...].
 func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
@@ -298,14 +314,7 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	parts := []part{
-		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_procstats"}}},
-		{"reads", sqlMSSQLProcReads, []any{id, from, to}},
-		{"databases", sqlMSSQLProcDatabases, []any{id, from, to}},
-		{"totals", sqlMSSQLProcTotals, []any{id, from, to, database}},
-		{"procs", sqlMSSQLProcs, []any{id, from, to, database}},
-		{"series", sqlMSSQLProcSeries, []any{id, from, to, database, procStep(to.Sub(from).Seconds())}},
-	}
+	parts := procsParts(id, from, to, database)
 	// the compare reads both windows: only when a shift is asked for (the page asks for it apart, part=compare)
 	if shift, on, err := compareShift(q.Get("compare"), from, to); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
