@@ -140,3 +140,35 @@ func TestFuncInlineRows(t *testing.T) {
 		t.Error("a database is asked again after an hour, not before")
 	}
 }
+
+// A database whose functions ran but which the login cannot enter (or which is not online) is named in one note,
+// by the read's own database name, else by its id; none left out = no note.
+func TestFuncInlineNamesTheUnaskedDatabases(t *testing.T) {
+	rows := []collect.Row{{"kind": "function", "database_id": int64(5), "database_name": "appdb"},
+		{"kind": "function", "database_id": int64(6), "database_name": "pvfs2"}, {"kind": "function", "database_id": int64(7)}}
+	got := inlineUnasked(rows, []int64{5, 6, 7}, map[int64]string{5: "[appdb]"})
+	if len(got) != 1 || got[0]["kind"] != "collector_error" || got[0]["source"] != "sys.sql_modules" {
+		t.Fatalf("the note: %v, want one collector_error from sys.sql_modules", got)
+	}
+	msg, _ := got[0]["message"].(string)
+	for _, want := range []string{"pvfs2", "database id 7", "not read"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the note %q lacks %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "appdb") {
+		t.Errorf("the note %q names appdb, which was asked", msg)
+	}
+	if got := inlineUnasked(rows, []int64{5, 6}, map[int64]string{5: "[appdb]", 6: "[pvfs2]"}); len(got) != 0 {
+		t.Errorf("every database asked: %v, want no note", got)
+	}
+	var many []int64
+	for i := int64(10); i < 25; i++ {
+		many = append(many, i)
+	}
+	if g := inlineUnasked(nil, many, nil); len(g) != 1 {
+		t.Errorf("fifteen databases: %v, want one note", g)
+	} else if m, _ := g[0]["message"].(string); !strings.Contains(m, "and 5 more") || strings.Contains(m, "database id 20") {
+		t.Errorf("fifteen databases: %q, want ten named and 'and 5 more'", m)
+	}
+}

@@ -230,7 +230,7 @@ func funcInline(ctx context.Context, conn *sql.Conn, info Info, rows []collect.R
 			quoted[id] = q
 		}
 	}
-	var out []collect.Row
+	out := inlineUnasked(rows, ids, quoted)
 	asked := 0
 	for _, id := range ids {
 		key := fmt.Sprintf("%s|%d", info.ServerName, id)
@@ -249,6 +249,12 @@ func funcInline(ctx context.Context, conn *sql.Conn, info Info, rows []collect.R
 		out = append(out, inlineRows(id, read)...)
 	}
 	return out
+}
+
+// inlineUnasked names, in one note, the databases whose functions ran but which the databases' list did not offer
+// (quoted: online and the login can enter them): their functions' marks read 'not read', and the note says where.
+func inlineUnasked(rows []collect.Row, ids []int64, quoted map[int64]string) []collect.Row {
+	return nil
 }
 
 // idNames reads an object id and name list into a map.
