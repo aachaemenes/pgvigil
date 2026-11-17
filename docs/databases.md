@@ -6,13 +6,16 @@ glance" and "which databases came and went". Each says where its numbers come fr
 ## The busiest tables (Table Size tab, "Busiest tables in the window")
 
 The top 5, 10 or 25 tables of the instance by **sequential scans**, **rows inserted**, **rows updated** (with the HOT
-share) and **rows deleted** over the page's time range (pgwatch's Tables Overview).
+share), **rows deleted** and **disk I/O reads** (the heap, index and TOAST blocks read from outside shared buffers)
+over the page's time range (pgwatch's Tables Overview).
 
-- Source: the `table_activity` collection, every 5 minutes, reads `pg_stat_user_tables` in every database the login
-  may connect to (the connected one on its own connection, each other on a short connection of its own, as the
-  `tables` collection does). Only the statistics view is read: no size function, no lock taken.
-- Per database it keeps the 100 tables that lead each counter (cumulatively since the statistics reset); with fewer
-  tables than that every table is read, idle ones included, so a table's first rise has a base.
+- Source: the `table_activity` collection, every 5 minutes, reads `pg_stat_user_tables` and, from this version on,
+  `pg_statio_user_tables`' block counters in every database the login may connect to (the connected one on its own
+  connection, each other on a short connection of its own, as the `tables` collection does). Only the statistics views
+  are read: no size function, no lock taken.
+- Per database it keeps the 100 tables that lead each counter - sequential scans, inserts, updates, deletes and heap +
+  index blocks read - (cumulatively since the statistics reset); with fewer tables than that every table is read, idle
+  ones included, so a table's first rise has a base. Disk I/O reads count only reads that hold the block counters.
 - The window's number is the sum of the rises between consecutive reads, the read just before the window (up to a
   day back) being the base. A step is a reset when a counter fell (a statistics reset, a crash, a failover): it counts
   the new values. A reset whose counters climb past their old values within one 5-minute step is not seen, and that
@@ -21,6 +24,16 @@ share) and **rows deleted** over the page's time range (pgwatch's Tables Overvie
   5-minute read of every table, and a long range can pass the page's statement timeout (not measured). A table first read inside the window (it joined a busy database's top 100 late) counts from that read:
   the "counted from" column says so.
 - The ranks are instance-wide: every database's tables compete.
+
+## A table's activity (Table Details, "Activity")
+
+Beside its size and its live and dead rows, a table's page draws, per `table_activity` read in the time range, the
+change since the read before it: **sequential and index scans**, **rows inserted, updated and deleted**, and the
+**buffer hit** - the heap and index blocks found in shared buffers, as a share of those found plus those read from
+outside (pgwatch's table details). A counter that fell (a statistics reset) leaves that read's changes out, and the
+section says how many resets the range holds. The buffer hit needs the block counters, read from this version on: a
+read before it has none, and the section says so. A table outside its database's busiest 100 by every counter is not
+read every 5 minutes: its page says so instead of drawing charts.
 
 ## UNUSED (Table Size tab, beside a table's total size)
 
@@ -91,3 +104,17 @@ Both engines, newest first, over the last 7, 30, 90 or 365 days (DBA Dash's New 
 
 The repository functions behind them (migration 0080): `table_activity_top`, `conn_sources_window`,
 `instance_tiles`, `database_changes`. The proof is `scripts/proof-tables-conn.sh`.
+
+## Autovacuum over time (Vacuum page)
+
+Below its tiles and checks the Vacuum page draws, over the time range (coroot's autovacuum charts), from what the collector
+already keeps:
+
+- **Autovacuum workers**: per minute sample, the autovacuum workers running against `autovacuum_max_workers`. A
+  minute with nothing running stores no sample. The setting's history is not kept: the line is its value as last read.
+- **Dead tuples by table**: the 5 tables with the most dead tuples at the range's newest table size read, each a point
+  per read.
+- **Autovacuum pressure**: per table size read, the tables whose dead tuples are past autovacuum's trigger
+  (`autovacuum_vacuum_threshold` + `autovacuum_vacuum_scale_factor` x live rows, capped by
+  `autovacuum_vacuum_max_threshold` unless -1) with the instance's settings as last read. A table's own autovacuum
+  settings are not read here (the grid below reads them).

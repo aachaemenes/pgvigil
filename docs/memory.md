@@ -89,6 +89,10 @@ The Pooler tab shows:
   user that sets no size, so a user's value is taken only where it differs from the row above: two users in a row
   with the same size read as the database's;
 - the clients and servers over the time range (summed over the pools);
+- the rates over the time range (pgwatch's PgBouncer charts), summed over the databases at each read: transactions
+  and queries per second, the average query time (weighted by queries) and the average wait for a server (weighted by
+  transactions), and the traffic - bytes received and sent per second (`SHOW STATS`' `avg_recv` / `avg_sent`, stored
+  from this version on: a read before it holds none, and the chart's place says so);
 - the per-database rates of `SHOW STATS` (PgBouncer's own per-second averages: queries, transactions, the mean query
   time and the mean client wait) and the totals since the pooler started;
 - `SHOW DATABASES` (the pool sizes, the reserve, the connection limits, paused and disabled) and `SHOW CONFIG` as
