@@ -22,7 +22,9 @@ import (
 // sys.dm_exec_query_stats: the executions, the CPU, the duration, the logical and physical reads, the writes, the
 // rows, the spills, and the largest memory grant and degree of parallelism. It is the statement history of a
 // database that has no Query Store; a database whose Query Store is on is read too (the server's plan cache is one
-// list) and its row says so.
+// list) and its row says so. Beside the counters each row carries the plan's extremes as the server keeps them
+// (planCacheSpread: the smallest and the largest run since the statement was compiled, its generation and its CLR
+// time): they are not counters, so nothing is subtracted from them, and a recompile starts them again.
 //
 // The view has one row per statement of a cached plan and counts since the plan was compiled, so the collector sends
 // the counters as they are, one row per statement and plan (the plan's handle, the statement's offsets and its
@@ -87,8 +89,28 @@ const planCacheDatabasesSQL = `SELECT 'database' AS kind, CAST(d.database_id AS 
   CAST(d.is_query_store_on AS int) AS query_store_on, CAST(d.state_desc AS nvarchar(60)) AS database_state
 FROM sys.databases d`
 
+// planCacheSpread is what D421 reads beside the counters: the payload's key and sys.dm_exec_query_stats' column
+// (Microsoft Learn, sys.dm_exec_query_stats: min_ / max_worker_time and _elapsed_time in microseconds, min_ /
+// max_physical_reads, _rows, _spills, min_grant_kb, min_ / max_ideal_grant_kb, min_dop, min_ / max_reserved_threads
+// and _used_threads, plan_generation_num, total_clr_time in microseconds). Each is the statement's smallest or
+// largest single run since its plan was compiled; a statement recompile starts them again under a later
+// creation_time. A column the server lacks is sent as NULL, never 0: an extreme that was not read is not an
+// extreme of nothing (the grant, thread and DOP columns arrived with SQL Server 2016, the spills with 2016 SP2 and
+// 2017 CU3).
+var planCacheSpread = []struct{ key, col string }{
+	{"min_worker_us", "min_worker_time"}, {"max_worker_us", "max_worker_time"},
+	{"min_elapsed_us", "min_elapsed_time"}, {"max_elapsed_us", "max_elapsed_time"},
+	{"min_physical_reads", "min_physical_reads"}, {"max_physical_reads", "max_physical_reads"},
+	{"min_rows", "min_rows"}, {"max_rows", "max_rows"}, {"min_spills", "min_spills"}, {"max_spills", "max_spills"},
+	{"min_grant_kb", "min_grant_kb"}, {"min_ideal_grant_kb", "min_ideal_grant_kb"}, {"max_ideal_grant_kb", "max_ideal_grant_kb"},
+	{"min_dop", "min_dop"}, {"min_reserved_threads", "min_reserved_threads"}, {"max_reserved_threads", "max_reserved_threads"},
+	{"min_used_threads", "min_used_threads"}, {"max_used_threads", "max_used_threads"},
+	{"plan_generation", "plan_generation_num"}, {"clr_us", "total_clr_time"},
+}
+
 // planCacheSQL: the candidate set, the most CPU first. {{grant}}, {{used}}, {{spills}} and {{dop}} are the columns
-// newer servers have, or 0. The handles and hashes ride as 0x text (QueryRows; the hashes as *_hex: the text policy
+// newer servers have, or 0; {{spread}} is planCacheSpread as the server has it (or NULL) and {{spread_out}} the
+// same keys leaving the statement. The handles and hashes ride as 0x text (QueryRows; the hashes as *_hex: the text policy
 // rewrites a column named query_hash); creation_time and last_execution are the server's own clock without a zone,
 // as the DMV writes them; last_execution is when the last run STARTED, last_elapsed_us how long it took.
 const planCacheSQL = `WITH s AS (
@@ -97,6 +119,7 @@ const planCacheSQL = `WITH s AS (
          qs.total_logical_reads, qs.total_physical_reads, qs.total_logical_writes, qs.total_rows,
          qs.last_execution_time, qs.last_elapsed_time,
          {{grant}} AS max_grant_kb, {{used}} AS max_used_grant_kb, {{spills}} AS total_spills, {{dop}} AS max_dop,
+         {{spread}},
          ROW_NUMBER() OVER (ORDER BY qs.total_worker_time DESC, qs.plan_handle, qs.statement_start_offset) AS rn_cpu,
          ROW_NUMBER() OVER (ORDER BY qs.total_elapsed_time DESC, qs.plan_handle, qs.statement_start_offset) AS rn_duration,
          ROW_NUMBER() OVER (ORDER BY qs.total_logical_reads DESC, qs.plan_handle, qs.statement_start_offset) AS rn_reads,
@@ -123,6 +146,7 @@ SELECT 'stmt' AS kind, k.plan_handle AS plan_handle, k.sql_handle AS sql_handle,
   CAST(k.total_rows AS bigint) AS row_count, CAST(k.total_spills AS bigint) AS spills,
   CAST(k.max_grant_kb AS bigint) AS max_grant_kb, CAST(k.max_used_grant_kb AS bigint) AS max_used_grant_kb, CAST(k.max_dop AS bigint) AS max_dop,
   k.last_execution_time AS last_execution, CAST(k.last_elapsed_time AS bigint) AS last_elapsed_us,
+  {{spread_out}},
   CAST(k.cached AS bigint) AS cached, CAST(k.listed AS bigint) AS listed
 FROM k
 OUTER APPLY (SELECT TOP (1) CAST(a.value AS int) AS dbid FROM sys.dm_exec_plan_attributes(k.plan_handle) a WHERE a.attribute = N'dbid') pa
@@ -138,8 +162,18 @@ func planCacheQuery(have map[string]bool) string {
 		// a subquery, not a bare constant: a window's ORDER BY refuses a constant expression
 		return "(SELECT CAST(0 AS bigint))"
 	}
+	spread, out := make([]string, 0, len(planCacheSpread)), make([]string, 0, len(planCacheSpread))
+	for _, c := range planCacheSpread {
+		expr := "CAST(NULL AS bigint)"
+		if have[c.col] {
+			expr = "CAST(qs." + c.col + " AS bigint)"
+		}
+		spread = append(spread, expr+" AS "+c.key)
+		out = append(out, "k."+c.key+" AS "+c.key)
+	}
 	return strings.NewReplacer("{{grant}}", col("max_grant_kb"), "{{used}}", col("max_used_grant_kb"),
-		"{{spills}}", col("total_spills"), "{{dop}}", col("max_dop")).Replace(planCacheSQL)
+		"{{spills}}", col("total_spills"), "{{dop}}", col("max_dop"),
+		"{{spread}}", strings.Join(spread, ",\n         "), "{{spread_out}}", strings.Join(out, ", ")).Replace(planCacheSQL)
 }
 
 // planCacheTextSQL reads the text of the named statements. The first %s is the VALUES list (planCacheTextValues),
