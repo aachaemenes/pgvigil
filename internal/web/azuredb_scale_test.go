@@ -238,9 +238,13 @@ func TestAzureDBFleetScaleOnAStore(t *testing.T) {
 	      ON CONFLICT (instance_id) DO UPDATE SET server = EXCLUDED.server, pool = EXCLUDED.pool, seen_at = EXCLUDED.seen_at`, ids); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.mssql_pool_minute (server, pool, snapshot_at, samples, avg_cpu_percent, max_cpu_percent, avg_edtu_percent, name_from)
-	      SELECT 'scalesrv' || (p % 10), 'scalepool' || p, $1::timestamptz + m * interval '1 minute', 4, (p + m) % 100, (p + m) % 100 + 0.5, (p + m) % 100, 'tag'
-	        FROM generate_series(0, 99) p, generate_series(0, 1440) m ON CONFLICT DO NOTHING`, from24); err != nil {
+	// each pool's minutes read through one of its member databases (instance_id is NOT NULL: p2f-1's 23502), the
+	// member rule above (pool i % 100, server i % 10)
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.mssql_pool_minute (server, pool, snapshot_at, samples, avg_cpu_percent, max_cpu_percent, avg_edtu_percent, instance_id, name_from)
+	      SELECT 'scalesrv' || (p % 10), 'scalepool' || p, $1::timestamptz + m * interval '1 minute', 4, (p + m) % 100, (p + m) % 100 + 0.5, (p + m) % 100, mb.i, 'tag'
+	        FROM generate_series(0, 99) p
+	        JOIN LATERAL (SELECT min(x) AS i FROM unnest($2::int[]) x WHERE x % 100 = p) mb ON mb.i IS NOT NULL
+	        CROSS JOIN generate_series(0, 1440) m ON CONFLICT DO NOTHING`, from24, ids); err != nil {
 		t.Fatal(err)
 	}
 	took := map[string]time.Duration{}
