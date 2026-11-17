@@ -34,10 +34,11 @@ func TestParityDemo(t *testing.T) {
 		// connection's database is its only one, so every row names it
 		own := "ledger" + s.Name[len(s.Name)-2:]
 		requests, summaries, files, volumes, slow, slowState, otherDB := 0, 0, map[string]bool{}, 0, 0, false, map[string]bool{}
+		fkinds := map[string]bool{}
 		for _, b := range run(t, s, i, 7) {
 			seen[b.Collection] += len(b.Rows)
 			for _, r := range b.Rows {
-				if db, ok := r["database_name"].(string); ok && db != own && (b.Collection == "mssql_requests" || b.Collection == "mssql_storage" || b.Collection == "mssql_xe") {
+				if db, ok := r["database_name"].(string); ok && db != own && (b.Collection == "mssql_requests" || b.Collection == "mssql_storage" || b.Collection == "mssql_xe" || b.Collection == "mssql_funcstats") {
 					otherDB[b.Collection+":"+db] = true
 				}
 				switch {
@@ -55,6 +56,8 @@ func TestParityDemo(t *testing.T) {
 					slowState = true
 				case b.Collection == "mssql_xe" && r["kind"] != "slow" && r["kind"] != "state":
 					otherDB["mssql_xe kind "+fmt.Sprint(r["kind"])] = true
+				case b.Collection == "mssql_funcstats" && r["kind"] != "state":
+					fkinds[fmt.Sprint(r["kind"])] = true
 				}
 				switch {
 				case b.Collection == "mssql_instance" && r["kind"] == "server":
@@ -80,9 +83,7 @@ func TestParityDemo(t *testing.T) {
 				t.Errorf("%s: no %s rows", s.Name, c)
 			}
 		}
-		// procstats / funcstats: 'not yet on Azure SQL Database' (internal/mssql procstats.go, funcstats.go) - the
-		// node's Object Execution tab has no source there, and the demo never shows what the collector does not send
-		for _, c := range []string{"mssql_ag", "mssql_jobs", "mssql_backups", "mssql_procstats", "mssql_funcstats"} {
+		for _, c := range []string{"mssql_ag", "mssql_jobs", "mssql_backups"} {
 			if seen[c] != 0 {
 				t.Errorf("%s: %d %s rows (an Azure SQL Database's collector does not run it)", s.Name, seen[c], c)
 			}
@@ -95,6 +96,10 @@ func TestParityDemo(t *testing.T) {
 		}
 		if slow == 0 || !slowState {
 			t.Errorf("%s: mssql_xe %d slow completions, the slow capture running %v, want both (the Slow Queries tab)", s.Name, slow, slowState)
+		}
+		// control audit row A8: the function and trigger statistics run there now (the node's Object Execution)
+		if !fkinds["function"] || !fkinds["trigger"] {
+			t.Errorf("%s: mssql_funcstats kinds %v, want function and trigger (the node's Object Execution)", s.Name, fkinds)
 		}
 		if len(otherDB) != 0 {
 			t.Errorf("%s: rows of another database or kind %v, want every row of %s (a database-scoped read; no blocked-process capture there)", s.Name, otherDB, own)

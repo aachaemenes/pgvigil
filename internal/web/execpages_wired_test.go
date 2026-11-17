@@ -59,15 +59,17 @@ func TestExecPagesReview5Wired(t *testing.T) {
 	}
 }
 
-// TestAzureNodeObjexecSaysNoSource (the five node tabs' read, 13:1x): a logical server's or an elastic pool's Object
-// Execution lists Azure SQL Databases, where mssql_procstats and mssql_funcstats do not run yet (internal/mssql
-// procstats.go, funcstats.go): its empty words say that, never 'nothing ran'.
-func TestAzureNodeObjexecSaysNoSource(t *testing.T) {
+// TestAzureNodeObjexecSaysWhyEmpty (the five node tabs' read 13:1x, then control audit row A8): a logical server's or
+// an elastic pool's Object Execution lists Azure SQL Databases, where mssql_procstats and mssql_funcstats need the
+// tier's right; an empty list says it may be a skipped collection and where to see which, never only 'nothing ran'.
+func TestAzureNodeObjexecSaysWhyEmpty(t *testing.T) {
 	b, err := os.ReadFile("../../web/src/mssql_objexec.ts")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "not yet on Azure SQL Database") {
-		t.Error("mssql_objexec.ts: a node's empty Object Execution does not say its databases' statistics are not read on Azure SQL Database")
+	for _, w := range []string{"were skipped there", "##MS_ServerStateReader##", "Collection health says which"} {
+		if !strings.Contains(string(b), w) {
+			t.Errorf("mssql_objexec.ts: a node's empty Object Execution does not say %q", w)
+		}
 	}
 }
