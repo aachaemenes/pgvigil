@@ -3,8 +3,9 @@
 -- mssql_func_inline, import_mssql_funcstats, mssql_func_purge); this file holds the lines the next join file puts
 -- into the objects it re-creates whole. Not a migration: nothing runs this file.
 
--- 1. purge()'s month-partition parents: mssql_func_read and mssql_func_sample beside mssql_proc_read and
---    mssql_proc_sample (the import locks the two in that name order) -
+-- 1. purge()'s month-partition parents: mssql_func_read and mssql_func_sample, anywhere in its IN list (purge drops
+--    by parent name, then partition - ORDER BY p.relname, c.relname - so the two go before mssql_proc_*, in the
+--    order 0343's import locks them: mssql_func_read, then mssql_func_sample) -
 --                         'mssql_func_read', 'mssql_func_sample',
 --    Until a join file carries them, their months are not dropped (one row per read, and one per object and kind
 --    that ran in the read).

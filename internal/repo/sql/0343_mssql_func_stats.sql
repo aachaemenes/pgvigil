@@ -178,9 +178,9 @@ BEGIN
               LEFT JOIN pgvigil.mssql_func_last l ON l.instance_id = p_instance_id AND l.kind = f.kind AND l.plan_handle = f.plan_handle
                                                  AND l.cached_time = f.cached_time
                    -- diff: the plan was in the read before and grew. whole: it counts lower than before; or it was
-                   -- not in the read before, and that read was complete, held no row of this kind's view (the
-                   -- kind was not read then) or the server restarted since; or that read was cut and the plan was
-                   -- cached at or after its clock. none: not in a cut read although cached earlier.
+                   -- not in the read before, and that read was complete or the server restarted since; or that read
+                   -- was cut and the plan was cached at or after its clock (a cut read that did not hold this kind
+                   -- falls under the same test). none: not in a cut read although cached earlier.
              CROSS JOIN LATERAL (SELECT CASE WHEN l.instance_id IS NOT NULL AND f.execution_count >= l.execution_count THEN 'diff'
                                              WHEN l.instance_id IS NOT NULL OR v_restart OR NOT v_prev.capped THEN 'whole'
                                              WHEN f.cached_time >= v_prev.server_local THEN 'whole'

@@ -177,7 +177,8 @@ win() { echo "from=$(date -u -d '-6 hours' +%FT%TZ)&to=$(date -u -d '+1 minute' 
 objs() { jq -c --arg p "$2" '.[$p] as $t | [$t.rows[] | [$t.columns, .] | transpose | map({(.[0]): .[1]}) | add]' "$1"; }
 # FV / TV: sa's read of one object in the function or the trigger view (0 when it is not listed)
 FV() { sq "SELECT CAST(ISNULL(SUM(execution_count), 0) AS varchar(20)) FROM sys.dm_exec_function_stats WHERE database_id = $1 AND object_id = $2"; }
-TV() { sq "SELECT CAST(ISNULL(SUM(execution_count), 0) AS varchar(20)) FROM sys.dm_exec_trigger_stats WHERE object_id = $1"; }
+# TV <database id> <object id>: object ids repeat across databases
+TV() { sq "SELECT CAST(ISNULL(SUM(execution_count), 0) AS varchar(20)) FROM sys.dm_exec_trigger_stats WHERE database_id = $1 AND object_id = $2"; }
 # ST <kind> <database id> <object id>: the newest stored interval's executions, 'none' without one
 ST() { q "select coalesce((select executions::text from pgvigil.mssql_func_sample where instance_id=$iid and kind='$1' and database_id=$2 and object_id=$3 order by snapshot_at desc limit 1), 'none')"; }
 
@@ -190,8 +191,8 @@ declare -A OID=([f_off]=$(oid dbo.f_off "$D1") [f_now]=$(oid dbo.f_now "$D1") [f
 [ -n "$SRV" ] && OID[srv]=$(sq "SELECT object_id FROM sys.server_triggers WHERE name = '$SRVTRG'")
 declare -A B
 for f in f_off f_now f_inl f_plain f_tvf f_itvf; do B[$f]=$(FV "$DB1" "${OID[$f]}"); done
-B[f_d2]=$(FV "$DB2" "${OID[f_d2]}"); B[fs_t_ai]=$(TV "${OID[fs_t_ai]}"); B[fs_ddl]=$(TV "${OID[fs_ddl]}")
-[ -n "$SRV" ] && B[srv]=$(TV "${OID[srv]}")
+B[f_d2]=$(FV "$DB2" "${OID[f_d2]}"); B[fs_t_ai]=$(TV "$DB1" "${OID[fs_t_ai]}"); B[fs_ddl]=$(TV "$DB1" "${OID[fs_ddl]}")
+[ -n "$SRV" ] && B[srv]=$(TV 1 "${OID[srv]}")
 sq "DECLARE @s bigint;
     SELECT @s = SUM(dbo.f_off(id)) FROM dbo.fs_n WHERE id <= 7;
     SELECT @s = COUNT(dbo.f_now(id)) FROM dbo.fs_n WHERE id <= 5;
@@ -205,8 +206,8 @@ sq "DECLARE @s bigint; SELECT @s = SUM(dbo.f_d2(id)) FROM dbo.fs_n WHERE id <= 2
 if [ -n "$SRV" ]; then for i in 1 2; do sq "CREATE DATABASE [${FX}_$i];" >/dev/null; dropdb "${FX}_$i"; done; fi
 declare -A A
 for f in f_off f_now f_inl f_plain f_tvf f_itvf; do A[$f]=$(FV "$DB1" "${OID[$f]}"); done
-A[f_d2]=$(FV "$DB2" "${OID[f_d2]}"); A[fs_t_ai]=$(TV "${OID[fs_t_ai]}"); A[fs_ddl]=$(TV "${OID[fs_ddl]}")
-[ -n "$SRV" ] && A[srv]=$(TV "${OID[srv]}")
+A[f_d2]=$(FV "$DB2" "${OID[f_d2]}"); A[fs_t_ai]=$(TV "$DB1" "${OID[fs_t_ai]}"); A[fs_ddl]=$(TV "$DB1" "${OID[fs_ddl]}")
+[ -n "$SRV" ] && A[srv]=$(TV 1 "${OID[srv]}")
 sleep 2
 collect mssql_funcstats | sed 's/^/  /' | cut -c1-300
 echo "  the collection's state: $(q "select status || '|' || coalesce(note, '') from pgvigil.collection_dates where instance_id=$iid and collection='mssql_funcstats'" | cut -c1-300)"
@@ -243,7 +244,7 @@ echo "--- FS2. the triggers against sa's read"
 fs2() {  # fs2 <label> <database id> <want executions> <want name> <want scope>
   local k=$1 db=$2 want=$3 name=$4 scope=$5 rise st row
   rise=$(( ${A[$k]} - ${B[$k]} )); st=$(ST trigger "$db" "${OID[$k]}")
-  row=$(q "select coalesce(object_name, 'NULL') || '|' || coalesce(trigger_scope, 'NULL') || '|' || coalesce(database_name, 'NULL') from pgvigil.mssql_func_sample where instance_id=$iid and kind='trigger' and object_id=${OID[$k]} order by snapshot_at desc limit 1")
+  row=$(q "select coalesce(object_name, 'NULL') || '|' || coalesce(trigger_scope, 'NULL') || '|' || coalesce(database_name, 'NULL') from pgvigil.mssql_func_sample where instance_id=$iid and kind='trigger' and database_id=$db and object_id=${OID[$k]} order by snapshot_at desc limit 1")
   echo "  $k: sa's rise $rise, stored $st, name|scope|database $row"
   [ "$rise" = "$want" ] && [ "$st" = "$want" ] || fail "FS2: $k - sa's rise $rise, stored $st, want $want"
   [ "${row%|*}" = "$name|$scope" ] || fail "FS2: $k stored as '$row', want '$name|$scope'"
