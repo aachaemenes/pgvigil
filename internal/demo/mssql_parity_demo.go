@@ -10,10 +10,10 @@ import (
 // reads as not working. Every row goes in through its import function as the collector hands it:
 //
 //	-azure-sqldb01 / -sqldb02  two Azure SQL Databases on the logical server demo-sqlsrv01, each moved from Standard S0
-//	        into the Basic elastic pool pool-ledger during the week (sqldb02 five days before the anchor, sqldb01 two:
+//	        into the Basic elastic pool pool-ledger during the week (sqldb02 five days before the anchor, sqldb01 30 hours:
 //	        the Service Objectives grid's tier change), the pool's limits raised from 50 to 100 eDTU and 5 to 10 GB
 //	        three days before the anchor (Pool history, from master's 14 days).
-//	-sql01  its Sales database's scoped configuration (MAXDOP set from 0 to 4 three days before the anchor), a database
+//	-sql01  its Sales database's scoped configuration (MAXDOP set from 0 to 4 30 hours before the anchor), a database
 //	        snapshot of Sales, and function and trigger statistics (the Object Execution grid, the Execution Stats
 //	        strip). The collector sends the scoped configuration and the snapshots inside mssql_confcheck (0391 / 0392,
 //	        their join lines): the demo hands them to their own import functions.
@@ -34,7 +34,7 @@ func (g *Gen) azureMovedAt() time.Time {
 	if g.is("-sqldb02") {
 		return g.end.Add(-5 * 24 * time.Hour)
 	}
-	return g.end.Add(-2 * 24 * time.Hour)
+	return g.end.Add(-30 * time.Hour)
 }
 
 // azurePoolRaisedAt is when the pool's limits went from 50 to 100 eDTU (and 5 to 10 GB).
@@ -205,11 +205,11 @@ func (g *Gen) mssqlParityBatches(t time.Time, first bool) []Batch {
 	return out
 }
 
-// mssqlScopedRows is sys.database_scoped_configurations of Sales and Ledger: Sales' MAXDOP set from 0 to 4 three days
+// mssqlScopedRows is sys.database_scoped_configurations of Sales and Ledger: Sales' MAXDOP set from 0 to 4 30 hours
 // before the anchor, Ledger on the legacy cardinality estimator.
 func (g *Gen) mssqlScopedRows(t time.Time) []Row {
 	maxdop := "0"
-	if !t.Before(g.end.Add(-3 * 24 * time.Hour)) {
+	if !t.Before(g.end.Add(-30 * time.Hour)) {
 		maxdop = "4"
 	}
 	var rows []Row
