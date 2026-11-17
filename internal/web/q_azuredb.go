@@ -171,6 +171,36 @@ SELECT inst.instance_id, inst.instance, g.edition, g.service_objective, g.pool,
  WHERE inst.platform = 'azuresqldb'
  ORDER BY w.unused_dtu DESC NULLS LAST, inst.instance`
 
+// sqlAzureSLOHistory: DBA Dash's Azure Service Objectives history (P25 task 9): each tier CHANGE of the scope's Azure
+// SQL Databases - a governance history period (0145) that follows another - its old and new edition, objective, pool
+// and limits and when it changed, the newest first - every change, not cut by the window (DBA Dash's history lists
+// them all; $1 <= $2 only types the window's parameters so the scope's $3 / $4 keep their places).
+var sqlAzureSLOHistory = sqlPerfScope + `, h AS (
+  SELECT g.instance_id, g.valid_from, g.edition, g.service_objective, g.pool, g.dtu_limit, g.cpu_limit,
+         lag(g.edition) OVER w AS old_edition, lag(g.service_objective) OVER w AS old_service_objective,
+         lag(g.pool) OVER w AS old_pool, lag(g.dtu_limit) OVER w AS old_dtu_limit, lag(g.cpu_limit) OVER w AS old_cpu_limit,
+         lag(g.valid_from) OVER w AS prev_from
+    FROM pgvigil.mssql_azuredb_governance_history g JOIN inst ON inst.instance_id = g.instance_id
+  WINDOW w AS (PARTITION BY g.instance_id ORDER BY g.valid_from)
+)
+SELECT h.instance_id, inst.instance, h.valid_from AS changed_at, h.old_edition, h.edition AS new_edition,
+       h.old_service_objective, h.service_objective AS new_service_objective, h.old_pool, h.pool AS new_pool,
+       h.old_dtu_limit, h.dtu_limit AS new_dtu_limit, h.old_cpu_limit, h.cpu_limit AS new_cpu_limit
+  FROM h JOIN inst USING (instance_id)
+ WHERE h.prev_from IS NOT NULL AND $1::timestamptz <= $2::timestamptz
+ ORDER BY h.valid_from DESC, inst.instance
+ LIMIT 2000`
+
+// sqlAzureGovernance: DBA Dash's Azure Resource Governance grid (P25 task 9): each Azure SQL Database of the scope
+// with its tier and its governance row as last read (0145's gov: sys.dm_user_db_resource_governance whole), the
+// viewer's source.
+var sqlAzureGovernance = sqlPerfScope + `
+SELECT g.instance_id, inst.instance, g.edition, g.service_objective, g.pool, g.dtu_limit, g.cpu_limit, g.since, g.snapshot_at,
+       g.gov
+  FROM pgvigil.mssql_azuredb_governance g JOIN inst ON inst.instance_id = g.instance_id
+ WHERE $1::timestamptz <= $2::timestamptz
+ ORDER BY inst.instance`
+
 // avgW: one figure's average over the minutes, each weighed by its 15-second samples (0128's rule)
 func avgW(col string) string {
 	return "round(sum(w." + col + " * w.samples) / nullif(sum(w.samples) FILTER (WHERE w." + col + " IS NOT NULL), 0), 2)"
@@ -214,5 +244,7 @@ func (s *Server) AzureDBSummary(w http.ResponseWriter, r *http.Request) {
 		tag = v
 	}
 	s.multiPart(w, r, []part{{"databases", sqlAzureDBFleet, []any{from, to, "sqlserver", tag}},
-		{"pools", sqlAzurePools, []any{from, to, "sqlserver", tag}}}) // P25 task 8: the Elastic Pool grid
+		{"pools", sqlAzurePools, []any{from, to, "sqlserver", tag}},            // P25 task 8: the Elastic Pool grid
+		{"slo_history", sqlAzureSLOHistory, []any{from, to, "sqlserver", tag}}, // P25 task 9
+		{"governance", sqlAzureGovernance, []any{from, to, "sqlserver", tag}}})
 }
