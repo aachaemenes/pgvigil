@@ -94,8 +94,12 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 freeport() { local l p; l=$(ss -ltn); for p in $(seq "$1" "$2"); do grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " <<<"$l" || { echo "$p"; return; }; done; return 1; }
 MADE_REPO=; MADE_DB=; MADE_L=; MADE_CT=; SRV_PID=; CHR_PID=
 CT=${PGVIGIL_MSSQL_CONTAINER:-}
-sq() { docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -W -h -1 -s '|' -t 600 -U sa -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
-sqs() { docker exec -i -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -U sa -i /dev/stdin; }
+# sq / sqs: sqlcmd prints a failed batch's error on stdout, and most callers here send stdout to /dev/null - so a
+# failed batch says why on stderr (its first lines) before sqlcmd's exit is returned. sq puts SET NOCOUNT ON first:
+# a statement that must open its batch (CREATE PROCEDURE) goes through sqs.
+sqsay() { echo "sqlcmd exit $1: $(head -n 6 <<<"$2" | cut -c1-300)" >&2; }
+sq() { local o rc=0; o=$(docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -W -h -1 -s '|' -t 600 -U sa -d "${2:-master}" -Q "SET NOCOUNT ON; $1") || rc=$?; [ -z "$o" ] || printf '%s\n' "$o"; [ "$rc" = 0 ] || sqsay "$rc" "$o"; return "$rc"; }
+sqs() { local o rc=0; o=$(docker exec -i -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -U sa -i /dev/stdin) || rc=$?; [ -z "$o" ] || printf '%s\n' "$o"; [ "$rc" = 0 ] || sqsay "$rc" "$o"; return "$rc"; }
 cleanup() {
   rc=$?
   [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null || true
@@ -111,6 +115,7 @@ cleanup() {
   exit $rc
 }
 trap cleanup EXIT; trap 'exit 143' TERM; trap 'exit 130' INT
+trap 'erc=$?; [ "$BASH_SUBSHELL" -eq 0 ] && echo "STOPPED: line $LINENO: ${BASH_COMMAND:0:200} (exit $erc)" >&2' ERR
 
 echo "--- the binary"
 BIN=${PGVIGIL_BIN:-}
@@ -145,7 +150,12 @@ sq "CREATE DATABASE [$DPC]; ALTER DATABASE [$DPC] SET RECOVERY SIMPLE; ALTER DAT
 sq "CREATE TABLE dbo.cs_big (id int IDENTITY PRIMARY KEY, pad char(400) NOT NULL);
     INSERT dbo.cs_big (pad) SELECT TOP (220000) REPLICATE(CHAR(65 + (ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) % 26)), 400) FROM sys.all_columns a CROSS JOIN sys.all_columns b;
     CREATE TABLE dbo.cs_sink (id int NOT NULL);" "$DPC" >/dev/null
-sq "CREATE PROCEDURE dbo.cs_p @n int AS BEGIN SET NOCOUNT ON; DECLARE @r bigint; SELECT @r = COUNT_BIG(*) FROM dbo.cs_big WHERE id <= @n AND HASHBYTES('SHA2_256', pad) <> 0x00 OPTION (MAXDOP 1); INSERT dbo.cs_sink SELECT TOP (10) id FROM dbo.cs_big WHERE id <= @n; END" "$DPC" >/dev/null
+sqs >/dev/null <<SQL
+USE [$DPC];
+GO
+CREATE PROCEDURE dbo.cs_p @n int AS BEGIN SET NOCOUNT ON; DECLARE @r bigint; SELECT @r = COUNT_BIG(*) FROM dbo.cs_big WHERE id <= @n AND HASHBYTES('SHA2_256', pad) <> 0x00 OPTION (MAXDOP 1); INSERT dbo.cs_sink SELECT TOP (10) id FROM dbo.cs_big WHERE id <= @n; END
+GO
+SQL
 echo "  cs_big: $(sq "SELECT CAST(SUM(used_page_count) AS varchar(20)) FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID('dbo.cs_big')" "$DPC") pages"
 "$BIN" migrate -config "$CFG" >/dev/null || fail "migrate"
 collect() { "$BIN" collect -config "$CFG" -once "$1" -instance "$2" > "$OUT" 2>&1 || { cat "$OUT" >&2; return 1; }; cat "$OUT"; }
