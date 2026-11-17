@@ -8,7 +8,8 @@ import { get, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
 import { mssqlObjectCell, mssqlObjectHref, mssqlObjectName } from './mssql_object';
 import { hashParam } from './dbinfo';
-import { Col, el, errorBox, fmtNum, grid } from './ui';
+import { badge, Col, el, errorBox, fmtNum, grid } from './ui';
+import { fromInput } from './tz';
 
 // DBA Dash's Type menu (control audit E1): its six object types, in its order - the type codes of the three stats views
 // (Microsoft Learn); types= sends the codes picked
@@ -16,6 +17,23 @@ const kinds: [string, string][] = [['P', 'Procedure'], ['TR', 'Trigger'], ['PC',
 const typeWords = new Map(kinds);
 const secs = (v: unknown) => v == null ? '' : fmtNum(Number(v) / 1000);
 const num3 = (v: unknown) => v == null ? '' : fmtNum(v);
+
+// DBA Dash's Compare To menu (ObjectExecutionSummary.Designer.cs; control audit E3): cmp= values and its words
+const compareTo: [string, string][] = [['', 'None'], ['prev', 'Previous Period'], ['day', '-24hrs offset'], ['week', '-7 days offset'], ['custom', 'Custom']];
+// the measures that have a compare_ twin under Compare To (q_mssql_procs.go objMeasureCols)
+const compared = new Set(['executions', 'executions_min', 'max_executions_min', 'duration_ms', 'duration_ms_sec', 'avg_duration_ms', 'cpu_ms', 'cpu_ms_sec',
+  'avg_cpu_ms', 'logical_reads', 'avg_logical_reads', 'physical_reads', 'avg_physical_reads', 'logical_writes', 'avg_logical_writes', 'period_secs']);
+// diff: DBA Dash's Diff (%) cell - red past +30 % and +50 %, green past -30 % and -50 % (DiffColorFromDouble)
+const diff = (v: unknown) => v == null ? '' : badge(`${fmtNum(v)} %`, Number(v) > 50 ? 'crit' : Number(v) > 30 ? 'warn' : Number(v) < -30 ? 'ok' : '');
+// withCompare: DBA Dash's grid under Compare To - each measure followed by its compare column, the average duration
+// and the average CPU then by their Diff (%)
+function withCompare(cols: Col[]): Col[] {
+  return cols.flatMap(c => !compared.has(c.key) ? [c] : [
+    c, { ...c, key: `compare_${c.key}`, label: `compare ${c.label ?? c.key}` },
+    ...(c.key === 'avg_duration_ms' ? [{ key: 'diff_avg_duration_pct', label: 'diff avg duration (%)', num: true, fmt: diff }] : []),
+    ...(c.key === 'avg_cpu_ms' ? [{ key: 'diff_avg_cpu_pct', label: 'diff avg CPU (%)', num: true, fmt: diff }] : []),
+  ]);
+}
 
 // objectExecutionSection: dbName given = that database alone (its id read from the page's databases part first); ids
 // given = those instances' objects in one list (a node's databases), the instance column first
@@ -44,8 +62,22 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
       void draw();
     }, 300);
   });
+  // DBA Dash's Compare To (control audit E3): None, Previous Period, -24hrs offset, -7 days offset, or Custom (both ends,
+  // typed on the display zone's clock); a change reads the list again with the compare window's figures beside
+  const cmpSel = el('select', { 'aria-label': 'Compare To' }, ...compareTo.map(([v, l]) => el('option', { value: v }, l))) as HTMLSelectElement;
+  const cmpFrom = el('input', { type: 'datetime-local', 'aria-label': 'Compare from' }) as HTMLInputElement;
+  const cmpTo = el('input', { type: 'datetime-local', 'aria-label': 'Compare to' }) as HTMLInputElement;
+  const custom = el('span', { hidden: 'hidden' }, ' from ', cmpFrom, ' to ', cmpTo);
+  cmpSel.addEventListener('change', () => { custom.hidden = cmpSel.value !== 'custom'; if (cmpSel.value !== 'custom') void draw(); });
+  for (const i of [cmpFrom, cmpTo]) i.addEventListener('change', () => { if (cmpFrom.value && cmpTo.value) void draw(); });
+  const cmpValue = (): string | undefined => {
+    if (cmpSel.value !== 'custom') return cmpSel.value || undefined;
+    if (!cmpFrom.value || !cmpTo.value) return undefined;
+    return `${fromInput(cmpFrom.value).toISOString()},${fromInput(cmpTo.value).toISOString()}`;
+  };
   const body = el('div');
-  sec.append(el('div', { class: 'toolbar', role: 'group', 'aria-label': 'Object Execution filters' }, el('span', { class: 'meta' }, 'Type:'), ...boxes, search), body);
+  sec.append(el('div', { class: 'toolbar', role: 'group', 'aria-label': 'Object Execution filters' }, el('span', { class: 'meta' }, 'Type:'), ...boxes, search,
+    el('label', {}, ' Compare To ', cmpSel), custom), body);
   let seq = 0, dbId: string | undefined, stale: AbortController | undefined;
 
   async function draw() {
@@ -63,10 +95,10 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
         if (!hit) { if (mine === seq) body.replaceChildren(el('p', { class: 'empty' }, `No procedure, function or trigger of ${dbName} ran in this range.`)); return; }
         dbId = String(hit.database_id);
       }
-      const types = on.size === kinds.length ? undefined : [...on].join(','), q = search.value.trim() || undefined;
+      const types = on.size === kinds.length ? undefined : [...on].join(','), q = search.value.trim() || undefined, cmpArg = cmpValue();
       const d = await get<{ objects: Table | null }>('mssql/procs', ids
-        ? { instances: ids.join(',') || '0', ...window_(ctx), part: 'objects', types, search: q }
-        : { instance: ctx.instance, ...window_(ctx), part: 'objects', types, search: q, db: dbId }, ac.signal);
+        ? { instances: ids.join(',') || '0', ...window_(ctx), part: 'objects', types, search: q, cmp: cmpArg }
+        : { instance: ctx.instance, ...window_(ctx), part: 'objects', types, search: q, db: dbId, cmp: cmpArg }, ac.signal);
       if (mine !== seq) return;
       // a row's database page: on a node's list, the row's own instance
       const inst = (r: Row) => ids ? Number(r.instance_id) : ctx.instance;
@@ -95,7 +127,7 @@ export function objectExecutionSection(ctx: Ctx, dbName?: string, ids?: number[]
       ];
       const rows = rowsOf(d.objects);
       body.replaceChildren(...(rows.length >= 2000 ? [el('p', { class: 'meta' }, 'The first 2,000 by total duration: a type or a search narrows the list.')] : []),
-        grid(rows, cols, ids
+        grid(rows, cmpArg ? withCompare(cols) : cols, ids
           // a node's databases are Azure SQL Databases: the two collections there need the tier's right (control
           // audit row A8), so an empty list may be a skipped collection - Collection health says which
           ? 'No procedure, function or trigger of these types ran in these databases in this range, or the mssql_procstats and mssql_funcstats collections were skipped there (on Basic, S0, S1 and in an elastic pool they need ##MS_ServerStateReader##): Collection health says which.'

@@ -512,6 +512,79 @@ func objType(alias, kind string) string {
 	return `(CASE ` + alias + `.type_desc WHEN 'CLR_STORED_PROCEDURE' THEN 'PC' WHEN 'EXTENDED_STORED_PROCEDURE' THEN 'X' WHEN 'CLR_TRIGGER' THEN 'TA' ELSE '` + base + `' END)`
 }
 
+// objMeasureCols: the measures of an Object Execution row (objCols' figures, and its kind's Period Time), each with a
+// compare_ twin under Compare To (control audit E3)
+var objMeasureCols = []string{"executions", "executions_min", "max_executions_min", "duration_ms", "duration_ms_sec", "avg_duration_ms",
+	"cpu_ms", "cpu_ms_sec", "avg_cpu_ms", "logical_reads", "avg_logical_reads", "physical_reads", "avg_physical_reads",
+	"logical_writes", "avg_logical_writes", "period_secs"}
+
+// sqlMSSQLObjectsCompare: Object Execution with DBA Dash's Compare To (control audit E3; ObjectExecutionStatsSummary_Get
+// with @CompareFrom / @CompareTo) - the list over the range ($2 / $3) beside the same list over the compare window
+// ($7 / $8), FULL JOINed by object as DBA Dash joins them (an object of one window only keeps its row), each measure's
+// compare_ column and DBA Dash's two diffs (diff_avg_duration_pct, diff_avg_cpu_pct: the change in % of the compare
+// figure); the range's longest total duration first, then the compare window's, 2,000 at most. $4-$6 as sqlMSSQLObjects.
+var sqlMSSQLObjectsCompare = func() string {
+	keys := []string{"kind", "type_code", "database_id", "object_id", "database", "schema_name", "object_name", "named", "type_desc"}
+	var cols []string
+	for _, k := range keys {
+		cols = append(cols, "coalesce(b."+k+", c."+k+") AS "+k)
+	}
+	for _, m := range objMeasureCols {
+		cols = append(cols, "b."+m)
+	}
+	cols = append(cols, "b.last_seen")
+	for _, m := range objMeasureCols {
+		cols = append(cols, "c."+m+" AS compare_"+m)
+	}
+	return `
+SELECT ` + strings.Join(cols, ",\n       ") + `,
+       round(100.0 * (b.avg_duration_ms - c.avg_duration_ms) / nullif(c.avg_duration_ms, 0), 2) AS diff_avg_duration_pct,
+       round(100.0 * (b.avg_cpu_ms - c.avg_cpu_ms) / nullif(c.avg_cpu_ms, 0), 2) AS diff_avg_cpu_pct
+  FROM (` + sqlMSSQLObjects + `) b
+  FULL JOIN (` + strings.NewReplacer("$2", "$7", "$3", "$8").Replace(sqlMSSQLObjects) + `) c
+    ON c.kind = b.kind AND c.database_id = b.database_id AND c.object_id = b.object_id
+ ORDER BY b.duration_ms DESC NULLS LAST, c.duration_ms DESC NULLS LAST, 5, 7, 4
+ LIMIT 2000`
+}()
+
+// sqlMSSQLNodeObjectsCompare: sqlMSSQLObjectsCompare over a node's databases, as sqlMSSQLNodeObjects runs sqlMSSQLObjects
+var sqlMSSQLNodeObjectsCompare = `
+SELECT i.instance_id, i.name AS instance, o.*
+  FROM unnest($1::int[]) AS u(id)
+  JOIN pgvigil.instances i ON i.instance_id = u.id
+  CROSS JOIN LATERAL (` + strings.ReplaceAll(sqlMSSQLObjectsCompare, "$1", "u.id") + `) o
+ ORDER BY o.duration_ms DESC NULLS LAST, o.compare_duration_ms DESC NULLS LAST, i.name, o.database, o.object_name, o.object_id
+ LIMIT 2000`
+
+// objCompareWindow reads cmp= (DBA Dash's Compare To; control audit E3): empty = none; prev = the window just before
+// the range, of its length; day / week = the range 24 hours / 7 days back; 'from,to' = a custom window (RFC 3339, from
+// before to, at most the longest window the API takes)
+func objCompareWindow(v string, from, to time.Time) (cfrom, cto time.Time, on bool, err error) {
+	switch v {
+	case "":
+		return time.Time{}, time.Time{}, false, nil
+	case "prev":
+		return from.Add(-to.Sub(from)), from, true, nil
+	case "day":
+		return from.Add(-24 * time.Hour), to.Add(-24 * time.Hour), true, nil
+	case "week":
+		return from.Add(-7 * 24 * time.Hour), to.Add(-7 * 24 * time.Hour), true, nil
+	}
+	a, b, ok := strings.Cut(v, ",")
+	if !ok {
+		return time.Time{}, time.Time{}, false, errors.New("cmp must be prev, day, week or a custom window 'from,to' (RFC 3339)")
+	}
+	cfrom, err1 := time.Parse(time.RFC3339, a)
+	cto, err2 := time.Parse(time.RFC3339, b)
+	if err1 != nil || err2 != nil {
+		return time.Time{}, time.Time{}, false, errors.New("cmp's custom window must be two RFC 3339 times, 'from,to'")
+	}
+	if !cfrom.Before(cto) || cto.Sub(cfrom) > maxWindow {
+		return time.Time{}, time.Time{}, false, errors.New("cmp's custom window must start before it ends and span at most 366 days and an hour")
+	}
+	return cfrom, cto, true, nil
+}
+
 // sqlMSSQLNodeObjects: Object Execution over a node's databases (P25 (i): DBA Dash's logical server and elastic pool
 // Object Execution, one grid with an instance column - the lead's Q2 (a)): sqlMSSQLObjects run for each id of $1 (an
 // int[]: the node's Azure SQL Databases, each an instance of its own) through a lateral join, its own $1 the id, the
@@ -611,7 +684,17 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("search is longer than 128 characters"))
 			return
 		}
-		parts = append(parts, part{"objects", sqlMSSQLObjects, []any{id, from, to, database, kinds, search}})
+		// DBA Dash's Compare To (control audit E3): the compare window's figures beside the range's
+		cfrom, cto, cmpOn, err := objCompareWindow(q.Get("cmp"), from, to)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if cmpOn {
+			parts = append(parts, part{"objects", sqlMSSQLObjectsCompare, []any{id, from, to, database, kinds, search, cfrom, cto}})
+		} else {
+			parts = append(parts, part{"objects", sqlMSSQLObjects, []any{id, from, to, database, kinds, search}})
+		}
 	}
 	if (q.Get("db_id") != "" || q.Get("object") != "") && q.Get("part") != "object_statements" && q.Get("part") != "object_schema" {
 		dbID, err1 := strconv.Atoi(q.Get("db_id"))
@@ -707,6 +790,15 @@ func (s *Server) mssqlNodeObjects(w http.ResponseWriter, r *http.Request) {
 	search := q.Get("search")
 	if len([]rune(search)) > 128 {
 		writeErr(w, http.StatusBadRequest, errors.New("search is longer than 128 characters"))
+		return
+	}
+	cfrom, cto, cmpOn, err := objCompareWindow(q.Get("cmp"), from, to)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if cmpOn {
+		s.multiPart(w, r, []part{{"objects", sqlMSSQLNodeObjectsCompare, []any{ids, from, to, nil, kinds, search, cfrom, cto}}})
 		return
 	}
 	s.multiPart(w, r, []part{{"objects", sqlMSSQLNodeObjects, []any{ids, from, to, nil, kinds, search}}})
