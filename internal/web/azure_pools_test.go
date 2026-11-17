@@ -68,7 +68,7 @@ func TestAzureSummaryPoolsOnAStore(t *testing.T) {
 	        avg_log_write_percent, max_worker_percent, max_session_percent, avg_edtu_percent, used_storage_percent, allocated_storage_percent,
 	        instance_id, name_from)
 	      VALUES ($1, 'pool1', $2, 4, 20, 50, 10, 5, 30, 12, 25, 40, 55, $4, 'tag'),
-	             ($1, 'pool1', $3, 4, 40, 90, 20, 15, 60, 24, 45, 41, 56, $4, 'tag')`, server, at, at.Add(time.Minute), ids[0])
+	             ($1, 'pool1', $3, 2, 40, 90, 20, 15, 60, 24, 45, 41, 56, $4, 'tag')`, server, at, at.Add(time.Minute), ids[0])
 
 	s := &Server{pool: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	call := func(tagQ string) []map[string]any {
@@ -105,9 +105,10 @@ func TestAzureSummaryPoolsOnAStore(t *testing.T) {
 		t.Fatalf("tag %s: pools %v, want pool1 once", tag, got)
 	}
 	p := got[0]
-	if fmt.Sprint(p["pool"], " ", p["databases"], " ", p["avg_cpu_percent"], " ", p["max_cpu_percent"], " ", p["avg_edtu_percent"], " ", p["max_worker_percent"], " ", p["used_storage_percent"]) !=
-		"pool1 2 30 90 35 60 41" {
-		t.Errorf("pool1: %v, want 2 databases, CPU avg 30 max 90, eDTU avg 35, workers max 60, storage used 41 (the last minute's)", p)
+	// the second minute carries 2 samples to the first's 4: an average weighs each minute by its samples (review t11-2 SHOULD 4)
+	if fmt.Sprint(p["pool"], " ", p["databases"], " ", p["avg_cpu_percent"], " ", p["max_cpu_percent"], " ", p["avg_edtu_percent"], " ", p["max_worker_percent"], " ",
+		p["used_storage_percent"], " ", p["max_data_io_percent"], " ", p["max_log_write_percent"]) != "pool1 2 26.67 90 31.67 60 41 20 15" {
+		t.Errorf("pool1: %v, want 2 databases, CPU avg 26.67 (20x4 + 40x2 over 6 samples) max 90, eDTU avg 31.67, workers max 60, storage used 41 (the last minute's), data IO max 20, log write max 15", p)
 	}
 	if other := call("azpool:none"); len(other) != 0 {
 		t.Errorf("another tag: %v, want no pool", other)

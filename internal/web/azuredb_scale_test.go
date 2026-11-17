@@ -4,6 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -213,6 +218,31 @@ func TestAzureDBFleetScaleOnAStore(t *testing.T) {
 		}
 		return took
 	}
+	// the fleet's pools (review t11-2 SHOULD 5): its databases on 10 logical servers in 100 elastic pools, each pool's
+	// minutes over the 24 hours - what the pages' own call reads besides the databases
+	for _, q := range []string{
+		`SELECT pgvigil.ensure_month_partition('mssql_pool_minute', $1)`,
+		`SELECT pgvigil.ensure_month_partition('mssql_pool_minute', $1::timestamptz + interval '1 day')`,
+	} {
+		if _, err := pool.Exec(ctx, q, from24); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() {
+		if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.mssql_pool_minute WHERE server LIKE 'scalesrv%'`); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.mssql_pool_member (instance_id, server, pool, seen_at)
+	      SELECT i, 'scalesrv' || (i % 10), 'scalepool' || (i % 100), now() FROM unnest($1::int[]) i
+	      ON CONFLICT (instance_id) DO UPDATE SET server = EXCLUDED.server, pool = EXCLUDED.pool, seen_at = EXCLUDED.seen_at`, ids); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.mssql_pool_minute (server, pool, snapshot_at, samples, avg_cpu_percent, max_cpu_percent, avg_edtu_percent, name_from)
+	      SELECT 'scalesrv' || (p % 10), 'scalepool' || p, $1::timestamptz + m * interval '1 minute', 4, (p + m) % 100, (p + m) % 100 + 0.5, (p + m) % 100, 'tag'
+	        FROM generate_series(0, 99) p, generate_series(0, 1440) m ON CONFLICT DO NOTHING`, from24); err != nil {
+		t.Fatal(err)
+	}
 	took := map[string]time.Duration{}
 	for _, w := range []struct {
 		name string
@@ -246,6 +276,24 @@ func TestAzureDBFleetScaleOnAStore(t *testing.T) {
 	t.Logf("one database's Azure tab window over 24 hours: %v samples in %v", scaleSamples(samples), tabTook.Round(time.Millisecond))
 	if samples == nil || *samples != 1441*4 || tabTook > 30*time.Second {
 		t.Errorf("the Azure tab's window: %v samples in %v, want %d in under 30 s", scaleSamples(samples), tabTook, 1441*4)
+	}
+	// the pages' own call (review t11-2 SHOULD 5): /api/azuredb/summary with no part= - every part (the databases, the
+	// pools, the Service Objectives changes, governance, Pool history and its state) over 24 hours, the fleet whole and
+	// cut to one logical server, each under the same 30 s
+	srv := &Server{pool: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	for _, cut := range []string{"", "scalesrv3"} {
+		q := url.Values{"from": {from24.Format(time.RFC3339)}, "to": {now.Add(time.Minute).Format(time.RFC3339)}}
+		if cut != "" {
+			q.Set("server", cut)
+		}
+		start = time.Now()
+		rec := httptest.NewRecorder()
+		srv.AzureDBSummary(rec, httptest.NewRequest(http.MethodGet, "/api/azuredb/summary?"+q.Encode(), nil))
+		callTook := time.Since(start)
+		t.Logf("the Azure Summary page's call (every part) over 24 hours, server %q: %v, %d bytes", cut, callTook.Round(time.Millisecond), rec.Body.Len())
+		if rec.Code != http.StatusOK || callTook > 30*time.Second {
+			t.Errorf("the page's call, server %q: %d in %v, want 200 in under 30 s", cut, rec.Code, callTook)
+		}
 	}
 
 	// the first build over 7 days (the design's row): 32 databases with 7 days of minutes each, from before 0167, built

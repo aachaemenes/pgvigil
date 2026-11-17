@@ -54,7 +54,10 @@ func TestAzureServiceObjectivesOnAStore(t *testing.T) {
 		}
 	}
 	exec(`INSERT INTO pgvigil.mssql_azuredb_governance_history (instance_id, valid_from, valid_to, edition, service_objective, dtu_limit, cpu_limit, gov)
-	      VALUES ($1, $2, $3, 'Standard', 'S1', 20, NULL, '{"max_sessions": 600}'), ($1, $3, 'infinity', 'Standard', 'S3', 100, NULL, '{"max_sessions": 2400}')`, id, t1, t2)
+	      VALUES ($1, $2, $3, 'Standard', 'S1', 20, NULL, '{"max_sessions": 600}'), ($1, $3, $4, 'Standard', 'S3', 100, NULL, '{"max_sessions": 2400}'),
+	             ($1, $4, 'infinity', 'Standard', 'S3', 100, NULL, '{"max_sessions": 2400, "max_dop": 8}')`, id, t1, t2, t2.Add(12*time.Hour))
+	// the last period above differs from the one before only in its gov row (0145 opens a period when any of its columns
+	// changes): no tier change (review t11-2 SHOULD 2)
 	exec(`INSERT INTO pgvigil.mssql_azuredb_governance (instance_id, snapshot_at, since, edition, service_objective, dtu_limit, gov)
 	      VALUES ($1, now(), $2, 'Standard', 'S3', 100, '{"max_sessions": 2400, "primary_group_max_workers": 200}')`, id, t2)
 	s := &Server{pool: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
