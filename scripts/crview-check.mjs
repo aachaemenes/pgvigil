@@ -61,10 +61,13 @@
 //  task 8 - custom tools
 //   CR-tools       an instance's own procedure listed as a tool runs with its parameters and its result drawn (L169);
 //                  the role per tool: 'waits on D1' until Allen's roles answer
-//  task 9 - the PM rows (PostgreSQL)
-//   PM-vacthr      Vacuum: where each table's autovacuum thresholds are, against its dead and changed rows (map-pm-web.tsv:237)
-//   PM-headroom    Vacuum: per database, the xid and multixact headroom left before the forced freeze (:238)
-//   PM-iosummary   I/O Summary: pg_stat_io's reads, writes and their times by backend type and object over the range (:245)
+//  task 9 - the PM rows (PostgreSQL; each PARTLY built on 65083820 - map-pm-web.tsv:237 / 238 / 245 - the cases are
+//          their gaps, from PerformanceMonitor's server-tabs.js:3118-3136, 3216-3224 and its constants at 5926, 6454, 6040)
+//   PM-vacthr      the Vacuum page's 'Where the thresholds are' tiles - failsafe engages, server warns, writes stop,
+//                  forced vacuum (each a % of the way to wraparound / of freeze_max_age, PostgreSQL's own constants)
+//   PM-headroom    the Vacuum page's 'Per-database headroom' grid - database, XIDs left, % to wraparound, % to
+//                  emergency vacuum, peak age (window), keeping up, MultiXacts left, % to MultiXact emergency, connectable
+//   PM-iosummary   the I/O page's 'I/O summary' tiles over the range - reads, read time, busiest, write counters tracked
 //  task 10 - the charts
 //   CR-addchart    Add Chart: StackedArea, StackedColumn, Column, Line, Pie (Doughnut), Scatter from a result set with
 //                  its X column, metrics and series column; each drawn (L130)
@@ -546,20 +549,25 @@ const section = async (h, cols) => ev(`(() => { const t = [...document.querySele
   let g = t.nextElementSibling; while (g && !g.matches('table.grid') && !g.querySelector('table.grid')) g = g.nextElementSibling; const tb = g?.matches('table.grid') ? g : g?.querySelector('table.grid');
   return { heads: [...(tb?.querySelectorAll('thead th') ?? [])].map(x => x.textContent.trim()), rows: tb?.querySelectorAll('tbody tr').length ?? 0, want: ${JSON.stringify(cols)} }; })()`);
 const hasCols = s => !!s && s.want.every(c => s.heads.includes(c)) && s.rows > 0;
+// tiles: a section's tile labels and values (pgvigil's tiles: .tile > .tile-label / .tile-value)
+const tilesOf = async h => ev(`(() => { const t = [...document.querySelectorAll('main h3, main h2')].find(x => x.textContent.trim().startsWith(${JSON.stringify(h)})); if (!t) return null;
+  let g = t.nextElementSibling; while (g && !g.matches('.tiles') && !g.querySelector('.tiles')) g = g.nextElementSibling; const box = g?.matches('.tiles') ? g : g?.querySelector('.tiles');
+  return [...(box?.querySelectorAll('.tile') ?? [])].map(x => ({ label: x.querySelector('.tile-label, .label')?.textContent.trim() ?? '', value: x.querySelector('.tile-value, .value')?.textContent.trim() ?? '' })); })()`);
+const tilesHave = (ts, labels) => !!ts && labels.every(l => ts.some(t => t.label === l && t.value !== '' && t.value !== '-'));
 await guard('PM-vacthr', async () => {
   await go(`#/vacuum?i=${await pgDemo()}`); await sleep(1200);
-  const s = await section('Where the thresholds are', ['table', 'dead rows', 'vacuum at', 'changed rows', 'analyze at']);
-  check('PM-vacthr', hasCols(s), `the section ${JSON.stringify(s)}`);
+  const ts = await tilesOf('Where the thresholds are');
+  check('PM-vacthr', tilesHave(ts, ['failsafe engages', 'server warns', 'writes stop', 'forced vacuum']), `the tiles ${JSON.stringify(ts)}`);
 });
 await guard('PM-headroom', async () => {
   await go(`#/vacuum?i=${await pgDemo()}`); await sleep(1200);
-  const s = await section('Per-database headroom', ['database', 'xid headroom', 'multixact headroom']);
+  const s = await section('Per-database headroom', ['database', 'XIDs left', '% to wraparound', '% to emergency vacuum', 'peak age', 'keeping up', 'MultiXacts left', '% to MultiXact emergency', 'connectable']);
   check('PM-headroom', hasCols(s), `the section ${JSON.stringify(s)}`);
 });
 await guard('PM-iosummary', async () => {
-  await go(`#/iosummary?i=${await pgDemo()}`); await sleep(1200);
-  const s = await section('I/O Summary', ['backend type', 'object', 'context', 'reads', 'writes', 'read time', 'write time']);
-  check('PM-iosummary', hasCols(s), `the page ${JSON.stringify(s)}`);
+  await go(`#/io?i=${await pgDemo()}`); await sleep(1200);
+  const ts = await tilesOf('I/O summary');
+  check('PM-iosummary', tilesHave(ts, ['reads', 'read time', 'busiest', 'write counters tracked']), `the tiles ${JSON.stringify(ts)}`);
 });
 
 // ---- task 10: the charts (a report's charts: [{ type, set, x, metrics, series, ... }])
