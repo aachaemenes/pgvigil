@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -466,6 +467,17 @@ SELECT i.instance_id, i.name AS instance, o.*
   CROSS JOIN LATERAL (` + strings.ReplaceAll(sqlMSSQLObjects, "$1", "u.id") + `) o
  ORDER BY o.duration_ms DESC NULLS LAST, i.name, o.database, o.object_name, o.object_id
  LIMIT 2000`
+
+// review t11-7 item 8: the node variant is made by a text replace of $1 - a $1 followed by a digit ($10 and over) would
+// silently become u.id0, so the start refuses it rather than a query going wrong later
+func init() {
+	if regexp.MustCompile(`\$1[0-9]`).MatchString(sqlMSSQLObjects) {
+		panic("sqlMSSQLObjects holds a $1 followed by a digit: sqlMSSQLNodeObjects' $1 -> u.id replace would break it")
+	}
+	if !strings.Contains(sqlMSSQLNodeObjects, "u.id") || strings.Contains(sqlMSSQLNodeObjects[strings.Index(sqlMSSQLNodeObjects, "CROSS JOIN LATERAL"):], "$1") {
+		panic("sqlMSSQLNodeObjects: the $1 -> u.id replace left a $1 in the lateral statement")
+	}
+}
 
 // objectKinds reads types= (procedure, function, trigger; a comma list): nil = every kind.
 func objectKinds(v string) ([]string, error) {

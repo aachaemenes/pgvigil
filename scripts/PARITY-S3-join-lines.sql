@@ -136,7 +136,8 @@
 --    relw4-s1's relgm), web/src/alerts.ts alertsView(ctx, keep?) (relw2c-s2's), web/src/drives.ts dbSpaceView(ctx, ids?)
 --    (dbadashvm-s1's rel-p20files), web/src/perfsummary.ts perfSummaryView(ctx, ids?) + internal/web/q_perfsummary.go
 --    ids= on /api/perfsummary (variants of its statements; sqlPerfScope and the default calls unchanged: visual-s1's
---    PERF REDO). The patch is cut against 65083820's text of those files and applied at the join AFTER each owner's
+--    PERF REDO). The patch is cut against 65083820's text of those files (drives.ts': this branch's blob 01f309c64, the 7806d311
+--    stray below in it; the hunks at L40 / L349 do not touch L411, so it applies to either - review t11-7 item 10) and applied at the join AFTER each owner's
 --    branch; a named check per file: every default call unchanged, the page's existing rows rerun. azure_nodes.ts needs
 --    the patch (its calls pass the parameter): this branch's tsc and its proofs run with it applied.
 --    ALSO NAMED for the join (a stray found 11-17 while cutting this patch): 7806d311 (P25 F103, task 2) changed

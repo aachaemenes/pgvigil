@@ -357,8 +357,17 @@ func (s *Server) AzureDBSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		pool = v
 	}
-	// the ids cut (sqlAzureScope's $5) is the node tabs' own; the Summary's call never cuts by it
-	args := []any{from, to, "sqlserver", tag, nil, server, pool}
+	// the ids cut (sqlAzureScope's $5): ids= (a node's own databases; review t11-7 item 6: bound, no longer always nil)
+	ids, err := idsParam(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var idsArg any
+	if ids != nil {
+		idsArg = ids
+	}
+	args := []any{from, to, "sqlserver", tag, idsArg, server, pool}
 	s.multiPart(w, r, []part{{"databases", sqlAzureDBFleet, args},
 		{"pools", sqlAzurePools, args},            // P25 task 8: the Elastic Pool grid
 		{"slo_history", sqlAzureSLOHistory, args}, // P25 task 9
