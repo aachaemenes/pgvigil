@@ -1,8 +1,10 @@
 package mssql
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
@@ -106,5 +108,35 @@ func TestTriggerNames(t *testing.T) {
 		if rows[i]["object_name"] != w.name || rows[i]["trigger_scope"] != w.scope {
 			t.Errorf("row %d: name %v scope %v, want %v %v", i, rows[i]["object_name"], rows[i]["trigger_scope"], w.name, w.scope)
 		}
+	}
+}
+
+// Inlineability: the databases asked are the ones with a listed scalar function (a trigger's database is not), and
+// one database's answer becomes an 'inline_read' row and one 'inline' row per function with the flags as booleans
+// (a NULL flag stays NULL).
+func TestFuncInlineRows(t *testing.T) {
+	rows := []collect.Row{{"kind": "function", "database_id": int64(7)}, {"kind": "trigger", "database_id": int64(9)},
+		{"kind": "function", "database_id": int64(5)}, {"kind": "function", "database_id": int64(7)}}
+	if got := inlineDatabases(rows); len(got) != 2 || got[0] != 5 || got[1] != 7 {
+		t.Errorf("the databases asked: %v, want [5 7]", got)
+	}
+	got := inlineRows(5, []collect.Row{{"object_id": int64(10), "is_inlineable": int64(1), "inline_type": int64(0)},
+		{"object_id": int64(11), "is_inlineable": int64(0), "inline_type": nil}})
+	if len(got) != 3 || got[0]["kind"] != "inline_read" || got[0]["database_id"] != int64(5) {
+		t.Fatalf("the rows: %v", got)
+	}
+	if got[1]["is_inlineable"] != true || got[1]["inline_type"] != false || got[2]["is_inlineable"] != false || got[2]["inline_type"] != nil {
+		t.Errorf("the flags: %v / %v", got[1], got[2])
+	}
+	if q := fmt.Sprintf(funcInlineSQL, "[appdb]"); !strings.Contains(q, "[appdb].sys.sql_modules") || !strings.Contains(q, "o.type = 'FN'") {
+		t.Errorf("the read: %s", q)
+	}
+	now := time.Now()
+	if !funcInlineSent.due("srv|1", now) {
+		t.Fatal("a database never asked is due")
+	}
+	funcInlineSent.mark("srv|1", now)
+	if funcInlineSent.due("srv|1", now.Add(59*time.Minute)) || !funcInlineSent.due("srv|1", now.Add(time.Hour)) {
+		t.Error("a database is asked again after an hour, not before")
 	}
 }

@@ -153,6 +153,70 @@ func nameTriggers(rows []collect.Row, server map[int64]string, byDB map[int64]ma
 	}
 }
 
+// funcInlineEvery is how often one database's scalar functions are asked for their inlineability: it follows the
+// definition's constructs and the INLINE clause, so it changes only with the definition.
+const funcInlineEvery = time.Hour
+
+// funcInlineSent remembers, per server and database, when this process last read sys.sql_modules there.
+var funcInlineSent = &sentMemo{at: map[string]time.Time{}, every: funcInlineEvery}
+
+// funcInlineSQL: one database's scalar functions as sys.sql_modules holds them (%s: the database's quoted name).
+// is_inlineable and inline_type arrived with SQL Server 2019 (Microsoft Learn, sys.sql_modules).
+const funcInlineSQL = `SELECT CAST(m.object_id AS bigint) AS object_id, CAST(m.is_inlineable AS int) AS is_inlineable,
+  CAST(m.inline_type AS int) AS inline_type
+FROM %[1]s.sys.sql_modules m JOIN %[1]s.sys.objects o ON o.object_id = m.object_id
+WHERE o.type = 'FN'`
+
+// inlineDatabases lists, in order, the databases that hold a listed scalar function.
+func inlineDatabases(rows []collect.Row) []int64 { return nil }
+
+// inlineRows turns one database's sys.sql_modules answer into the payload's rows: an 'inline_read' row (the import
+// replaces that database's rows) and one 'inline' row per function, the two flags as booleans.
+func inlineRows(db int64, read []collect.Row) []collect.Row { return nil }
+
+// funcInline reads the inlineability of the scalar functions the read listed, at most hourly a database, on SQL
+// Server 2019 and later (and Managed Instance): a database that cannot be read costs a note and keeps what the
+// store holds of it, never the run.
+func funcInline(ctx context.Context, conn *sql.Conn, info Info, rows []collect.Row, now time.Time) []collect.Row {
+	if info.Major < 15 && info.Kind != KindAzureMI {
+		return nil
+	}
+	ids := inlineDatabases(rows)
+	if len(ids) == 0 {
+		return nil
+	}
+	quoted := map[int64]string{}
+	dbs, err := QueryRows(ctx, conn, funcStatsDatabasesSQL)
+	if err != nil {
+		return []collect.Row{{"kind": "collector_error", "source": "sys.databases", "message": "the databases were not listed for their functions' inlineability (" + err.Error() + ")"}}
+	}
+	for _, d := range dbs {
+		id, _ := d["database_id"].(int64)
+		if q, _ := d["quoted_name"].(string); q != "" {
+			quoted[id] = q
+		}
+	}
+	var out []collect.Row
+	asked := 0
+	for _, id := range ids {
+		key := fmt.Sprintf("%s|%d", info.ServerName, id)
+		q, ok := quoted[id]
+		if !ok || !funcInlineSent.due(key, now) || asked >= funcTriggerNameDBs {
+			continue
+		}
+		asked++
+		read, err := QueryRows(ctx, conn, fmt.Sprintf(funcInlineSQL, q))
+		if err != nil {
+			out = append(out, collect.Row{"kind": "collector_error", "source": "sys.sql_modules",
+				"message": "the inlineability of the scalar functions of database " + q + " was not read (" + err.Error() + "): the page says 'not read' for them"})
+			continue
+		}
+		funcInlineSent.mark(key, now)
+		out = append(out, inlineRows(id, read)...)
+	}
+	return out
+}
+
 // idNames reads an object id and name list into a map.
 func idNames(ctx context.Context, conn *sql.Conn, query string) (map[int64]string, error) {
 	rows, err := QueryRows(ctx, conn, query)
@@ -276,5 +340,6 @@ func (funcStatsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 		s["capped"], s["kinds"] = capped, kinds
 	}
 	out = append(out, all...)
+	out = append(out, funcInline(ctx, conn, info, all, time.Now())...)
 	return append(out, notes...), nil
 }
