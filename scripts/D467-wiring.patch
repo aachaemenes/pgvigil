@@ -1,0 +1,32 @@
+diff --git i/THIRD-PARTY-NOTICES.md w/THIRD-PARTY-NOTICES.md
+index 6267a6c8..968bc188 100644
+--- i/THIRD-PARTY-NOTICES.md
++++ w/THIRD-PARTY-NOTICES.md
+@@ -115,6 +115,7 @@ Each piece below is named in a comment beside it in the file. Where only a shape
+ | The row-count variance, parameter-sniffing (by CPU, else by physical reads) and wasteful-grant rules of its Step 5 as thresholds (100 times the rows; over 3 executions and under 0.70 or over 1.30 of the average, an average of over 1,000 reads; over 1 MB granted and under 10 % used) with their three short labels; the statements are pgvigil's own, on stored reads | DarlingData, sp_QuickieCache 1.11 (2026-11-01), sp_QuickieCache/sp_QuickieCache.sql | MIT, Copyright (c) 2021 Darling Data, LLC | internal/repo/sql/0342_mssql_cache_spread.sql (mssql_pc_diagnostics, mssql_plancache_grant_findings), internal/web/q_mssql_plancache.go (sqlMSSQLPCExtremes) |
+ | The slow-and-frequent filter's rule and its defaults (an average CPU of at least 500 ms over at least 100 executions, of each database the first 100 by average CPU), read, not copied: the statement is pgvigil's own, on the page's range | dbatools 2.9.1, public/Get-DbaQueryExecutionTime.ps1 | MIT, Copyright (c) 2018 Chrissy LeMaire | internal/web/q_mssql_plancache.go (pcFilter, pcFiltered), web/src/mssql_plancache.ts (SLOW) |
+ | Which figures of a cached statement are kept beside its counters (the plan's generation, the extremes of worker time, elapsed time, physical reads and rows, the CLR time, the grant, ideal grant, DOP and thread extremes, the spills) and the Top Queries column groups (Times, Extremes, Memory grants, Parallelism, each off at first), read, not copied: the reads and the store are pgvigil's own | PerformanceMonitor 3.13.0, install/08_collect_query_stats.sql; the groups as 3.12.0's Dashboard drew them | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/mssql/plancache.go (planCacheSpread), internal/repo/sql/0342_mssql_cache_spread.sql (mssql_pc_extreme), web/src/mssql_plancache.ts (GROUPS) |
++| The function and trigger reads beside the procedures' (sys.dm_exec_function_stats, from SQL Server 2016, and sys.dm_exec_trigger_stats, one row per cached plan), read, not copied: the statements are pgvigil's own | DarlingData, sp_QuickieCache 1.11 (2026-11-01), sp_QuickieCache/sp_QuickieCache.sql | MIT, Copyright (c) 2021 Darling Data, LLC | internal/mssql/funcstats.go |
+ | The default of every sys.configurations option (the #ConfigurationDefaults table) and sp_Blitz's CheckIDs, as data; the database options its #DatabaseDefaults table holds off, as rules; the notes on global trace flags (CheckID 74), in this project's words | SQL Server First Responder Kit 8.34, sp_Blitz.sql | MIT, Copyright (c) 2022 Brent Ozar Unlimited; portions of sp_Blitz Copyright Microsoft (tigertoolbox, MIT) | internal/mssql/checks.go (configDefaultList, traceFlagNotes), internal/mssql/dboptions.go (databaseRules) |
+ | The catalogue of SQL Server builds 2016-2025 with their release and support end dates and each build's page (its [Url]), as data | SQL Server First Responder Kit 8.34, SqlServerVersions.sql (the script by Josh Darnell, SqlServerVersionScript, MIT) | MIT, Copyright (c) 2022 Brent Ozar Unlimited; Copyright for SqlServerVersionScript held by Josh Darnell | internal/mssql/checks.go (buildCatalogue, BuildDocs) |
+ | The waits per core per minute figure (its formula and its 180 flag) and the 27 wait types its per-core list leaves out beyond sp_BlitzFirst's Ignorable ones, as data | SQLMonitor (github.com/imajaydwivedi/SQLMonitor) at de87d37: DDLs/SCH-usp_waits_per_core_per_minute.sql, DDLs/SCH-Create-All-Objects.sql (BlitzFirst_WaitStats_Categories) | MIT, Copyright (c) 2022 Ajay Dwivedi | internal/repo/sql/0152_mssql_counters.sql (mssql_wait_percore_ignored, mssql_wait_core_points, mssql_wait_core_summary), internal/repo/sql/0153_mssql_counter_checks.sql (the seed) |
+diff --git i/internal/community/kits/ports.json w/internal/community/kits/ports.json
+index 115420f5..037d9488 100644
+--- i/internal/community/kits/ports.json
++++ w/internal/community/kits/ports.json
+@@ -1851,5 +1851,15 @@
+     "begin": "Row count variance: huge gap between min and max rows",
+     "end": "Spilling queries",
+     "sha256": "120ebca6cce04ef75d0671726b7d5d227021ef8e91977aa2f2e26677822ead88"
++  },
++  {
++    "name": "quickieCacheFunctionTriggerReads",
++    "go_file": "internal/mssql/funcstats.go",
++    "repo": "erikdarlingdata/DarlingData",
++    "path": "Install-All/DarlingData.sql",
++    "follows": "sp_QuickieCache 1.11 (20261101), its function and trigger reads: sys.dm_exec_function_stats from SQL Server 2016 (asked first through sys.all_objects) and sys.dm_exec_trigger_stats, beside the procedures",
++    "begin": "sys.dm_exec_function_stats is available starting SQL Server 2016, so",
++    "end": "One aggregate for all three object types. Same shape as the",
++    "sha256": "ab666664ce9799576a2d7c2bd2b5b9691dda9216ecce3e4ad1a3924ebacbbe0c"
+   }
+ ]
