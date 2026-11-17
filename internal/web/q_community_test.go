@@ -201,7 +201,10 @@ func TestCommunitySamples(t *testing.T) {
 		case err == nil && listed:
 			t.Errorf("%s: a stored sample and a reason for none (noSample)", tool.ID)
 		case err != nil && !listed:
+			// the rest of the row reads the sample: a missing one ends this tool's checks here (it panicked the
+			// whole package before, p11c-2 11-17 14:2x)
 			t.Errorf("%s: no stored sample and no reason listed in noSample (%v)", tool.ID, err)
+			continue
 		case err != nil:
 			continue
 		}

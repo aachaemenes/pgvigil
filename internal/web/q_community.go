@@ -505,6 +505,8 @@ var samplePage = map[string]string{
 // noSample lists the catalogue's tools that have no stored sample, with why (a test fails on a tool with neither).
 var noSample = map[string]string{
 	"glenn_berry": "nothing of Glenn Berry's script is stored (his queries are his own text, all rights reserved): picking the file and running a query need a live install",
+	// P25 row 75 (the fault p11c-2's run found 11-17 14:2x: the tool was added with neither a sample nor a reason)
+	"sp_DBPermissions": "no sample is stored: its result is one database's own users, roles and permissions, never shown from another server; the database page's sp_DBPermissions tab runs it live through the door",
 }
 
 // kitLicense: the words a sample line says about whose words its findings are.
