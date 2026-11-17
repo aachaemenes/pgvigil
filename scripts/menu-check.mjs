@@ -284,7 +284,8 @@
 //                     no th title holds a SQL Server word (SQL Server, sys., DBCC, T-SQL, default trace, msdb, query hash,
 //                     plan cache). The pages: the reports on demo-onprem-erp01 (pg) and demo-onprem-sql01 (ms), the
 //                     SQL Server-only ones on sql01 alone, the root-only ones at the root. Red on 535a0cfe: every row FAIL
-//                     'no title: <labels>'.
+//                     'no title: <labels>'. Batch 2 (rows written 11-17 07:0x): sql01's Memory page, the grid under
+//                     'Workload groups and resource pools' alone (20 labels) - red on 0816da3c.
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1796,8 +1797,10 @@ await guard('E-details', async () => {
 });
 
 // ---- RELNOTES set 4, L20: the header titles of the columns DBA Dash describes, page by page ------------------------
-// [route, scopes, labels]: scopes 'pg' demo-onprem-erp01, 'ms' demo-onprem-sql01, 'root' the root; the labels are the
-// drawn columns DBA Dash describes on the page's twin (the gaps, described and not drawn, are in relgm/l20-gaps.tsv)
+// [route, scopes, labels, heading?]: scopes 'pg' demo-onprem-erp01, 'ms' demo-onprem-sql01, 'root' the root; the labels
+// are the drawn columns DBA Dash describes on the page's twin (the gaps, described and not drawn, are in
+// relgm/l20-gaps.tsv); a heading = only the grid right after the h3 that starts with it (a page whose other grids
+// reuse a label for another thing)
 const L20 = [
   ['rp_props', ['pg', 'ms'], ['Instance', 'Database', 'Property', 'Value', 'Valid From']],
   ['rp_finder', ['pg', 'ms'], ['Instance']],
@@ -1811,14 +1814,19 @@ const L20 = [
     'Managed Service Account?', 'FileName', 'Is Clustered', 'Cluster Node Name', 'Instant File Initialization Enabled', 'Snapshot Date']],
   ['rp_qs', ['root'], ['Instance', 'Query Hash', 'Plans']],
   ['rp_qscharts', ['root'], ['Text']],
+  // batch 2: Resource Governor (DBA Dash's two views, pgvigil's one grid on the Memory page)
+  ['mssqlmemory', ['ms'], ['pool', 'pool min memory %', 'pool max memory %', 'pool target', 'pool used', 'pool grants used', 'pool grant waiters',
+    'pool grant timeouts', 'group', 'importance', 'max grant % (the cap)', 'grant timeout s', 'max DOP', 'max CPU s', 'max requests', 'reduced grants',
+    'requests', 'active', 'queued', 'largest grant'], 'Workload groups and resource pools'],
 ];
 const msWord = /SQL Server|\bsys\.|DBCC|T-SQL|default trace|msdb|query hash|plan cache/i;
 const sqlId20 = idOf('demo-onprem-sql01');
-for (const [route, scopes, labels] of L20) for (const sc of scopes) {
+for (const [route, scopes, labels, heading] of L20) for (const sc of scopes) {
   await guard(`H-title ${route} ${sc}`, async () => {
     await go(`#/${route}${sc === 'pg' ? `?i=${erpId}` : sc === 'ms' ? `?i=${sqlId20}` : ''}`); await sleep(1500);
     // every header cell of the page's grids, drawn or empty: its label and its title
-    const ths = await ev(`[...document.querySelectorAll('main table.grid > thead > tr:first-child > th, main table.grid-empty > thead > tr > th')]
+    const root = heading ? `([...document.querySelectorAll('main h3')].find(h => h.textContent.trim().startsWith(${JSON.stringify(heading)}))?.nextElementSibling ?? null)` : `document.querySelector('main')`;
+    const ths = await ev(`[...(${root}?.querySelectorAll('table.grid > thead > tr:first-child > th, table.grid-empty > thead > tr > th') ?? [])]
       .map(h => ({ label: (h.querySelector('.th-label') ?? h).textContent.trim(), title: h.getAttribute('title') ?? '' }))`);
     const missing = labels.filter(l => { const hs = (ths ?? []).filter(h => h.label === l); return hs.length === 0 || hs.some(h => h.title === '' || h.title === l); });
     const absent = labels.filter(l => !(ths ?? []).some(h => h.label === l));
