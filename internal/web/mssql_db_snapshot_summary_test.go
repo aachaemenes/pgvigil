@@ -2,6 +2,7 @@ package web
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -26,6 +27,25 @@ func TestSnapshotSummaryIsTheSchemaHistory(t *testing.T) {
 	}
 	if strings.Contains(src, "part: 'snapshots'") {
 		t.Error("mssql_db.ts still reads part=snapshots (database snapshots, not DBA Dash's schema snapshots)")
+	}
+	// review t11-4 NIT 12 / SHOULD 4: the tab's own case draws snapshotSummary, which maps the name to its id through the
+	// collection's per-database rows (part mssql_dbs: the never-read and not-readable databases too), never the
+	// instance's databases part (present databases only), shows the section by that id, and says why a database has no read
+	cs := regexp.MustCompile(`(?s)case 'snapshots':\s*(.*?)break;`).FindStringSubmatch(src)
+	if cs == nil || !strings.Contains(cs[1], "snapshotSummary(ctx, db)") {
+		t.Error("mssql_db.ts: case 'snapshots' does not draw snapshotSummary(ctx, db)")
+	}
+	fn := regexp.MustCompile(`(?s)async function snapshotSummary\(ctx: Ctx, db: string\): Promise<HTMLElement> \{(.*?)\n\}\n`).FindStringSubmatch(src)
+	if fn == nil {
+		t.Fatal("mssql_db.ts: no snapshotSummary(ctx, db)")
+	}
+	for _, want := range []string{"part: 'mssql_dbs'", "part: 'state'", "schemaDbSection(ctx, row.dbid", "row.note", "st.note"} {
+		if !strings.Contains(fn[1], want) {
+			t.Errorf("mssql_db.ts: snapshotSummary lacks %q", want)
+		}
+	}
+	if strings.Contains(fn[1], "get<{ databases: Table | null }>('schema'") {
+		t.Error("mssql_db.ts: snapshotSummary maps the name through the instance's databases part (present databases only)")
 	}
 	q, err := os.ReadFile("q_mssql_checks.go")
 	if err != nil {
