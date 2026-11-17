@@ -842,7 +842,7 @@ func windowsItems(inst installOptions, found bool) []removal {
 	appHome := filepath.Join(programFiles(), "pgvigil")
 	apps, _ := filepath.Glob(filepath.Join(appHome, "pgvigil-app.exe*"))
 	olds, _ := filepath.Glob(filepath.Join(appHome, "*.old-*"))
-	appFiles := append(apps, olds...)
+	appFiles := slices.Concat(apps, olds)
 	items = append(items, removal{what: "the app, machine-wide (" + filepath.Join(appHome, "pgvigil-app.exe") + " and its old copies)", present: len(appFiles) > 0, remove: func() error {
 		for _, f := range appFiles {
 			if err := removeNowOrAtRestart(f); err != nil {

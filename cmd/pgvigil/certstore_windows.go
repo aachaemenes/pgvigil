@@ -48,7 +48,7 @@ var (
 	modcrypt32        = windows.NewLazySystemDLL("crypt32.dll")
 	procCertGetProp   = modcrypt32.NewProc("CertGetCertificateContextProperty")
 	modadvapi32       = windows.NewLazySystemDLL("advapi32.dll")
-	procInitAcl       = modadvapi32.NewProc("InitializeAcl")
+	procInitACL       = modadvapi32.NewProc("InitializeAcl")
 	procAddAce        = modadvapi32.NewProc("AddAce")
 	procAddAllowedEx  = modadvapi32.NewProc("AddAccessAllowedAceEx")
 )
@@ -584,7 +584,7 @@ func withReadAce(old *windows.ACL, sid *windows.SID) (*windows.ACL, error) {
 	size := uint32(hdr.Size) + uint32(unsafe.Sizeof(windows.ACCESS_ALLOWED_ACE{})) - 4 + windows.GetLengthSid(sid)
 	buf := make([]uint32, (size+3)/4) // DWORD-aligned
 	acl := (*windows.ACL)(unsafe.Pointer(&buf[0]))
-	if r, _, e := procInitAcl.Call(uintptr(unsafe.Pointer(acl)), uintptr(size), uintptr(rev)); r == 0 {
+	if r, _, e := procInitACL.Call(uintptr(unsafe.Pointer(acl)), uintptr(size), uintptr(rev)); r == 0 {
 		return nil, fmt.Errorf("InitializeAcl: %w", e)
 	}
 	n := uint32(old.AceCount)
@@ -672,7 +672,7 @@ func aclView(sdBytes []byte) (sd *windows.SECURITY_DESCRIPTOR, aces []aceView, n
 
 // grantKeyAccess gives ONE account Read on the CNG private key of a LocalMachine certificate. Every refusal comes
 // before anything is written, in this order: elevation, the store, the account, the certificate, the key, the Deny.
-func grantKeyAccess(store, thumbprint, account string, out, errw io.Writer) error {
+func grantKeyAccess(store, thumbprint, account string, out, _ io.Writer) error {
 	location, name, err := parseStoreName(store)
 	if err != nil {
 		return err
