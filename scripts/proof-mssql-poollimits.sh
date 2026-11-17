@@ -14,7 +14,7 @@
 # What it makes, and takes away on every exit path the shell can catch: a store database pgvigil_plproof_<n>; in the
 # logical server's master, a user for the login pgv_pool, its dbmanager membership, and for one reading its
 # ##MS_DatabaseManager## membership - each removed and read back before the script ends (the lab's 'down' then deletes
-# the server). It rescales the lab's pool from 50 to 100 eDTU once (Basic; the lab's down deletes it).
+# the server). It rescales the lab's pool from 50 to 100 eDTU and 10 GB once (Basic; the lab's down deletes it).
 #
 # Expected (written before the first run):
 #  L0 pgv_pool as the lab makes it (a login in master with ##MS_ServerStateReader##, a user in each pooled database, no
@@ -26,17 +26,22 @@
 #  L2 dbmanager given (read back: one row in sys.database_role_members): as pgv_pool in master
 #     IS_ROLEMEMBER('dbmanager') = 1 within 6 minutes (Microsoft: a role change can take 5 minutes); master's view holds
 #     a row of the pool at 50 DTU within 20 minutes; the run ends ok, mssql_pool_limit_read state read, at least one
-#     period of the pool stored, the newest with DTU limit 50 and storage limit 5120 MB (a Basic 50 eDTU pool's default
-#     maximum data size, 5 GB) [inferred]
-#  L3 the pool rescaled to 100 eDTU (az read back: capacity 100); master's view shows elastic_pool_dtu_limit 100 within
-#     20 minutes; the run then stores the change: the pool's DTU limits over its periods end 50 then 100 (a storage or
-#     CPU change on its own row splits a period too; the storage column is printed)
+#     period of the pool stored, the newest with DTU limit 50 and the storage limit master's own view gives at that
+#     moment (try 1, 2026-11-17: 5000 MB for a Basic 50 eDTU pool, where Microsoft's limits page says 5 GB - never a
+#     constant here); az's own maxSizeBytes is printed beside it as a reading (Azure's resource and master may word the
+#     limit differently)
+#  L3 the pool rescaled to 100 eDTU AND 10 GB (Microsoft's DTU elastic pool limits: Basic 100 eDTU's max storage per
+#     pool is 10 GB; try 1's rescale with the pool's 5000 MB was refused, ElasticPoolCapacityStorageNotAllowedMB) - az
+#     read back: capacity 100; master's view shows elastic_pool_dtu_limit 100 within 20 minutes; the run then stores the
+#     change: the pool's DTU limits over its periods end 50 then 100 (a storage or CPU change on its own row splits a
+#     period too), the newest period's storage master's own figure then. An az refusal is a FAIL line and L4 / L5 run.
 #  L4 the second reading (the lead's Q1): dbmanager taken away, ##MS_DatabaseManager## given - three readings, none a
 #     FAIL: IS_ROLEMEMBER('dbmanager') as pgv_pool after up to 6 minutes (1 = the collector would read), the collector's
 #     own run, and pgv_pool's own SELECT on the view (its count beside the admin's: 0 while the admin sees rows =
 #     filtered; an error = refused, its number) within 6 minutes; the server role taken away again
 #  L5 the grant removed: no user for pgv_pool in master, in no master role, its server roles ##MS_ServerStateReader##
-#     alone (read back); the store database dropped (read back in pg_database)
+#     alone (read back through sys.sql_logins, Microsoft's server-roles page example B: in try 1 a member join through
+#     sys.server_principals read 'none' in master); the store database dropped (read back in pg_database)
 # The pool stays at 100 eDTU until the lab's down: a second run on the same lab fails L2 (its newest period is 100).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -60,19 +65,22 @@ GRANT_GONE="read back: user in master none; server roles ##MS_ServerStateReader#
 sqa() { SQLCMDPASSWORD=$2 docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$SQLCMD_IMAGE" \
   -S "tcp:$AZ_HOST,$AZ_PORT" -U "$1" -d "$3" -C -b -l 60 -h -1 -W -i /dev/stdin; }
 adm() { sqa "$ADMIN_USER" "$ADMIN_PW" master; }
-# the grant's removal, read back: run at the end and on every exit (a statement whose object is gone does nothing)
+# the grant's removal, read back: run at the end and on every exit (a statement whose object is gone does nothing);
+# the login found through sys.sql_logins, as Microsoft's server-roles page lists a role's SQL logins (example B): in
+# try 1 a join through sys.server_principals found no member in master, which would also have skipped the
+# ##MS_DatabaseManager## removal below
 ungrant() {
   adm <<SQL
 SET NOCOUNT ON;
 IF IS_ROLEMEMBER(N'dbmanager', N'$POOL_USER') = 1 ALTER ROLE dbmanager DROP MEMBER [$POOL_USER];
 IF EXISTS (SELECT 1 FROM sys.server_role_members m JOIN sys.server_principals r ON r.principal_id = m.role_principal_id
-            JOIN sys.server_principals p ON p.principal_id = m.member_principal_id
+            JOIN sys.sql_logins p ON p.principal_id = m.member_principal_id
            WHERE r.name = N'##MS_DatabaseManager##' AND p.name = N'$POOL_USER') ALTER SERVER ROLE ##MS_DatabaseManager## DROP MEMBER [$POOL_USER];
 IF USER_ID(N'$POOL_USER') IS NOT NULL DROP USER [$POOL_USER];
 GO
 SELECT 'read back: user in master ' + CASE WHEN USER_ID(N'$POOL_USER') IS NULL THEN 'none' ELSE 'PRESENT' END
   + '; server roles ' + ISNULL((SELECT STRING_AGG(r.name, ', ') WITHIN GROUP (ORDER BY r.name) FROM sys.server_role_members m
-      JOIN sys.server_principals r ON r.principal_id = m.role_principal_id JOIN sys.server_principals p ON p.principal_id = m.member_principal_id
+      JOIN sys.server_principals r ON r.principal_id = m.role_principal_id JOIN sys.sql_logins p ON p.principal_id = m.member_principal_id
      WHERE p.name = N'$POOL_USER'), 'none');
 SQL
 }
@@ -118,6 +126,12 @@ right_is() { local want=$1 mins=$2 got=; for _ in $(seq 1 $((mins * 2))); do
 num() { case $1 in ''|*[!0-9]*) echo 0;; *) echo "$1";; esac; }
 rows_at() { local got; got=$(printf "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.elastic_pool_resource_stats WHERE elastic_pool_name = N'%s'%s;\n" \
     "$AZ_POOL" "${1:+ AND elastic_pool_dtu_limit = $1}" | adm 2>/dev/null | tr -d '[:space:]') || got=; num "$got"; }
+# the pool's storage limit as master's view gives it now (its newest row), and as Azure's resource gives it (az's
+# maxSizeBytes in MB; a reading only): the stored period's storage is graded against master's, never a constant
+master_mb() { local got; got=$(printf "SET NOCOUNT ON; SELECT TOP (1) elastic_pool_storage_limit_mb FROM sys.elastic_pool_resource_stats WHERE elastic_pool_name = N'%s' ORDER BY end_time DESC;\n" \
+    "$AZ_POOL" | adm 2>/dev/null | tr -d '[:space:]') || got=; num "$got"; }
+az_mb() { local b; b=$("$AZ" sql elastic-pool show --subscription "$PGVIGIL_LAB_AZ_SUBSCRIPTION" -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_POOL" \
+    --query maxSizeBytes -o tsv 2>/dev/null) || b=; case $b in ''|*[!0-9]*) echo 'not read';; *) echo $((b / 1048576));; esac; }
 # master's view, polled every 30 s for up to 20 minutes, until it holds a row of the pool at this DTU limit
 wait_rows() { local seen=0; for _ in $(seq 1 40); do seen=$(rows_at "$1"); [ "$seen" -gt 0 ] && break; sleep 30; done; echo "$seen"; }
 
@@ -141,21 +155,30 @@ echo "   as pgv_pool in master: IS_ROLEMEMBER('dbmanager') = $RIGHT2"
 S2=$(wait_rows 50); echo "   master's rows of the pool at 50 DTU: $S2"
 L2=$(run); echo "   $L2"; P2=$(periods); echo "$P2" | sed 's/^/   period /'
 R2=$(q "select r.state from pgvigil.mssql_pool_limit_read r join pgvigil.instances i using (instance_id) where i.name = 'pl1'")
+M2=$(master_mb)
+echo "   the read's state: ${R2:-none}; the storage limit: master's view $M2 MB, az's maxSizeBytes $(az_mb) MB (a reading)"
 grep -qxF 'read back: 1' <<<"$B2" && [ "$RIGHT2" = 1 ] && [ "$S2" -gt 0 ] && [[ "$L2" == "ok|"* ]] && [ "$R2" = read ] \
-  && [[ "$(echo "$P2" | tail -1)" == *"|50|5120" ]] && ok L2 \
-  || bad "L2 (expected read back 1, the right 1, a 50-DTU row in master, ok, state read, the newest period 50 DTU / 5120 MB)"
+  && [ "$M2" -gt 0 ] && [ "$(echo "$P2" | tail -1 | cut -d'|' -f3-4)" = "50|$M2" ] && ok L2 \
+  || bad "L2 (expected read back 1, the right 1, a 50-DTU row in master, ok, state read, the newest period 50 DTU with master's storage figure)"
 
-echo "== L3: the pool rescaled to 100 eDTU"
-"$AZ" sql elastic-pool update --subscription "$PGVIGIL_LAB_AZ_SUBSCRIPTION" -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_POOL" --capacity 100 -o none
-CAP=$("$AZ" sql elastic-pool show --subscription "$PGVIGIL_LAB_AZ_SUBSCRIPTION" -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_POOL" --query capacity -o tsv)
-echo "   az read back: capacity $CAP"
-S3=$(wait_rows 100); echo "   master's rows of the pool at 100 DTU: $S3"
-L3=$(run); echo "   $L3"; P3=$(periods); echo "$P3" | sed 's/^/   period /'
-# the DTU limits over the periods, a run of one value once (a storage or CPU change on its own row splits a period too)
-DTUS=$(echo "$P3" | cut -d'|' -f3 | uniq | tail -2 | tr '\n' ' ')
-echo "   the DTU limits' last two values: $DTUS"
-[ "$CAP" = 100 ] && [ "$S3" -gt 0 ] && [[ "$L3" == "ok|"* ]] && [ "$DTUS" = "50 100 " ] && ok L3 \
-  || bad "L3 (expected capacity 100, a 100-DTU row in master, ok, the DTU limits ending 50 then 100)"
+echo "== L3: the pool rescaled to 100 eDTU and 10 GB"
+# Basic 100 eDTU allows 10 GB only (Microsoft's DTU elastic pool limits); a refusal is this row's FAIL, never the run's end
+if "$AZ" sql elastic-pool update --subscription "$PGVIGIL_LAB_AZ_SUBSCRIPTION" -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_POOL" \
+     --capacity 100 --max-size 10GB -o none 2> "$WORK/l3.err"; then
+  CAP=$("$AZ" sql elastic-pool show --subscription "$PGVIGIL_LAB_AZ_SUBSCRIPTION" -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_POOL" --query capacity -o tsv 2>/dev/null) || CAP=
+  echo "   az read back: capacity ${CAP:-not read}; maxSizeBytes $(az_mb) MB"
+  S3=$(wait_rows 100); echo "   master's rows of the pool at 100 DTU: $S3"
+  L3=$(run); echo "   $L3"; P3=$(periods); echo "$P3" | sed 's/^/   period /'
+  M3=$(master_mb); echo "   the storage limit: master's view $M3 MB"
+  # the DTU limits over the periods, a run of one value once (a storage or CPU change on its own row splits a period too)
+  DTUS=$(echo "$P3" | cut -d'|' -f3 | uniq | tail -2 | tr '\n' ' ')
+  echo "   the DTU limits' last two values: $DTUS"
+  [ "$CAP" = 100 ] && [ "$S3" -gt 0 ] && [[ "$L3" == "ok|"* ]] && [ "$DTUS" = "50 100 " ] \
+    && [ "$M3" -gt 0 ] && [ "$(echo "$P3" | tail -1 | cut -d'|' -f3-4)" = "100|$M3" ] && ok L3 \
+    || bad "L3 (expected capacity 100, a 100-DTU row in master, ok, the DTU limits ending 50 then 100, the newest period with master's storage figure)"
+else
+  bad "L3 (az refused the rescale: $(tr '\n' ' ' < "$WORK/l3.err" | cut -c1-300)) - L4 and L5 run on"
+fi
 
 echo "== L4: the second reading - ##MS_DatabaseManager## in place of dbmanager"
 printf "SET NOCOUNT ON;\nALTER ROLE dbmanager DROP MEMBER [%s];\nALTER SERVER ROLE ##MS_DatabaseManager## ADD MEMBER [%s];\n" "$POOL_USER" "$POOL_USER" | adm
