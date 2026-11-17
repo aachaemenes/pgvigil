@@ -1,7 +1,7 @@
-diff --git i/internal/web/q_perfsummary.go w/internal/web/q_perfsummary.go
+diff --git a/internal/web/q_perfsummary.go b/internal/web/q_perfsummary.go
 index 79c3574e5..8ad69f9f2 100644
---- i/internal/web/q_perfsummary.go
-+++ w/internal/web/q_perfsummary.go
+--- a/internal/web/q_perfsummary.go
++++ b/internal/web/q_perfsummary.go
 @@ -2,8 +2,10 @@ package web
  
  import (
@@ -58,10 +58,10 @@ index 79c3574e5..8ad69f9f2 100644
  	if err != nil {
  		writeErr(w, http.StatusBadRequest, err)
  		return
-diff --git i/web/src/alerts.ts w/web/src/alerts.ts
+diff --git a/web/src/alerts.ts b/web/src/alerts.ts
 index 9e4d67a4b..002d687c7 100644
---- i/web/src/alerts.ts
-+++ w/web/src/alerts.ts
+--- a/web/src/alerts.ts
++++ b/web/src/alerts.ts
 @@ -126,7 +126,9 @@ const logCols: Col[] = [
  // alertsView: the Alerts tab - the channels, the open alerts as a triage grid (acknowledge, notes, mute, close, the
  // blackout flag, the known-noise label), the silenced servers and blackouts, the mute rules and known patterns, the
@@ -92,10 +92,10 @@ index 9e4d67a4b..002d687c7 100644
    // a metric threshold is an alert rule (task 131): its alerts are listed here with source 'alert rule'
    sec.append(el('p', { class: 'meta' }, 'An alert of source \'alert rule\' comes from a threshold on a charted metric: ',
      el('a', { href: href(ctx, { tab: 'alertrules' }) }, 'Alert rules'), ' lists the rules and what the sender last made of each.'));
-diff --git i/web/src/drives.ts w/web/src/drives.ts
+diff --git a/web/src/drives.ts b/web/src/drives.ts
 index 01f309c64..5f94aa1c7 100644
---- i/web/src/drives.ts
-+++ w/web/src/drives.ts
+--- a/web/src/drives.ts
++++ b/web/src/drives.ts
 @@ -40,11 +40,13 @@ const noThreshold = 'no threshold set';
  const naStatus = (v: unknown) => v == null || v === '' || statusKind[String(v)] ? '' : 'status none';
  const statusColor: Record<string, string> = { critical: 'var(--crit)', warning: 'var(--warn)', ok: 'var(--ok)', unknown: 'var(--muted)' };
@@ -123,10 +123,10 @@ index 01f309c64..5f94aa1c7 100644
    const sec = el('section', {}, el('h2', {}, 'DB Space'));
    const body = el('div');
    const days = [7, 30, 90, 180, 365];
-diff --git i/web/src/perfsummary.ts w/web/src/perfsummary.ts
+diff --git a/web/src/perfsummary.ts b/web/src/perfsummary.ts
 index 353f87385..bacc70ae5 100644
---- i/web/src/perfsummary.ts
-+++ w/web/src/perfsummary.ts
+--- a/web/src/perfsummary.ts
++++ b/web/src/perfsummary.ts
 @@ -67,9 +67,10 @@ const waitCell = (v: unknown, r: Row) => v != null ? ms(v)
    : muted('not read', 'no wait read in the range');
  const STALE_SECS = 180;
@@ -140,10 +140,10 @@ index 353f87385..bacc70ae5 100644
    const end = Date.parse(win.to);
    // the 'now' columns: the newest snapshot inside the range; one older than three minutes before the range's end is
    // not now (a collection that stopped) and its figures are not shown as current
-diff --git i/web/src/running_fleet.ts w/web/src/running_fleet.ts
+diff --git a/web/src/running_fleet.ts b/web/src/running_fleet.ts
 index 62577c2db..89f6ecc51 100644
---- i/web/src/running_fleet.ts
-+++ w/web/src/running_fleet.ts
+--- a/web/src/running_fleet.ts
++++ b/web/src/running_fleet.ts
 @@ -34,10 +34,11 @@ function runningHref(ctx: Ctx, r: Row): string {
    return r.snapshot_at == null ? base : `${base}&at=${encodeURIComponent(String(r.snapshot_at))}`;
  }
