@@ -88,6 +88,9 @@ for (const theme of ['light', 'dark']) {
     walked++;
     await cmd('Page.navigate', { url: U + hash }); await sleep(250); await cmd('Page.reload'); await sleep(250);
     if (!(await settled())) { failed++; console.log(`FAIL ${theme} ${name}: the page did not render in 15 s`); continue; }
+    // review t11-6 NIT 11: the theme asked is the theme drawn (main.ts applyTheme: data-theme on the root element)
+    const drawnTheme = await ev(`document.documentElement.getAttribute('data-theme')`);
+    if (drawnTheme !== theme) { failed++; console.log(`FAIL ${theme} ${name}: THEME NOT APPLIED - the page drew data-theme ${drawnTheme}`); continue; }
     // review t11-6 BLOCKER 1: an unknown tab renders the Summary under the asked address (router.ts parse) - fail it
     const asked = hash.split('?')[0];
     const landed = await ev(`(() => ${JSON.stringify(asked)} === '#/summary' || ![...document.querySelectorAll('a.on')].some(a => /#\/summary(\?|$)/.test(a.getAttribute('href') || '')))()`);
