@@ -108,6 +108,12 @@ each instance's rows together, the instances by their critical rows, then their 
 instance's own rows keep their order (critical first, then the check and the object). The mail draws the page, so it
 has the same order.
 
+The page's rows, and so the mail's grid and the post's counts below, are the checks `/api/overview` runs. For a
+PostgreSQL instance those are its collections, replication, jobs, backups, integrity checks, disks and the rest of the
+page's list. For a SQL Server instance they are its collection health alone (a collection failing or stale): its
+Agent jobs, backups, last good CHECKDB and drive space are judged in the cells of its Summary page and are not among
+these rows or counts.
+
 With `post:` (or the dialog's webhook channels) each day's mail, once it is **sent**, also posts a short text through
 those webhook channels of the `alerts:` block (Slack, Teams, Discord, Google Chat or json): the counts the drawn page
 showed, the worst three instances and a link to the page (`alerts_base_url` + `/#/checks?w=24h`; no
