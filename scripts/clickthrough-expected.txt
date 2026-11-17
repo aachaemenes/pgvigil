@@ -20,7 +20,8 @@ must status|disabled | root | ^pgthresholds$ | ^B Set\.\.\.$ | the root Threshol
 # words in that state now (its NOTHING / reads row out of this file: such a row again is NEW); a row's Draw on the strip
 # whose query has no interval in the range says so under the strip (web/src/timestrip.ts stripOverlay's none)
 must disabled | * | .* | ^B Chart menu: .* > menu B Pick series > B All$ | a chart's Pick series 'All' with every series shown: off, 'every series is shown' (web/src/chart.ts); None the same with none shown
-must disabled | * | .* | menu B Columns\.\.\. > B Show every column$ | the grid's Columns... 'Show every column' with none hidden: off, 'every column is shown' (web/src/gridtools.ts)
+must disabled | * | .* | menu B Columns\.\.\. > B All$ | the grid's Columns... 'All' (DBA Dash's Columns dialog; 'Show every column' before task PGRID B05) with none hidden: off, 'every column is shown' (web/src/gridtools.ts)
+must disabled | * | .* | menu B Columns\.\.\. > B Toggle selected$ | the grid's Columns... 'Toggle selected' with no name picked in its list: off, 'no name is picked in the list' (web/src/gridtools.ts, task PGRID B05)
 must disabled | * | .* | menu B Columns\.\.\. > B Reset this grid$ | 'Reset this grid' with nothing changed: off, 'nothing in this grid is changed from its default' (web/src/gridtools.ts)
 must disabled | * | ^statements$ | ^B Reset all$ | the statements filter's 'Reset all' with no filter set: off, 'no filter is set: nothing to reset' (web/src/stmt_filter.ts)
 # the findings review's fold (review-13 should 4): Activity's Latest is off ('this is the newest snapshot: the page follows it')

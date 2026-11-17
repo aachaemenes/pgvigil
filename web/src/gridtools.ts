@@ -19,9 +19,10 @@ import { Grid, htmlDoc, json, markdown, sqlScript, tsv } from './gridwriters';
 
 // bars: a column's data bar by its name - behind the value (the default, the only style before task GM: a stored list of
 // names loads as it), under the value, or a traffic light with the high values the worse or the better; rownum: the row
-// numbers drawn (a counter, no column)
+// numbers drawn (a counter, no column); added: the rows' keys the page does not draw, drawn as columns at the grid's
+// end (the chooser's undrawn data columns, task PGRID B05) - a key no longer offered is kept here and drawn never
 type BarStyle = 'behind' | 'under' | 'worse' | 'better';
-interface Prefs { hidden: string[]; frozen: number; bars: Record<string, BarStyle>; rownum?: boolean }
+interface Prefs { hidden: string[]; frozen: number; bars: Record<string, BarStyle>; rownum?: boolean; added?: string[] }
 const BAR_STYLES: [BarStyle, string][] = [['behind', 'Behind value'], ['under', 'Under value'], ['worse', 'Traffic light (higher is worse)'], ['better', 'Traffic light (higher is better)']];
 type Agg = 'sum' | 'avg' | 'min' | 'max';
 interface Grouping { col: string; agg: Agg; box: HTMLElement }
@@ -79,7 +80,10 @@ function hash(s: string): string {
   for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
   return h.toString(36);
 }
-const keyOf = (t: HTMLTableElement) => `pgvigil.grid.${(/^#\/([A-Za-z_]+)/.exec(location.hash)?.[1] ?? 'summary')}.${hash(headingOf(t) + '|' + names(t).join('|'))}`;
+// the key: the page's own columns alone (a column the chooser added never changes which grid it is)
+const isAdded = (h: Element | undefined) => !!h?.hasAttribute('data-gt-added');
+const ownNames = (t: HTMLTableElement) => { const hs = heads(t); return names(t).filter((_, j) => !isAdded(hs[j])); };
+const keyOf = (t: HTMLTableElement) => `pgvigil.grid.${(/^#\/([A-Za-z_]+)/.exec(location.hash)?.[1] ?? 'summary')}.${hash(headingOf(t) + '|' + ownNames(t).join('|'))}`;
 
 // ---- a saved view's layouts (VIEWS slice B, views.ts) ------------------------------------------------------------
 // While a view is loaded its layouts are a layer over the browser's own choices: every grid of the page is drawn from
@@ -135,7 +139,7 @@ function load(t: HTMLTableElement): Prefs {
     const styles = new Set(BAR_STYLES.map(x => x[0]));
     const bars: Record<string, BarStyle> = Array.isArray(p.bars) ? Object.fromEntries(list(p.bars).map(n => [n, 'behind' as BarStyle]))
       : p.bars && typeof p.bars === 'object' ? Object.fromEntries(Object.entries(p.bars).filter(([, v]) => styles.has(v as BarStyle))) as Record<string, BarStyle> : {};
-    return { hidden: list(p.hidden), frozen: Math.max(0, Math.min(MAX_FROZEN, Math.floor(Number(p.frozen) || 0))), bars, rownum: p.rownum === true };
+    return { hidden: list(p.hidden), frozen: Math.max(0, Math.min(MAX_FROZEN, Math.floor(Number(p.frozen) || 0))), bars, rownum: p.rownum === true, added: list(p.added) };
   } catch { return none; }   // a value another version wrote
 }
 function save(t: HTMLTableElement, p: Prefs) {
@@ -146,7 +150,7 @@ function save(t: HTMLTableElement, p: Prefs) {
     apply(t, p);
     return;
   }
-  const k = keyOf(t), empty = !p.hidden.length && !p.frozen && !Object.keys(p.bars).length && !p.rownum;
+  const k = keyOf(t), empty = !p.hidden.length && !p.frozen && !Object.keys(p.bars).length && !p.rownum && !p.added?.length;
   if (empty) mem.delete(k); else mem.set(k, p);
   try {
     if (empty) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(p));
@@ -154,12 +158,34 @@ function save(t: HTMLTableElement, p: Prefs) {
   apply(t, p);
 }
 
+// ---- the undrawn data columns (task PGRID B05) ------------------------------------------------------------------
+
+// neverOf: the keys a page holds back on purpose (a masked text's raw form, an internal id, a sort value of a column it
+// hides itself): its grid's data-gt-never, a JSON array of keys, empty by default
+function neverOf(t: HTMLTableElement): Set<string> {
+  try {
+    const v = JSON.parse(t.getAttribute('data-gt-never') ?? '[]') as unknown;
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+  } catch { return new Set(); }   // a page's list that does not read: nothing held back beyond the '_' rule
+}
+// offered: the keys the grid's rows carry and no column of the page draws, in the order first met - never a key
+// starting '_' (a page's own working value) nor one the page holds back
+function offered(t: HTMLTableElement): string[] {
+  const m = gridModel(t);
+  if (!m?.keys) return [];
+  const hs = heads(t), own = new Set(m.cols.filter((_, j) => !isAdded(hs[j])).map(c => c.key)), never = neverOf(t);
+  return m.keys().filter(k => !own.has(k) && !k.startsWith('_') && !never.has(k));
+}
+// addedOf: the kept added columns the grid offers now (a key held back since, or gone from the rows, is not drawn)
+const addedOf = (t: HTMLTableElement, p: Prefs) => { const o = new Set(offered(t)); return (p.added ?? []).filter(k => o.has(k)); };
+
 // ---- drawing what is kept ------------------------------------------------------------------------------------
 
 // apply: the hidden columns (a class per column and data-gt-hidden on the header, which the export reads), the frozen
 // ones (sticky, each at the width of the ones before it) and the data bars. p: the choice just made; without it the
 // kept one. The hidden columns are written first, then every width is read in one pass, then the frozen ones written.
 function apply(t: HTMLTableElement, p: Prefs = load(t)) {
+  gridModel(t)?.extra?.(addedOf(t, p));   // the added columns first: the rules below read the headers drawn
   const ns = names(t), hs = heads(t);
   if (!hs.length) return;
   const hidden = new Set(p.hidden.filter(n => ns.includes(n)));
@@ -462,36 +488,91 @@ function redrawPanel(t: HTMLTableElement) {
 
 // chooser: the panel with every tool of a grid: each column's tick, its data bars, the frozen columns, the group-by,
 // a column's cells for the selection line. back: where the focus returns on Close; focus false = drawn again after
-// the page redrew the grid, without taking the focus from where it is.
+// the page redrew the grid, without taking the focus from where it is (the names picked in its list are kept then).
+// The list (DBA Dash's Columns dialog, task PGRID B05): the page's columns, then the rows' keys it does not draw
+// ('not drawn by this page', unticked until drawn); one tab stop (a listbox): the arrows move, Space picks, Shift with
+// an arrow picks a range, Ctrl+A picks every name; a click picks a name, Ctrl+click adds one, Shift+click a range. All
+// ticks every column of the page, None unticks all but the first (a grid keeps one column), Toggle selected ticks or
+// unticks each picked name.
+const picksOf = new Map<string, Set<string>>();   // by the grid's key: the names picked in its open chooser
+let colSeq = 0;
 function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   panels.get(t)?.remove();
   const ns = names(t), hs = heads(t), p = load(t), k = keyOf(t);
+  const own = ns.map((n, j) => ({ n, j })).filter(x => !isAdded(hs[x.j]));
+  const first = own[0]?.n ?? '';
   const hidden = new Set(p.hidden.filter(n => ns.includes(n))), barsOn = new Set(Object.keys(p.bars).filter(n => ns.includes(n)));
+  const added = new Set(addedOf(t, p));
+  if (focus || !picksOf.has(k)) picksOf.set(k, new Set());
+  const picks = picksOf.get(k)!;
   const box = el('div', { class: 'gt-panel', role: 'dialog', 'aria-label': 'Columns of this grid' });
   const close = () => {
-    box.remove(); panels.delete(t); openPanels.delete(k);
+    box.remove(); panels.delete(t); openPanels.delete(k); picksOf.delete(k);
     const to = back && back.isConnected && back.tabIndex >= 0 ? back : homeOf(t);   // else the grid's current cell (its one tab stop)
     to?.focus();
   };
   // a bar ticked here keeps its style (behind the value when new); the row numbers stay as they are
-  const now = (): Prefs => ({ hidden: [...hidden], frozen: Number(freeze.value) || 0, bars: Object.fromEntries([...barsOn].map(n => [n, p.bars[n] ?? 'behind' as BarStyle])), rownum: p.rownum });
-  const list = el('div', { class: 'gt-cols' });
-  ns.forEach((n, j) => {
-    const tick = el('input', { type: 'checkbox' }) as HTMLInputElement;
-    tick.checked = !hidden.has(n);
-    tick.addEventListener('change', () => {
-      if (tick.checked) hidden.delete(n); else hidden.add(n);
-      if (hidden.size >= ns.length) { hidden.delete(n); tick.checked = true; }   // the last column stays
-      save(t, now());
+  const now = (): Prefs => ({ hidden: [...hidden], frozen: Number(freeze.value) || 0, bars: Object.fromEntries([...barsOn].map(n => [n, p.bars[n] ?? 'behind' as BarStyle])), rownum: p.rownum, added: [...added] });
+  const said = el('span', { class: 'meta', role: 'status' });
+  const list = el('div', { class: 'gt-cols', role: 'listbox', 'aria-multiselectable': 'true', tabindex: '0',
+    'aria-label': 'The columns: the arrows move, Space picks a name, Shift with an arrow picks a range, Ctrl+A picks every name; Toggle selected ticks or unticks the picked names' });
+  interface Item { name: string; row: HTMLElement; tick: HTMLInputElement; undrawn: boolean }
+  const items: Item[] = [];
+  let act = 0, anchor = -1;
+  // shown: a name drawn now (a page's column not hidden, an added key ticked)
+  const shownNow = (it: Item) => it.undrawn ? added.has(it.name) : !hidden.has(it.name);
+  // keep: never every page column hidden - the grid's first stays, said in words
+  const keep = () => { if (own.length && own.every(x => hidden.has(x.n))) { hidden.delete(first); said.textContent = `${first} stays: a grid keeps one column.`; } };
+  const setShown = (it: Item, on: boolean) => { if (it.undrawn) { if (on) added.add(it.name); else added.delete(it.name); } else if (on) hidden.delete(it.name); else hidden.add(it.name); };
+  const ticks = () => items.forEach(it => { it.tick.checked = shownNow(it); });
+  const paint = () => {
+    items.forEach((it, i) => { it.row.setAttribute('aria-selected', String(picks.has(it.name))); it.row.classList.toggle('gt-act', i === act); });
+    if (items[act]) list.setAttribute('aria-activedescendant', items[act].row.id); else list.removeAttribute('aria-activedescendant');
+    offState();
+  };
+  const range = (a: number, b: number) => { picks.clear(); for (let i = Math.min(a, b); i <= Math.max(a, b); i++) picks.add(items[i].name); };
+  const addItem = (name: string, undrawn: boolean, j: number) => {
+    const tick = el('input', { type: 'checkbox', tabindex: '-1' }) as HTMLInputElement;
+    const nameEl = el('span', { class: 'gt-col-name' }, name);
+    const row = el('div', { class: 'gt-col', role: 'option', id: `gt-col-${++colSeq}`, ...(undrawn ? { 'data-gt-undrawn': '' } : {}) }, el('label', {}, tick, ' ', nameEl));
+    const it: Item = { name, row, tick, undrawn };
+    tick.checked = shownNow(it);
+    tick.addEventListener('change', () => { said.textContent = ''; setShown(it, tick.checked); keep(); ticks(); save(t, now()); });
+    // a name picks (its tick is the checkbox alone): a click one, Ctrl+click (Cmd) adds or drops one, Shift+click a range
+    nameEl.addEventListener('click', e => {
+      e.preventDefault();
+      const i = items.indexOf(it);
+      if (e.shiftKey && anchor >= 0) range(anchor, i);
+      else if (e.ctrlKey || e.metaKey) { if (picks.has(name)) picks.delete(name); else picks.add(name); anchor = i; }
+      else { picks.clear(); picks.add(name); anchor = i; }
+      act = i; paint(); list.focus();
     });
-    const row = el('div', { class: 'gt-col' }, el('label', {}, tick, ' ', n));
-    if (hs[j].classList.contains('num')) {
-      const bar = el('input', { type: 'checkbox', 'aria-label': `Data bars on ${n}` }) as HTMLInputElement;
-      bar.checked = barsOn.has(n);
-      bar.addEventListener('change', () => { if (bar.checked) barsOn.add(n); else barsOn.delete(n); save(t, now()); });
+    if (undrawn) row.append(' ', el('span', { class: 'meta' }, 'not drawn by this page'));
+    else if (hs[j]?.classList.contains('num')) {
+      const bar = el('input', { type: 'checkbox', tabindex: '-1', 'aria-label': `Data bars on ${name}` }) as HTMLInputElement;
+      bar.checked = barsOn.has(name);
+      bar.addEventListener('change', () => { if (bar.checked) barsOn.add(name); else barsOn.delete(name); save(t, now()); });
       row.append(' ', el('label', { class: 'meta' }, bar, ' data bars'));
     }
-    list.append(row);
+    items.push(it); list.append(row);
+  };
+  own.forEach(x => addItem(x.n, false, x.j));
+  offered(t).forEach(key => addItem(key, true, -1));
+  list.addEventListener('keydown', e => {
+    const n = items.length;
+    if (!n) return;
+    let to = -1;
+    if (e.key === 'ArrowDown') to = Math.min(n - 1, act + 1);
+    else if (e.key === 'ArrowUp') to = Math.max(0, act - 1);
+    else if (e.key === 'Home') to = 0;
+    else if (e.key === 'End') to = n - 1;
+    else if (e.key === ' ') { e.preventDefault(); const nm = items[act].name; if (picks.has(nm)) picks.delete(nm); else picks.add(nm); anchor = act; paint(); return; }
+    else if ((e.key === 'a' || e.key === 'A') && (e.ctrlKey || e.metaKey)) { e.preventDefault(); items.forEach(it => picks.add(it.name)); paint(); return; }
+    else return;
+    e.preventDefault();
+    if (e.shiftKey) range(anchor >= 0 ? anchor : act, to);
+    act = to; paint();
+    items[act].row.scrollIntoView({ block: 'nearest' });
   });
   const freeze = el('input', { type: 'number', min: '0', max: String(Math.min(MAX_FROZEN, ns.length - 1)), value: String(Math.min(p.frozen, Math.max(0, ns.length - 1))), 'aria-label': 'Columns frozen at the left' }) as HTMLInputElement;
   freeze.addEventListener('change', () => { freeze.value = String(Math.max(0, Math.min(Number(freeze.max), Math.floor(Number(freeze.value) || 0)))); save(t, now()); });
@@ -502,37 +583,52 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   const sum = el('select', { 'aria-label': 'Select the cells of a column: their count, sum, average, min and max show above the grid' }, el('option', { value: '' }, 'no column')) as HTMLSelectElement;
   ns.forEach((n, j) => { if (!hidden.has(n)) sum.append(el('option', { value: String(j) }, n)); });
   sum.addEventListener('change', () => pickColumn(t, sum.value === '' ? -1 : Number(sum.value)));
-  const all = el('button', { type: 'button' }, 'Show every column');
-  all.addEventListener('click', () => { hidden.clear(); list.querySelectorAll<HTMLInputElement>('.gt-col > label:first-child input').forEach(i => { i.checked = true; }); save(t, now()); });
+  // DBA Dash's three: All, None, Toggle Selected
+  const all = el('button', { type: 'button' }, 'All');
+  all.addEventListener('click', () => { said.textContent = ''; hidden.clear(); ticks(); save(t, now()); offState(); });
+  const none = el('button', { type: 'button' }, 'None');
+  none.addEventListener('click', () => {
+    own.forEach(x => { if (x.n !== first) hidden.add(x.n); }); hidden.delete(first); added.clear();
+    said.textContent = `None: ${first} stays - a grid keeps one column.`;
+    ticks(); save(t, now()); offState();
+  });
+  const toggle = el('button', { type: 'button' }, 'Toggle selected');
+  toggle.addEventListener('click', () => {
+    said.textContent = '';
+    items.filter(it => picks.has(it.name)).forEach(it => setShown(it, !shownNow(it)));
+    keep(); ticks(); save(t, now()); offState();
+  });
   const reset = el('button', { type: 'button' }, 'Reset this grid');
-  reset.addEventListener('click', () => { hidden.clear(); barsOn.clear(); freeze.value = '0'; save(t, { ...now(), rownum: false }); group(t, null); pickColumn(t, -1); chooser(t, back); });
+  reset.addEventListener('click', () => { hidden.clear(); barsOn.clear(); added.clear(); freeze.value = '0'; save(t, { ...now(), rownum: false, added: [] }); group(t, null); pickColumn(t, -1); chooser(t, back); });
   const done = el('button', { type: 'button' }, 'Close');
   done.addEventListener('click', close);
   box.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } });
-  // Show every column with none hidden, Reset this grid with nothing changed from its default: a click would change
-  // nothing - each off with its reason, read again on every change in the panel (the walk's NOTHING rows)
+  // a button whose click would change nothing is off with its reason, read again on every change in the panel (the
+  // walk's NOTHING rows)
   const offNote = el('span', { class: 'off-reason' });
-  const offState = () => {
-    const noneHidden = hidden.size === 0;
-    const plain = noneHidden && barsOn.size === 0 && (Number(freeze.value) || 0) === 0 && !groupings.get(t) && picked(t).length === 0 && !p.rownum;
-    const why = [noneHidden ? 'every column is shown' : '', plain ? 'nothing in this grid is changed from its default' : ''].filter(Boolean);
-    offNote.textContent = why.join('; ');
-    offControl(all, noneHidden ? 'every column is shown' : null, offNote);
-    offControl(reset, plain ? 'nothing in this grid is changed from its default' : null, offNote);
-  };
+  function offState() {
+    const allShown = hidden.size === 0, onlyFirst = own.every(x => x.n === first || hidden.has(x.n)) && added.size === 0;
+    const plain = allShown && barsOn.size === 0 && added.size === 0 && (Number(freeze.value) || 0) === 0 && !groupings.get(t) && picked(t).length === 0 && !p.rownum;
+    const why = { all: allShown ? 'every column is shown' : null, none: onlyFirst ? 'only the first column is shown' : null,
+      toggle: picks.size ? null : 'no name is picked in the list', reset: plain ? 'nothing in this grid is changed from its default' : null };
+    offNote.textContent = Object.values(why).filter(Boolean).join('; ');
+    offControl(all, why.all, offNote);
+    offControl(none, why.none, offNote);
+    offControl(toggle, why.toggle, offNote);
+    offControl(reset, why.reset, offNote);
+  }
   box.addEventListener('change', offState);
-  all.addEventListener('click', offState);
-  offState();
+  paint();
   box.append(el('p', { class: 'meta' }, 'Columns of this grid: shown when ticked. The choice is kept in this browser.'), list,
     el('p', {}, el('label', {}, 'Freeze the first ', freeze, ' column(s)'), ' ', el('label', {}, 'Group by ', by), ' ', el('label', {}, 'Sum the cells of ', sum)),
-    el('p', {}, all, ' ', reset, ' ', done, ' ', offNote));
+    el('p', {}, all, ' ', none, ' ', toggle, ' ', reset, ' ', done, ' ', said, ' ', offNote));
   const host = boxOf(t);
   if (host.classList.contains('grid-box')) host.insertBefore(box, host.firstChild); else host.before(box);
   panels.set(t, box);
   panelBacks.set(t, back);
   panelStates.set(t, offState);
   openPanels.add(k);
-  if (focus) (box.querySelector('input') as HTMLElement | null)?.focus();
+  if (focus) list.focus();
 }
 
 // ---- the menu (task GM: DBA Dash's grid menu) ------------------------------------------------------------------
@@ -764,6 +860,7 @@ const css = () => {
     + '.gt-panel,.gt-groups{border:1px solid var(--line);background:var(--card);color:var(--fg);padding:.5rem .8rem;margin:.3rem 0}'
     + '.gt-panel p,.gt-groups p{margin:.3rem 0}.gt-cols{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:.1rem 1rem;max-height:16rem;overflow:auto}'
     + '.gt-panel input[type=number]{width:4rem}.gt-scroll{overflow:auto;max-height:18rem}'
+    + '.gt-col[aria-selected=true]{background:var(--sel,rgba(80,140,230,.22))}.gt-cols:focus-visible .gt-col.gt-act{outline:2px solid var(--fg);outline-offset:-2px}.gt-cols:focus-visible{outline:2px solid var(--line)}'
     + '.gt-table{border-collapse:collapse;font-variant-numeric:tabular-nums}.gt-table th,.gt-table td{padding:.2rem .6rem;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;font-weight:400}'
     + '.gt-table thead th{color:var(--muted)}.gt-table .num{text-align:right}';
 };

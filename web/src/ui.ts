@@ -67,7 +67,11 @@ export interface Col {
 // rows: the grid's rows as filtered and sorted; allRows: each of them as a table row, the ones not drawn yet (past the
 // grid's page) built off the screen, so the export and Copy all take every row without drawing them
 // text: a row's cell as the screen words it (the grid menu's statistics read the rows without building them)
-export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[]; allRows?(): HTMLTableRowElement[]; text?(r: Record<string, unknown>, c: Col): string }
+// keys: every key the grid's rows carry, in the order first met (the chooser's undrawn data columns, task PGRID B05);
+// extra: the columns the grid draws beyond the page's own - a key each, its label the key, its header data-gt-added -
+// set whole (the ones given, in that order; none = the page's own alone); a set equal to the drawn one draws nothing
+export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[]; allRows?(): HTMLTableRowElement[]; text?(r: Record<string, unknown>, c: Col): string;
+  keys?(): string[]; extra?(keys: string[]): void }
 const models = new WeakMap<HTMLTableElement, GridModel>();
 export function gridModel(t: HTMLTableElement): GridModel | undefined { return models.get(t); }
 
@@ -325,7 +329,10 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   const head = el('tr'), filterRow = el('tr', { class: 'filters', hidden: '' });
   const inputs = new Map<string, HTMLInputElement>();
   const filterBtns: HTMLButtonElement[] = [];
-  for (const c of cols) {
+  cols = [...cols];   // the page's columns, then any the chooser adds (extra): the model's cols is this array
+  const own = cols.length;
+  // addHead: a column's header cell and its filter field; added: a column the chooser drew (data-gt-added)
+  const addHead = (c: Col, added: boolean) => {
     const name = c.label ?? c.key;
     // (tabindex -1: the grid is one tab stop; F2 on its header cell opens the filter row - the ARIA grid pattern)
     const fb = el('button', { type: 'button', class: 'filter-btn', title: 'Filter ' + name, 'aria-label': 'Filter ' + name, 'aria-expanded': 'false', tabindex: '-1' }) as HTMLButtonElement;   // its glyph is CSS (::before), so a header's text stays its label
@@ -337,7 +344,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       for (const b of filterBtns) b.setAttribute('aria-expanded', String(open));
       if (open) inputs.get(c.key)!.focus();
     });
-    const th = el('th', { ...(c.num ? { class: 'num' } : {}), ...(c.title ? { title: c.title } : {}) }, el('span', { class: 'th-label' }, name), fb);
+    const th = el('th', { ...(c.num ? { class: 'num' } : {}), ...(c.title ? { title: c.title } : {}), ...(added ? { 'data-gt-added': '' } : {}) }, el('span', { class: 'th-label' }, name), fb);
     th.addEventListener('click', () => {
       asc = sortKey === c.key ? !asc : true; sortKey = c.key;
       draw();
@@ -356,7 +363,10 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     });
     inputs.set(c.key, inp);
     filterRow.append(el('td', c.num ? { class: 'num' } : {}, inp));
-  }
+  };
+  for (const c of cols) addHead(c, false);
+  // a filter row opened before a column was added: the new field opens with it (the buttons say the row's state)
+  const syncFilterBtns = () => { const open = !filterRow.hasAttribute('hidden'); for (const b of filterBtns) b.setAttribute('aria-expanded', String(open)); };
   thead.append(head, filterRow);
   table.append(thead, tbody);
   const fmtCell = (c: Col, r: Record<string, unknown>) => { const v = r[c.key]; return c.fmt ? c.fmt(v, r) : (c.num ? fmtNum(v) : fmtAny(v)); };
@@ -487,9 +497,34 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     e.preventDefault();
     cur = to; rove(true);
   });
+  // every key the rows carry, in the order first met (the chooser's undrawn data columns)
+  // read once: a grid's rows never change (a page draws a new grid for new rows), and the tools ask at every redraw
+  let keyList: string[] | null = null;
+  const keys = () => { if (!keyList) { const ks = new Set<string>(); for (const r of rows) for (const k of Object.keys(r)) ks.add(k); keyList = [...ks]; } return [...keyList]; };
+  // extra: the added columns set whole; a key the page draws itself, or not in the rows, is never added; a number column
+  // when every value it holds is a number
+  const extra = (want: string[]) => {
+    const mine = new Set(cols.slice(0, own).map(c => c.key)), have = new Set(keys());
+    const next = [...new Set(want)].filter(k => !mine.has(k) && have.has(k));
+    if (next.join('\u0000') === cols.slice(own).map(c => c.key).join('\u0000')) return;
+    for (let j = cols.length - 1; j >= own; j--) {
+      const c = cols[j];
+      head.children[j]?.remove(); filterRow.children[j]?.remove(); filterBtns.splice(j, 1);
+      inputs.delete(c.key); filters.delete(c.key);
+      if (sortKey === c.key) sortKey = '';
+      cols.splice(j, 1);
+    }
+    for (const k of next) {
+      const vals = rows.map(r => r[k]).filter(v => v != null && v !== '');
+      const c: Col = { key: k, label: k, num: vals.length > 0 && vals.every(v => typeof v === 'number') };
+      cols.push(c); addHead(c, true);
+    }
+    syncFilterBtns();
+    draw();
+  };
   models.set(table, { cols, rows: () => shown,
     allRows: () => shown.length > limit ? shown.map(rowEl) : [...tbody.children] as HTMLTableRowElement[],
-    text: (r, c) => words(fmtCell(c, r)) });
+    text: (r, c) => words(fmtCell(c, r)), keys, extra });
   draw();
   new MutationObserver(() => rove(document.activeElement === document.body)).observe(head, { attributes: true, subtree: true, attributeFilter: ['data-gt-hidden'] });
   const wrap = el('div', { class: 'grid-wrap' }, table);   // its scroll is the keyboard's through the table's current cell (one tab stop)

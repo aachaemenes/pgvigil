@@ -403,7 +403,7 @@ const gmWords = sig => !/^menu /.test(sig) ? (gridKey(sig) ?? sig.replace(/\s.*$
   : sig.replace(/▸$/, '').replace(/^menu B ✓ /, 'menu B ').replace(/^(menu B (?:Hide column|Freeze the columns up to|Group by|Filter by value|Exclude value)\b).*/, '$1').replace(/^menu B \[.*\] .*/, 'menu B [column] statistics');
 for (const [got, want] of [[gmWords('menu B Copy▸'), 'menu B Copy'], [gmWords('menu B ✓ Row numbers'), 'menu B Row numbers'], [gmWords('menu B Hide column Free space'), 'menu B Hide column'],
   [gmWords('menu B Filter by value: OK'), 'menu B Filter by value'], [gmWords('menu B [Free] Count: #| Sum: #'), 'menu B [column] statistics'], [gmWords('menu B Rows: #| Cols: #'), 'menu B Rows: #| Cols: #'],
-  [gmWords('Icheckbox Free space'), 'Icheckbox'], [gmWords('B Show every column'), 'B Show every column']]) {
+  [gmWords('Icheckbox Free space'), 'Icheckbox'], [gmWords('B All'), 'B All']]) {
   if (got !== want) { console.error(`the grid menu's count fixture: '${got}', want '${want}'`); process.exit(2); }
 }
 const pagesOf = shard.pages;

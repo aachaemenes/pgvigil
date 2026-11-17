@@ -466,6 +466,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // the instances both grids speak of: all in scope, or in the focused view those with a warning or a critical
   const base = () => focus ? rows.filter(r => groups.some(g => bad(r, g.key))) : rows;
   const countBtns = new Map<string, HTMLElement>();
+  const neverKeys = [...new Set(rows.flatMap(r => Object.keys(r).filter(k => /^[gm]_/.test(k))))];
   const drawLower = () => {
     const live = groups.filter(g => rows.some(r => focus ? bad(r, g.key) : bucketOf(r, g.key) !== 'na'));
     const keep = new Set(live.map(g => 'g_' + g.key));
@@ -482,7 +483,11 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     // DBA Dash's empty grid is its header row alone; the words stay for a screen reader
     lower.replaceChildren(grid(shown, shownCols,
       rows.length === 0 ? 'No instances yet: run the collector.' : pick ? 'No instance matches.' : focus ? 'Nothing needs a look: every sampled check is OK.' : 'No instance matches.'));
-    lower.querySelector('table.grid')?.setAttribute('data-grid-name', 'Instances');   // its name in a saved view (gridtools)
+    const lt = lower.querySelector('table.grid');
+    lt?.setAttribute('data-grid-name', 'Instances');   // its name in a saved view (gridtools)
+    // never offered as a data column by the chooser (task PGRID B05; the lead 11-16 22:51): each test's g_ and each chip's
+    // m_ value - a sort key of a column this page draws or hides itself (a picked count leaves one test column)
+    lt?.setAttribute('data-gt-never', JSON.stringify(neverKeys));
   };
   // The test grid counts every instance in scope, in the focused view too (DBA Dash counts the whole table; the view
   // only chooses which tests are listed), so a count and the rows its click leaves agree: a picked count shows its
