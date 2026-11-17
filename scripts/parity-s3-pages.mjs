@@ -115,6 +115,19 @@ for (const theme of ['light', 'dark']) {
     console.log(`${!bad.length && sales ? 'ok  ' : 'FAIL'} schema-dblink: ${l.length} database link(s), Sales ${sales ? 'present' : 'MISSING'}, ${bad.length} not to the Snapshot Summary${bad.length ? ': ' + bad.slice(0, 3).map(x => `${x.t} -> ${x.h}`).join('; ') : ''}`);
   }
 }
+// control audit row X3: the fleet Summary's 'Elastic Pool Storage' test opens the root Azure Summary (the demo holds a pool)
+{
+  walked++;
+  await cmd('Page.navigate', { url: U + '#/summary' }); await sleep(250); await cmd('Page.reload'); await sleep(250);
+  if (!(await settled())) { failed++; console.log('FAIL summary-elasticpool: the Summary did not render in 15 s'); }
+  else {
+    const a = await ev(`(() => { const x = [...document.querySelectorAll('main table a, main table button')].find(e => e.textContent.trim() === 'Elastic Pool Storage');
+      return x ? { tag: x.tagName, h: x.getAttribute('href') ?? '' } : null; })()`);
+    const ok = !!a && a.tag === 'A' && a.h.startsWith('#/azuresummary');
+    if (!ok) failed++;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} summary-elasticpool: ${a ? `${a.tag} ${a.h}` : 'no Elastic Pool Storage test cell'}`);
+  }
+}
 console.log(`total: ${walked} page(s), ${failed} failed, ${nodes} violation node(s)`);
 ws.close();
 process.exit(failed ? 1 : 0);
