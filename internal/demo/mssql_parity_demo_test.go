@@ -137,6 +137,7 @@ func TestParityDemo(t *testing.T) {
 	procDefs := map[string]bool{}
 	pcStmts := map[string]bool{}
 	queues := map[string]bool{}
+	procs := map[string]bool{}
 	for _, b := range run(t, specs[sql01], sql01, 7) {
 		seen[b.Collection] += len(b.Rows)
 		for _, r := range b.Rows {
@@ -154,12 +155,16 @@ func TestParityDemo(t *testing.T) {
 			if b.Collection == "mssql_plancache" && r["kind"] == "stmt" && r["database_name"] == "Sales" {
 				pcStmts[fmt.Sprint(r["query_key"])] = true
 			}
+			// the object page (OBJ): the procedures the plan cache's texts name carry their execution statistics
+			if b.Collection == "mssql_procstats" && r["kind"] == "proc" && r["database_name"] == "Sales" {
+				procs[fmt.Sprint(r["schema_name"], ".", r["object_name"])] = true
+			}
 			if b.Collection == "mssql_service_broker" && r["kind"] == "queue" && r["database_name"] == "Sales" {
 				queues[fmt.Sprint(r["queue_name"], " ", r["is_receive_enabled"])] = true
 			}
 		}
 	}
-	for _, c := range []string{"mssql_db_scoped_config", "mssql_schema", "mssql_funcstats", "mssql_plancache", "mssql_service_broker"} {
+	for _, c := range []string{"mssql_db_scoped_config", "mssql_schema", "mssql_funcstats", "mssql_plancache", "mssql_service_broker", "mssql_procstats"} {
 		if seen[c] == 0 {
 			t.Errorf("demo-onprem-sql01: no %s rows", c)
 		}
@@ -175,6 +180,9 @@ func TestParityDemo(t *testing.T) {
 	}
 	if len(pcStmts) < 3 {
 		t.Errorf("demo-onprem-sql01: Sales' plan-cache statements %d, want three (the Query Stats tab)", len(pcStmts))
+	}
+	if !procs["dbo.usp_GetOrders"] || !procs["dbo.usp_AddOrder"] || !procs["dbo.usp_MonthEnd"] {
+		t.Errorf("demo-onprem-sql01: Sales' procedure statistics %v, want dbo.usp_GetOrders, dbo.usp_AddOrder and dbo.usp_MonthEnd (the object page)", procs)
 	}
 	if !queues["OrderQueue true"] || !queues["AuditQueue false"] {
 		t.Errorf("demo-onprem-sql01: Sales' Service Broker queues %v, want OrderQueue receiving and AuditQueue receive-disabled", queues)
