@@ -108,3 +108,11 @@
 --    1, fo.tag) after a top-level tag folder's scopeFolders. A database whose server is not read yet (no pool member row,
 --    no @@SERVERNAME read, no tier row) sits under the folder itself, never under a made-up server.
 --    The pages' routes are scripts/PARITY-S3-wiring.patch's (line 6, re-cut for task 7).
+
+-- 9. 0395 (P25 task 9b, Pool history; the number the lead's 09:09 / 09:18) creates only its own objects. At the join:
+--    (a) mssql_pool_limit_history and mssql_pool_limit_read under the instance scope's policy pgvigil_scope (each
+--    row's instance_id is the pooled database that read it: a tag-scoped login sees a pool's history through a
+--    database of its scope; the join's TestEveryInstanceTableHasScope names them); (b) purge: the rows go with the
+--    instance (ON DELETE CASCADE); the history is kept as the other limit histories are (0145's governance history) -
+--    no time cut; (c) no grant line: apply_roles makes import_mssql_pool_limits the collector's door with every
+--    import_ function.
