@@ -267,42 +267,43 @@ SELECT i.instance_id, i.name AS instance, i.engine, x.allocated_bytes, x.used_by
  WHERE i.is_active AND x.databases > 0 AND ($1::int[] IS NULL OR i.instance_id = ANY ($1))
  ORDER BY x.allocated_bytes DESC NULLS LAST, i.name`
 
-// sqlDBSpaceDatabases: one instance's databases now. $1 the instance.
+// sqlDBSpaceDatabases: one instance's databases now. $1 the instance, $2 one database's name (P25: its page) or empty.
 const sqlDBSpaceDatabases = `
 SELECT d.datname AS database, d.size_bytes AS allocated_bytes, NULL::bigint AS used_bytes, NULL::bigint AS data_bytes, NULL::bigint AS log_bytes, d.snapshot_at,
        d.dbid
   FROM pgvigil.databases d JOIN pgvigil.instances i USING (instance_id)
- WHERE d.instance_id = $1 AND d.is_present AND i.engine = 'postgres'
+ WHERE d.instance_id = $1 AND d.is_present AND i.engine = 'postgres' AND ($2::text = '' OR d.datname = $2::text)
 UNION ALL
 SELECT f.database_name, sum(f.size_bytes), CASE WHEN bool_and(f.used_read) THEN sum(f.used_bytes) END,
        coalesce(sum(f.size_bytes) FILTER (WHERE f.type_desc <> 'LOG'), 0), coalesce(sum(f.size_bytes) FILTER (WHERE f.type_desc = 'LOG'), 0), max(f.snapshot_at),
        NULL::bigint
   FROM pgvigil.mssql_files f JOIN pgvigil.instances i USING (instance_id)
- WHERE f.instance_id = $1 AND f.is_present AND i.engine = 'sqlserver'
+ WHERE f.instance_id = $1 AND f.is_present AND i.engine = 'sqlserver' AND ($2::text = '' OR f.database_name = $2::text)
  GROUP BY f.database_name
  ORDER BY 2 DESC NULLS LAST, 1`
 
 // sqlDBSpaceHistory: one instance's space over $2 days, per $3-second bucket: the total of every database (each
-// database's largest read in the bucket, summed) - DBA Dash's DB Space History. $1 the instance.
+// database's largest read in the bucket, summed) - DBA Dash's DB Space History. $1 the instance; $4 one database's
+// name (P25: its page, its own history) or empty.
 const sqlDBSpaceHistory = `
 SELECT b.at AS snapshot_at, sum(b.size_bytes) AS allocated_bytes,
        CASE WHEN count(b.used_bytes) = count(*) THEN sum(b.used_bytes) END AS used_bytes, count(*) AS databases
   FROM (SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $3) * $3) AS at, s.datname AS db, max(s.size_bytes) AS size_bytes, NULL::bigint AS used_bytes
           FROM pgvigil.database_sizes s
-         WHERE s.instance_id = $1 AND s.snapshot_at > now() - make_interval(days => $2)
+         WHERE s.instance_id = $1 AND s.snapshot_at > now() - make_interval(days => $2) AND ($4::text = '' OR s.datname = $4::text)
          GROUP BY 1, 2
         UNION ALL
         SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $3) * $3), s.database_name, max(s.data_bytes + s.log_bytes),
                max(s.data_used_bytes + s.log_used_bytes)
           FROM pgvigil.mssql_database_size s
-         WHERE s.instance_id = $1 AND s.snapshot_at > now() - make_interval(days => $2)
+         WHERE s.instance_id = $1 AND s.snapshot_at > now() - make_interval(days => $2) AND ($4::text = '' OR s.database_name = $4::text)
          GROUP BY 1, 2) b
  GROUP BY 1 ORDER BY 1`
 
 // dbSpaceDays are the History windows offered (days).
 var dbSpaceDays = map[int]bool{7: true, 30: true, 90: true, 180: true, 365: true}
 
-// DBSpace is GET /api/dbspace[?instance=N|?instances=..][&days=30]: DBA Dash's DB Space. A folder: one row per
+// DBSpace is GET /api/dbspace[?instance=N[&db=<name>]|?instances=..][&days=30]: DBA Dash's DB Space. A folder: one row per
 // instance (instances); an instance: its databases (databases) and its total over the days asked (history).
 func (s *Server) DBSpace(w http.ResponseWriter, r *http.Request) {
 	id, ids, err := storageScope(r)
@@ -322,10 +323,11 @@ func (s *Server) DBSpace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	step := int(math.Ceil(float64(days) * 86400 / 300))
+	db := r.URL.Query().Get("db") // a database's own page (P25): its row and its history; '' = the instance's
 	s.multiPart(w, r, []part{
 		{"instances", sqlDBSpaceInstances, []any{[]int32{int32(id)}}},
-		{"databases", sqlDBSpaceDatabases, []any{id}},
-		{"history", sqlDBSpaceHistory, []any{id, days, step}},
+		{"databases", sqlDBSpaceDatabases, []any{id, db}},
+		{"history", sqlDBSpaceHistory, []any{id, days, step, db}},
 	})
 }
 

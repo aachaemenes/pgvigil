@@ -7,6 +7,7 @@ import { hashParam, hrefWith } from './dbinfo';
 import { performanceView } from './performance';
 import { mssqlFilesView } from './mssql_storage';
 import { mssqlQueryStoreView } from './mssql_querystore';
+import { dbSpaceView } from './drives';
 import { el } from './ui';
 
 export const mssqlDbTab = 'mssqldb';
@@ -42,6 +43,10 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
     case 'files':
       // the instance's Database files page reads db= by itself (mssql_storage.ts)
       body = await mssqlFilesView(ctx);
+      break;
+    case 'dbspace':
+      // the instance's DB Space read with db= (/api/dbspace: this database's row and its own history)
+      body = await dbSpaceView(ctx);
       break;
     case 'qs': case 'topqueries': case 'forcedplans': case 'tuning': {
       // the Query Store page reads its database and view from the hash: this tab's own, put there first (a link from

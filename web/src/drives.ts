@@ -408,7 +408,7 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
   async function draw() {
     try {
       const sc = await scope(ctx);
-      last = { d: await get<Parts<'instances' | 'databases' | 'history'>>('dbspace', { ...sc.params, days: day }), sc };
+      last = { d: await get<Parts<'instances' | 'databases' | 'history'>>('dbspace', { ...sc.params, days: day, db: ctx.tab === 'mssqldb' ? hashParam('db') ?? undefined : undefined }), sc };
     } catch (e) { body.replaceChildren(errorBox(e)); return; }
     render();
   }
