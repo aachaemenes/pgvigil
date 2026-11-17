@@ -47,10 +47,16 @@ SELECT i.instance_id, i.name, mb.seen_at
 const sqlPoolMinutes = `
 SELECT pm.snapshot_at AS minute, pm.samples, pm.avg_cpu_percent, pm.max_cpu_percent, pm.avg_data_io_percent, pm.avg_log_write_percent,
        pm.avg_edtu_percent, pm.max_worker_percent, pm.max_session_percent, pm.allocated_storage_percent, pm.used_storage_percent,
-       i.name AS read_through
+       i.name AS read_through,
+       -- control audit A3 (0418): the minute's largest samples; the DTUs from the pool's DTU limit of 0395's limit history
+       -- (the period covering the minute: none without the dbmanager opt-in's read - the view itself holds no DTU limit)
+       pm.max_data_io_percent, pm.max_log_write_percent, pm.max_edtu_percent,
+       round(pm.avg_edtu_percent * lh.dtu_limit / 100.0, 2) AS avg_dtu, round(pm.max_edtu_percent * lh.dtu_limit / 100.0, 2) AS max_dtu, lh.dtu_limit
   FROM pgvigil.mssql_pool_member m
   JOIN pgvigil.mssql_pool_minute pm ON pm.server = m.server AND pm.pool = m.pool
   LEFT JOIN pgvigil.instances i ON i.instance_id = pm.instance_id
+  LEFT JOIN LATERAL (SELECT max(h.dtu_limit) AS dtu_limit FROM pgvigil.mssql_pool_limit_history h
+                      WHERE h.server = pm.server AND h.pool = pm.pool AND h.valid_from <= pm.snapshot_at AND h.valid_to > pm.snapshot_at) lh ON true
  WHERE m.instance_id = $1 AND pm.snapshot_at >= $2 AND pm.snapshot_at < $3
  ORDER BY pm.snapshot_at DESC
  LIMIT 1440`
@@ -67,9 +73,16 @@ SELECT date_trunc($4, pm.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS s
        round(sum(pm.avg_edtu_percent * pm.samples) / nullif(sum(pm.samples) FILTER (WHERE pm.avg_edtu_percent IS NOT NULL), 0), 2) AS avg_edtu_percent,
        max(pm.max_worker_percent) AS max_worker_percent, max(pm.max_session_percent) AS max_session_percent,
        (array_agg(pm.allocated_storage_percent ORDER BY pm.snapshot_at DESC))[1] AS allocated_storage_percent,
-       (array_agg(pm.used_storage_percent ORDER BY pm.snapshot_at DESC))[1] AS used_storage_percent
+       (array_agg(pm.used_storage_percent ORDER BY pm.snapshot_at DESC))[1] AS used_storage_percent,
+       max(pm.max_data_io_percent) AS max_data_io_percent, max(pm.max_log_write_percent) AS max_log_write_percent,
+       max(pm.max_edtu_percent) AS max_edtu_percent,
+       round(sum(pm.avg_edtu_percent * lh.dtu_limit / 100.0 * pm.samples)
+             / nullif(sum(pm.samples) FILTER (WHERE pm.avg_edtu_percent IS NOT NULL AND lh.dtu_limit IS NOT NULL), 0), 2) AS avg_dtu,
+       round(max(pm.max_edtu_percent * lh.dtu_limit / 100.0), 2) AS max_dtu, max(lh.dtu_limit) AS dtu_limit
   FROM pgvigil.mssql_pool_member m
   JOIN pgvigil.mssql_pool_minute pm ON pm.server = m.server AND pm.pool = m.pool
+  LEFT JOIN LATERAL (SELECT max(h.dtu_limit) AS dtu_limit FROM pgvigil.mssql_pool_limit_history h
+                      WHERE h.server = pm.server AND h.pool = pm.pool AND h.valid_from <= pm.snapshot_at AND h.valid_to > pm.snapshot_at) lh ON true
  WHERE m.instance_id = $1 AND pm.snapshot_at >= $2 AND pm.snapshot_at < $3
  GROUP BY 1
  ORDER BY 1 DESC

@@ -31,17 +31,16 @@ export const dbMeasures: Measure[] = [
   { key: 'dtu_limit', label: 'DTU Limit', axis: 'DTU' }, { key: 'cpu_limit', label: 'CPU Limit', axis: 'DTU' },
 ];
 
-// DBA Dash's Pool chart's measures (PoolColumns L96-110); the pool's per-minute maxima, DTUs and limit are not stored yet
-// (control audit A3): listed, not offered, said why
-const a3 = 'the pool\'s per-minute maxima and DTUs are not stored yet (control audit A3)';
+// DBA Dash's Pool chart's measures (PoolColumns L96-110): the maxima stored by 0418, the DTUs and the limit from the
+// pool's DTU limit of 0395's limit history (none without the dbmanager opt-in's read)
 export const poolMeasures: Measure[] = [
   { key: 'avg_cpu_percent', label: 'Avg CPU %', axis: 'Percent' }, { key: 'avg_data_io_percent', label: 'Avg Data %', axis: 'Percent' },
   { key: 'avg_log_write_percent', label: 'Avg Log Write %', axis: 'Percent' }, { key: 'avg_edtu_percent', label: 'Avg DTU %', axis: 'Percent' },
   { key: 'max_worker_percent', label: 'Max Worker %', axis: 'Percent' }, { key: 'max_session_percent', label: 'Max Session %', axis: 'Percent' },
-  { key: 'max_cpu_percent', label: 'Max CPU %', axis: 'Percent', shown: true }, { key: 'max_data_io_percent', label: 'Max Data %', axis: 'Percent', shown: true, unread: a3 },
-  { key: 'max_log_write_percent', label: 'Max Log Write %', axis: 'Percent', shown: true, unread: a3 }, { key: 'max_edtu_percent', label: 'Max DTU %', axis: 'Percent', unread: a3 },
-  { key: 'avg_dtu', label: 'Avg DTU', axis: 'DTU', unread: a3 }, { key: 'max_dtu', label: 'Max DTU', axis: 'DTU', unread: a3 },
-  { key: 'dtu_limit', label: 'DTU Limit', axis: 'DTU', unread: a3 },
+  { key: 'max_cpu_percent', label: 'Max CPU %', axis: 'Percent', shown: true }, { key: 'max_data_io_percent', label: 'Max Data %', axis: 'Percent', shown: true },
+  { key: 'max_log_write_percent', label: 'Max Log Write %', axis: 'Percent', shown: true }, { key: 'max_edtu_percent', label: 'Max DTU %', axis: 'Percent' },
+  { key: 'avg_dtu', label: 'Avg DTU', axis: 'DTU' }, { key: 'max_dtu', label: 'Max DTU', axis: 'DTU' },
+  { key: 'dtu_limit', label: 'DTU Limit', axis: 'DTU' },
 ];
 
 // chosenMeasures: the page's chosen measures, else DBA Dash's defaults (the unread ones never)

@@ -179,12 +179,18 @@ func poolNumber(v any) (float64, bool, error) {
 	return 0, false, fmt.Errorf("not a number: %T", v)
 }
 
+// poolMaxOf: the averages whose minute's largest sample is stored beside them (DBA Dash's Pool chart's Max CPU %, Max
+// Data %, Max Log Write % and Max DTU %; control audit A3 - the view's only max_ columns are workers and sessions,
+// Microsoft Learn)
+var poolMaxOf = map[string]string{"avg_cpu_percent": "max_cpu_percent", "avg_data_io_percent": "max_data_io_percent",
+	"avg_log_write_percent": "max_log_write_percent", "avg_edtu_percent": "max_edtu_percent"}
+
 // poolMinute is one stored minute.
 type poolMinute struct {
 	minute  time.Time
 	samples int
 	vals    map[string]*float64 // avg_x / max_x / the last-figure names
-	maxCPU  *float64
+	maxes   map[string]*float64 // poolMaxOf's names: the minute's largest sample of each
 }
 
 // poolGrace is how long after a minute's end its last rows may still arrive (Microsoft: a row 'every few seconds';
@@ -213,7 +219,7 @@ func poolMinutes(samples []poolSample, serverNow time.Time) []poolMinute {
 	out := make([]poolMinute, 0, len(by))
 	for m, ss := range by {
 		sort.Slice(ss, func(i, j int) bool { return ss[i].end.Before(ss[j].end) })
-		pm := poolMinute{minute: m, samples: len(ss), vals: map[string]*float64{}}
+		pm := poolMinute{minute: m, samples: len(ss), vals: map[string]*float64{}, maxes: map[string]*float64{}}
 		for _, fg := range poolFigures {
 			var sum, top float64
 			n := 0
@@ -237,8 +243,8 @@ func poolMinutes(samples []poolSample, serverNow time.Time) []poolMinute {
 			case "avg":
 				a, t := sum/float64(n), top
 				pm.vals[fg.col] = &a
-				if fg.col == "avg_cpu_percent" {
-					pm.maxCPU = &t
+				if mx, ok := poolMaxOf[fg.col]; ok {
+					pm.maxes[mx] = &t
 				}
 			case "max":
 				pm.vals[fg.col] = &top
@@ -262,10 +268,12 @@ func (m poolMinute) row(server, pool, from string) collect.Row {
 			r[fg.col] = nil
 		}
 	}
-	if m.maxCPU != nil {
-		r["max_cpu_percent"] = *m.maxCPU
-	} else {
-		r["max_cpu_percent"] = nil
+	for _, mx := range poolMaxOf {
+		if v := m.maxes[mx]; v != nil {
+			r[mx] = *v
+		} else {
+			r[mx] = nil
+		}
 	}
 	return r
 }
