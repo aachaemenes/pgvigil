@@ -122,7 +122,7 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
 }
 
 export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
-  const d = await get<{ databases: Table | null; pools: Table | null }>('azuredb/summary', { ...window_(ctx), ...(ctx.tag ? { tag: ctx.tag } : {}) });
+  const d = await get<{ databases: Table | null; pools: Table | null; slo_history: Table | null; governance: Table | null }>('azuredb/summary', { ...window_(ctx), ...(ctx.tag ? { tag: ctx.tag } : {}) });
   const rows = rowsOf(d.databases);
   // the read lists every Azure SQL Database of the scope (read or not): none = the scope holds none, so no grid of
   // Azure's columns and no word of them, the scope said instead (j15b's wording walk: 'elastic pool' under a
@@ -143,7 +143,7 @@ export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
       'beside the share at 70 % and over. Not as DBA Dash: a long window reads its built hours and its edge minutes (the minutes\' numbers exactly; DBA Dash rounds a window over a day to hours).'));
   const name = (v: unknown, r: Row) => el('a', { href: href(ctx, { instance: Number(r.instance_id), tag: undefined, tab: 'mssqlazure' }) }, String(v));
   sec.append(grid(rows, [
-    { key: 'instance', label: 'database (instance)', fmt: name }, { key: 'service_objective', label: 'tier', fmt: (v, r) => v == null ? (r.tier_read ? '' : el('span', { class: 'meta' }, 'not read')) : String(v) },
+    { key: 'instance', label: 'database (instance)', fmt: name }, { key: 'service_objective', label: 'tier', fmt: (v, r) => v == null ? (r.tier_read ? '' : el('span', { class: 'meta' }, 'not read')) : el('a', { href: '#azure-slo', title: 'its changes: Service Objectives below' }, String(v)) },
     n('dtu_limit', 'DTUs'), n('cpu_limit', 'vCores'), { key: 'pool', label: 'elastic pool' },
     n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct), n('cpu_hot_pct', 'CPU samples at 70 %+', pct),
     n('avg_data_io_percent', 'data IO avg', pct), n('max_data_io_percent', 'data IO max', pct), n('data_hot_pct', 'data IO samples at 70 %+', pct),
@@ -172,5 +172,33 @@ export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
     n('used_storage_percent', 'storage used', pct), n('allocated_storage_percent', 'storage allocated', pct),
     n('minutes', 'minutes'), { key: 'last_minute', label: 'last minute', fmt: fmtTime },
   ], 'No database of this scope is in an elastic pool pgvigil reads.'));
+  // DBA Dash's Azure Service Objectives and Resource Governance (P25 task 9): each tier change of these databases
+  // (the governance history pgvigil keeps since it first read each one), and each database's governance row as last
+  // read, its whole row in the viewer below the grid
+  const slo = rowsOf(d.slo_history), gov = rowsOf(d.governance);
+  const viewer = el('div', { 'aria-live': 'polite' });
+  const dbLink = (v: unknown, r: Row) => el('a', { href: href(ctx, { instance: Number(r.instance_id), tag: undefined, tab: 'mssqlazure' }) }, String(v));
+  const show = (r: Row) => {
+    const g = (r.gov ?? {}) as Record<string, unknown>;
+    viewer.replaceChildren(el('h4', { tabindex: '-1' }, `Resource governance of ${String(r.instance)}`),
+      grid(Object.keys(g).sort().map(k => ({ setting: k, value: g[k] == null ? '' : String(g[k]) })), [{ key: 'setting' }, { key: 'value' }], 'No governance row read.'));
+    (viewer.firstChild as HTMLElement).focus();
+  };
+  const gv = (k: string, label: string): Col => ({ key: k, label, num: true, fmt: (_v, r) => { const x = ((r.gov ?? {}) as Record<string, unknown>)[k]; return x == null ? '' : num(x); } });
+  sec.append(el('h3', { id: 'azure-slo' }, 'Service Objectives (changes)'), grid(slo, [
+    { key: 'instance', label: 'database (instance)', fmt: dbLink }, { key: 'changed_at', label: 'changed', fmt: fmtTime },
+    { key: 'old_edition', label: 'edition from' }, { key: 'new_edition', label: 'edition to' },
+    { key: 'old_service_objective', label: 'objective from' }, { key: 'new_service_objective', label: 'objective to' },
+    n('old_dtu_limit', 'DTUs from'), n('new_dtu_limit', 'DTUs to'), n('old_cpu_limit', 'vCores from'), n('new_cpu_limit', 'vCores to'),
+    { key: 'old_pool', label: 'pool from' }, { key: 'new_pool', label: 'pool to' },
+  ], 'No tier change of these databases since pgvigil first read each one.'),
+  el('h3', {}, 'Resource Governance'), grid(gov, [
+    { key: 'instance', label: 'database (instance)', fmt: dbLink }, { key: 'service_objective', label: 'tier' },
+    n('dtu_limit', 'DTUs'), n('cpu_limit', 'vCores'), { key: 'pool', label: 'elastic pool' },
+    gv('max_sessions', 'max sessions'), gv('primary_group_max_workers', 'max workers'), gv('primary_max_log_rate', 'max log rate (bytes/s)'),
+    gv('primary_group_max_io', 'max IOPS'), gv('max_db_memory', 'max memory'),
+    { key: 'since', label: 'tier since', fmt: fmtTime },
+    { key: 'view', label: 'viewer', fmt: (_v, r) => { const b = el('button', { type: 'button' }, 'View'); b.addEventListener('click', () => show(r)); return b; } },
+  ], 'No governance row read for these databases (the mssql_azuredb_governance collection runs hourly).'), viewer);
   return sec;
 }
