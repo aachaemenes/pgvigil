@@ -69,7 +69,7 @@ function whoCell(_: unknown, r: Row): string | Node {
 }
 
 // compareCell: the change's before and after side by side, read whole on the click (the list holds them cut)
-function compareCell(ctx: Ctx): (v: unknown, r: Row) => Node {
+export function compareCell(ctx: Ctx): (v: unknown, r: Row) => Node {
   return (_, r) => {
     const box = el('div');
     const btn = el('button', { type: 'button', 'aria-label': `compare the before and after of ${String(r.identity ?? '')}` }, 'compare') as HTMLButtonElement;
