@@ -161,7 +161,10 @@
 //                     no grid has one by default, so the check declares 'engine' itself on the Summary's Instances
 //                     grid and holds it there while the page draws the grid again. That grid's rows carry _worst,
 //                     _cells, _acked (pages.ts) and every key of the instances read: no listed name starts with '_';
-//                     'engine', listed before it is declared, is not listed after; and a kept choice that names them
+//                     'engine', listed before it is declared, is not listed after; the page's own never-offered list
+//                     (the lead 22:51: the Summary's Instances grid the first grid given one - its g_ and m_ keys, the
+//                     sort values of columns the page hides itself): no listed name starts with 'g_' or 'm_'; and a
+//                     kept choice that names them
 //                     (instance_id ticked, then "_worst" and "engine" written beside it in the browser's stored
 //                     choice - the ticked keys are kept as a JSON array of their names - and the page drawn again)
 //                     draws instance_id alone: neither is a column, a listed name, in Copy > Grid, in Copy > As JSON,
@@ -176,13 +179,15 @@
 //   P-freeze          B09, on platform's header: 'Freeze Column' unticked; picked - the columns up to platform frozen
 //                     (table[data-gt-frozen], platform's th sticky), the item ticked on reopening, 'Unfreeze Column'
 //                     offered; Unfreeze Column - nothing frozen, Freeze Column unticked again, no Unfreeze Column item
-//   (the six rows below are written on this pane's recommendations, asked of the lead as 'PGRID ROW CALLS 2' 11-16
-//   22:5x: an answer that differs changes the row before any build)
+//   (the six rows below: this pane's recommendations as the lead answered them, 'PGRID ROW CALLS 2', brief 11-16 22:51 -
+//   the rows changed by that answer 11-17 01:2x: P-editfilter's unchanged Apply and a number column's <>, P-groupby's
+//   drill, P-bars' Warning at / Critical at, P-script's From items absent, the Summary's g_ / m_ keys never offered)
 //   P-editfilter      B11, 'Edit Filter...' on a cell's and a header's menu, on the hostile fixture's grid: a dialog
 //                     whose text field holds the grid's filter as one text - one line per column that has a filter,
 //                     '[<the column's name, a ] in it doubled>] <its filter as the filter row holds it>', in the
 //                     columns' order (txt 'like "R%"' and num '>=13' set in the filter row, 2 rows left: '[txt] like
-//                     "R%"' then '[num] >=13'). Apply writes each line into its column's filter field and empties
+//                     "R%"' then '[num] >=13'); Apply of that text unchanged changes nothing (the same fields, the
+//                     same rows). Apply writes each line into its column's filter field and empties
 //                     every column with no line: the filter row stays the one place a filter lives, the lines are
 //                     ANDed. '[column 5] =""' leaves the six rows whose cell is empty (DBA Dash's IS NULL);
 //                     '[column 5] <>"e7"' with '[we]]ird"name] like "o1%"' leaves ids 1, 10, 14, 15, 16, 17, 18 (id
@@ -190,7 +195,9 @@
 //                     two lines in the columns' order. A text it cannot read is refused in words that name the line,
 //                     the dialog still open and the filter row as it was: a line with no '[column]' ('line 1'), a
 //                     column the grid does not have ('line 1' and 'nosuch'), a column on two lines ('line 2'). An
-//                     empty text clears every filter (18 rows); the filter row is still there
+//                     empty text clears every filter (18 rows); the filter row is still there. A NUMBER column's <>
+//                     keeps an empty cell too (the lead 22:51; ui.ts drops it today): a dropped grid of n 5 / empty /
+//                     7, '[n] <>"5"' leaves ids 2 and 3
 //   P-groupby         B10, 'Group By...' on a cell's and a header's menu (the one-click 'Group by <column>' is gone): a
 //                     dialog with a row per shown column and its ticks by name - 'Group By <c>', 'Count Distinct <c>',
 //                     'Min <c>', 'Max <c>', and on a number column 'Sum <c>', 'Sum % <c>', 'Avg <c>' (a text column
@@ -201,7 +208,11 @@
 //                     | Sum %', 'sessions | Avg', 'sessions | Min', 'sessions | Max' (DBA Dash's names), a row per
 //                     platform, every number the one worked out from the grid's own rows (a count exactly, a percent
 //                     within 0.1, the others within 0.01; no number where no row of the group has one). OK with no
-//                     Group By ticked is refused in words ('at least one column'), the dialog still open
+//                     Group By ticked is refused in words ('at least one column'), the dialog still open. THE DRILL
+//                     (DBA Dash's FilterToGroup; the lead 22:51: built): a click on the panel's first group row leaves
+//                     in the grid exactly that platform's rows (as many as its Count), Clear filters on the grid's
+//                     menu is on and brings every row back; the second group row by the keyboard (its tab stop
+//                     focused, Enter) the same
 //   P-bars            a number column's Data bar submenu: 'Behind value', 'Under value', the two traffic lights,
 //                     'Options...', 'Copy to All Numeric Columns', 'Remove', 'Remove All Data Bars' (DBA Dash's
 //                     order); on a grid with no bar Copy to All and Remove All are off with their words ('no data bar
@@ -211,11 +222,19 @@
 //                     Options... on sessions: a dialog with Style, Minimum and Maximum (empty = the grid's own
 //                     values) and OK, Cancel, Remove; Maximum at twice the column's largest value: its largest cell
 //                     at 50 %, the field holding that number when the dialog opens again; 'abc' refused in words
-//                     ('Maximum'), the dialog still open, the bar as it was; emptied: 100 % again. Remove All Data
-//                     Bars: no bar in the grid and none after a reload
-//   P-script          B04, 'Save Table' on a cell's and a header's menu: 'From Data Table', 'From Grid', 'Script Data
-//                     Table', 'Script Grid' (DBA Dash's order); the two From items off with their words (pgvigil
-//                     writes no table on a monitored server: 'not built'); the two Script items open the code viewer
+//                     ('Maximum'), the dialog still open, the bar as it was; emptied: 100 % again. THE TRAFFIC
+//                     LIGHT'S THRESHOLDS (the lead 22:51: built, DBA Dash's DataBarConfig): Traffic light (higher is
+//                     worse) on sessions, its Options... holds 'Warning at', 'Critical at' and 'Thresholds are
+//                     values'; Warning at 20, Critical at 50: each cell red at or above 50 % of the scale, amber at or
+//                     above 20 %, else green - the scale from the smaller of 0 and the column's lowest value to its
+//                     highest (DataBarSettings.ColorFor), worked out by hand from the drawn numbers; Thresholds are
+//                     values ticked with Warning at the column's median and Critical at its highest value: red at or
+//                     above the highest, amber at or above the median, else green. Remove All Data Bars: no bar in
+//                     the grid and none after a reload
+//   P-script          B04, 'Save Table' on a cell's and a header's menu, on the default serve exactly 'Script Data
+//                     Table', 'Script Grid' (DBA Dash's order; its From Data Table / From Grid write a table on a
+//                     server and are left out of the menu where they cannot act - never shown dead, the lead 22:51);
+//                     the two Script items open the code viewer
 //                     (dialog.sqlview, its Copy) with CREATE TABLE and INSERT in the dialect of the page's engine: a
 //                     PostgreSQL instance's grid (Statements) pg_temp.pgvigil_grid; a SQL Server instance's (the
 //                     first of its Files, DB Space, Jobs, Backups, SQL Server errors and TempDB pages that draws
@@ -225,7 +244,7 @@
 //                     and every column the chooser offers, drawn or not (every instance; instance_id among the
 //                     columns) - and nothing the chooser holds back: on the Summary's Instances grid with 'engine'
 //                     declared never offered, the script names instance_id and no _worst, _cells, _acked, _live,
-//                     _chips or engine column
+//                     _chips or engine column, and no g_ or m_ column (the page's own never-offered keys)
 //   P-copysum         D20, the Summary's toolbar: a 'Copy' drop-down holding exactly 'Copy Summary' and 'Copy Test
 //                     Summary'. Copy Summary puts the Instances grid on the clipboard as the grid's own Copy > Grid
 //                     does - the words tab-separated (the header, first 'Instance', and a line per instance drawn)
@@ -1351,7 +1370,8 @@ await guard('P-chooser', async () => {
   await openS(); const rst = await pPress('Reset this grid'); await sleep(300); const headsR = await gHeads(ST);
   await pNeverOff(); await pPress('Close'); await gmClose(); await gReset();
   const undS = listS.filter(x => x.undrawn).map(x => x.name), undN = listN.filter(x => x.undrawn).map(x => x.name);
-  const heldOk = oS && undS.includes('instance_id') && undS.includes('engine') && !listS.some(x => x.name.startsWith('_'))
+  const gm = l => l.filter(x => /^[gm]_/.test(x.name)).map(x => x.name);
+  const heldOk = oS && undS.includes('instance_id') && undS.includes('engine') && !listS.some(x => x.name.startsWith('_')) && gm(listS).length === 0 && gm(listN).length === 0
     && never && undN.includes('instance_id') && !listN.some(x => x.name === 'engine')
     && tickS && headsS.includes('instance_id') && typeof kept === 'string'
     && headsK.includes('instance_id') && !headsK.includes('_worst') && !headsK.includes('engine') && !listK.some(x => x.name === '_worst' || x.name === 'engine') && listK.length > 0
@@ -1363,7 +1383,7 @@ await guard('P-chooser', async () => {
     + `; MOUSE ${mouseOk}: picked ${JSON.stringify(mPicked)}, Toggle selected hid them ${tog1 && !headsTog.includes('platform') && !headsTog.includes('sessions')}, then showed them ${tog2 && same(headsBack, heads0)}, a Shift+click's range ${JSON.stringify(rPicked)}`
     + `; KEYS ${keysOk}: picked in a new panel ${kPicked0.length}, tab stops in the list ${kb.stops} (focused ${kb.focus}), the focus '${k0}' -> Down '${k1}' -> Space, Shift+Down '${k2}', picked ${JSON.stringify(kPicked)}, Enter on Toggle selected ${kt1}: ${headsK1.length} of ${heads0.length} columns, again ${kt2}: ${headsK2.length}, Ctrl+A picked ${kAll} of ${list0.length}`
     + `; UNDRAWN ${undOk}: listed ${JSON.stringify(und.map(x => x.name)).slice(0, 200)}; instance_id ticked: ${colId.length} of ${ids} cells, in Copy > Column ${(copyId ?? '').split('\n').filter(Boolean).length} lines; unticked gone ${unt && !headsGone.includes('instance_id')}`
-    + `; HELD BACK ${heldOk}: the Summary grid's undrawn names ${JSON.stringify(undS).slice(0, 160)} ('_' names ${listS.filter(x => x.name.startsWith('_')).length}); 'engine' declared ${never}, listed after ${listN.some(x => x.name === 'engine')}; instance_id ticked ${tickS && headsS.includes('instance_id')}; the stored choice ${typeof kept === 'string' ? kept.slice(0, 160) : `${kept} entries naming instance_id`}`
+    + `; HELD BACK ${heldOk}: the Summary grid's undrawn names ${JSON.stringify(undS).slice(0, 160)} ('_' names ${listS.filter(x => x.name.startsWith('_')).length}, g_ / m_ names ${JSON.stringify(gm(listS)).slice(0, 120)}); 'engine' declared ${never}, listed after ${listN.some(x => x.name === 'engine')}; instance_id ticked ${tickS && headsS.includes('instance_id')}; the stored choice ${typeof kept === 'string' ? kept.slice(0, 160) : `${kept} entries naming instance_id`}`
     + `; drawn again: columns of the three ${JSON.stringify(headsK.filter(x => x === 'instance_id' || x === '_worst' || x === 'engine'))}, listed ${JSON.stringify(listK.filter(x => x.name === '_worst' || x.name === 'engine').map(x => x.name))}; ${heldIn.join('; ') || 'no copy and no file holds _worst or engine'}; Reset this grid ${rst}: instance_id ${headsR.includes('instance_id') ? 'still drawn' : 'gone'}`);
 });
 
@@ -1436,7 +1456,9 @@ await guard('P-editfilter', async () => {
   const norm = x => (x ?? '(no Edit Filter dialog)').replace(/\r/g, '').trim(), holds = (f, want) => !!f && Object.entries(f).every(([k, v]) => v === (want[k] ?? ''));
   const onHead = ((await gmOpen(th))[0] ?? []).some(x => x.label.replace(/\.\.\.$/, '') === 'Edit Filter'); await gmClose();
   await gFilter('txt', 'like "R%"', GV); await gFilter('num', '>=13', GV);
-  const ids0 = await ids(), text0 = norm(await efOpen(cell));
+  const f0 = await fields(), ids0 = await ids(), raw0 = await efOpen(cell), text0 = norm(raw0);
+  // (the lead 22:51) Apply of the opening text unchanged changes nothing
+  const a0 = raw0 === null ? null : await efApply(raw0), f0b = await fields(), ids0b = await ids();
   const a1 = await efApply('[column 5] =""'), f1 = await fields(), ids1 = await ids(), text1 = norm(await efOpen(cell));
   const a2 = await efApply('[column 5] <>"e7"\n[we]]ird"name] like "o1%"'), f2 = await fields(), ids2 = await ids(), text2 = norm(await efOpen(cell));
   // what it cannot read: refused in words naming the line, the dialog open, the filter row as it was
@@ -1447,14 +1469,21 @@ await guard('P-editfilter', async () => {
   }
   const a3 = await efApply(''), f3 = await fields(), ids3 = await ids();
   const rowThere = await ev(`!!${GV}?.querySelector('thead tr.filters')`);
+  // a NUMBER column's <> keeps an empty cell (the lead 22:51), on a grid of its own: n 5 / empty / 7
+  await dropHostile([{ id: 1, n: 5 }, { id: 2, n: null }, { id: 3, n: 7 }], 'gm-numempty.json');
+  const numCol = await ev(`${GV}?.querySelectorAll('thead tr:first-child th')[1]?.classList.contains('num') ?? false`);
+  await efOpen(gCell('id', 0, GV)); const a4 = await efApply('[n] <>"5"'), ids4 = await ids();
   await closeDialogs();
   check('P-editfilter', onHead && ids0 === '13,14' && text0 === '[txt] like "R%"\n[num] >=13'
+    && !!a0 && !a0.open && JSON.stringify(f0b) === JSON.stringify(f0) && ids0b === ids0
+    && numCol && !!a4 && !a4.open && ids4 === '2,3'
     && !!a1 && !a1.open && holds(f1, { 'column 5': '=""' }) && ids1 === '1,2,3,4,5,6' && text1 === '[column 5] =""'
     && !!a2 && !a2.open && holds(f2, { 'we]ird"name': 'like "o1%"', 'column 5': '<>"e7"' }) && ids2 === '1,10,14,15,16,17,18' && text2 === '[we]]ird"name] like "o1%"\n[column 5] <>"e7"'
     && bad.every(b => b.ok) && !!a3 && !a3.open && holds(f3, {}) && ids3.split(',').length === hostile.length && rowThere,
-    `Edit Filter on the header ${onHead}; txt like "R%" and num >=13 leave ids ${ids0}, the text '${text0.replace(/\n/g, ' / ')}'; '[column 5] =""' applied (${said(a1)}): fields ${JSON.stringify(f1)}, ids ${ids1}, the text again '${text1.replace(/\n/g, ' / ')}'`
+    `Edit Filter on the header ${onHead}; txt like "R%" and num >=13 leave ids ${ids0}, the text '${text0.replace(/\n/g, ' / ')}'; applied unchanged (${said(a0)}): fields the same ${JSON.stringify(f0b) === JSON.stringify(f0)}, ids ${ids0b}; '[column 5] =""' applied (${said(a1)}): fields ${JSON.stringify(f1)}, ids ${ids1}, the text again '${text1.replace(/\n/g, ' / ')}'`
     + `; two lines applied (${said(a2)}): fields ${JSON.stringify(f2)}, ids ${ids2}, the text again '${text2.replace(/\n/g, ' / ')}'; refusals: ${bad.map(b => `'${b.t}' -> ${said(b.r)}${b.ok ? '' : ' NOT AS EXPECTED'}`).join('; ')}`
-    + `; an empty text (${said(a3)}): ${ids3 === '' ? 0 : ids3.split(',').length} rows of ${hostile.length}, fields ${JSON.stringify(f3)}; the filter row there ${rowThere}`);
+    + `; an empty text (${said(a3)}): ${ids3 === '' ? 0 : ids3.split(',').length} rows of ${hostile.length}, fields ${JSON.stringify(f3)}; the filter row there ${rowThere}`
+    + `; a number column (${numCol}) n 5 / empty / 7 with '[n] <>"5"' (${said(a4)}): ids ${ids4} (want 2,3: the empty cell kept)`);
 });
 
 await guard('P-groupby', async () => {
@@ -1473,6 +1502,16 @@ await guard('P-groupby', async () => {
   const done = await dPress('OK');
   const got = await ev(`(() => { const t = document.querySelector('.gt-groups table'); return t ? { heads: [...t.querySelectorAll('thead th')].map(h => h.textContent.replace(/\\s+/g, ' ').trim()),
     rows: [...t.querySelectorAll('tbody tr')].map(tr => [...tr.children].map(c => c.textContent.replace(/\\s+/g, ' ').trim())) } : null; })()`);
+  // THE DRILL (the lead 22:51): a group row filters the grid to its platform; Clear filters undoes it; by click, then by keys
+  const GR = k => `document.querySelectorAll('.gt-groups table tbody tr')[${k}]`;
+  const drillCheck = async k => { const key = (got?.rows[k] ?? [])[0] ?? null, cnt = Number(String((got?.rows[k] ?? [])[1] ?? '').replace(/,/g, ''));
+    const p = await gCol('platform'), clear = ((await gmOpen(gCell('platform')))[0] ?? []).find(x => x.label === 'Clear filters'); await gmClose();
+    const onAll = p.length === cnt && cnt > 0 && p.every(x => x === key); await gmOpen(gCell('platform')); const cl = await gmPick('Clear filters'); await sleep(500);
+    const back = (await gCol('platform')).length; return { key, cnt, shown: p.length, onAll, clear: clear ? (clear.off ?? 'ON') : 'absent', cl, back, ok: onAll && clear?.off == null && !!clear && cl && back === plats.length }; };
+  const byClick = await gClick(`${GR(0)}?.children[0]`) ? (await sleep(500), await drillCheck(0)) : null;
+  const tab = await ev(`(() => { const tr = ${GR(1)}; const x = tr && [tr, ...tr.querySelectorAll('*')].find(e => e.tabIndex >= 0); if (!x) return false; x.focus(); return document.activeElement === x; })()`);
+  if (tab) await key('Enter', 'Enter', 13, 0, '\r');
+  const byKey = tab ? (await sleep(500), await drillCheck(1)) : null;
   await closeDialogs(); await gReset();
   // by hand, from the grid's own rows
   const wantHeads = ['platform', 'Count', 'Count %', 'name | Count Distinct', 'sessions | Sum', 'sessions | Sum %', 'sessions | Avg', 'sessions | Min', 'sessions | Max'];
@@ -1488,9 +1527,11 @@ await guard('P-groupby', async () => {
   }
   check('P-groupby', has(topH) && has(topC) && old.length === 0 && opened && pre.key === true && pre.count === true && pre.pct === false && pre.sumText !== 'on'
     && !!none && none.open && /at least one column/i.test(none.said) && unset.length === 0 && !!done && !done.open
-    && !!got && JSON.stringify(got.heads) === JSON.stringify(wantHeads) && got.rows.length === new Set(plats).size && total > 0 && diffs.length === 0,
+    && !!got && JSON.stringify(got.heads) === JSON.stringify(wantHeads) && got.rows.length === new Set(plats).size && total > 0 && diffs.length === 0
+    && got.rows.length > 1 && !!byClick?.ok && !!byKey?.ok,
     `Group By... on the header ${has(topH)}, on a cell ${has(topC)}; the one-click items left ${JSON.stringify(old)}; the dialog opened ${opened}: ${JSON.stringify(pre)}; OK with no Group By: ${said(none)}; ticks not found ${JSON.stringify(unset)}; OK: ${said(done)}`
-    + `; the panel's header ${got ? JSON.stringify(got.heads) : '(no .gt-groups table)'}, ${got?.rows.length ?? 0} rows for ${new Set(plats).size} platforms of ${total} instances; against the grid's rows: ${diffs.slice(0, 6).join('; ') || 'every number as worked out by hand'}${diffs.length > 6 ? ` (+${diffs.length - 6} more)` : ''}`);
+    + `; the panel's header ${got ? JSON.stringify(got.heads) : '(no .gt-groups table)'}, ${got?.rows.length ?? 0} rows for ${new Set(plats).size} platforms of ${total} instances; against the grid's rows: ${diffs.slice(0, 6).join('; ') || 'every number as worked out by hand'}${diffs.length > 6 ? ` (+${diffs.length - 6} more)` : ''}`
+    + `; the drill by a click on the first group: ${JSON.stringify(byClick)}; by keys on the second (a tab stop ${tab}): ${JSON.stringify(byKey)} (the grid's ${total} rows)`);
 });
 
 await guard('P-bars', async () => {
@@ -1521,6 +1562,25 @@ await guard('P-bars', async () => {
   await dSet('Maximum', 'abc'); const badMax = await dPress('OK'), s4 = await barOf('sessions');
   await dSet('Maximum', ''); const ok2 = await dPress('OK'), s5 = await barOf('sessions');
   await closeDialogs();
+  // the traffic light's Warning at / Critical at (the lead 22:51): % of the scale, then values; each cell against the rule by hand
+  const nums = (await gCol('sessions')).map(gNum), real = nums.filter(v => v !== null), hi = Math.max(...real), lo0 = Math.min(0, ...real);
+  const sj = await ev(gIx('sessions'));
+  const lightOf = () => ev(`${gRows}.map(tr => { const td = tr.children[${sj}]; return !td ? '' : td.classList.contains('gt-tl-r') ? 'r' : td.classList.contains('gt-tl-a') ? 'a' : td.classList.contains('gt-tl-g') ? 'g' : ''; })`);
+  const wrongOf = (got, want) => want.map((w, i) => w === got[i] ? null : `${nums[i]}: ${got[i] || '-'} (want ${w || '-'})`).filter(Boolean);
+  await gmOpen(cell); const t1 = await gmPick('Data bar', 'Traffic light (higher is worse)'); await sleep(300);
+  await gmOpen(cell); const o2 = await gmPick('Data bar', 'Options'); await sleep(300);
+  const tf = { warn: await dGet('Warning at'), crit: await dGet('Critical at'), values: await dGet('Thresholds are values') };
+  const setW = await dSet('Warning at', '20') && await dSet('Critical at', '50'); const okT1 = await dPress('OK');
+  const wantPct = nums.map(v => v === null ? '' : (((v - lo0) / ((hi - lo0) || 1)) * 100 >= 50 ? 'r' : ((v - lo0) / ((hi - lo0) || 1)) * 100 >= 20 ? 'a' : 'g'));
+  const wrongPct = wrongOf(await lightOf(), wantPct);
+  const med = [...real].sort((a, b) => a - b)[Math.floor((real.length - 1) / 2)];
+  await gmOpen(cell); await gmPick('Data bar', 'Options'); await sleep(300);
+  const setV = await dSet('Thresholds are values', true) && await dSet('Warning at', String(med)) && await dSet('Critical at', String(hi)); const okT2 = await dPress('OK');
+  const wantVal = nums.map(v => v === null ? '' : v >= hi ? 'r' : v >= med ? 'a' : 'g');
+  const wrongVal = wrongOf(await lightOf(), wantVal);
+  await closeDialogs();
+  const tlOk = t1 && o2 && tf.warn !== null && tf.crit !== null && tf.values !== null && setW && !!okT1 && !okT1.open && wrongPct.length === 0 && real.length > 2
+    && setV && !!okT2 && !okT2.open && wrongVal.length === 0 && wantVal.includes('a') && wantVal.includes('g');
   await gmOpen(cell); const p3 = await gmPick('Data bar', 'Remove All Data Bars'); await sleep(300);
   const none1 = await lights(), st3 = await stored();
   await send('Page.reload'); await sleep(1500); await go('#/instances');
@@ -1532,9 +1592,10 @@ await guard('P-bars', async () => {
     && o1 && opt.style === 'Under value' && opt.min === '' && opt.max === '' && ['OK', 'Cancel', 'Remove'].every(b => optBtns.includes(b))
     && !!ok1 && !ok1.open && max > 0 && s3.share === '50%' && kept !== null && kept !== '' && Number(kept) === max * 2
     && !!badMax && badMax.open && /Maximum/.test(badMax.said) && s4.share === '50%' && !!ok2 && !ok2.open && s5.share === '100%'
-    && p3 && none1 === 0 && (st3 === null || Object.keys(st3).length === 0) && none2 === 0 && offOf(sub9, 'Remove All Data Bars') === 'no data bar on this grid',
+    && tlOk && p3 && none1 === 0 && (st3 === null || Object.keys(st3).length === 0) && none2 === 0 && offOf(sub9, 'Remove All Data Bars') === 'no data bar on this grid',
     `Data bar on sessions: ${JSON.stringify(labels0)}; with no bar Copy to All '${offOf(sub0, 'Copy to All Numeric Columns')}', Remove All '${offOf(sub0, 'Remove All Data Bars')}'; Under value ${p1}, Copy to All Numeric Columns ${p2}: stored ${JSON.stringify(st2)} for the number columns ${JSON.stringify(numCols)}, sessions ${JSON.stringify(s2)}, active ${JSON.stringify(a2)}; after a reload ${JSON.stringify(s2b)} / ${JSON.stringify(a2b)}`
     + `; Options... ${o1}: ${JSON.stringify(opt)}, buttons ${JSON.stringify(optBtns)}; Maximum ${max * 2}: ${said(ok1)}, the largest cell ${s3.share || 'no bar'}, the field again '${kept}'; 'abc': ${said(badMax)}, ${s4.share || 'no bar'}; emptied: ${said(ok2)}, ${s5.share || 'no bar'}`
+    + `; TRAFFIC LIGHT ${tlOk}: picked ${t1}, Options ${o2} fields ${JSON.stringify(tf)}; 20 / 50 % of the scale ${lo0}..${hi} (${said(okT1)}): ${wrongPct.slice(0, 5).join(', ') || 'every cell as by hand'}${wrongPct.length > 5 ? ` (+${wrongPct.length - 5})` : ''}; values ${med} / ${hi} (${said(okT2)}): ${wrongVal.slice(0, 5).join(', ') || 'every cell as by hand'}${wrongVal.length > 5 ? ` (+${wrongVal.length - 5})` : ''}`
     + `; Remove All Data Bars ${p3}: ${none1} cells with a bar, stored ${JSON.stringify(st3)}, after a reload ${none2}, the item then '${offOf(sub9, 'Remove All Data Bars')}'`);
 });
 
@@ -1565,15 +1626,16 @@ await guard('P-script', async () => {
   const sum = await script(`${ST}?.querySelector('tbody td')`, 'Script Data Table');
   await pNeverOff(); await gmClose();
   const held = ['_worst', '_cells', '_acked', '_live', '_chips', 'engine'].filter(k => namesCol(sum, k));
-  const wantSub = ['From Data Table', 'From Grid', 'Script Data Table', 'Script Grid'], subL = lv.map(x => x.label), offs = lv.filter(x => /^From /.test(x.label)).map(x => x.off ?? 'ON');
-  check('P-script', okSub && onHead && JSON.stringify(subL) === JSON.stringify(wantSub) && offs.length === 2 && offs.every(o => /not built/.test(o))
+  const gmCols = sum ? [...new Set((sum.text.split('\n').filter(l => !/^\s*,?\s*\(/.test(l)).join('\n').match(/(?:^|[^A-Za-z0-9_])([gm]_[A-Za-z0-9_]+)/g) ?? []).map(x => x.replace(/^[^gm]/, '')))] : [];
+  const wantSub = ['Script Data Table', 'Script Grid'], subL = lv.map(x => x.label), offs = lv.filter(x => /^From /.test(x.label)).map(x => x.label + ' ' + (x.off ?? 'ON'));
+  check('P-script', okSub && onHead && JSON.stringify(subL) === JSON.stringify(wantSub) && offs.length === 0
     && dialect(sg) === 'postgres' && sg.copy && /CREATE TEMP TABLE/.test(sg.text) && tuples(sg.text) === shownN && shownN > 0 && shownN < all && !namesCol(sg, 'instance_id')
     && dialect(sd) === 'postgres' && tuples(sd.text) === all && namesCol(sd, 'instance_id')
     && dialect(pg) === 'postgres' && msTab !== '' && dialect(ms) === 'sqlserver'
-    && never && !!sum && namesCol(sum, 'instance_id') && held.length === 0,
-    `Save Table on a cell ${okSub}, on the header ${onHead}: ${JSON.stringify(subL)}, the From items ${JSON.stringify(offs)}; Instances filtered to '${first}' (${shownN} of ${all} rows): Script Grid ${dialect(sg)}, ${sg ? tuples(sg.text) : 0} value rows, instance_id ${namesCol(sg, 'instance_id') ? 'named' : 'not named'}, the viewer's Copy ${!!sg?.copy}`
+    && never && !!sum && namesCol(sum, 'instance_id') && held.length === 0 && gmCols.length === 0,
+    `Save Table on a cell ${okSub}, on the header ${onHead}: ${JSON.stringify(subL)}, From items shown ${JSON.stringify(offs)}; Instances filtered to '${first}' (${shownN} of ${all} rows): Script Grid ${dialect(sg)}, ${sg ? tuples(sg.text) : 0} value rows, instance_id ${namesCol(sg, 'instance_id') ? 'named' : 'not named'}, the viewer's Copy ${!!sg?.copy}`
     + `; Script Data Table ${dialect(sd)}, ${sd ? tuples(sd.text) : 0} value rows, instance_id ${namesCol(sd, 'instance_id') ? 'named' : 'not named'}; a PostgreSQL instance's Statements: ${dialect(pg)}; a SQL Server instance's ${msTab || 'pages (none of the six drew rows)'}: ${dialect(ms)}`
-    + `; the Summary's Instances grid with 'engine' never offered (${never}): Script Data Table ${sum ? `names instance_id ${namesCol(sum, 'instance_id')}, held-back columns named ${JSON.stringify(held)}` : 'not opened'}`);
+    + `; the Summary's Instances grid with 'engine' never offered (${never}): Script Data Table ${sum ? `names instance_id ${namesCol(sum, 'instance_id')}, held-back columns named ${JSON.stringify(held)}, g_ / m_ columns ${JSON.stringify(gmCols).slice(0, 160)}` : 'not opened'}`);
 });
 
 await guard('P-copysum', async () => {
