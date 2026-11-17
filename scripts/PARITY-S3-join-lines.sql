@@ -19,3 +19,9 @@
 --          }, undefined, false, false);
 --          return [mssqlDatabases, ...instanceGroups.filter(g => g.key !== 'main').map(...)];
 --    The object nodes (task 4) hang under each database node when they are built.
+
+-- 2. The branch: rel-parity-s3 was cut from rel-j16-last 65083820 and took rel-d467 aea13a65 by merge (e9dfb820; it
+--    carries D421), so it joins after D467: the order D421 -> D467 -> PARSAFE -> the parity rows. It carries no line
+--    D467's own join lines already apply (0343, scripts/D467-join-lines.sql 1-7, scripts/D467-wiring.patch; D421's
+--    likewise). The merge's one conflict: web/src/mssql_plancache.ts, D467's page kept whole and the database page's
+--    fix (mssqlPlanCacheView's onlyDb) put back on it.
