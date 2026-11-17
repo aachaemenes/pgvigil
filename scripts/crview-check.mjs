@@ -14,7 +14,7 @@
 //   CR-role        a report whose access is 'admin': an operator's page says 'You do not have access to this report'
 //                  and its run POST answers 403 with the role's words; an admin runs it (L85)
 //  task 3 - the run
-//   CR-cancel      a report that sleeps 60 s: Cancel ends it within 5 s, the status 'Cancelled', the statement gone
+//   CR-cancel      a report that sleeps 45 s (a report's timeout is 60 s at most): Cancel ends it within 5 s, the status 'Cancelled', the statement gone
 //                  from the server (pg_stat_activity / sys.dm_exec_requests read by the proof) (L89)
 //   CR-timer       while it runs the status shows a running hh:mm:ss that moves; then 'Completed in <t>'; a report
 //                  that RAISE NOTICEs (PRINTs on SQL Server) with 'status from messages' shows the last message as its
@@ -231,10 +231,10 @@ const statusText = () => ev(`document.querySelector('main [role=status]')?.textC
 const clickButton = label => ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === ${JSON.stringify(label)}); if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return false; b.click(); return true; })()`);
 const openReport = async (id, instId) => { await go(`#/customreports?report=${id}${instId ? '&i=' + instId : ''}`); await sleep(500); };
 for (const [eng, inst, body, gone] of [
-  ['postgres', crPg, 'SELECT pg_sleep(60) AS slept', () => psql(`select count(*) from pg_stat_activity where query like '%pg_sleep(60)%' and pid <> pg_backend_pid()`)],
-  ['sqlserver', crMs, "WAITFOR DELAY '00:01:00'; SELECT 1 AS slept", () => sqlcmd("SELECT COUNT(*) FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE t.text LIKE '%00:01:00%' AND r.session_id <> @@SPID")],
+  ['postgres', crPg, 'SELECT pg_sleep(45) AS slept', () => psql(`select count(*) from pg_stat_activity where query like '%pg_sleep(45)%' and pid <> pg_backend_pid()`)],
+  ['sqlserver', crMs, "WAITFOR DELAY '00:00:45'; SELECT 1 AS slept", () => sqlcmd("SELECT COUNT(*) FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE t.text LIKE '%00:00:45%' AND r.session_id <> @@SPID")],
 ]) await guard(`CR-cancel ${eng}`, async () => {
-  const saved = await addReport({ name: `cr-cancel-${eng}-${Date.now()}`, engine: eng, body, timeout_secs: 120 });
+  const saved = await addReport({ name: `cr-cancel-${eng}-${Date.now()}`, engine: eng, body, timeout_secs: 60 });   // a report's timeout is 1 to 60 s (0106)
   await openReport(saved.id, await idByName(inst));
   const ran = await clickButton('Run'); await sleep(1500);
   const t0 = Date.now(), cancelled = await clickButton('Cancel');
