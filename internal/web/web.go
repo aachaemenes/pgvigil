@@ -369,6 +369,7 @@ func (s *Server) Handler() http.Handler {
 	s.post(api, "POST /api/pg/thresholds", needAdmin, s.PgThresholdWrite)
 	api.HandleFunc("GET /api/corruption", s.Corruption)
 	api.HandleFunc("GET /api/vacuum", s.Vacuum)
+	api.HandleFunc("GET /api/vacuum/trend", s.VacuumTrend) // parity set 2, L48: autovacuum over time
 	api.HandleFunc("GET /api/dbadash", s.DBADash)
 	api.HandleFunc("GET /api/jobsreport", s.JobsReport)
 	api.HandleFunc("GET /api/custom", s.Custom)

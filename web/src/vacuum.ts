@@ -4,7 +4,8 @@
 // vacuumView(ctx) (the lead wires the route and the tab).
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
-import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+import { lineChart } from './chart';
 
 type Parts = 'state' | 'checks' | 'running' | 'tables' | 'wraparound' | 'holders' | 'history';
 
@@ -18,7 +19,10 @@ const weekMs = 7 * 24 * 3600 * 1000;
 
 export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
   const w = window_(ctx);
-  const d = await get<Record<Parts, Table | null>>('vacuum', { instance: ctx.instance, ...w });
+  // the page's read and autovacuum over time (parity set 2, L48: GET /api/vacuum/trend) side by side; a failed trend
+  // read is its own error box, the page stays
+  const [d, tr] = await Promise.all([get<Record<Parts, Table | null>>('vacuum', { instance: ctx.instance, ...w }),
+    get<VacTrend>('vacuum/trend', { instance: ctx.instance, ...w }).catch((e: unknown) => e instanceof Error ? e : new Error(String(e)))]);
   const st = rowsOf(d.state)[0] as Row | undefined;
   const checks = rowsOf(d.checks), running = rowsOf(d.running), tables = rowsOf(d.tables);
   const wrap = rowsOf(d.wraparound), holders = rowsOf(d.holders), history = rowsOf(d.history);
@@ -58,6 +62,7 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
     ]));
   }
 
+  sec.append(trendCharts(tr));
   sec.append(el('h3', {}, 'Running now'), grid(running, [
     { key: 'kind' },
     { key: 'pid', num: true },
@@ -154,4 +159,29 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'detail', wide: true },
     ], 'No vacuum run seen in this window.'));
   return sec;
+}
+
+// ---- autovacuum over time (parity set 2, the sweep's L48: coroot's three) ----------------------------------------------
+interface VacTrend {
+  workers: { at: string; n: number; max?: number }[];
+  dead: { table: string; points: { at: string; v: number | null }[] }[];
+  pressure: { at: string; n: number }[];
+  words: string[];
+}
+// trendCharts: the autovacuum workers against autovacuum_max_workers, the dead tuples of the five tables with the most
+// at the window's end, and the tables past autovacuum's trigger - each a chart over the window, the reader's words under
+// them (what it could not read)
+function trendCharts(tr: VacTrend | Error): HTMLElement {
+  const box = el('div', { class: 'vacuum-trend' }, el('h3', {}, 'Autovacuum over time'));
+  if (tr instanceof Error) { box.append(errorBox(tr)); return box; }
+  const workers = tr.workers.map(p => ({ snapshot_at: p.at, n: p.n, max: p.max ?? null }));
+  const at = [...new Set(tr.dead.flatMap(t => t.points.map(p => p.at)))].sort();
+  const dead = at.map(a => Object.fromEntries([['snapshot_at', a], ...tr.dead.map((t, i) => [`d${i}`, t.points.find(p => p.at === a)?.v ?? null])]));
+  const pressure = tr.pressure.map(p => ({ snapshot_at: p.at, n: p.n }));
+  box.append(el('div', { class: 'charts' },
+    lineChart('Autovacuum workers', workers, [{ key: 'n', label: 'workers running' }, { key: 'max', label: 'autovacuum_max_workers' }], fmtNum),
+    lineChart('Dead tuples by table', dead, tr.dead.map((t, i) => ({ key: `d${i}`, label: t.table })), fmtNum),
+    lineChart('Autovacuum pressure', pressure, [{ key: 'n', label: "tables past autovacuum's trigger" }], fmtNum)),
+    ...tr.words.map(x => el('p', { class: 'meta' }, x)));
+  return box;
 }
