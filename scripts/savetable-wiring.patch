@@ -1,0 +1,56 @@
+diff --git i/cmd/pgvigil/report.go w/cmd/pgvigil/report.go
+index 15e01273..d64076d7 100644
+--- i/cmd/pgvigil/report.go
++++ w/cmd/pgvigil/report.go
+@@ -361,7 +361,8 @@ var knownKeys = map[string]bool{
+ 	// client certificate's files), the SQL Server counters' edits (401) and the schema read's databases (A26)
+ 	"probe": true, "probe_every_minute": true, "agents": true,
+ 	"metrics": true, "cache_seconds": true, "databases": true, "max_databases": true, "include_databases": true, "prometheus_metrics": true,
+-	"cq": true, "workers": true, "result_keep": true, "via": true, "community_allow": true, "jobs_allow": true,
++	"save_table": true, // task 7b: doors.save_table
++	"cq":         true, "workers": true, "result_keep": true, "via": true, "community_allow": true, "jobs_allow": true,
+ 	"patroni": true, "cert_file": true, "key_file": true,
+ 	"mssql_counters": true, "add": true, "remove": true, "object": true, "counter": true, "mssql_schema": true,
+ }
+diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
+index 9237a8b4..cd18a491 100644
+--- i/cmd/pgvigil/serve.go
++++ w/cmd/pgvigil/serve.go
+@@ -225,6 +225,11 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 	}
+ 	defer srv.Close()
+ 	srv.EnableMetrics(promCfg)
++	// task 7b: doors.save_table - one WARN naming what is open, as the other write doors
++	if cfg.Doors.SaveTable {
++		log.Warn("doors.save_table is on: an admin of the UI can write a grid as a new table into the schema pgvigil_saved of each instance whose actions: list names save_table, through its actions login")
++	}
++	srv.EnableSaveTable(cfg.Doors.SaveTable)
+ 	srv.SetViewEditors(cfg.Views.SharedEditors) // who may write shared views (pgvigil.yaml views.shared_editors)
+ 	if cfg.Actions.Queue() {
+ 		if err := srv.SetQueue(ctx, d); err != nil { // serve's own login (-dsn when given), the one its UI pool uses
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 6add356e..a7fb85dc 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -401,6 +401,9 @@ func (s *Server) Handler() http.Handler {
+ 	s.post(api, "POST /api/actions/cancel", needOperator, s.actions.Cancel)
+ 	s.post(api, "POST /api/actions/terminate", needOperator, s.actions.Terminate)
+ 	api.HandleFunc("GET /api/actions/log", s.actions.Log)
++	// task 7b: Save Table's From items (savetable.go; doors.save_table and the instance's actions: list)
++	api.HandleFunc("GET /api/actions/save_table", s.SaveTableState)
++	s.post(api, "POST /api/actions/save_table", needAdmin, s.SaveTable)
+ 	api.HandleFunc("GET /api/mssql/storage", s.MSSQLStorage)
+ 	api.HandleFunc("GET /api/mssql/storage_depth", s.MSSQLStorageDepth) // task 407
+ 	api.HandleFunc("GET /api/mssql/config_checks", s.MSSQLConfigChecks) // task 409
+diff --git i/web/src/needs.ts w/web/src/needs.ts
+index 6fe343a5..56fe3e37 100644
+--- i/web/src/needs.ts
++++ w/web/src/needs.ts
+@@ -17,6 +17,7 @@ export interface Can { operator: boolean; admin: boolean }
+ export const routeNeeds = {
+   'indexes/advise': ['operator', 'running the index advisor'],
+   'actions/cancel': ['operator', 'cancelling a query'],
++  'actions/save_table': ['admin', 'saving a grid as a table on an instance'],
+   'actions/terminate': ['operator', 'ending a session'],
+   'mssql/actions/run': ['operator', 'running an action on a SQL Server instance'],
+   'mssql/actions/verify/preview': ['operator', 'reading a backup to verify'],
