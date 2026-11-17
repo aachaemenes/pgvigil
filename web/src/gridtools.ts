@@ -16,7 +16,11 @@ import { Cell, Kind, Meta, Section, Status, csv, exportGrid, fillOf, fontOf, fro
 import { openViewer } from './sqlview';
 import { GridMenuAsk, cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, isCondList, offControl, quoteFilter } from './ui';
 import { MenuItem, gridLines, showTreeMenu } from './treemenu';
-import { Grid, htmlDoc, json, markdown, sqlScript, tsv } from './gridwriters';
+import { Grid, htmlDoc, json, markdown, sqlScript, sqlWire, tsv } from './gridwriters';
+import { get, post } from './api';
+import { dialogRole } from './needs';
+import { parse } from './router';
+import { FLEET_OFF, SaveState, confirmWord, defaultTable, fromOff, saveKeys } from './savetable';
 import { filterText, readFilterText } from './gridfilter';
 import { AGG_NAMES, AGG_ORDER, AggKind, GCell, GValue, GroupSpec, groupBy } from './groupby';
 
@@ -759,7 +763,11 @@ function dataTable(t: HTMLTableElement): Grid | null {
   const m = gridModel(t);
   if (!m?.all) return null;
   const hs = heads(t), own = m.cols.filter((_, j) => !isAdded(hs[j])), more = offered(t);
-  const keys = [...own.map(c => c.key), ...more], cols = [...own.map(c => c.label ?? c.key), ...more];
+  return dataGrid(m.all(), [...own.map(c => c.key), ...more], [...own.map(c => c.label ?? c.key), ...more]);
+}
+// dataGrid: the page's rows under keys, raw values as DBA Dash scripts its underlying DataTable (Script Data Table's
+// and From Data Table's one rule)
+function dataGrid(all: Record<string, unknown>[], keys: string[], cols: string[]): Grid {
   const cell = (v: unknown): Cell => {
     if (v === null || v === undefined || v === '') return { v: '', kind: 'text', text: '' };
     if (typeof v === 'number' && Number.isFinite(v)) return { v, kind: Number.isInteger(v) ? 'int' : 'dec', text: String(v) };
@@ -767,7 +775,7 @@ function dataTable(t: HTMLTableElement): Grid | null {
     const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
     return { v: s, kind: 'text', text: s };
   };
-  const rows = m.all().map(r => keys.map(k => cell(r[k])));
+  const rows = all.map(r => keys.map(k => cell(r[k])));
   return { cols, rows, num: keys.map((_, j) => rows.some(r => typeof r[j].v === 'number' && r[j].kind !== 'bool') && rows.every(r => r[j].v === '' || (typeof r[j].v === 'number' && r[j].kind !== 'bool'))) };
 }
 // scriptTable: CREATE TABLE and its INSERTs (the export's sqlScript) in the code viewer, in the page's engine's dialect
@@ -781,9 +789,90 @@ function scriptTable(t: HTMLTableElement, what: 'Script Data Table' | 'Script Gr
     openViewer(`${what}: ${name}`, sqlScript(g, e, { title: `${name} (${m.instance}, ${m.tab}, ${m.window})`, zone: timeZone(m.at), at: m.at.toISOString() }));
   });
 }
-// the From items write a table on an instance through its actions door: an administrator's opt-in (task 7b); until
-// it is on they say so (the lead 11-17 01:26: in the menu, never absent)
-const SAVE_TABLE_OFF = 'off: an administrator turns on doors: save_table in pgvigil.yaml; the door login needs CREATE in the database';
+// ---- Save Table's From items (task 7b): a write door, an administrator's opt-in -------------------------------------
+// The items stay in the menu, off with the first switch that is off (the lead 11-17 01:26 / 02:17): a fleet page's
+// words (savetable.ts FLEET_OFF), else the server's for the page's own instance (GET actions/save_table: doors.save_table,
+// the instance's actions: list, its actions_dsn, the admin role). The state is read once per instance when the page's
+// grids are drawn, so the menu (built at the right-click, no wait) has it.
+let saveSt: { id: number; st?: SaveState; err?: string } | null = null;
+function saveState(): SaveState | string {
+  const id = parse().instance;
+  if (!id) return FLEET_OFF;
+  if (saveSt?.id !== id) {
+    const s: { id: number; st?: SaveState; err?: string } = { id };
+    saveSt = s;
+    get<SaveState>('actions/save_table', { instance_id: id }).then(st => { s.st = st; }, (e: unknown) => { s.err = e instanceof Error ? e.message : String(e); });
+  }
+  if (saveSt.st) return saveSt.st;
+  return saveSt.err ? `off: whether Save Table is on here could not be read (${saveSt.err})` : 'off: reading whether Save Table is on for this instance';
+}
+function saveOff(): string {
+  const s = saveState();
+  return typeof s === 'string' ? s : fromOff(false, s.on ? '' : s.off);
+}
+// saveGrid: what a From item writes - From Grid the shown rows and columns (gridOf, as Script Grid); From Data Table
+// every row the page gave the grid with the DRAWN columns plus the chooser's ADDED ones (savetable.ts saveKeys: never a
+// column merely offered, a '_' key or a held-back one - the lead 11-17 02:17, review-29 S8)
+function saveGrid(t: HTMLTableElement, from: 'data' | 'grid'): Grid | null {
+  if (from === 'grid') return gridOf(t, false);
+  const m = gridModel(t);
+  if (!m?.all) return null;
+  const hs = heads(t), own = m.cols.filter((_, j) => !isAdded(hs[j]));
+  const keys = saveKeys(own.map(c => c.key), addedOf(t, load(t)), [...neverOf(t)]);
+  const label = new Map(own.map(c => [c.key, c.label ?? c.key]));
+  return dataGrid(m.all(), keys, keys.map(k => label.get(k) ?? k));
+}
+// saveDialog: the page's own instance (named, no picker), a database of its list, the schema pgvigil_saved, the table
+// name (DBA Dash's default), what will be written, the typed '<instance>/<database>' (review-29 S7); Save posts the
+// grid as data (gridwriters.ts sqlWire) and says the server's words
+function saveDialog(t: HTMLTableElement, from: 'data' | 'grid', back: HTMLElement | null) {
+  const st = saveState();
+  const what = from === 'data' ? 'From Data Table' : 'From Grid';
+  if (typeof st === 'string' || !st.on) return;   // the item is off then
+  const g = saveGrid(t, from);
+  if (!g || !g.cols.length) { line(t).textContent = `Save Table ${what}: this grid holds no rows of its own to save`; return; }
+  const wire = sqlWire(g);
+  const db = el('select', { 'aria-label': 'Database' }, ...st.databases.map(n => el('option', { value: n }, n))) as HTMLSelectElement;
+  const name = el('input', { type: 'text', 'aria-label': 'Table name', size: '32', autocomplete: 'off' }) as HTMLInputElement;
+  name.value = defaultTable(new Date());
+  const typed = el('input', { type: 'text', 'aria-label': 'Type the instance and database to save', size: '32', autocomplete: 'off' }) as HTMLInputElement;
+  const want = el('code', {}, '');
+  const go = el('button', { type: 'submit', disabled: '' }, 'Save') as HTMLButtonElement;
+  const role = dialogRole(go, 'actions/save_table');
+  const cancel = el('button', { type: 'button' }, 'Cancel');
+  const msg = el('p', { class: 'meta', role: 'status' });
+  const check = () => {
+    want.textContent = confirmWord(st.instance, db.value);
+    if (!role.why) go.disabled = !db.value || !name.value.trim() || typed.value.trim() !== confirmWord(st.instance, db.value);
+  };
+  for (const f of [db, name, typed]) f.addEventListener('input', check);
+  db.addEventListener('change', check);
+  const form = el('form', { method: 'dialog' },
+    el('p', {}, `${g.rows.length} row(s) and ${g.cols.length} column(s) of this grid, written as a NEW table on ${st.instance} through its actions login; pgvigil never overwrites a table.`),
+    st.databases.length ? el('p', {}, el('label', {}, 'Database ', db)) : el('p', { class: 'meta' }, 'This instance lists no database a table may go into.'),
+    el('p', {}, el('label', {}, `Schema ${st.schema ?? 'pgvigil_saved'}, table `, name)),
+    el('p', {}, el('label', {}, 'Type ', want, ' to save ', typed)),
+    role.note, msg, el('p', {}, go, ' ', cancel));
+  const d = toolDialog(t, `Save Table ${what}`, back, form);
+  cancel.addEventListener('click', () => d.close());
+  check();
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    if (role.why || go.disabled) return;   // off is off: an Enter in a field submits the form too
+    go.disabled = true;
+    msg.textContent = 'Saving...';
+    const body = { instance_id: parse().instance, database: db.value, table: name.value.trim(), from, confirm: typed.value.trim(),
+      cols: g.cols.map((c, j) => ({ name: c, type: wire.kinds[j] })), rows: wire.rows };
+    try {
+      const r = await post<{ outcome: string; detail: string }>(`actions/save_table?instance_id=${encodeURIComponent(String(parse().instance))}`, body);
+      msg.textContent = r.detail;
+    } catch (err) {
+      msg.textContent = err instanceof Error ? err.message : String(err);
+      check();
+    }
+  });
+  typed.focus();
+}
 
 // barOptions: DBA Dash's data bar Options (DataBarConfig, task PGRID B14): Style, Minimum and Maximum (empty: the
 // grid's own values), and a traffic light's Warning at / Critical at with Thresholds are values; OK, Cancel, Remove. A
@@ -918,7 +1007,9 @@ export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | 
     file('SQL (INSERT) for SQL Server', 'mssql.sql', 'application/sql', (x, sec, m) => '﻿' + sqlScript(x, 'sqlserver', head(sec, m))),
   ] });
   // Save Table (DBA Dash's: From Data Table, From Grid, Script Data Table, Script Grid)
-  out.push({ label: 'Save Table', sub: [{ label: 'From Data Table', off: SAVE_TABLE_OFF }, { label: 'From Grid', off: SAVE_TABLE_OFF },
+  const sOff = none ?? (saveOff() || undefined);
+  out.push({ label: 'Save Table', sub: [{ label: 'From Data Table', off: sOff, act: () => saveDialog(t, 'data', back) },
+    { label: 'From Grid', off: sOff, act: () => saveDialog(t, 'grid', back) },
     { label: 'Script Data Table', act: () => scriptTable(t, 'Script Data Table') }, { label: 'Script Grid', off: none, act: () => scriptTable(t, 'Script Grid') }] });
   // 4. Transpose, 5. Select
   if (!th) {
@@ -1059,6 +1150,7 @@ export function installGridTools() {
   let asked = false;
   const run = () => {
     asked = false;
+    saveState();   // the From items' state for the page's own instance, read before the first right-click
     const ts = [...due];
     due.clear();
     for (const t of ts) {

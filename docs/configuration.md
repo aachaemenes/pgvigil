@@ -338,6 +338,23 @@ Prometheus text format, read with a signed-in session or `metrics.token` (`file:
 least); it opens server names, engines, platforms, versions and every figure to whoever reads that Prometheus. Its
 `metrics:` block holds `token`, `cache_seconds`, `databases`, `max_databases`, `include_databases` and `tags`.
 
+### Save Table to an instance
+
+```yaml
+doors:
+  save_table: on            # the grid menu's Save Table > From Data Table / From Grid (docs/export.md)
+instances:
+  - name: app1
+    dsn: env:APP1_DSN
+    actions_dsn: env:APP1_ACTIONS_DSN
+    actions: [save_table]   # SQL Server: beside kill, job_start, ...; PostgreSQL: beside the job actions
+```
+
+`doors.save_table` lets an admin of the UI write a grid's rows as a new table on an instance whose `actions:` list names
+`save_table`, through its actions login, into that login's own schema `pgvigil_saved` (made once per database by a DBA:
+docs/export.md, 'Save Table to an instance'). Off by default; while on, serve logs one WARN naming it. A PostgreSQL
+instance that names `save_table` must have an `actions_dsn` of its own, never its `dsn`.
+
 ## SQL Server schema history (mssql_schema)
 
 A SQL Server instance's `mssql_schema: {databases: [...]}` turns the schema history on for those databases (`*` every

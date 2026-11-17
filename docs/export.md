@@ -190,9 +190,8 @@ dialog. In DBA Dash's order:
   Grid opens the code viewer with what Export file's SQL writes (the rows the filters leave, the shown columns); Script
   Data Table with every row the page gave the grid, whatever its filters, and every column the chooser offers, as the
   values the page read. Each is in the page's engine's dialect (a fleet page: PostgreSQL's). From Data Table and From Grid
-  write a table on an instance through its actions door, an administrator's opt-in: until `doors: save_table: on` is set
-  in pgvigil.yaml they are off with the words 'off: an administrator turns on doors: save_table in pgvigil.yaml; the door
-  login needs CREATE in the database'.
+  write the grid as a NEW table on the page's own instance through its actions door (below, 'Save Table to an
+  instance'); until an administrator turns them on they stay in the menu, off with the first switch that is off.
 - **Transpose** > **This row**, **Selected rows**, **Grid**: the rows as columns in a dialog, with Copy; the grid form
   shows its first 50 rows and says so, its Copy takes every row.
 - **Select** > **Row**, **Column**, **All**; **Clear the selection**.
@@ -323,3 +322,67 @@ Not proven here: Microsoft Excel itself (not on the proof machine; the table par
 repairs a file for: one name per column, the header cells equal to the names, no sheet filter beside a table)
 and Firefox (the proof drives Chromium; Firefox 113+ has the one browser-specific call, `CompressionStream`,
 and an older one gets stored zip entries).
+
+## Save Table to an instance (From Data Table, From Grid)
+
+DBA Dash's From Data Table and From Grid write a grid as a new table on a server. pgvigil writes it only on the page's
+own monitored instance, through that instance's actions login, into that login's own schema `pgvigil_saved` - never on
+a server typed in the browser, never over an existing table. It is an administrator's opt-in, off by default; the menu
+names the first switch that is off:
+
+1. `doors: save_table: on` in pgvigil.yaml ('off: an administrator turns on doors: save_table in pgvigil.yaml'); serve
+   logs one WARN naming what it opens while it is on.
+2. `save_table` in the instance's `actions:` list ('off: this instance's actions: list does not name save_table'), and
+   its `actions_dsn` ('off: this instance has no actions_dsn'). On PostgreSQL it is the list's first entry that is not a
+   job action; an instance naming it whose `actions_dsn` is its `dsn` stops pgvigil at start.
+3. The admin role in the UI ('off: saving a grid as a table needs the admin role').
+4. The schema `pgvigil_saved`, owned by the actions login, in each database a table may go into ('off: the door login
+   has no schema pgvigil_saved (docs/export.md has the two lines that make it)'). The two lines, run once per database
+   by a DBA:
+
+   ```sql
+   -- PostgreSQL (the actions login 'pgvigil roles' prints)
+   CREATE SCHEMA pgvigil_saved AUTHORIZATION pgvigil_actions;
+   -- SQL Server (the actions login's user in that database)
+   CREATE SCHEMA pgvigil_saved AUTHORIZATION [pgvigil_actions];
+   GRANT CREATE TABLE TO [pgvigil_actions];
+   ```
+
+   No grant on `dbo` or `public` is ever needed: CREATE TABLE in `dbo` would need ALTER on `dbo`, which lets the login
+   that ends sessions drop every `dbo` table; CREATE on `public` lets a login plant objects on every role's search path.
+   A schema owned by another login is refused with words.
+
+A fleet page's grid holds many instances' rows: its From items stay off ('off: a fleet page's rows come from many
+instances; save from the instance's own page'). From Grid writes the shown rows and columns (as Script Grid); From Data
+Table writes every row the page gave the grid with the page's own columns and the ones added in the chooser - never a
+column the chooser merely offers, a key starting `_` or one the page holds back.
+
+The dialog names the instance, offers its databases (never a system or template database: master, model, msdb,
+tempdb, a distribution database, rdsadmin; template0, template1 and any template, cloudsqladmin, rdsadmin,
+azure_maintenance, azure_sys), shows the schema, takes the table name (DBA Dash's default, the local time as
+yyyyMMddHHmmss) and asks for `<instance>/<database>` typed to save.
+
+What the server checks, in order, before anything is written: the role; the switch; one save at a time in serve
+(another is refused with words, never queued); the body (at most 32 MiB, 100,000 rows, 2,000,000 cells, 1,600 columns on
+PostgreSQL and 1,024 on SQL Server); the actions log writable; the instance's list and login; the typed confirmation;
+the names; the values; then, on the chosen database, that the actions login reaches the same server as the read login,
+is a login of its own and not a superuser, sysadmin or CONTROL SERVER holder, and owns `pgvigil_saved`; then that the
+table does not exist.
+
+- The names: the table and every column name are quoted as identifiers (PostgreSQL in double quotes with `"` doubled,
+  SQL Server in brackets with `]` doubled), never refused for a quote, a bracket, a dot or a semicolon; refused with
+  words when empty, holding a control or invisible character (zero-width spaces, direction marks, the line and paragraph
+  separators), longer than the engine allows (PostgreSQL 63 bytes, SQL Server 128 UTF-16 units), repeated (case aside
+  on SQL Server), or on SQL Server starting with `#` (a temporary table that would vanish).
+- The values: each column's kind is the SQL export's (whole number, number, time with its offset, date, true / false,
+  text); every value travels as data through the engine's bulk copy (PostgreSQL COPY, SQL Server's bulk load), never in
+  SQL text. A value that does not fit its kind refuses the whole grid naming its row and column, never the value; on SQL
+  Server a number with more than 10 decimal places or 28 digits before the point is refused, never rounded. A NUL
+  character in a text is dropped and counted in the answer.
+- The table is created and loaded in one transaction: any error leaves no table.
+
+Every attempt from the instance's list on is in the store's actions log (pgvigil.actions_log, action save_table): a 'started' row before
+the write and its end - done (the rows written), refused or failed with the words. A serve that stops between the
+commit and the end row leaves the started row alone. Refusals before that (the role, the switch, the body, a page
+instance) are answered with words and serve's log line, as every action's.
+

@@ -105,16 +105,41 @@ function sqlNames(cols: string[], e: Engine): string[] {
   return cut.map(n => e === 'sqlserver' ? '[' + n.replace(/]/g, ']]') + ']' : '"' + n.replace(/"/g, '""') + '"');
 }
 
-// a column's type from its cells' kinds: a number type only when every non-empty cell is a number (whole numbers alone:
-// bigint), a time with its offset, a date, a boolean; anything else text
-function sqlType(g: Grid, j: number, e: Engine): string {
+// a column's kind from its cells' kinds: a number only when every non-empty cell is a number (whole numbers alone:
+// int), a time with its offset, a date, a boolean; anything else text. The one rule of the SQL export (sqlType) and of
+// Save Table's From items (sqlWire; the server maps each kind to its engine's type: internal/savetable)
+export type SqlKind = 'int' | 'dec' | 'time' | 'day' | 'bool' | 'text';
+export function sqlKind(g: Grid, j: number): SqlKind {
   const cs = g.rows.map(r => r[j]).filter((c): c is Cell => !!c && c.v !== '');
   const all = (k: string) => cs.length > 0 && cs.every(c => typeof c.v === 'number' && c.kind === k);
-  if (numberCol(g, j)) return cs.every(c => { const v = rawValue(c); return typeof v === 'number' && Number.isInteger(v) && Math.abs(v) <= Number.MAX_SAFE_INTEGER; }) ? (e === 'sqlserver' ? 'BIGINT' : 'bigint') : (e === 'sqlserver' ? 'DECIMAL(38,10)' : 'numeric');
-  if (all('date')) return e === 'sqlserver' ? 'DATETIMEOFFSET' : 'timestamptz';
-  if (all('day')) return e === 'sqlserver' ? 'DATE' : 'date';
-  if (all('bool')) return e === 'sqlserver' ? 'BIT' : 'boolean';
-  return e === 'sqlserver' ? 'NVARCHAR(MAX)' : 'text';
+  if (numberCol(g, j)) return cs.every(c => { const v = rawValue(c); return typeof v === 'number' && Number.isInteger(v) && Math.abs(v) <= Number.MAX_SAFE_INTEGER; }) ? 'int' : 'dec';
+  if (all('date')) return 'time';
+  if (all('day')) return 'day';
+  if (all('bool')) return 'bool';
+  return 'text';
+}
+const SQL_TYPES: Record<SqlKind, [string, string]> = {
+  int: ['bigint', 'BIGINT'], dec: ['numeric', 'DECIMAL(38,10)'], time: ['timestamptz', 'DATETIMEOFFSET'], day: ['date', 'DATE'],
+  bool: ['boolean', 'BIT'], text: ['text', 'NVARCHAR(MAX)'],
+};
+function sqlType(g: Grid, j: number, e: Engine): string { return SQL_TYPES[sqlKind(g, j)][e === 'sqlserver' ? 1 : 0]; }
+
+// sqlWire: Save Table's columns and rows as its body carries them (task 7b) - each column's kind, each cell as the SQL
+// export writes it, as data: null for an empty cell, a number's value, a boolean, a time ISO 8601 with its offset, a
+// date, a text column's words (a boolean's shown words, a number's value as text). The server binds every value.
+export function sqlWire(g: Grid): { kinds: SqlKind[]; rows: (string | number | boolean | null)[][] } {
+  const kinds = g.cols.map((_, j) => sqlKind(g, j));
+  const rows = g.rows.map(r => g.cols.map((_, j) => {
+    const c = r[j], v = c ? valueOf(c) : null;
+    if (v === null) return null;
+    switch (kinds[j]) {
+      case 'bool': return v === true || v === 1;
+      case 'int': case 'dec': return typeof v === 'number' ? v : Number(v);
+      case 'time': case 'day': return String(v);
+      default: return typeof v === 'boolean' ? c!.text : String(v);
+    }
+  }));
+  return { kinds, rows };
 }
 
 // sqlScript: a temp table and its rows as INSERT batches, DBA Dash's script shape for each engine. A string is quoted

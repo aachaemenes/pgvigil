@@ -28,6 +28,18 @@ index 9237a8b4..cd18a491 100644
  	srv.SetViewEditors(cfg.Views.SharedEditors) // who may write shared views (pgvigil.yaml views.shared_editors)
  	if cfg.Actions.Queue() {
  		if err := srv.SetQueue(ctx, d); err != nil { // serve's own login (-dsn when given), the one its UI pool uses
+diff --git i/internal/web/roles_test.go w/internal/web/roles_test.go
+index 4ded7ce2..70d51838 100644
+--- i/internal/web/roles_test.go
++++ w/internal/web/roles_test.go
+@@ -289,6 +289,7 @@ var (
+ 		"pg_backups.ts":      {"pg/thresholds"},
+ 		"pg_backup_dest.ts":  {"pg/backup_dest"},
+ 		"tree_settings.ts":   {"admin/instances"},
++		"gridtools.ts":       {"actions/save_table"}, // task 7b: Save Table posts with the instance in its query
+ 	}
+ )
+ 
 diff --git i/internal/web/web.go w/internal/web/web.go
 index 6add356e..a7fb85dc 100644
 --- i/internal/web/web.go

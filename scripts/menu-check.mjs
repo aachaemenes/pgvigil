@@ -235,10 +235,13 @@
 //                     above the highest, amber at or above the median, else green. Remove All Data Bars: no bar in
 //                     the grid and none after a reload
 //   P-script          B04, 'Save Table' on a cell's and a header's menu: 'From Data Table', 'From Grid', 'Script Data
-//                     Table', 'Script Grid' (DBA Dash's order); on the default serve the two From items (a table
-//                     written on an instance through its actions door: an admin's opt-in, task 7b - the lead 11-17
-//                     01:26) are OFF with the words 'off: an administrator turns on doors: save_table in
-//                     pgvigil.yaml; the door login needs CREATE in the database' - in the menu, never absent;
+//                     Table', 'Script Grid' (DBA Dash's order); the two From items (a table written on an
+//                     instance through its actions door: an admin's opt-in, task 7b) are in the menu, never absent,
+//                     and OFF on the default serve - on the fleet's Instances grid with 'off: a fleet page's rows
+//                     come from many instances; save from the instance's own page' (the lead 11-17 02:17), on a
+//                     PostgreSQL instance's Statements grid with the first switch that is off, 'off: an
+//                     administrator turns on doors: save_table in pgvigil.yaml' (CHANGED 11-17 02:4x, task 7b's
+//                     build: the 01:26 words with 'the door login needs CREATE in the database' are gone);
 //                     the two Script items open the code viewer
 //                     (dialog.sqlview, its Copy) with CREATE TABLE and INSERT in the dialect of the page's engine: a
 //                     PostgreSQL instance's grid (Statements) pg_temp.pgvigil_grid; a SQL Server instance's (the
@@ -1623,6 +1626,10 @@ await guard('P-script', async () => {
   await gReset();
   // an instance of each engine: the dialect is the page's
   await go(`#/statements?i=${erpId}`); await sleep(500);
+  // the From items on the instance's own page: the server's words (its state is read when the grid is drawn)
+  const fromOffs = async sel => { await gmOpen(sel); const ok = await gmPick('Save Table'); const l = ok ? (await gmLevels())[1] ?? [] : []; await gmClose(); return l.filter(x => /^From /.test(x.label)).map(x => x.off ?? 'ON'); };
+  let instOffs = [];
+  for (let k = 0; k < 8; k++) { instOffs = await fromOffs(`document.querySelector('main table.grid tbody td')`); if (!instOffs.some(o => /^off: reading/.test(o))) break; await sleep(400); }
   const pg = await script(`document.querySelector('main table.grid tbody td')`, 'Script Grid');
   const sqlId = idOf('demo-onprem-sql01'); let msTab = '', ms = null;
   for (const tab of ['dbfiles', 'dbspace', 'jobs', 'backups', 'mssqlerrors', 'mssqltempdb']) { await go(`#/${tab}?i=${sqlId}`); await sleep(500); if (await ev(`!!document.querySelector('main table.grid tbody td')`)) { msTab = tab; break; } }
@@ -1635,13 +1642,14 @@ await guard('P-script', async () => {
   const held = ['_worst', '_cells', '_acked', '_live', '_chips', 'engine'].filter(k => namesCol(sum, k));
   const gmCols = sum ? [...new Set((sum.text.split('\n').filter(l => !/^\s*,?\s*\(/.test(l)).join('\n').match(/(?:^|[^A-Za-z0-9_])([gm]_[A-Za-z0-9_]+)/g) ?? []).map(x => x.replace(/^[^gm]/, '')))] : [];
   const wantSub = ['From Data Table', 'From Grid', 'Script Data Table', 'Script Grid'], subL = lv.map(x => x.label), offs = lv.filter(x => /^From /.test(x.label)).map(x => x.off ?? 'ON');
-  const offWords = 'off: an administrator turns on doors: save_table in pgvigil.yaml; the door login needs CREATE in the database';
-  check('P-script', okSub && onHead && JSON.stringify(subL) === JSON.stringify(wantSub) && offs.length === 2 && offs.every(o => o === offWords)
+  const fleetWords = "off: a fleet page's rows come from many instances; save from the instance's own page", offWords = 'off: an administrator turns on doors: save_table in pgvigil.yaml';
+  check('P-script', okSub && onHead && JSON.stringify(subL) === JSON.stringify(wantSub) && offs.length === 2 && offs.every(o => o === fleetWords)
+    && instOffs.length === 2 && instOffs.every(o => o === offWords)
     && dialect(sg) === 'postgres' && sg.copy && /CREATE TEMP TABLE/.test(sg.text) && tuples(sg.text) === shownN && shownN > 0 && shownN < all && !namesCol(sg, 'instance_id')
     && dialect(sd) === 'postgres' && tuples(sd.text) === all && namesCol(sd, 'instance_id')
     && dialect(pg) === 'postgres' && msTab !== '' && dialect(ms) === 'sqlserver'
     && never && !!sum && namesCol(sum, 'instance_id') && held.length === 0 && gmCols.length === 0,
-    `Save Table on a cell ${okSub}, on the header ${onHead}: ${JSON.stringify(subL)}, the From items' words ${JSON.stringify(offs)}; Instances filtered to '${first}' (${shownN} of ${all} rows): Script Grid ${dialect(sg)}, ${sg ? tuples(sg.text) : 0} value rows, instance_id ${namesCol(sg, 'instance_id') ? 'named' : 'not named'}, the viewer's Copy ${!!sg?.copy}`
+    `Save Table on a cell ${okSub}, on the header ${onHead}: ${JSON.stringify(subL)}, the From items' words ${JSON.stringify(offs)} on the fleet, ${JSON.stringify(instOffs)} on an instance's Statements; Instances filtered to '${first}' (${shownN} of ${all} rows): Script Grid ${dialect(sg)}, ${sg ? tuples(sg.text) : 0} value rows, instance_id ${namesCol(sg, 'instance_id') ? 'named' : 'not named'}, the viewer's Copy ${!!sg?.copy}`
     + `; Script Data Table ${dialect(sd)}, ${sd ? tuples(sd.text) : 0} value rows, instance_id ${namesCol(sd, 'instance_id') ? 'named' : 'not named'}; a PostgreSQL instance's Statements: ${dialect(pg)}; a SQL Server instance's ${msTab || 'pages (none of the six drew rows)'}: ${dialect(ms)}`
     + `; the Summary's Instances grid with 'engine' never offered (${never}): Script Data Table ${sum ? `names instance_id ${namesCol(sum, 'instance_id')}, held-back columns named ${JSON.stringify(held)}, g_ / m_ columns ${JSON.stringify(gmCols).slice(0, 160)}` : 'not opened'}`);
 });

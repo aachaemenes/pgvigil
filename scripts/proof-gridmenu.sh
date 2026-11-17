@@ -11,7 +11,7 @@
 #                         P = the parity rows of P01 / P02 / P04 alone (P-chooser .. P-opengrid); G,P = both
 #   PGVIGIL_GRIDMENU_NO_MSSQL=1  no container (G-sql then fails, saying so); a run whose cases name neither G nor G-sql
 #                         starts none by itself (the container serves G-sql alone)
-# Part U (tasks PGRID B11 / B10), after the web build: web/src/gridfilter.test.mjs and groupby.test.mjs on their compiled modules, the FAIL lines
+# Part U (tasks PGRID B11 / B10 / 7b), after the web build: web/src/gridfilter.test.mjs, groupby.test.mjs and savetable.test.mjs on their compiled modules, the FAIL lines
 # and its count line printed; a failed or missing module makes the run's rc 1 whatever menu-check says.
 # Needs node 22+, npm, go, psql, chromium and docker. Exit: menu-check's (0 = every case ok), 1 = the build or the
 # container failed, 2 = no DSN.
@@ -68,7 +68,11 @@ else U=1; echo "FAIL U: gridfilter.ts did not compile"; fi
 if web/node_modules/.bin/esbuild web/src/groupby.ts --format=esm --outfile="$OUT/groupby.mjs" --log-level=warning >> "$OUT/u.log" 2>&1; then
   node web/src/groupby.test.mjs "$OUT/groupby.mjs" >> "$OUT/u.log" 2>&1 || U=1
 else U=1; echo "FAIL U: groupby.ts did not compile"; fi
-grep -E '^(FAIL|gridfilter:|groupby:)' "$OUT/u.log"
+# (task PGRID 7b) Save Table's From items: what From Data Table writes, the fleet page's words, the confirmation
+if web/node_modules/.bin/esbuild web/src/savetable.ts --format=esm --outfile="$OUT/savetable.mjs" --log-level=warning >> "$OUT/u.log" 2>&1; then
+  node web/src/savetable.test.mjs "$OUT/savetable.mjs" >> "$OUT/u.log" 2>&1 || U=1
+else U=1; echo "FAIL U: savetable.ts did not compile"; fi
+grep -E '^(FAIL|gridfilter:|groupby:|savetable:)' "$OUT/u.log"
 PGVIGIL_MENU_ONLY="${PGVIGIL_MENU_ONLY:-G}" PGVIGIL_MENU_SHOTS="${PGVIGIL_MENU_SHOTS:-$OUT/shots}" \
   node scripts/menu-check.mjs 2>&1 | tee "$OUT/menu-check.log"
 R=${PIPESTATUS[0]}
