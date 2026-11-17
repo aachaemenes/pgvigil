@@ -422,7 +422,9 @@ done
 ok "K14: a block with 'enable:' for enabled (named with line $KBADLINE of its file), and one without its channel, each stop serve at start (a refusal's exit code, the refusal's own words)"
 
 # ---- K15-K21: B20-4, the daily fleet health (worst first, the post through the alert channels, the role) ---------------
-# PGVIGIL_KROWS_GO=1 (a red run): a failed row of K15-K21 prints FAIL and the next row runs; the block fails at its end
+# PGVIGIL_KROWS_GO=1 (a red run): a failed row of K15-K21 prints FAIL and the next row runs; the block fails at its end.
+# Under set -euo pipefail a bare assignment from a command that can fail (a grep that finds nothing, a query on a
+# column the tree lacks) ends the script without a word: every such line here is guarded (|| kfail, || true).
 KBAD=0
 kfail() { if [[ ${PGVIGIL_KROWS_GO:-0} == 1 ]]; then echo "FAIL $*"; KBAD=$((KBAD + 1)); else fail "$@"; fi; }
 KROW=0
@@ -547,7 +549,7 @@ PY
 }
 node "$WORK/kord.mjs" "$CDP" "$U" "$TOKEN" '#/checks?w=24h' > "$WORK/kord.json" || kfail "K15: the driver: $(cat "$WORK/kord.json")"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); json.dump(d["rows"], open(sys.argv[2], "w"))' "$WORK/kord.json" "$WORK/kord-rows.json" || kfail "K15: no checks grid on the page: $(head -c 400 "$WORK/kord.json")"
-KSEEN=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(" ".join(sorted({i for _, i in r if i.startswith("k15-")})))' "$WORK/kord-rows.json")
+KSEEN=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(" ".join(sorted({i for _, i in r if i.startswith("k15-")})))' "$WORK/kord-rows.json" 2>/dev/null || true)
 [[ $KSEEN == "k15-aaa k15-zzz" ]] || kfail "K15: the seeded instances on the page: '$KSEEN' (the seed did not reach the page: the row would test nothing)"
 why=$(kwf "$WORK/kord-rows.json" 2>&1) || kfail "K15: the Daily checks page is not worst first: $why"
 python3 - "$WORK/kord.json" <<'PY' || kfail "K15: the section's post numbers: $(head -c 600 "$WORK/kord.json")"
@@ -688,7 +690,7 @@ KROW=$KBAD
 c=$(postj reportmail '{"op":"daily_drop"}'); [[ $c == 200 && $(nlive) == 0 ]] || kfail "K19: the drop: $c $(cat "$WORK/body")"
 c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"mail","post":["deadhook"]}')
 [[ $c == 200 && $(klive "post_channels") == "{deadhook}" && $(klive schedule_id) != "$KID" ]] || kfail "K19: the keep with post [deadhook]: $c $(cat "$WORK/body")"
-KID=$(klive schedule_id); D0=$(grep -rl 'daily checks post failed' "$WORK/drop" 2>/dev/null | wc -l)
+KID=$(klive schedule_id)
 SEND=$(kturn "$KID" q) || kfail "K19: no serve queued the turn in 3 minutes"
 kwaitsent "$SEND" || kfail "K19: mail $SEND not answered in 3 minutes"
 [[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND") == sent \
@@ -700,10 +702,9 @@ kok "K19: a post to deadhook failed (mail $SEND sent; post_error names 127.0.0.1
 
 # ---- K19b: a sent mail whose page sent no counts is alerted (review-26 sql S3) ------------------------------------------------
 KROW=$KBAD
-D1=$(grep -rl 'sent no counts' "$WORK/drop" 2>/dev/null | wc -l)
 SEND4=$(kturn "$KID" q '2 days') || kfail "K19b: no serve queued the turn in 3 minutes"
 # the page that sent no counts, as the server stores it (the render's post refused, or none): no sender runs before kwaitsent
-q "update pgvigil.report_mail_sends set post = null, post_error = 'the drawn page sent no counts: nothing posted' where send_id = $SEND4" >/dev/null
+q "update pgvigil.report_mail_sends set post = null, post_error = 'the drawn page sent no counts: nothing posted' where send_id = $SEND4" >/dev/null 2>&1 || kfail "K19b: the send row of a page that sent no counts could not be set (mail $SEND4)"
 kwaitsent "$SEND4" || kfail "K19b: mail $SEND4 not answered in 3 minutes"
 [[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND4") == sent ]] || kfail "K19b: mail $SEND4: $(q "select outcome, coalesce(error, render_error) from pgvigil.report_mail_sends where send_id = $SEND4")"
 grep -rl '"setting": "daily checks post failed"' "$WORK/drop" 2>/dev/null | xargs -r grep -l "mail $SEND4, sent): the drawn page sent no counts" | grep -q . || kfail "K19b: no 'daily checks post failed' notice naming mail $SEND4 and 'sent no counts' in the file drop"
@@ -723,11 +724,11 @@ c=$(postj reportmail "{$KKEEP,\"post\":[\"hook\",\"deadhook\"]}")
 [[ $c == 200 && $(jget "d['detail']") == *changed* && $(klive "post_channels") == "{deadhook,hook}" && $(nlog) == $((L7 + 1)) ]] \
   || kfail "K19c: one more post channel is a change: $c $(cat "$WORK/body"); post_channels $(klive "post_channels"), $(( $(nlog) - L7 )) log row(s) written"
 # deadhook as a channel the sender no longer records (no sender runs inside this row); put back after
-q "update pgvigil.alert_channels set is_configured = false where name = 'deadhook'" >/dev/null
+q "update pgvigil.alert_channels set is_configured = false where name = 'deadhook'" >/dev/null || kfail "K19c: deadhook could not be marked as no longer recorded"
 kdrive change '#/checks?w=24h' 'post@pgvigil.test' > "$WORK/kd.json" || kfail "K19c: Change...: $(cat "$WORK/kd.json")"
 [[ $(kd "d['note']") == *"deadhook is no longer a recorded webhook channel: Save drops it"* && $(kd "sorted(map(tuple, d['posts']))") == "[('hook', True)]" && $(kd "d['said']") == *done* \
    && $(klive "post_channels") == "{hook}" ]] || kfail "K19c: the dialog with a kept channel that is gone: $(cat "$WORK/kd.json"); post_channels $(klive "post_channels")"
-q "update pgvigil.alert_channels set is_configured = true where name = 'deadhook'" >/dev/null
+q "update pgvigil.alert_channels set is_configured = true where name = 'deadhook'" >/dev/null || kfail "K19c: deadhook could not be put back"
 c=$(postj reportmail "{$KKEEP,\"post\":[]}")
 [[ $c == 200 && $(klive schedule_id) == "$KID" && $(klive "post_channels") == "-" ]] || kfail "K19c: the keep with post []: $c $(cat "$WORK/body"); post_channels $(klive "post_channels")"
 kok "K19c: a keep with no post field left {deadhook} and wrote nothing; post [hook] then [hook, deadhook] was a change; the dialog named the kept channel that is gone and its Save dropped it; post [] cleared the list"
