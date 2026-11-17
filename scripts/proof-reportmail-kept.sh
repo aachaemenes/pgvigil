@@ -873,4 +873,4 @@ for _ in $(seq 1 36); do sender2; [[ $(q2 "select count(*) from pgvigil.report_m
 got=$(kmail green@pgvigil.test 0 'All checks pass') || fail "G4: the green day's mail: $got"
 ok "G4: THE GREEN DAY: no check fails; the turn was SENT (mail $SEND) and its body holds the checks grid's header row, no data row and 'All checks pass' in place of 'No rows.'"
 kstop "$SG"
-ok "K: the Daily checks mail (K1-K14, G1-G4)"
+ok "K: the Daily checks mail (K1-K21, G1-G4)"
