@@ -35,6 +35,7 @@ func TestParityDemo(t *testing.T) {
 		own := "ledger" + s.Name[len(s.Name)-2:]
 		requests, summaries, files, volumes, slow, slowState, otherDB := 0, 0, map[string]bool{}, 0, 0, false, map[string]bool{}
 		fkinds := map[string]bool{}
+		poolMax := 0 // control audit A3: the pool minutes' maxima (0418)
 		for _, b := range run(t, s, i, 7) {
 			seen[b.Collection] += len(b.Rows)
 			for _, r := range b.Rows {
@@ -58,6 +59,8 @@ func TestParityDemo(t *testing.T) {
 					otherDB["mssql_xe kind "+fmt.Sprint(r["kind"])] = true
 				case b.Collection == "mssql_funcstats" && r["kind"] != "state":
 					fkinds[fmt.Sprint(r["kind"])] = true
+				case b.Collection == "mssql_pool" && r["max_data_io_percent"] != nil && r["max_log_write_percent"] != nil && r["max_edtu_percent"] != nil:
+					poolMax++
 				}
 				switch {
 				case b.Collection == "mssql_instance" && r["kind"] == "server":
@@ -82,6 +85,9 @@ func TestParityDemo(t *testing.T) {
 			if seen[c] == 0 {
 				t.Errorf("%s: no %s rows", s.Name, c)
 			}
+		}
+		if poolMax == 0 {
+			t.Errorf("%s: no pool minute carries max_data_io_percent, max_log_write_percent and max_edtu_percent (control audit A3)", s.Name)
 		}
 		for _, c := range []string{"mssql_ag", "mssql_jobs", "mssql_backups"} {
 			if seen[c] != 0 {
