@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -11,7 +12,8 @@ import (
 // did over the window, from the differences of sys.dm_exec_procedure_stats between two reads (mssql_procstats,
 // every five minutes; 0084).
 //
-//	GET /api/mssql/procs?instance=N[&from=&to=][&db=<database id>][&db_id=&object=][&part=...]
+//	GET /api/mssql/procs?instance=N[&from=&to=][&db=<database id>][&db_id=&object=][&part=...][&types=&search=]
+//	  objects     (part=objects only) the procedures, functions and triggers in one list (P25 Object Execution)
 //	  state       the mssql_procstats collection's last run
 //	  reads       the reads of the window that took differences: how many, the seconds they cover
 //	  databases   the databases with a procedure that ran in the window (the page's filter), each under one name
@@ -399,6 +401,52 @@ SELECT ` + funcCols + `, p.trigger_scope,
  ORDER BY p.cpu_us DESC, n.database, p.object_name NULLS LAST, p.object_id
  LIMIT 2000`
 
+// objCols: the columns the three kinds share, as Object Execution lists them
+const objCols = `o.database_id, o.object_id, o.database, o.schema_name, o.object_name, o.named, o.type_desc, o.executions,
+       o.executions_min, o.max_executions_min, o.duration_ms, o.duration_ms_sec, o.avg_duration_ms, o.cpu_ms, o.cpu_ms_sec,
+       o.avg_cpu_ms, o.logical_reads, o.avg_logical_reads, o.physical_reads, o.avg_physical_reads, o.logical_writes,
+       o.avg_logical_writes, o.last_seen`
+
+// sqlMSSQLObjects: DBA Dash's Object Execution (P25 F102 / F505) - the procedures, the scalar functions and the
+// triggers in ONE list, each row its kind and its Period Time (the seconds its kind's reads cover: the procedures'
+// reads, the functions' and triggers' reads); $5 the kinds asked (NULL = every kind, DBA Dash's Type filter), $6 a
+// text the schema or the name holds (case ignored; empty = any); the longest total duration first.
+var sqlMSSQLObjects = `
+WITH pc AS (SELECT coalesce(sum(r.interval_secs), 0)::float8 AS secs FROM pgvigil.mssql_proc_read r
+             WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3),
+fc AS (SELECT coalesce(sum(r.interval_secs), 0)::float8 AS secs FROM pgvigil.mssql_func_read r
+        WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3),
+o AS (
+  SELECT 'procedure'::text AS kind, ` + objCols + `, pc.secs AS period_secs FROM (` + sqlMSSQLProcs + `) o CROSS JOIN pc
+  UNION ALL
+  SELECT 'function', ` + objCols + `, fc.secs FROM (` + sqlMSSQLFuncs + `) o CROSS JOIN fc
+  UNION ALL
+  SELECT 'trigger', ` + objCols + `, fc.secs FROM (` + sqlMSSQLTriggers + `) o CROSS JOIN fc
+)
+SELECT o.kind, ` + objCols + `, o.period_secs
+  FROM o
+ WHERE ($5::text[] IS NULL OR o.kind = ANY ($5::text[]))
+   AND ($6::text = '' OR strpos(lower(coalesce(o.schema_name, '') || '.' || o.object_name), lower($6::text)) > 0)
+ ORDER BY o.duration_ms DESC NULLS LAST, o.database, o.object_name, o.object_id
+ LIMIT 2000`
+
+// objectKinds reads types= (procedure, function, trigger; a comma list): nil = every kind.
+func objectKinds(v string) ([]string, error) {
+	if v == "" {
+		return nil, nil
+	}
+	var out []string
+	for _, k := range strings.Split(v, ",") {
+		switch k = strings.TrimSpace(k); k {
+		case "procedure", "function", "trigger":
+			out = append(out, k)
+		default:
+			return nil, errors.New("types must list procedure, function or trigger")
+		}
+	}
+	return out, nil
+}
+
 // procsParts: the tab's parts that every read asks for (database: db=, nil = every database). The functions'
 // collection state is a part of its own: the page reads the procedures' state as the first row of 'state'.
 func procsParts(id int, from, to time.Time, database any) []part {
@@ -437,6 +485,20 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 	} else if on {
 		parts = append(parts, part{"compare", sqlMSSQLProcCompare, []any{planEach, id, from, to, database, shift}},
 			part{"compare_windows", sqlMSSQLProcCompareWindows, []any{planEach, id, from, to, shift}})
+	}
+	// Object Execution's one list: read only when asked (part=objects), as it runs the three kinds' reads again
+	if q.Get("part") == "objects" {
+		kinds, err := objectKinds(q.Get("types"))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		search := q.Get("search")
+		if len([]rune(search)) > 128 {
+			writeErr(w, http.StatusBadRequest, errors.New("search is longer than 128 characters"))
+			return
+		}
+		parts = append(parts, part{"objects", sqlMSSQLObjects, []any{id, from, to, database, kinds, search}})
 	}
 	if q.Get("db_id") != "" || q.Get("object") != "" {
 		dbID, err1 := strconv.Atoi(q.Get("db_id"))
