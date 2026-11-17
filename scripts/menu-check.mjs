@@ -289,7 +289,9 @@
 //                     named 'H-title <page> (<heading>) <scope>'. Batch 3 (07:0x): sql01's Log Shipping, its Summary
 //                     (5 labels) and Detail (5) grids - red on ccc2a4e9. A heading names the FIRST grid after its h3
 //                     (before the next h2 / h3). Batch 4 (07:0x): the root Backups page's SQL Server grids, by instance
-//                     (4 labels) and databases (2) - red on 0072e2f6.
+//                     (4 labels) and databases (2) - red on 0072e2f6. Batch 5 (07:0x): TempDB's layout grid on sql01
+//                     (19 labels) and at the root (20, with instance; the root's Checks grid draws instance too) - red on
+//                     b24b74a1.
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1805,6 +1807,10 @@ await guard('E-details', async () => {
 // are the drawn columns DBA Dash describes on the page's twin (the gaps, described and not drawn, are in
 // relgm/l20-gaps.tsv); a heading = only the grid right after the h3 that starts with it (a page whose other grids
 // reuse a label for another thing)
+// batch 5's TempDB layout labels (DBA Dash's TempDBConfigView, every described column but its Instance)
+const L20tempdb = ['# data files', 'insufficient files', 'recommended (minimum)', '# log files', 'even sized', 'even growth', 'total size (MB)', 'log (MB)',
+  'file size (MB)', 'max growth (MB)', 'max log growth (MB)', 'max growth %', 'max log growth %', 'tempdb volume(s)', 'CPU count', 'T1117', 'T1118',
+  'trace flags required?', 'memory-optimized metadata?'];
 const L20 = [
   ['rp_props', ['pg', 'ms'], ['Instance', 'Database', 'Property', 'Value', 'Valid From']],
   ['rp_finder', ['pg', 'ms'], ['Instance']],
@@ -1828,6 +1834,9 @@ const L20 = [
   // batch 4: Backups (DBA Dash's BackupsView: its instance summary and its database grid; the root's SQL Server sections)
   ['backups', ['root'], ['instance', 'oldest full', 'oldest differential', 'oldest log'], 'SQL Server backups by instance'],
   ['backups', ['root'], ['instance', 'database'], 'SQL Server databases'],
+  // batch 5: TempDB (DBA Dash's TempDBConfigView): an instance's layout row; at the root every instance's, with Instance
+  ['mssqltempdb', ['ms'], L20tempdb],
+  ['mssqltempdb', ['root'], ['instance', ...L20tempdb]],
 ];
 const msWord = /SQL Server|\bsys\.|DBCC|T-SQL|default trace|msdb|query hash|plan cache/i;
 const sqlId20 = idOf('demo-onprem-sql01');
