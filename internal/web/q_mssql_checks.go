@@ -84,6 +84,118 @@ SELECT q.schema_name, q.queue_name, q.is_receive_enabled, q.is_enqueue_enabled, 
  WHERE q.instance_id = $1 AND q.database_name = $2::text
  ORDER BY q.is_present DESC, q.schema_name, q.queue_name`
 
+// the database and transmission / conversation thresholds at DBA Dash's root defaults (control audit D4 a; D4 b's table
+// replaces them): the oldest message waiting to be sent 15 minutes a warning and 60 critical, 100,000 open
+// conversations a warning (no critical)
+const brokerTQAgeWarningMins, brokerTQAgeCriticalMins, brokerConversationWarning = 15, 60, 100000
+
+// sqlBrokerDatabases (control audit D4 a; DBA Dash's ServiceBrokerDatabaseInfo L109-120): each database of instance $1
+// the broker store knows - its transmission queue (the messages, those with a status, the oldest and its age in
+// minutes as DATEDIFF(mi) counts them), its conversations by state ('??' a total over the scan cap: its states then
+// unknown), the activation tasks aborted in the newest hour of the Broker Activation samples (the cumulative counter's
+// growth) - and database_status: the worst of the transmission age, the conversation count, conversations in error and
+// aborted activations, 4 when none, with its issues.
+var sqlBrokerDatabases = fmt.Sprintf(`
+WITH dbs AS (
+  SELECT database_name FROM pgvigil.mssql_broker_read WHERE instance_id = $1
+  UNION SELECT database_name FROM pgvigil.mssql_broker_transmission WHERE instance_id = $1
+  UNION SELECT database_name FROM pgvigil.mssql_broker_conversation WHERE instance_id = $1
+  UNION SELECT database_name FROM pgvigil.mssql_broker_queue WHERE instance_id = $1 AND is_present
+), tq AS (
+  SELECT t.database_name, sum(t.message_count) AS transmission_queue_count,
+         coalesce(sum(t.message_count) FILTER (WHERE t.transmission_status <> ''), 0) AS transmission_queue_error_count,
+         min(t.oldest_enqueue_at) AS oldest_enqueue_at, max(t.snapshot_at) AS snapshot_at
+    FROM pgvigil.mssql_broker_transmission t WHERE t.instance_id = $1 GROUP BY 1
+), cv AS (
+  SELECT c.database_name, sum(c.conversation_count) AS conversation_count,
+         CASE WHEN bool_or(c.state = '??') THEN NULL ELSE coalesce(sum(c.conversation_count) FILTER (WHERE c.state = 'CO'), 0) END AS conversing_count,
+         CASE WHEN bool_or(c.state = '??') THEN NULL ELSE coalesce(sum(c.conversation_count) FILTER (WHERE c.state = 'DI'), 0) END AS disconnected_inbound_count,
+         CASE WHEN bool_or(c.state = '??') THEN NULL ELSE coalesce(sum(c.conversation_count) FILTER (WHERE c.state = 'DO'), 0) END AS disconnected_outbound_count,
+         CASE WHEN bool_or(c.state = '??') THEN NULL ELSE coalesce(sum(c.conversation_count) FILTER (WHERE c.state = 'ER'), 0) END AS error_count,
+         CASE WHEN bool_or(c.state = '??') THEN NULL ELSE coalesce(sum(c.conversation_count) FILTER (WHERE c.state = 'CD'), 0) END AS closed_count
+    FROM pgvigil.mssql_broker_conversation c WHERE c.instance_id = $1 GROUP BY 1
+), act AS (
+  SELECT s.instance_name AS database_name, greatest(max(s.cntr_value) - min(s.cntr_value), 0) AS tasks_aborted_1hr
+    FROM pgvigil.mssql_broker_counter_sample s
+   WHERE s.instance_id = $1 AND s.object = 'Broker Activation' AND s.counter_name = 'Tasks Aborted/sec'
+     AND s.snapshot_at > (SELECT max(x.snapshot_at) FROM pgvigil.mssql_broker_counter_sample x WHERE x.instance_id = $1) - interval '1 hour'
+   GROUP BY 1
+)
+SELECT d.database_name, tq.transmission_queue_count, tq.transmission_queue_error_count, tq.oldest_enqueue_at, ag.tq_age_mins,
+       cv.conversation_count, cv.conversing_count, cv.disconnected_inbound_count, cv.disconnected_outbound_count, cv.error_count, cv.closed_count,
+       act.tasks_aborted_1hr, st.transmission_status, st.conversation_status, st.error_conversation_status, st.activation_status,
+       (SELECT min(x) FROM (VALUES (st.transmission_status), (st.conversation_status), (st.error_conversation_status), (st.activation_status), (4)) v(x)
+         WHERE x <> 3) AS database_status,
+       nullif(concat_ws('; ',
+         CASE WHEN st.transmission_status IN (1, 2) THEN 'a message has waited ' || ag.tq_age_mins || ' minutes to be sent' END,
+         CASE WHEN st.conversation_status IN (1, 2) THEN cv.conversation_count || ' open conversations: usually conversations not ended' END,
+         CASE WHEN st.error_conversation_status = 2 THEN cv.error_count || ' conversations in error' END,
+         CASE WHEN st.activation_status = 2 THEN act.tasks_aborted_1hr || ' activation tasks aborted in the last hour' END), '') AS issues
+  FROM dbs d
+  LEFT JOIN tq USING (database_name) LEFT JOIN cv USING (database_name) LEFT JOIN act USING (database_name)
+  CROSS JOIN LATERAL (SELECT (extract(epoch FROM date_trunc('minute', tq.snapshot_at) - date_trunc('minute', tq.oldest_enqueue_at)) / 60)::int AS tq_age_mins) ag
+  CROSS JOIN LATERAL (SELECT CASE WHEN ag.tq_age_mins >= %[2]d THEN 1 WHEN ag.tq_age_mins >= %[1]d THEN 2 ELSE 4 END AS transmission_status,
+                             CASE WHEN cv.conversation_count >= %[3]d THEN 2 ELSE 4 END AS conversation_status,
+                             CASE WHEN cv.error_count > 0 THEN 2 ELSE 4 END AS error_conversation_status,
+                             CASE WHEN act.tasks_aborted_1hr > 0 THEN 2 ELSE 4 END AS activation_status) st
+ ORDER BY database_status, d.database_name`, brokerTQAgeWarningMins, brokerTQAgeCriticalMins, brokerConversationWarning)
+
+// sqlBrokerInstance (control audit D4 a; DBA Dash's ServiceBrokerInstanceInfo L65-103): instance $1's Service Broker in
+// one row - its endpoint, the Broker Statistics' growth in the newest hour of samples, its queues' and databases' worst
+// status and their critical / warning counts, endpoint_status (3 no endpoint; 2 not STARTED or failed logins),
+// error_status (2 corrupted messages in the hour; 4 traffic; else 3) and service_broker_status - the worst of the
+// four, 3 (N/A) with nothing to report - with its issues (the counts first, then the instance's own).
+var sqlBrokerInstance = `
+WITH ep AS (
+  SELECT e.* FROM pgvigil.mssql_broker_endpoint e WHERE e.instance_id = $1 ORDER BY e.snapshot_at DESC LIMIT 1
+), win AS (
+  SELECT max(x.snapshot_at) - interval '1 hour' AS since FROM pgvigil.mssql_broker_counter_sample x WHERE x.instance_id = $1
+), st AS (
+  SELECT ` + brokerGrowth("SQL SEND Total", "sends_1hr") + `, ` + brokerGrowth("SQL RECEIVE Total", "receives_1hr") + `,
+         ` + brokerGrowth("Enqueued Messages Total", "enqueued_messages_1hr") + `, ` + brokerGrowth("Activation Errors Total", "activation_errors_1hr") + `,
+         ` + brokerGrowth("Dropped Messages Total", "dropped_messages_1hr") + `, ` + brokerGrowth("Corrupted Messages Total", "corrupted_messages_1hr") + `,
+         ` + brokerGrowth("Broker Transaction Rollbacks", "transaction_rollbacks_1hr") + `
+    FROM pgvigil.mssql_broker_counter_sample s, win
+   WHERE s.instance_id = $1 AND s.object = 'Broker Statistics' AND s.snapshot_at > win.since
+), q AS (
+  SELECT count(*) AS queue_count, sum(qs.message_count) AS queue_message_count, min(qs.queue_status) AS queue_status,
+         count(*) FILTER (WHERE qs.queue_status = 1) AS critical_count, count(*) FILTER (WHERE qs.queue_status = 2) AS warning_count
+    FROM (SELECT q.message_count, ` + brokerQueueStatusCols + `
+            FROM pgvigil.mssql_broker_queue q
+            ` + brokerQueueStatusJoins + `
+           WHERE q.instance_id = $1 AND q.is_present) qs
+), d AS (
+  SELECT sum(db.transmission_queue_count) AS transmission_queue_count, sum(db.conversation_count) AS conversation_count,
+         min(db.database_status) AS database_status,
+         count(*) FILTER (WHERE db.database_status = 1) AS critical_count, count(*) FILTER (WHERE db.database_status = 2) AS warning_count,
+         count(*) FILTER (WHERE db.transmission_queue_count > 0 OR db.conversation_count > 0) AS active_count
+    FROM (` + sqlBrokerDatabases + `) db
+)
+SELECT ep.endpoint_name, ep.state_desc AS endpoint_state, ep.port AS endpoint_port, ep.connection_count, ep.connected_count, ep.login_failed_count,
+       ep.last_activity_at, st.*, q.queue_count, q.queue_message_count, d.transmission_queue_count, d.conversation_count,
+       q.queue_status, d.database_status, c.endpoint_status, c.error_status,
+       coalesce((SELECT min(x) FROM (VALUES (CASE WHEN q.queue_count > 0 THEN q.queue_status END),
+                                            (CASE WHEN d.active_count > 0 OR d.database_status < 4 THEN d.database_status END),
+                                            (c.endpoint_status), (c.error_status)) v(x) WHERE x <> 3), 3) AS service_broker_status,
+       nullif(concat_ws('; ',
+         CASE WHEN q.critical_count > 0 OR q.warning_count > 0 THEN 'Queues: ' || concat_ws(', ', CASE WHEN q.critical_count > 0 THEN q.critical_count || ' critical' END,
+                                                                               CASE WHEN q.warning_count > 0 THEN q.warning_count || ' warning' END) END,
+         CASE WHEN d.critical_count > 0 OR d.warning_count > 0 THEN 'Databases: ' || concat_ws(', ', CASE WHEN d.critical_count > 0 THEN d.critical_count || ' critical' END,
+                                                                                  CASE WHEN d.warning_count > 0 THEN d.warning_count || ' warning' END) END,
+         CASE WHEN ep.endpoint_name IS NOT NULL AND ep.state_desc <> 'STARTED' THEN 'the Service Broker endpoint is ' || ep.state_desc END,
+         CASE WHEN ep.login_failed_count > 0 THEN 'Service Broker endpoint connections have failed to log in' END,
+         CASE WHEN st.corrupted_messages_1hr > 0 THEN st.corrupted_messages_1hr || ' corrupted messages in the last hour' END), '') AS issues
+  FROM st CROSS JOIN q CROSS JOIN d LEFT JOIN ep ON true
+  CROSS JOIN LATERAL (SELECT CASE WHEN ep.endpoint_name IS NULL THEN 3 WHEN ep.state_desc <> 'STARTED' OR ep.login_failed_count > 0 THEN 2 ELSE 4 END AS endpoint_status,
+                             CASE WHEN st.corrupted_messages_1hr > 0 THEN 2
+                                  WHEN st.sends_1hr > 0 OR st.receives_1hr > 0 OR st.enqueued_messages_1hr > 0 THEN 4 ELSE 3 END AS error_status) c`
+
+// brokerGrowth: one cumulative Broker Statistics counter's growth over the hour's samples (alias s), never below 0 (a
+// restart resets it)
+func brokerGrowth(counter, as string) string {
+	return "greatest(max(s.cntr_value) FILTER (WHERE s.counter_name = '" + counter + "') - min(s.cntr_value) FILTER (WHERE s.counter_name = '" + counter + "'), 0) AS " + as
+}
+
 // DBA Dash's Service Broker thresholds at its ROOT DEFAULTS (Script.PostDeployment1.sql L2188-2210; control audit D4 a):
 // a queue 10,000 messages deep is a warning (no critical), its oldest message waiting 15 minutes a warning and 60
 // critical. D4 b's thresholds table (Root / Instance / Database / Queue) replaces them.
@@ -285,6 +397,10 @@ func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
 		// db=: one database's Service Broker (P25 row 73); the depth and the counters over the window
 		{"broker_state", sqlMssqlRunningState, []any{id, []string{"mssql_service_broker"}}},
 		{"broker_queues", sqlMSSQLChecksBrokerQueues, []any{id, r.URL.Query().Get("db")}},
+		// control audit D4 a: DBA Dash's database and instance statuses (the report's Databases and Instances grids, the
+		// Summary's cell)
+		{"broker_databases", sqlBrokerDatabases, []any{id}},
+		{"broker_instance", sqlBrokerInstance, []any{id}},
 		{"broker_depth", sqlMSSQLChecksBrokerDepth, []any{id, r.URL.Query().Get("db"), from, to}},
 		{"broker_transmission", sqlMSSQLChecksBrokerTransmission, []any{id, r.URL.Query().Get("db")}},
 		{"broker_conversations", sqlMSSQLChecksBrokerConversations, []any{id, r.URL.Query().Get("db")}},
