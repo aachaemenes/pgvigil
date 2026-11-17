@@ -42,6 +42,10 @@ type Right struct {
 	// On says whether the right applies to this server: "" yes; "hide" = not listed at all there; any other text =
 	// listed as 'not on this server' with that reason.
 	On func(Info) string
+	// OptIn: a right pgvigil never asks for, only offers (P25 task 9b: Pool history's dbmanager) - its block, every line
+	// a comment ({login} filled in), printed in the script in place of Grant whatever the read; its state is always
+	// Null's words and it never counts as missing. "" = an ordinary right.
+	OptIn string
 }
 
 // notAzureDB: Azure SQL Database has no server-level rights of this kind (one database is the instance).
@@ -124,6 +128,30 @@ var Rights = []Right{
 		Checks: []string{"HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE')"},
 		On: func(i Info) string {
 			if i.Kind != KindAzureDB || !azureServerState(i) {
+				return "hide"
+			}
+			return ""
+		}},
+	// Azure SQL Database in an elastic pool: Pool history (mssql_pool_limits) reads master's sys.elastic_pool_resource_stats,
+	// which asks dbmanager there (Microsoft Learn) - a role that also creates and drops databases, so an opt-in (desk
+	// Q176 = a): its block is printed commented out, and the read in master says whether it is held (this read runs in
+	// the database, which cannot see master's roles)
+	{Key: "azure_dbmanager_pool_history", Name: "dbmanager in the logical server's master (an opt-in: Pool history only)",
+		For:   "Pool history: the elastic pool's DTU and storage limits over time, from master's sys.elastic_pool_resource_stats (14 days kept there)",
+		Check: "CAST(NULL AS int)",
+		// the statement as every row has one; the script prints the OptIn block, which carries it commented out
+		Grant: "-- in the logical server's master database\nCREATE USER {login} FROM LOGIN {login};\nALTER ROLE dbmanager ADD MEMBER {login};",
+		Null:  "an opt-in, not read here: mssql_pool_limits asks it in master every hour - its last run on Collection health says read (held) or skipped (not given)",
+		OptIn: "-- OPT-IN, not needed: every line below is a comment; uncomment it only where the login may create and drop databases.\n" +
+			"-- dbmanager lets the login create and drop databases on this logical server, which can cost money.\n" +
+			"-- Only Pool history needs it (the elastic pool's limits over time); pgvigil reads every other figure without it.\n" +
+			"-- In the logical server's master database, as the server admin or the Entra admin:\n" +
+			"-- CREATE USER {login} FROM LOGIN {login};\n" +
+			"-- ALTER ROLE dbmanager ADD MEMBER {login};\n" +
+			"-- To take it back: ALTER ROLE dbmanager DROP MEMBER {login};",
+		Checks: []string{"IS_ROLEMEMBER('dbmanager')"},
+		On: func(i Info) string {
+			if i.Kind != KindAzureDB || !strings.EqualFold(i.ServiceObjective, "ElasticPool") {
 				return "hide"
 			}
 			return ""
@@ -269,6 +297,8 @@ type RightsRead struct {
 	Rights                  []RightState
 	// Missing counts every missing right; MissingCore the needed ones among them.
 	Missing, MissingCore int
+	// OptIns counts the opt-in blocks the script carries (Right.OptIn): printed whatever is missing.
+	OptIns int
 	// NoScript says why no script is printed though rights are missing ("" = one is printed).
 	NoScript string
 }
@@ -402,6 +432,11 @@ func ReadRights(ctx context.Context, conn *sql.Conn, platform string) (RightsRea
 		if !asked {
 			continue // hidden on this server
 		}
+		if r.OptIn != "" {
+			out.Rights = append(out.Rights, optInState(r, id))
+			out.OptIns++
+			continue
+		}
 		switch {
 		case a.Valid && a.Int64 == 1:
 			st.State = "held"
@@ -433,7 +468,7 @@ func (r *RightsRead) guard(id rightsIdentity, info Info) {
 		names = append(names, s.Databases...)
 	}
 	switch {
-	case r.Missing == 0:
+	case r.Missing == 0 && r.OptIns == 0:
 		return
 	case func() bool {
 		for _, n := range names {
@@ -457,6 +492,12 @@ func (r *RightsRead) guard(id rightsIdentity, info Info) {
 	}
 }
 
+// optInState is an opt-in right's row: its Null words as the state, its block with the login filled in as the grant.
+func optInState(r Right, id rightsIdentity) RightState {
+	return RightState{Key: r.Key, Name: r.Name, For: r.For, Core: r.Core, State: r.Null,
+		Grant: strings.NewReplacer("{login}", id.quoted).Replace(r.OptIn)}
+}
+
 // rightsNoAccess names the online databases the login cannot enter (nil when the read fails: the row still says missing).
 func rightsNoAccess(ctx context.Context, conn *sql.Conn) []string {
 	rows, err := conn.QueryContext(ctx, rightsNoAccessSQL)
@@ -478,7 +519,7 @@ func rightsNoAccess(ctx context.Context, conn *sql.Conn) []string {
 // nothing, then each missing right's statement under a comment naming it. "" when nothing is missing or no script
 // may be printed (NoScript says why). Every name in it is one guard let through: none holds a line break.
 func (r RightsRead) Script(at string) string {
-	if r.Missing == 0 || r.NoScript != "" {
+	if (r.Missing == 0 && r.OptIns == 0) || r.NoScript != "" {
 		return ""
 	}
 	var b strings.Builder
@@ -489,8 +530,11 @@ func (r RightsRead) Script(at string) string {
 			continue
 		}
 		kind := "optional"
-		if s.Core {
+		switch {
+		case s.Core:
 			kind = "needed"
+		case s.State != "missing":
+			kind = "an opt-in, every line a comment"
 		}
 		fmt.Fprintf(&b, "\n-- %s (%s): %s\n", s.Name, kind, s.For)
 		if len(s.Databases) > 0 {
