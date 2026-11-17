@@ -8,6 +8,7 @@ import { performanceView } from './performance';
 import { mssqlFilesView } from './mssql_storage';
 import { mssqlQueryStoreView } from './mssql_querystore';
 import { dbSpaceView } from './drives';
+import { mssqlPlanCacheView } from './mssql_plancache';
 import { get, rowsOf, Table } from './api';
 import { badge, el, grid } from './ui';
 
@@ -59,6 +60,11 @@ export async function mssqlDbView(ctx: Ctx): Promise<HTMLElement> {
     case 'files':
       // the instance's Database files page reads db= by itself (mssql_storage.ts)
       body = await mssqlFilesView(ctx);
+      break;
+    case 'querystats':
+      // DBA Dash's Query Stats (sys.dm_exec_query_stats per database and query hash) = the instance's Plan cache page
+      // fixed on this database
+      body = await mssqlPlanCacheView(ctx, db);
       break;
     case 'dboptions':
       body = await dbOptions(ctx, db);

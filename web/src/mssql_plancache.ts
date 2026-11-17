@@ -30,14 +30,16 @@ const text = (v: unknown) => {
   return el('span', { 'data-full': s, title: s }, s.length > 160 ? s.slice(0, 160) + '...' : s);
 };
 
-export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
+// onlyDb: a SQL Server database's page (mssql_db.ts, P25 Query Stats): the cache cut to that database by its name -
+// its id read from the databases part on the first draw, the picker fixed on it and nothing remembered
+export async function mssqlPlanCacheView(ctx: Ctx, onlyDb?: string): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, `Plan cache (${rangeLabel(ctx)})`));
   sec.append(el('p', { class: 'meta' }, 'Source: sys.dm_exec_query_stats, read every five minutes; a figure is what ran between two reads, summed per database and query hash. '
     + 'Only what stays in the cache between two reads is seen: a statement compiled, run and evicted in between is in no read, so on a cache that turns over fast these are a floor. '
     + 'The databases whose Query Store is on have a fuller history on the Query Store tab; the scope below keeps the ones without.'));
   const store = `pgvigil.mssql.plancache.${String(ctx.instance)}`;
   const saved = (() => { try { return JSON.parse(sessionStorage.getItem(store) ?? '{}') as { db?: string; noqs?: boolean }; } catch { return {}; } })();
-  let database = saved.db ?? '', noqs = saved.noqs ?? false;
+  let database = onlyDb ? '' : saved.db ?? '', noqs = onlyDb ? false : saved.noqs ?? false;
   const sel = el('select', { 'aria-label': 'Database' }, el('option', { value: '' }, 'every database'));
   const chk = el('input', { type: 'checkbox' }) as HTMLInputElement;
   chk.checked = noqs;
@@ -56,6 +58,13 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
     }
     if (mine !== seq) return;
     const dbs = rowsOf(d.databases), top = rowsOf(d.top), reads = rowsOf(d.reads)[0], tot = rowsOf(d.totals)[0] ?? {};
+    if (onlyDb && !database) {
+      const hit = dbs.find(r => String(r.database_name) === onlyDb);
+      if (!hit) { body.replaceChildren(el('p', { class: 'empty' }, `No plan-cache read of ${onlyDb} in this range.`)); return; }
+      database = String(hit.database_id);
+      void draw();
+      return;
+    }
     // a database remembered from before that the instance no longer lists stays in the list, so it can be left
     const opts = dbs.map(r => [String(r.database_id), `${String(r.database_name)}${r.query_store_on ? ' (Query Store on)' : ''}`] as [string, string]);
     if (database && !opts.some(o => o[0] === database)) opts.push([database, `database ${database} (not listed now)`]);
@@ -170,7 +179,8 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
     body.replaceChildren(...out);
   }
 
-  const remember = () => { try { sessionStorage.setItem(store, JSON.stringify({ db: database, noqs })); } catch { /* private window */ } };
+  const remember = () => { if (onlyDb) return; try { sessionStorage.setItem(store, JSON.stringify({ db: database, noqs })); } catch { /* private window */ } };
+  if (onlyDb) { sel.disabled = true; chk.disabled = true; }
   sel.addEventListener('change', () => { database = sel.value; remember(); void draw(); });
   chk.addEventListener('change', () => { noqs = chk.checked; remember(); void draw(); });
   sec.append(el('div', { class: 'toolbar' }, el('label', {}, 'Database ', sel), el('label', {}, chk, ' only databases without Query Store')), body);
