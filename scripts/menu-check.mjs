@@ -292,7 +292,9 @@
 //                     (4 labels) and databases (2) - red on 0072e2f6. Batch 5 (07:0x): TempDB's layout grid on sql01
 //                     (19 labels) and at the root (20, with instance; the root's Checks grid draws instance too) - red on
 //                     b24b74a1. Batch 6 (07:1x): demo-onprem-erp01's Jobs page, its Running now grid (5 labels) - red
-//                     on 66aa081f.
+//                     on 66aa081f. Batch 8 (07:1x): the root's Deadlocks report (3 labels; Graph on both of its
+//                     grids) and DB Space at the root (name) and on erp01 / sql01 (database), allocated and used in any
+//                     unit ('allocated (*)') - red on 28eb10d3.
 //   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
@@ -1842,6 +1844,11 @@ const L20 = [
   // drawn there even empty; SQL Server's Running now grid (mssql_jobs.ts) is drawn only while a job runs, which on the
   // demo depends on the clock: titled, no row (NOT PROVEN by a row)
   ['jobs', ['pg'], ['started', 'running for', 'average', 'estimated end', 'current step'], 'Running now'],
+  // batch 8: Deadlocks (DBA Dash's DeadlocksReport: Graph on two grids, Victim Procedure, Procedure) and DB Space
+  // (SpaceTracking: Name, Allocated, Used - the unit in the label, 'x (*)' = any unit)
+  ['rp_deadlocks', ['root'], ['Graph', 'Victim Procedure', 'Procedure']],
+  ['dbspace', ['root'], ['name', 'allocated (*)', 'used (*)']],
+  ['dbspace', ['pg', 'ms'], ['database', 'allocated (*)', 'used (*)']],
 ];
 const msWord = /SQL Server|\bsys\.|DBCC|T-SQL|default trace|msdb|query hash|plan cache/i;
 const sqlId20 = idOf('demo-onprem-sql01');
@@ -1856,8 +1863,9 @@ for (const [route, scopes, labels, heading] of L20) for (const sc of scopes) {
         return []; })()` : `[...document.querySelectorAll('main table.grid, main table.grid-empty')]`;
     const ths = await ev(`${tables}.flatMap(t => [...t.querySelectorAll(':scope > thead > tr:first-child > th')])
       .map(h => ({ label: (h.querySelector('.th-label') ?? h).textContent.trim(), title: h.getAttribute('title') ?? '' }))`);
-    const missing = labels.filter(l => { const hs = (ths ?? []).filter(h => h.label === l); return hs.length === 0 || hs.some(h => h.title === '' || h.title === l); });
-    const absent = labels.filter(l => !(ths ?? []).some(h => h.label === l));
+    const same = (h, l) => l.endsWith(' (*)') ? h.label.startsWith(l.slice(0, -2)) : h.label === l;   // 'allocated (*)': the unit picked
+    const missing = labels.filter(l => { const hs = (ths ?? []).filter(h => same(h, l)); return hs.length === 0 || hs.some(h => h.title === '' || h.title === h.label); });
+    const absent = labels.filter(l => !(ths ?? []).some(h => same(h, l)));
     const leak = sc === 'pg' ? (ths ?? []).filter(h => msWord.test(h.title)).map(h => `${h.label}: '${h.title.slice(0, 60)}'`) : [];
     check(name, (ths ?? []).length > 0 && missing.length === 0 && leak.length === 0,
       `${(ths ?? []).length} header cell(s); ${missing.length ? `no title: ${missing.join(', ')}${absent.length ? ` (not drawn: ${absent.join(', ')})` : ''}` : `all ${labels.length} titled`}${leak.length ? `; SQL Server words on a PostgreSQL page: ${leak.join('; ')}` : ''}`);
