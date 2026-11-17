@@ -31,6 +31,10 @@ import (
 // count every plan whole at the next read. The clock first, the names' lock fallback, the cut at 5,000 plans a
 // view and the resource database left out are mssql_procstats' (procstats.go says why). Rights and platforms as
 // mssql_procstats: not on Azure SQL Database.
+//
+// Reading the two views beside the procedures' view follows sp_QuickieCache 1.11's function and trigger reads
+// (DarlingData, sp_QuickieCache/sp_QuickieCache.sql L1918-1975 and L2023-2032 at Updates_20261101; MIT, Copyright
+// (c) 2021 Darling Data, LLC): the statements are pgvigil's own.
 type funcStatsCollector struct{}
 
 func init() { Register(funcStatsCollector{}) }
