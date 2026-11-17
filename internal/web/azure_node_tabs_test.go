@@ -57,8 +57,9 @@ func TestAzureNodeTabsAreWired(t *testing.T) {
 			t.Errorf("%s has no %s", file, sig)
 		}
 	}
-	if !strings.Contains(read("internal/web/q_perfsummary.go"), "$5::int[] IS NULL OR i.instance_id = ANY ($5::int[])") {
-		t.Error("internal/web/q_perfsummary.go: sqlPerfScope does not cut to ids= ($5)")
+	// the Performance Summary's ids= is a variant of its statements; sqlPerfScope and the default calls stay as they are
+	if !strings.Contains(read("internal/web/q_perfsummary.go"), "i.instance_id = ANY ($5::int[])") {
+		t.Error("internal/web/q_perfsummary.go: no statement cut to ids= ($5)")
 	}
 	// the patch carries exactly the other slices' files, one diff each
 	patch := read("scripts/NODETABS-wiring.patch")
