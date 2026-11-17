@@ -299,7 +299,102 @@ await guard('CR-assoc', async () => {
   check('CR-assoc', saved.status === 200 && field && okBtn, `saved ${saved.status}; the editor's Associate Collection ${field}; the Trigger Collection button ${JSON.stringify(btn)}`);
 });
 
-const notYet = ['task 4 the result sets', 'task 5 the columns', 'task 6 the links',
+// ---- task 4: the result sets (several sets come only from a SQL Server batch: a PostgreSQL report is one statement)
+const threeSets = "SELECT 1 AS a, 'x' AS b UNION ALL SELECT 2, 'y'; SELECT 20 AS c; SELECT 30 AS d";
+const setBoxes = () => ev(`[...document.querySelectorAll('main .cr-set')].map(b => ({ name: b.querySelector('.cr-set-name')?.textContent.trim() ?? '', shown: !b.hidden && b.offsetParent !== null, h: Math.round(b.getBoundingClientRect().height) }))`);
+const runOn = async (def, instName) => {
+  const saved = await addReport({ engine: 'sqlserver', body: threeSets, ...def });
+  await openReport(saved.id, await idByName(instName ?? crMs));
+  await clickButton('Run');
+  for (let k = 0; k < 40; k++) { await sleep(250); if (/Completed|Ran at/.test(await statusText())) break; }
+  return saved;
+};
+const pick = (label, value) => ev(`(() => { const s = document.querySelector('main [aria-label=' + ${JSON.stringify(JSON.stringify(label))} + ']'); if (!s) return false; s.value = ${JSON.stringify(value)}; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+await guard('CR-select', async () => {
+  const saved = await runOn({ name: `cr-sel-${Date.now()}`, sets: [{ set: 0, name: 'first' }, { set: 1, name: 'second' }, { set: 2, name: 'third', in_all: false }] });
+  const opts = await ev(`[...(document.querySelector('main [aria-label="Select Results"]')?.options ?? [])].map(o => o.textContent.trim())`);
+  const all = (await setBoxes()).filter(b => b.shown).map(b => b.name);
+  const one = await pick('Select Results', 'third') ? (await setBoxes()).filter(b => b.shown).map(b => b.name) : null;
+  check('CR-select', saved.status === 200 && JSON.stringify(opts) === '["All","first","second","third"]' && JSON.stringify(all) === '["first","second"]' && JSON.stringify(one) === '["third"]',
+    `saved ${saved.status}; Select Results ${JSON.stringify(opts)}; All shows ${JSON.stringify(all)} (third left out of All); third alone ${JSON.stringify(one)}`);
+});
+await guard('CR-restore', async () => {
+  await runOn({ name: `cr-rest-${Date.now()}` });
+  const before = await ev(`document.querySelector('main .cr-set table.grid thead')?.textContent ?? ''`);
+  await ev(`(() => { const t = document.querySelector('main .cr-set table.grid'); const th = t?.querySelector('thead th'); if (th) th.setAttribute('data-gt-hidden', ''); t?.classList.add('gt-h1'); const b = t?.closest('.cr-set'); if (b) b.style.height = '120px'; })()`);
+  const restored = await clickButton('Restore Default View'); await sleep(800);
+  const after = await ev(`(() => { const t = document.querySelector('main .cr-set table.grid'); return { head: t?.querySelector('thead')?.textContent ?? '', hidden: !!t?.querySelector('[data-gt-hidden]'), h: t?.closest('.cr-set')?.style.height ?? '' }; })()`);
+  check('CR-restore', restored && after.head === before && !after.hidden && after.h === '', `Restore Default View ${restored}; after it ${JSON.stringify(after)}`);
+});
+await guard('CR-switch', async () => {
+  const b = await addReport({ name: `cr-pair-b-${Date.now()}`, engine: 'store', body: 'SELECT @q::text AS q', params: [{ name: 'q', type: 'text', label: 'q', default: '' }] });
+  const a = await addReport({ name: `cr-pair-a-${Date.now()}`, engine: 'store', body: 'SELECT @q::text AS q', params: [{ name: 'q', type: 'text', label: 'q', default: '' }], pair: { report_id: b.id, label: 'Charts' } });
+  await go(`#/customreports?report=${a.id}&q=carried`); await sleep(800);
+  const sw = await clickButton('Charts'); await sleep(1000);
+  const at = await ev(`({ hash: location.hash, q: document.querySelector('main [aria-label=q]')?.value ?? '' })`);
+  await ev('history.back()'); await sleep(1000);
+  const back = await ev('location.hash');
+  check('CR-switch', sw && at.hash.includes(`report=${b.id}`) && at.q === 'carried' && back.includes(`report=${a.id}`), `the switch button ${sw}; opened ${JSON.stringify(at)}; Back to ${back}`);
+});
+await guard('CR-urllabel', async () => {
+  const s = await addReport({ name: `cr-url-${Date.now()}`, engine: 'store', body: 'SELECT 1 AS one', description: 'With its runbook.', url: 'https://example.org/runbook', url_label: 'Runbook' });
+  await openReport(s.id);
+  const a = await ev(`(() => { const a = [...document.querySelectorAll('main a')].find(x => x.textContent.trim() === 'Runbook'); return a ? { href: a.href, target: a.target, rel: a.rel } : null; })()`);
+  check('CR-urllabel', !!a && a.href === 'https://example.org/runbook' && a.target === '_blank' && /noopener/.test(a.rel), `the URL label ${JSON.stringify(a)}`);
+});
+await guard('CR-renameset', async () => {
+  const saved = await runOn({ name: `cr-ren-${Date.now()}` });
+  const ok = await ev(`(() => { const b = [...document.querySelectorAll('main .cr-set:first-of-type button')].find(x => x.textContent.trim() === 'Rename'); if (!b) return false; b.click(); return true; })()`);
+  await sleep(300);
+  await ev(`(() => { const d = document.querySelector('dialog[open]'); const i = d?.querySelector('input'); if (i) { i.value = 'renamed set'; d.querySelector('button[type=submit]')?.click(); } })()`);
+  await sleep(800); await openReport(saved.id, await idByName(crMs)); await clickButton('Run'); await sleep(2500);
+  const names = (await setBoxes()).map(b => b.name);
+  const opts = await ev(`[...(document.querySelector('main [aria-label="Select Results"]')?.options ?? [])].map(o => o.textContent.trim())`);
+  check('CR-renameset', ok && names[0] === 'renamed set' && opts.includes('renamed set'), `Rename ${ok}; after a reload the sets ${JSON.stringify(names)}, the list ${JSON.stringify(opts)}`);
+});
+await guard('CR-script', async () => {
+  const s = await addReport({ name: `cr-script-${Date.now()}`, engine: 'store', body: 'SELECT 42 AS answer', columns: [{ set: 0, column: 'answer', label: 'The answer' }] });
+  await openReport(s.id);
+  const ok = await clickButton('Script Report'); await sleep(600);
+  const v = await ev(`document.querySelector('dialog.sqlview[open] pre')?.textContent ?? ''`);
+  check('CR-script', ok && v.includes('SELECT 42 AS answer') && v.includes('The answer') && /"name":\s*"cr-script-/.test(v), `Script Report ${ok}; the viewer ${v.length} characters: ${JSON.stringify(v.slice(0, 160))}`);
+});
+await guard('CR-singlepage', async () => {
+  await runOn({ name: `cr-page-${Date.now()}` });
+  const fit = await ev(`(() => { const c = [...document.querySelectorAll('main input[type=checkbox]')].find(x => x.closest('label')?.textContent.trim() === 'Fit to one screen'); if (!c) return null; c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  await sleep(400);
+  const total = await ev(`[...document.querySelectorAll('main .cr-set')].reduce((n, b) => n + b.getBoundingClientRect().height, 0)`);
+  check('CR-singlepage', fit === true && total > 0 && total <= 900, `the toggle ${fit}; the sets' height together ${Math.round(total)} px (the window 900)`);
+});
+await guard('CR-toggle', async () => {
+  await runOn({ name: `cr-tog-${Date.now()}` });
+  const ok = await clickButton('Toggle Grid'); await sleep(300);
+  const hidden = await ev(`[...document.querySelectorAll('main .cr-set table.grid')].every(t => t.offsetParent === null)`);
+  const back = await clickButton('Toggle Grid'); await sleep(300);
+  const shown = await ev(`[...document.querySelectorAll('main .cr-set table.grid')].some(t => t.offsetParent !== null)`);
+  const charts = await ev(`[...document.querySelectorAll('main button')].some(b => b.textContent.trim() === 'Toggle Charts')`);
+  check('CR-toggle', ok && hidden && back && shown && charts, `Toggle Grid ${ok}: grids hidden ${hidden}, shown again ${shown}; Toggle Charts there ${charts}`);
+});
+await guard('CR-setbar', async () => {
+  await runOn({ name: `cr-bar-${Date.now()}` });
+  const bars = await ev(`[...document.querySelectorAll('main .cr-set')].map(b => [...b.querySelectorAll('.cr-set-bar button')].map(x => x.textContent.trim()))`);
+  const want = ['Maximize', 'Columns', 'Copy', 'Clear Filter', 'Rename'];
+  const max = await ev(`(() => { const b = document.querySelector('main .cr-set:first-of-type .cr-set-bar button'); if (!b) return null; b.click(); return true; })()`);
+  await sleep(300);
+  const shown = (await setBoxes()).filter(b => b.shown).length;
+  check('CR-setbar', bars.length === 3 && bars.every(b => want.every(w => b.includes(w))) && max && shown === 1, `the bars ${JSON.stringify(bars)}; Maximize ${max} leaves ${shown} set shown`);
+});
+await guard('CR-resize', async () => {
+  await runOn({ name: `cr-size-${Date.now()}` });
+  const h0 = (await setBoxes())[0]?.h ?? 0;
+  const sep = await ev(`(() => { const s = document.querySelector('main .cr-set [role=separator]'); if (!s) return null; s.focus(); return { now: s.getAttribute('aria-valuenow'), min: s.getAttribute('aria-valuemin') }; })()`);
+  for (let k = 0; k < 3; k++) await ev(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))`);
+  await sleep(200);
+  const h1 = (await setBoxes())[0]?.h ?? 0;
+  check('CR-resize', !!sep && sep.min === '100' && h1 > h0, `the separator ${JSON.stringify(sep)}; the first set ${h0} px, after three ArrowDown ${h1} px`);
+});
+
+const notYet = ['task 5 the columns', 'task 6 the links',
   'task 7 every grid', 'task 8 custom tools', 'task 9 the PM rows', 'task 10 the charts'];
 for (const g of notYet) check(g, false, 'its cases are not written yet (task 1)');
 
