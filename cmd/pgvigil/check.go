@@ -105,7 +105,7 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 	for _, in := range cfg.Instances {
 		eng := engineName(in)
 		raw := strings.TrimSpace(in.DSNRaw)
-		if eng == config.EnginePostgres && !strings.HasPrefix(raw, "env:") && !strings.HasPrefix(raw, "file:") && config.HasInlinePassword(raw) {
+		if eng == config.EnginePostgres && !strings.HasPrefix(raw, "env:") && !strings.HasPrefix(raw, "file:") && config.HasInlinePGPassword(raw) {
 			add("WARN", "instance "+in.Name, "its dsn carries an inline password: move it to a passfile, env:NAME, file:/path or password_secret (the inline form is discouraged)")
 		}
 		runnable := 0

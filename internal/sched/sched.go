@@ -363,9 +363,15 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 	run := func(first bool) {
 		// the back-off (L214): an instance whose own connect failed 3 times in a row is skipped by every one of its
 		// loops inside its window, one probe at a time after it; a skip counts no failure (collect.skipped)
-		if skip, note := collect.ConnectBackoff(in.Name, time.Now()); skip {
+		skip, note, probe := collect.ConnectBackoff(in.Name, time.Now())
+		if skip {
 			collect.RecordRunEvery(in.Name, in.Engine, name, collect.Result{Note: note}, iv)
 			return
+		}
+		if probe {
+			// the probe is this run's: free again when the run ends, whatever it did (a gated collection skips
+			// before any connect, a stop cuts a run short - neither may hold the instance)
+			defer collect.ProbeDone(in.Name)
 		}
 		// the run deadline (L250): a hung run is cancelled, its loop ticks on; the cancel reaches the driver (pgx
 		// sends a cancel request, go-mssqldb an attention) and a repository write in flight rolls back

@@ -94,7 +94,7 @@ type Heartbeat struct {
 	runs     map[[2]string]*runAgg    // engine, collection
 	load     map[string]*loadAgg      // instance name
 	streaks  map[[2]string]*streak    // instance name, collection
-	probing  map[string]bool          // instance name: a backed-off instance whose probe a loop holds (L214, backoff.go)
+	probing  map[string]bool          // instance name: a backed-off instance whose probe a loop holds until its run ends (L214, backoff.go)
 	hourly   map[healthKey]*healthAgg // B6.1: instance, collection, UTC hour (health.go)
 	hourNew  time.Time                // the newest hour counted
 	seen     map[string]time.Time     // instance name: when this run last named it in the repository (seenDue)
@@ -309,7 +309,6 @@ func (h *Heartbeat) instanceConnectTimed(instance string, err error, now time.Ti
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.probeDone(instance) // the probe's connect reported (L214): the next window, or none, holds from this result
 	h.countConnectTimed(instance, err, took)
 	sk := [2]string{instance, connectStreak}
 	s := h.streaks[sk]
@@ -424,7 +423,6 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 		}
 		return
 	}
-	h.probeDone(instance) // a run that never reached a connect still releases the probe (L214, backoff.go)
 	l := h.loadOf(instance)
 	if every > 0 && (l.every == 0 || every < l.every) {
 		l.every = every

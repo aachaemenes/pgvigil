@@ -329,9 +329,68 @@ func (d DBADashRepo) Every() time.Duration {
 
 // inlinePassword says whether an inline connection string carries a password: a URL's user:password@ or a password /
 // pwd query key, or an ADO or ODBC segment whose key (trimmed, any case: the driver trims it so) is password or pwd.
-// HasInlinePassword says whether a connection string carries a password inline ('pgvigil check' warns on a
-// PostgreSQL instance's, L181/L9; a sqlserver dsn with one is refused at load below).
-func HasInlinePassword(v string) bool { return inlinePassword(v) }
+// HasInlinePGPassword says whether a PostgreSQL connection string carries a password inline: a URL's userinfo or
+// password= query (inlinePassword's URL reading), or a libpq keyword/value string's password keyword with a value
+// ('pgvigil check' warns on it, L181/L9; inlinePassword alone reads the sqlserver forms - URL and ';'-separated -
+// and saw no keyword/value password: rn-2's difference). env: and file: references are the caller's to rule out.
+func HasInlinePGPassword(v string) bool {
+	l := strings.TrimSpace(v)
+	if strings.Contains(l, "://") {
+		return inlinePassword(l)
+	}
+	return kvPassword(l)
+}
+
+// kvPassword reads a libpq keyword/value string (key = value pairs separated by white space; a value may be
+// single-quoted, with \' and \\ inside) and says whether its password keyword holds a value.
+func kvPassword(s string) bool {
+	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	i := 0
+	for i < len(s) {
+		for i < len(s) && space(s[i]) {
+			i++
+		}
+		ks := i
+		for i < len(s) && s[i] != '=' && !space(s[i]) {
+			i++
+		}
+		key := strings.ToLower(s[ks:i])
+		for i < len(s) && space(s[i]) {
+			i++
+		}
+		if i >= len(s) || s[i] != '=' {
+			continue // a word without '=': not a pair
+		}
+		i++
+		for i < len(s) && space(s[i]) {
+			i++
+		}
+		n := 0
+		if i < len(s) && s[i] == '\'' {
+			i++
+			for i < len(s) && s[i] != '\'' {
+				if s[i] == '\\' && i+1 < len(s) {
+					i++
+				}
+				n++
+				i++
+			}
+			i++
+		} else {
+			for i < len(s) && !space(s[i]) {
+				if s[i] == '\\' && i+1 < len(s) {
+					i++
+				}
+				n++
+				i++
+			}
+		}
+		if key == "password" && n > 0 {
+			return true
+		}
+	}
+	return false
+}
 
 func inlinePassword(v string) bool {
 	l := strings.ToLower(strings.TrimSpace(v))

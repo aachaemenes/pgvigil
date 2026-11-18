@@ -49,72 +49,83 @@ func TestConnectBackoffSkipsInsideTheWindow(t *testing.T) {
 	now := time.Now()
 	since := now.Add(-30 * time.Second)
 	h.streaks[[2]string{"pg1", connectStreak}] = &streak{fails: 3, since: since, at: now.Add(-time.Second)}
-	skip, note := ConnectBackoff("pg1", now)
-	if !skip {
-		t.Fatal("inside the window the run is skipped; it was not")
+	skip, note, probe := ConnectBackoff("pg1", now)
+	if !skip || probe {
+		t.Fatalf("inside the window the run is skipped and no probe is granted: skip=%v probe=%v", skip, probe)
 	}
 	for _, want := range []string{" (skipped: backing off - 3 connects failed in a row since ", "; next try about "} {
 		if !strings.Contains(note, want) {
 			t.Errorf("the skip note lacks %q: %q", want, note)
 		}
 	}
-	// another instance, and a streak under 3, run as before
-	if skip, _ := ConnectBackoff("pg2", now); skip {
-		t.Error("an instance without a streak was skipped")
+	// another instance, and a streak under 3, run as before (no probe: nothing backs off)
+	if skip, _, probe := ConnectBackoff("pg2", now); skip || probe {
+		t.Errorf("an instance without a streak: skip=%v probe=%v, want false false", skip, probe)
 	}
 	h.streaks[[2]string{"pg3", connectStreak}] = &streak{fails: 2, since: since, at: now}
-	if skip, _ := ConnectBackoff("pg3", now); skip {
+	if skip, _, _ := ConnectBackoff("pg3", now); skip {
 		t.Error("two failed connects back nothing off (the rule starts at 3)")
 	}
 }
 
 // TestConnectBackoffOneProbe (L214, B1): when the window has ended, ONE loop takes the probe and the others keep
-// skipping; the probe's connect report (the streak extended) releases it, and the next window holds everyone again.
+// skipping until that loop's run ends (ProbeDone); a failed probe's new window holds everyone again.
 func TestConnectBackoffOneProbe(t *testing.T) {
 	h, restore := testHeartbeat()
 	defer restore()
 	now := time.Now()
 	h.streaks[[2]string{"pg1", connectStreak}] = &streak{fails: 3, since: now.Add(-5 * time.Minute), at: now.Add(-2 * time.Minute)}
-	skip1, _ := ConnectBackoff("pg1", now)
-	skip2, note2 := ConnectBackoff("pg1", now)
-	if skip1 || !skip2 {
-		t.Fatalf("one probe: first skip=%v (want false, the probe), second skip=%v (want true)", skip1, skip2)
+	skip1, _, probe1 := ConnectBackoff("pg1", now)
+	skip2, note2, probe2 := ConnectBackoff("pg1", now)
+	if skip1 || !probe1 || !skip2 || probe2 {
+		t.Fatalf("one probe: first skip=%v probe=%v (want false true), second skip=%v probe=%v (want true false)", skip1, probe1, skip2, probe2)
 	}
 	if !strings.Contains(note2, "backing off") {
 		t.Errorf("the second loop's note says backing off: %q", note2)
 	}
-	// the probe's connect fails: the streak extends and the probe is released; the new window holds every loop
+	// the probe's connect fails and its run ends: the streak extends and the new window holds every loop
 	_ = h.instanceConnectTimed("pg1", errors.New("dial tcp: connection refused"), now, 0)
-	if skip, _ := ConnectBackoff("pg1", now.Add(time.Second)); !skip {
+	ProbeDone("pg1")
+	if skip, _, _ := ConnectBackoff("pg1", now.Add(time.Second)); !skip {
 		t.Error("inside the new window after the probe's failure, a run was not skipped")
 	}
 	// the window ends again: exactly one probe again
 	later := now.Add(16 * time.Minute)
-	s1, _ := ConnectBackoff("pg1", later)
-	s2, _ := ConnectBackoff("pg1", later)
-	if s1 || !s2 {
-		t.Errorf("after the next window one probe again: first skip=%v, second skip=%v", s1, s2)
+	s1, _, p1 := ConnectBackoff("pg1", later)
+	s2, _, p2 := ConnectBackoff("pg1", later)
+	if s1 || !p1 || !s2 || p2 {
+		t.Errorf("after the next window one probe again: first skip=%v probe=%v, second skip=%v probe=%v", s1, p1, s2, p2)
 	}
-	// an opened connect ends the streak: no skips, no probes held
+	// an opened connect ends the streak: no skips, whether or not the probing run has ended yet
 	_ = h.instanceConnectTimed("pg1", nil, later, 0)
-	if skip, _ := ConnectBackoff("pg1", later.Add(time.Second)); skip {
-		t.Error("after an opened connect the back-off is over; a run was skipped")
+	if skip, _, probe := ConnectBackoff("pg1", later.Add(time.Second)); skip || probe {
+		t.Errorf("after an opened connect the back-off is over: skip=%v probe=%v", skip, probe)
 	}
+	ProbeDone("pg1")
 }
 
-// TestConnectBackoffProbeReleasedByARun (L214, B1): a granted probe whose run never reports a connect (a config path
-// that returns first) is released by the run's own record, so the instance is never held forever.
-func TestConnectBackoffProbeReleasedByARun(t *testing.T) {
+// TestConnectBackoffProbeIsItsLoops (L214, B1; rn-1's difference 1): the probe is released by its own loop alone
+// (ProbeDone, when its run ends) - a run that skipped before any connect (a gated collection) frees it that way, and
+// neither another loop's back-off skip nor any recorded run frees it early.
+func TestConnectBackoffProbeIsItsLoops(t *testing.T) {
 	h, restore := testHeartbeat()
 	defer restore()
 	now := time.Now()
 	h.streaks[[2]string{"pg1", connectStreak}] = &streak{fails: 4, since: now.Add(-time.Hour), at: now.Add(-time.Hour)}
-	if skip, _ := ConnectBackoff("pg1", now); skip {
-		t.Fatal("the window ended an hour ago: the first caller takes the probe")
+	if skip, _, probe := ConnectBackoff("pg1", now); skip || !probe {
+		t.Fatalf("the window ended an hour ago: the first caller takes the probe (skip=%v probe=%v)", skip, probe)
 	}
-	h.record("pg1", "postgres", "activity", Result{Err: errors.New("dsn resolved to an empty string")}, now, 0)
-	if skip, _ := ConnectBackoff("pg1", now); skip {
-		t.Error("the probe was not released by the run's record: the next caller was skipped")
+	// another loop's back-off skip is recorded while the probe is out: it must not free the probe
+	_, note, _ := ConnectBackoff("pg1", now)
+	h.record("pg1", "postgres", "dbstats", Result{Note: note}, now, 0)
+	if skip, _, _ := ConnectBackoff("pg1", now); !skip {
+		t.Error("another loop's recorded back-off skip freed the probe: two probes at once")
+	}
+	// the probing loop's own run skipped before any connect (a gated collection); its end frees the probe
+	h.record("pg1", "postgres", "amcheck", Result{Note: " (skipped: amcheck is off)"}, now, 0)
+	ProbeDone("pg1")
+	if skip, _, probe := ConnectBackoff("pg1", now); skip || !probe {
+		t.Errorf("after the gated run ended the next caller takes the probe: skip=%v probe=%v", skip, probe)
 	}
 }
 
@@ -131,7 +142,7 @@ func TestAuthFailureNeverBacksOff(t *testing.T) {
 	if s := h.streaks[[2]string{"pg1", connectStreak}]; s != nil && s.fails != 0 {
 		t.Fatalf("5 refused logins built a streak of %d; want 0", s.fails)
 	}
-	if skip, _ := ConnectBackoff("pg1", now); skip {
+	if skip, _, _ := ConnectBackoff("pg1", now); skip {
 		t.Error("an instance refusing logins was backed off")
 	}
 	// a streak ends at a refused login too
@@ -139,7 +150,7 @@ func TestAuthFailureNeverBacksOff(t *testing.T) {
 	_ = h.instanceConnectTimed("pg2", errors.New("connection refused"), now, 0)
 	_ = h.instanceConnectTimed("pg2", errors.New("connection refused"), now, 0)
 	_ = h.instanceConnectTimed("pg2", auth, now, 0)
-	if skip, _ := ConnectBackoff("pg2", now); skip {
+	if skip, _, _ := ConnectBackoff("pg2", now); skip {
 		t.Error("a streak ended by a refused login still backed the instance off")
 	}
 }

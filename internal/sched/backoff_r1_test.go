@@ -51,7 +51,7 @@ func TestConnectBackoffHoldsTheLoops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer waitBeat()
+	defer func() { cancel(); waitBeat() }() // the beat's stop first: waited for before its cancel it runs out its 15 s
 	r, err := repo.Open(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
