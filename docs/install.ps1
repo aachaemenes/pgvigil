@@ -68,8 +68,9 @@ if (Test-MsiInstall) {
 if (-not $From -and ($Fips -or $Plain -or $TrustRoot -or $App -or $UpdateCheck -or $OwnerDsnFile -or $Dump -or $NoDump -or $PgDump)) {
     throw 'pgvigil install: -Fips, -Plain, -TrustRoot, -App, -UpdateCheck and the upgrade switches go with -From <folder>'
 }
-# a native command's stderr under 'Stop' in Windows PowerShell 5.1 throws when it is redirected: run such a command with
-# 'Continue' and read its exit code instead
+# a native command's stderr under 'Stop' in Windows PowerShell 5.1 throws when it is redirected - in ISE, in a remoting
+# session, under '2>&1 | Tee-Object' - even on success (pgvigil logs its INFO lines to stderr): run every native command
+# through this, with 'Continue', and judge it by its exit code
 function Invoke-Native([scriptblock]$cmd) {
     $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     try { $out = & $cmd 2>&1 | ForEach-Object { "$_" }; return @{ Code = $LASTEXITCODE; Out = ($out -join "`n") } } finally { $ErrorActionPreference = $eap }
@@ -153,12 +154,14 @@ if ($From) {
             if ($Dump) { $up += @('-dump', $Dump) }
             if ($NoDump) { $up += '-no-dump' }
             if ($PgDump) { $up += @('-pg-dump', $PgDump) }
-            & $exe @up
-            if ($LASTEXITCODE -ne 0) { throw "pgvigil install -upgrade exited with $LASTEXITCODE" }
+            $r = Invoke-Native { & $exe @up }
+            if ($r.Out) { Write-Host $r.Out }
+            if ($r.Code -ne 0) { throw "pgvigil install -upgrade exited with $($r.Code)" }
         } else {
             if ($OwnerDsnFile -or $Dump -or $NoDump -or $PgDump) { throw 'pgvigil install: -OwnerDsnFile, -Dump, -NoDump and -PgDump go with an upgrade; the service pgvigil is not installed' }
-            & $exe install
-            if ($LASTEXITCODE -ne 0) { throw "pgvigil install exited with $LASTEXITCODE" }
+            $r = Invoke-Native { & $exe install }
+            if ($r.Out) { Write-Host $r.Out }
+            if ($r.Code -ne 0) { throw "pgvigil install exited with $($r.Code)" }
             Add-MachinePath (Join-Path $env:ProgramFiles 'pgvigil')
         }
         if ($App) {
@@ -219,8 +222,9 @@ try {
         Write-Host ".\pgvigil.exe $version is ready (no service installed)"
         return
     }
-    & (Join-Path $work $asset) install
-    if ($LASTEXITCODE -ne 0) { throw "pgvigil install exited with $LASTEXITCODE" }
+    $r = Invoke-Native { & (Join-Path $work $asset) install }
+    if ($r.Out) { Write-Host $r.Out }
+    if ($r.Code -ne 0) { throw "pgvigil install exited with $($r.Code)" }
     $binDir = Join-Path $env:ProgramFiles 'pgvigil'
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     if (($machinePath -split ';') -notcontains $binDir) {
