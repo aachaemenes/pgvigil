@@ -16,3 +16,21 @@ any WARN or a failed instance - so an install script can gate on the code.
 - **Each instance** - the file's and Admin > Instances' enabled inventory, both engines - gets the one connection test
   the Admin page itself uses (10 seconds, at most 8 at a time): who answered, and the collections that will not run
   there and why. `-instance <name>` narrows the connection tests; the configuration and repository checks still run.
+
+## Keeping a password out of pgvigil.yaml
+
+A PostgreSQL instance's `dsn` may hold its password inline, and such a configuration keeps loading - but the
+collector warns at every start, `pgvigil check` lists the instance, and the form is discouraged: the file is read by
+whoever reads the configuration, and backups carry it. The other forms: a libpq passfile (`passfile=` in the dsn),
+`env:NAME`, `file:/path`, `password_secret` (AWS Secrets Manager), or a sealed file:
+
+```
+pgvigil secret seal -name pg1 [-config pgvigil.yaml] < the connection string     (typed at a terminal, it is not shown)
+dsn: file:/etc/pgvigil/secrets/pg1-3f9c2a1b77e0.dsn
+```
+
+The command takes the connection string on stdin - never as an argument - writes it to `secrets/` beside the
+configuration and prints the line to put under the instance in place of its `dsn`. On Linux that is a file of mode
+0600 with the configuration folder's owner (run it as root or as the service account); on Windows a DPAPI blob at
+machine scope and a `dpapi:` reference, readable through the configuration folder's own access list. Each seal
+writes a new file; `pgvigil uninstall -all` removes the folder.

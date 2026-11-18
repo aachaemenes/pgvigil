@@ -324,7 +324,7 @@ func writeIfAbsent(path, content string, mode os.FileMode) (bool, error) {
 // ownFiles are the files the installer itself puts beside the config (and the folder of the Windows log); reports.dsn
 // is the store reports' login on Windows (reportsDSNFor), which -purge removes with repo.dsn.
 // instances/ and sources/ are the page's credential folders (task 204, config.SecretDir / SourceSecretDir), beside the config;
-// secrets/ is 'pgvigil secret seal''s (L9, config.FileSecretDir).
+// secrets/ is the folder of 'pgvigil secret seal' (L9, config.FileSecretDir).
 var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "reports.dsn", "pgvigil.log", "logs", "instances", "sources", "secrets"}
 
 // dedicatedFolder refuses a config folder that is not the installer's own. The installer sets that
@@ -1168,14 +1168,20 @@ func foreignFiles(dir string, own ...string) []string {
 	return other
 }
 
-// credentialItems lists the page's credential folders beside the config (task 204: instances/ and sources/, the
-// monitored servers' passwords) one by one with their file count; a folder that is a link (or a junction) is kept and
-// named with its target, since removing the link would leave the passwords where it points. own gets the names
-// removeFolder may take with the configuration folder (a kept link is not among them).
+// credentialItems lists the credential folders beside the config - the page's (task 204: instances/ and sources/, the
+// monitored servers' passwords) and the sealed connection strings' (L9: secrets/, 'pgvigil secret seal') - one by one
+// with their file count; a folder that is a link (or a junction) is kept and named with its target, since removing
+// the link would leave the passwords where it points. own gets the names removeFolder may take with the configuration
+// folder (a kept link is not among them).
 func credentialItems(cfgDir string, removeTree func(string) error) (items []removal, own []string) {
-	for _, name := range []string{"instances", "sources"} {
+	for _, f := range []struct{ name, what string }{
+		{"instances", "the page's credential folder "},
+		{"sources", "the page's credential folder "},
+		{"secrets", "the sealed connection strings' folder "},
+	} {
+		name := f.name
 		d := filepath.Join(cfgDir, name)
-		it := removal{what: "the page's credential folder " + d}
+		it := removal{what: f.what + d}
 		fi, err := os.Lstat(d)
 		if err != nil {
 			items = append(items, it)
