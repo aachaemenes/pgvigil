@@ -1,7 +1,9 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
@@ -278,5 +280,51 @@ func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
 			part{"connections", sqlCollectorConns, nil},
 			part{"purges", sqlCollectorPurges, nil})
 	}
-	s.multiPart(w, r, parts)
+	ps, err := onlyPart(r, parts)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.multiPost(w, r, ps, map[string]func(*table){"streaks": backingOff})
+}
+
+// backingOff (L214, B2): the streaks table gains a backing_off column - for an instance's own (connect) streak of 3
+// or more, 'backing off: <n> connects failed in a row since <t>; next try about <t>' from the same rule the loop's
+// gate uses (collect.BackoffWindow over the stored streak), nil on every other row.
+func backingOff(t *table) {
+	col := map[string]int{}
+	for i, c := range t.Columns {
+		col[c] = i
+	}
+	ci, fi, si, li := col["collection"], col["fail_streak"], col["failing_since"], col["last_run_at"]
+	t.Columns = append(t.Columns, "backing_off")
+	for i, row := range t.Rows {
+		var words any
+		fails := asInt(row[fi])
+		last, okLast := row[li].(time.Time)
+		if row[ci] == "(connect)" && okLast {
+			if next, on := collect.BackoffWindow(fails, last); on {
+				since := ""
+				if s, ok := row[si].(time.Time); ok {
+					since = s.Format(time.RFC3339)
+				}
+				words = fmt.Sprintf("backing off: %d connects failed in a row since %s; next try about %s",
+					fails, since, next.Format(time.RFC3339))
+			}
+		}
+		t.Rows[i] = append(row, words)
+	}
+}
+
+// asInt: a query's integer however the driver typed it.
+func asInt(v any) int {
+	switch n := v.(type) {
+	case int64:
+		return int(n)
+	case int32:
+		return int(n)
+	case int:
+		return n
+	}
+	return 0
 }

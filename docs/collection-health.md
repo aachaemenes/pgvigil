@@ -25,6 +25,13 @@ least). An instance that is not active is not listed. The failures in a row are 
 the picked range. **Failed % 24hrs** is the rate the Summary judges (24 hours from the next whole hour, or from the
 acknowledgement below if that is later).
 
+The collector backs off a down server: after 3 failed connects of an instance in a row, no collection of it connects
+again for a minute from the last attempt, doubling each further failure up to 15 minutes, then one probe at a time -
+the held runs are skips, not failures, a refused login never counts (the server answered), and the Collector page's
+Failing now panel says *backing off: n connects failed in a row since t; next try about t*. Every run also has a
+deadline of twice its interval (at least 2 and at most 30 minutes; the first run after a start gets 30): a run past
+it is cancelled and counted failed as *timed out after d*, and the next tick starts fresh.
+
 ### Acknowledged errors
 
 An instance's collector errors are acknowledged on the **Collector errors** page (Acknowledge, per instance or every

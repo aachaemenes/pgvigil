@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	mrand "math/rand/v2"
@@ -329,6 +330,29 @@ func firstStart(iv time.Duration) time.Duration {
 	return 0
 }
 
+// The run deadline (L250, PerformanceMonitor's check_hung_collector_job): every run is cancelled at twice its
+// interval, clamped between runDeadlineFloor and runDeadlineCap; the first run after a start gets the cap whole (PM's
+// first-run allowance). Variables so a test can scale the clock.
+var (
+	runDeadlineFloor = 2 * time.Minute
+	runDeadlineCap   = 30 * time.Minute
+)
+
+// runDeadline: one run's limit from its interval; the first run after a start gets the cap.
+func runDeadline(iv time.Duration, first bool) time.Duration {
+	if first {
+		return runDeadlineCap
+	}
+	d := 2 * iv
+	if d < runDeadlineFloor {
+		d = runDeadlineFloor
+	}
+	if d > runDeadlineCap {
+		d = runDeadlineCap
+	}
+	return d
+}
+
 func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string, iv time.Duration) {
 	jitter := firstStart(iv)
 	select {
@@ -336,11 +360,26 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 		return
 	case <-time.After(jitter):
 	}
-	run := func() {
+	run := func(first bool) {
+		// the back-off (L214): an instance whose own connect failed 3 times in a row is skipped by every one of its
+		// loops inside its window, one probe at a time after it; a skip counts no failure (collect.skipped)
+		if skip, note := collect.ConnectBackoff(in.Name, time.Now()); skip {
+			collect.RecordRunEvery(in.Name, in.Engine, name, collect.Result{Note: note}, iv)
+			return
+		}
+		// the run deadline (L250): a hung run is cancelled, its loop ticks on; the cancel reaches the driver (pgx
+		// sends a cancel request, go-mssqldb an attention) and a repository write in flight rolls back
+		limit := runDeadline(iv, first)
+		rctx, rcancel := context.WithTimeout(ctx, limit)
+		defer rcancel()
 		// the run's imports taken again after a deadlock (repo.Import counts them) go to its heartbeat row (N4)
 		var retries atomic.Int64
-		res := engines.RunOnce(repo.WithRetryCounter(ctx, &retries), log, r, in, name)
+		res := engines.RunOnce(repo.WithRetryCounter(rctx, &retries), log, r, in, name)
 		res.Retries = int(retries.Load())
+		if res.Err != nil && ctx.Err() == nil && errors.Is(rctx.Err(), context.DeadlineExceeded) {
+			res.Err = fmt.Errorf("timed out after %s: %w", limit, res.Err)
+			res.Outcome = collect.OutcomeTimedOut
+		}
 		if res.Err == nil || ctx.Err() == nil { // task 201: the heartbeat counts the run, never one the stop cut short
 			collect.RecordRunEvery(in.Name, in.Engine, name, res, iv) // task 201 DONE-2 N3: the span's interval
 		}
@@ -348,7 +387,7 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 			log.Warn("collection failed", "instance", in.Name, "collection", name, "err", res.Err)
 		}
 	}
-	run()
+	run(true)
 	t := time.NewTicker(iv)
 	defer t.Stop()
 	for {
@@ -356,7 +395,7 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			run()
+			run(false)
 		}
 	}
 }

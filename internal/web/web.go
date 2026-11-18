@@ -1108,6 +1108,12 @@ func (s *Server) rateLookback(ctx context.Context, id int, collection string) in
 
 // multi runs named queries in order into one JSON object; the first error ends the reply.
 func (s *Server) multi(w http.ResponseWriter, r *http.Request, parts []part) {
+	s.multiPost(w, r, parts, nil)
+}
+
+// multiPost is multi with a rework per named part after its read, for a column a Go rule computes (the streaks'
+// backing-off line, L214: the rule is collect's, shared with the loop, never re-done in SQL).
+func (s *Server) multiPost(w http.ResponseWriter, r *http.Request, parts []part, posts map[string]func(*table)) {
 	out := map[string]*table{}
 	for _, p := range parts {
 		t, err := s.query(r.Context(), p.sql, p.args...)
@@ -1116,6 +1122,9 @@ func (s *Server) multi(w http.ResponseWriter, r *http.Request, parts []part) {
 			return
 		}
 		// a part that read a window cut to its reach carries what it read beside its columns and rows (query's markRead)
+		if f := posts[p.name]; f != nil {
+			f(t)
+		}
 		out[p.name] = t
 	}
 	s.reply(w, r, out, nil)

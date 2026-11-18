@@ -156,6 +156,9 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       + 'Newest read: now against the newest row stored by the collection on any instance; the oldest instance\'s newest read is the instance furthest behind.'));
 
   const failPanel = panel('Failing now', 'failed runs in a row, per instance and collection',
+    // the back-off (L214): an instance whose own connects fail is held by the loop's rule; the words come from the
+    // server (backing_off), the same Go rule the loop reads
+    ...streaks.filter(r => r.backing_off).map(r => el('p', { class: 'state' }, `${r.instance}: ${r.backing_off}`)),
     streaks.length ? grid(streaks, [
       { key: 'instance', fmt: (_v, r) => instLink(ctx, r) }, { key: 'collection' },
       { key: 'fail_streak', label: 'failed in a row', num: true, fmt: fmtNum },
