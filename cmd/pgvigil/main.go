@@ -277,6 +277,7 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	warnInlinePasswords(log, cfg) // L9
 	if cfg.Flags.Once == "" {
 		return fmt.Errorf("collect needs -once <collection>; known: %v", engines.Names())
 	}
@@ -359,6 +360,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	warnInlinePasswords(log, cfg) // L9: an inline PostgreSQL password still loads, with a warning naming the fix
 	for _, w := range collect.CustomWarnings() {
 		log.Warn(w)
 	}

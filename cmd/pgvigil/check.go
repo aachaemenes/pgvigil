@@ -25,6 +25,18 @@ import (
 // written to the repository or to a monitored server. Exit 0 = all OK; 1 = the configuration does not load (or a
 // usage error); 2 = the repository is unreachable or newer than this build; 3 = any WARN or a failed instance.
 
+// inlinePasswordWords: the fix for an inline PostgreSQL password, in the words the load's WARN and 'pgvigil check'
+// share (L9; config.go's sqlserver refusal names the same two reference forms).
+const inlinePasswordWords = "its dsn carries an inline password: move it to a passfile, env:NAME, file:/path or password_secret (the inline form is discouraged)"
+
+// warnInlinePasswords (L9): the collector's load warns once for each PostgreSQL instance whose dsn in pgvigil.yaml
+// carries an inline password - the configuration keeps loading; the password itself is never logged.
+func warnInlinePasswords(log *slog.Logger, cfg *config.Config) {
+	for _, name := range cfg.InlinePasswordInstances() {
+		log.Warn("instance "+name+": "+inlinePasswordWords, "instance", name)
+	}
+}
+
 // checkRow is one line of 'pgvigil check': OK | WARN | FAIL, what it judged, and the words.
 type checkRow struct {
 	Level string `json:"level"`
@@ -103,12 +115,11 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 	}
 	add("OK", "configuration", fmt.Sprintf("%s loads: %d instance(s) in the file", path, len(cfg.Instances)))
 	// C2: the configuration's warnings
+	for _, name := range cfg.InlinePasswordInstances() {
+		add("WARN", "instance "+name, inlinePasswordWords)
+	}
 	for _, in := range cfg.Instances {
 		eng := engineName(in)
-		raw := strings.TrimSpace(in.DSNRaw)
-		if eng == config.EnginePostgres && !strings.HasPrefix(raw, "env:") && !strings.HasPrefix(raw, "file:") && config.HasInlinePGPassword(raw) {
-			add("WARN", "instance "+in.Name, "its dsn carries an inline password: move it to a passfile, env:NAME, file:/path or password_secret (the inline form is discouraged)")
-		}
 		runnable := 0
 		for _, c := range engines.Specs(eng) {
 			if cfg.Interval(in, c.Name, c.Default) <= 0 {

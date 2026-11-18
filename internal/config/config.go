@@ -341,6 +341,27 @@ func HasInlinePGPassword(v string) bool {
 	return kvPassword(l)
 }
 
+// InlinePasswordInstances names the file's PostgreSQL instances whose dsn carries an inline password, in the file's
+// order (L9): never one whose dsn comes through env: or file:, and never a sqlserver instance (an inline password
+// there is refused at load). The collector warns at its load for each, 'pgvigil check' lists them, and the beat
+// carries them to the instance's findings.
+func (c *Config) InlinePasswordInstances() []string {
+	var out []string
+	for _, in := range c.Instances {
+		if in.Engine != "" && in.Engine != EnginePostgres {
+			continue
+		}
+		raw := strings.TrimSpace(in.DSNRaw)
+		if strings.HasPrefix(raw, "env:") || strings.HasPrefix(raw, "file:") || strings.HasPrefix(raw, "dpapi:") {
+			continue
+		}
+		if HasInlinePGPassword(raw) {
+			out = append(out, in.Name)
+		}
+	}
+	return out
+}
+
 // kvPassword reads a libpq keyword/value string (key = value pairs separated by white space; a value may be
 // single-quoted, with \' and \\ inside) and says whether its password keyword holds a value.
 func kvPassword(s string) bool {
