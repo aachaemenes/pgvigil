@@ -30,7 +30,8 @@ dsn: file:/etc/pgvigil/secrets/pg1-3f9c2a1b77e0.dsn
 ```
 
 The command takes the connection string on stdin - never as an argument - writes it to `secrets/` beside the
-configuration and prints the line to put under the instance in place of its `dsn`. On Linux that is a file of mode
-0600 with the configuration folder's owner (run it as root or as the service account); on Windows a DPAPI blob at
+configuration and prints the line to put under the instance in place of its `dsn`. On Linux that is a file with the
+configuration folder's owner and group - mode 0640 under the installer's 0750 folder, so the service reads it as its
+group, 0600 elsewhere (run it as root or as the folder's owner); on Windows a DPAPI blob at
 machine scope and a `dpapi:` reference, readable through the configuration folder's own access list. Each seal
 writes a new file; `pgvigil uninstall -all` removes the folder.

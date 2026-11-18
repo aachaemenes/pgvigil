@@ -354,7 +354,8 @@ func FileSecretDir(configPath string) string { return besideConfig(configPath, "
 // SealFileSecret stores value for a file instance in dir (FileSecretDir) and returns its reference (L9): the same
 // forms as WriteSecret - a DPAPI blob at machine scope on Windows (dpapi:), a file of mode 0600 elsewhere (file:) -
 // but the folder takes its access from the configuration's own folder, which the installer made for the service
-// account: on Windows the new folder inherits that access list, elsewhere folder and file take that folder's owner.
+// account: on Windows the new folder inherits that access list, elsewhere folder and file take that folder's owner,
+// group and mode without the bits for others (a file 0640 where the folder's group may read: the installer's form).
 // WriteSecret's own access list is the page's, set for the account serve runs as; an administrator sealing a secret
 // from a prompt must not become its only reader. Each seal is a file of its own (<name>-<random>).
 func SealFileSecret(dir, name, value string) (string, error) {
