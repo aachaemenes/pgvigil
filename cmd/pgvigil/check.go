@@ -95,6 +95,7 @@ func pgSpecNames() []string {
 func checkRun(ctx context.Context, log *slog.Logger, path string, only []string) ([]checkRow, int) {
 	var rows []checkRow
 	add := func(level, what, words string) { rows = append(rows, checkRow{level, what, words}) }
+	log.Debug("check", "config", path, "only", only)
 	cfg, err := loadConfigAt(path, false)
 	if err != nil {
 		add("FAIL", "configuration", err.Error())

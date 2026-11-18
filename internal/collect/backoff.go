@@ -31,8 +31,8 @@ func BackoffWindow(fails int, last time.Time) (next time.Time, on bool) {
 		n = 10 // 2^10 units is far past the cap already; a long streak never overflows the shift
 	}
 	wait := BackoffUnit << n
-	if cap := backoffCap * BackoffUnit; wait > cap {
-		wait = cap
+	if longest := backoffCap * BackoffUnit; wait > longest {
+		wait = longest
 	}
 	return last.Add(wait), true
 }
