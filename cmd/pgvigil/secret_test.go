@@ -66,3 +66,30 @@ func TestSecretSealWritesAFileRefL9(t *testing.T) {
 		t.Errorf("a refused seal left a file: %d entries before, %d after", len(before), len(after))
 	}
 }
+
+// TestSecretSealFollowsTheInstallersAccessL9 (L9; found reading the Linux installer, service_linux.go L173-187): the
+// installer makes the configuration folder root:<service group> 0750 and its files 0640, so the service reads them as
+// its group. A sealed file must be readable the same way: secrets/ takes the folder's mode without the other bits
+// (0750 here) and the file 0640 when the folder's group may read, 0600 when it may not - a 0700 folder and a 0600 file
+// owned by root would leave the service unable to read its own connection string.
+func TestSecretSealFollowsTheInstallersAccessL9(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(dir, "pgvigil.yaml")
+	if err := os.WriteFile(cfg, []byte("repository:\n  dsn: env:X\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := secretSeal(cfg, "pg1", strings.NewReader("host=h password=zz"), &out); err != nil {
+		t.Fatal(err)
+	}
+	p := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(out.String(), "dsn: ")), "file:")
+	if st, err := os.Stat(filepath.Dir(p)); err != nil || st.Mode().Perm() != 0o750 {
+		t.Errorf("secrets/ under a 0750 configuration folder: %v %v, want 0750 (the service's group enters it)", st.Mode().Perm(), err)
+	}
+	if st, err := os.Stat(p); err != nil || st.Mode().Perm() != 0o640 {
+		t.Errorf("the sealed file under a 0750 configuration folder: %v %v, want 0640 (the service's group reads it)", st.Mode().Perm(), err)
+	}
+}
