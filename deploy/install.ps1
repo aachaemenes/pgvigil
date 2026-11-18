@@ -46,6 +46,25 @@ function Add-MachinePath([string]$dir) {
     }
 }
 
+# A machine whose pgvigil came from the MSI (docs/msi.md) is upgraded and removed with msiexec only: two installers
+# over one service would each undo the other's files. The MSI's UpgradeCode is fixed for every version; Windows
+# Installer keeps it under Installer\UpgradeCodes in its packed form (each of the first three groups reversed, then
+# every pair of the rest swapped).
+function Test-MsiInstall {
+    $upgradeCode = 'E2AB00E7-0D75-4F83-BE94-E0F5EDE96B6C'
+    $hex = $upgradeCode.Replace('-', '')
+    $rev = { param([string]$part) $chars = $part.ToCharArray(); [array]::Reverse($chars); return (-join $chars) }
+    $packed = (& $rev $hex.Substring(0, 8)) + (& $rev $hex.Substring(8, 4)) + (& $rev $hex.Substring(12, 4))
+    foreach ($pair in 0..7) { $packed += (& $rev $hex.Substring(16 + 2 * $pair, 2)) }
+    foreach ($root in 'HKLM:\SOFTWARE\Classes\Installer\UpgradeCodes', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UpgradeCodes') {
+        if (Test-Path -LiteralPath (Join-Path $root $packed)) { return $true }
+    }
+    return $false
+}
+if (Test-MsiInstall) {
+    throw 'pgvigil install: this machine''s pgvigil came from the MSI (its UpgradeCode is installed). Upgrade it with msiexec /i pgvigil-<version>-x64.msi and remove it with msiexec /x - never with this script (docs/msi.md)'
+}
+
 if (-not $From -and ($Fips -or $Plain -or $TrustRoot -or $App -or $UpdateCheck -or $OwnerDsnFile -or $Dump -or $NoDump -or $PgDump)) {
     throw 'pgvigil install: -Fips, -Plain, -TrustRoot, -App, -UpdateCheck and the upgrade switches go with -From <folder>'
 }

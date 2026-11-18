@@ -1,0 +1,122 @@
+name: msi
+
+# pgvigil's MSI (L189): built on windows-latest by WiX 5.0.2 (pinned in packaging/msi/pgvigil.wixproj; ICE validation
+# inside the build) from the tree's own windows/amd64 binary, then proven on the runner: the package holds no
+# custom-action DLL, a silent install makes the service through 'pgvigil install', an upgrade over the previous MSI
+# replaces the file, a downgrade is refused, an uninstall removes the service and the program and keeps the data.
+# Unsigned until the code-signing certificate's secret exists (docs/msi.md); nothing secret is used.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/msi.yml
+      - packaging/msi/**
+      - cmd/pgvigil/install.go
+      - cmd/pgvigil/service_windows.go
+      - docs/install.ps1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: msi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # empty until the code-signing certificate exists: the signing step below runs only with it
+      PGV_SIGN_PFX: ${{ secrets.PGV_SIGN_PFX }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: the windows/amd64 binary of this tree
+        shell: bash
+        run: |
+          mkdir -p out
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o out/pgvigil.exe ./cmd/pgvigil
+      - name: two packages - the previous version (0.0.1) and this one (0.0.2)
+        shell: pwsh
+        run: |
+          $bin = (Resolve-Path out/pgvigil.exe).Path
+          foreach ($v in '0.0.1', '0.0.2') {
+            dotnet build packaging/msi/pgvigil.wixproj -c Release "-p:PgvVersion=$v" "-p:PgvBinary=$bin" -o "out/msi-$v"
+            if ($LASTEXITCODE -ne 0) { throw "the MSI build of $v exited with $LASTEXITCODE" }
+          }
+          Get-ChildItem out/msi-*/*.msi | Format-Table Name, Length
+      - name: the package holds no custom-action DLL (its Binary table is empty or absent)
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path out/msi-0.0.2/pgvigil-0.0.2-x64.msi).Path
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($msi, 0))
+          $names = @()
+          try {
+            $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('SELECT `Name` FROM `Binary`'))
+            $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+            while ($true) {
+              $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+              if (-not $rec) { break }
+              $names += $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, 1)
+            }
+          } catch {
+            Write-Host "no Binary table: $($_.Exception.InnerException.Message)"
+          }
+          if ($names.Count -gt 0) { throw "the MSI's Binary table holds $($names -join ', '): no custom-action DLL may ship (M1)" }
+          Write-Host 'Binary table: empty or absent'
+      - name: silent install of the previous version
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec -ArgumentList '/i', (Resolve-Path out/msi-0.0.1/pgvigil-0.0.1-x64.msi).Path, '/qn', '/l*v', 'out\install-1.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content out\install-1.log -Tail 60; throw "install of 0.0.1 exited with $($p.ExitCode)" }
+          $exe = Join-Path $env:ProgramFiles 'pgvigil\pgvigil.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw "$exe is missing after the install" }
+          Get-Service pgvigil | Format-List Name, Status, StartType
+          & $exe version
+      - name: an upgrade over it
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec -ArgumentList '/i', (Resolve-Path out/msi-0.0.2/pgvigil-0.0.2-x64.msi).Path, '/qn', '/l*v', 'out\install-2.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content out\install-2.log -Tail 60; throw "the upgrade to 0.0.2 exited with $($p.ExitCode)" }
+          $installed = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -eq 'pgvigil' })
+          if ($installed.Count -ne 1 -or $installed[0].DisplayVersion -ne '0.0.2') { throw "after the upgrade: $($installed | ForEach-Object DisplayVersion) installed, want 0.0.2 alone" }
+          Get-Service pgvigil | Format-List Name, Status, StartType
+      - name: a downgrade is refused
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec -ArgumentList '/i', (Resolve-Path out/msi-0.0.1/pgvigil-0.0.1-x64.msi).Path, '/qn', '/l*v', 'out\downgrade.log' -Wait -PassThru
+          if ($p.ExitCode -eq 0) { throw 'the downgrade to 0.0.1 was accepted: MajorUpgrade must refuse it' }
+          $installed = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -eq 'pgvigil' })
+          if ($installed.Count -ne 1 -or $installed[0].DisplayVersion -ne '0.0.2') { throw "after the refused downgrade: $($installed | ForEach-Object DisplayVersion) installed, want 0.0.2 alone" }
+          Write-Host "the downgrade was refused with exit code $($p.ExitCode)"
+      - name: install.ps1 refuses this MSI machine
+        shell: pwsh
+        run: |
+          $refused = $false
+          try { $env:PGVIGIL_NO_SERVICE = ''; & docs/install.ps1 } catch { $refused = "$_" -match 'msiexec'; Write-Host "install.ps1: $_" }
+          if (-not $refused) { throw 'docs/install.ps1 did not refuse a machine whose pgvigil came from the MSI' }
+      - name: an uninstall removes the service and the program, and keeps the data
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec -ArgumentList '/x', (Resolve-Path out/msi-0.0.2/pgvigil-0.0.2-x64.msi).Path, '/qn', '/l*v', 'out\uninstall.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content out\uninstall.log -Tail 60; throw "the uninstall exited with $($p.ExitCode)" }
+          if (Get-Service pgvigil -ErrorAction SilentlyContinue) { throw 'the service pgvigil is still there after the uninstall' }
+          if (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'pgvigil\pgvigil.exe')) { throw 'pgvigil.exe is still there after the uninstall' }
+          Write-Host "kept under ProgramData: $(Test-Path -LiteralPath (Join-Path $env:ProgramData 'pgvigil'))"
+      - name: sign the package (only once the certificate's secret exists)
+        if: ${{ env.PGV_SIGN_PFX != '' }}
+        shell: pwsh
+        run: |
+          throw 'the signing step is written when the code-signing certificate exists (docs/msi.md): until then the MSI ships unsigned'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pgvigil-msi
+          path: |
+            out/msi-0.0.2/*.msi
+            out/*.log

@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  pgvigil's Windows Installer package (L189). Built by pgvigil.wixproj on WixToolset.Sdk 5.0.2 (MS-RL, a build tool
+  only, no fee; WiX v6 starts the Open Source Maintenance Fee - not taken) from the release's own windows/amd64
+  binary: -p:PgvVersion=<x.y.z> -p:PgvBinary=<path to pgvigil.exe>.
+
+  perMachine; the UpgradeCode below is fixed for every version (docs/install.ps1 reads it to refuse an MSI machine);
+  a MajorUpgrade replaces an older version and refuses a downgrade (docs/upgrade.md holds the way back).
+
+  The MSI places ONE file, pgvigil.exe, under %ProgramFiles%\pgvigil. Everything else - the service pgvigil under its
+  virtual account, the ACLs of %ProgramData%\pgvigil, the configuration file - is made by 'pgvigil install', run as a
+  deferred custom action from the installed file (install.go stays the one owner of the service: no ServiceInstall
+  table, no custom-action DLL in the Binary table). A removal runs 'pgvigil uninstall' the same way (the
+  configuration and the data under %ProgramData%\pgvigil are kept, as that verb keeps them); an upgrade stops the
+  service before its old file is replaced and lets the new 'pgvigil install' take it from there.
+
+  No operator group (a named difference from PerformanceMonitor's MSI): pgvigil's access is one model, roles in its
+  own store; a Windows group would be a second door beside it (docs/msi.md).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="pgvigil"
+           Manufacturer="pgvigil"
+           Version="$(var.PgvVersion)"
+           UpgradeCode="E2AB00E7-0D75-4F83-BE94-E0F5EDE96B6C"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Compressed="yes">
+    <SummaryInformation Description="pgvigil $(var.PgvVersion) - the collector and its service" />
+    <MajorUpgrade DowngradeErrorMessage="A newer pgvigil is installed. This installer does not go back: docs/upgrade.md holds the way back." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="pgvigil">
+        <Component Id="PgvigilExe">
+          <File Id="PgvigilExeFile" Name="pgvigil.exe" Source="$(var.PgvBinary)" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <!-- named for the reader and for 'pgvigil install', which makes and secures it: the MSI writes nothing there -->
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATAFOLDER" Name="pgvigil" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="pgvigil" Level="1">
+      <ComponentRef Id="PgvigilExe" />
+    </Feature>
+
+    <!-- M2 (a): the service, its ACLs and the configuration come from 'pgvigil install' (its Windows defaults are
+         these two folders); NT AUTHORITY\SYSTEM runs it (deferred, not impersonated) -->
+    <CustomAction Id="PgvInstall" FileRef="PgvigilExeFile" ExeCommand="install"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <!-- a removal: the service goes with 'pgvigil uninstall'; the configuration and data stay -->
+    <CustomAction Id="PgvUninstall" FileRef="PgvigilExeFile" ExeCommand="uninstall"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <!-- an upgrade's removal of the old version: only stop the service, so its file can be replaced (net.exe waits
+         for the stop); the new version's 'pgvigil install' replaces the service -->
+    <CustomAction Id="PgvStop" Directory="System64Folder" ExeCommand="net.exe stop pgvigil"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="PgvStop" After="InstallInitialize" Condition="UPGRADINGPRODUCTCODE" />
+      <Custom Action="PgvUninstall" After="PgvStop" Condition="(REMOVE=&quot;ALL&quot;) AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="PgvInstall" After="InstallFiles" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>
