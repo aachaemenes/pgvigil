@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 
@@ -38,5 +39,19 @@ func TestInlinePasswordWarnsAtLoadL9(t *testing.T) {
 		if strings.Contains(out, never) {
 			t.Errorf("the warnings hold %q (an instance that must not warn, or the password itself):\n%s", never, out)
 		}
+	}
+}
+
+// TestRunNotesInlinePasswordsL9 (L9, 0455): 'pgvigil run' hands the inline-password list to the repository once its
+// heartbeat has started (the finding's source), after the load's WARN.
+func TestRunNotesInlinePasswordsL9(t *testing.T) {
+	b, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	i, j := strings.Index(s, "collect.StartHeartbeat("), strings.Index(s, "collect.NoteInlinePasswords(")
+	if i < 0 || j < 0 || j < i {
+		t.Errorf("main.go: collect.NoteInlinePasswords after collect.StartHeartbeat (positions %d, %d)", i, j)
 	}
 }
