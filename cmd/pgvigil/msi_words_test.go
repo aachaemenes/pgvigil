@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -93,5 +94,25 @@ func TestInstallScriptRefusesAnMSIMachineL189(t *testing.T) {
 		if !strings.Contains(ps, want) {
 			t.Errorf("docs/install.ps1 lacks %q (the named way on an MSI machine)", want)
 		}
+	}
+}
+
+// TestInstallScriptNativeCallsWrapped (L189, the lead's 15:28 - sqltoolsbuild-s2's finding): install.ps1 runs under
+// $ErrorActionPreference = 'Stop', and Windows PowerShell 5.1 turns a native program's stderr into an error record
+// wherever it is redirected (ISE, a remoting session, '2>&1 | Tee-Object'): a SUCCESSFUL 'pgvigil install' then throws on
+// its first slog INFO line. Every call of the downloaded pgvigil.exe goes through the script's Invoke-Native (stderr read
+// under 'Continue', judged by the exit code) - none is a bare '& <exe> install'.
+func TestInstallScriptNativeCallsWrapped(t *testing.T) {
+	ps := readRepoFile(t, "docs/install.ps1")
+	bare := regexp.MustCompile(`(?m)^\s*&\s*(\$exe|\(Join-Path \$work \$asset\))\s+(@up|install)\b`)
+	for _, m := range bare.FindAllString(ps, -1) {
+		t.Errorf("install.ps1 runs pgvigil.exe bare under 'Stop' (5.1 throws on its stderr in ISE): %q - call it through Invoke-Native", strings.TrimSpace(m))
+	}
+	wrapped := regexp.MustCompile(`Invoke-Native\s*\{\s*&\s*(\$exe|\(Join-Path \$work \$asset\))\s+(@up|install)\b`)
+	if n := len(wrapped.FindAllString(ps, -1)); n != 3 {
+		t.Errorf("install.ps1 has %d install calls through Invoke-Native, want 3 (the offline upgrade and install, the online install)", n)
+	}
+	if dep := readRepoFile(t, "deploy/install.ps1"); dep != ps {
+		t.Errorf("deploy/install.ps1 differs from docs/install.ps1 (scripts/proof-install.sh L40 compares them)")
 	}
 }
