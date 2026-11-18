@@ -278,7 +278,12 @@ func checkSpace(ctx context.Context, rc *pgx.Conn, dsn string, size int64, add f
 		add("OK", "repository space", "not read: the store's directory is not readable to this process")
 		return
 	}
-	free, err := freeBytes(dir)
+	// the platform's own read (the upgrade's: statfs on Linux, GetDiskFreeSpaceEx on Windows); none elsewhere
+	if upgradeHooksOf == nil || upgradeHooksOf.freeBytes == nil {
+		add("OK", "repository space", "not read: no free-space read on this platform")
+		return
+	}
+	free, err := upgradeHooksOf.freeBytes(dir)
 	if err != nil {
 		add("OK", "repository space", "not read: "+err.Error())
 		return
