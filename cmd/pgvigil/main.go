@@ -400,6 +400,10 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer waitBeat() // the last minute and the stop mark are written before the process ends
+	// L9 (0455): the instances whose dsn carries an inline password become a finding on each - the names only
+	if err := collect.NoteInlinePasswords(ctx, cfg.InlinePasswordInstances()); err != nil {
+		log.Warn("the inline-password finding was not written", "err", err)
+	}
 	go func() {
 		if err := dbadash.Run(ctx, log, cfg.Repository.DSN(), cfg.DBADash); err != nil {
 			log.Warn("dbadash door stopped", "err", err)
