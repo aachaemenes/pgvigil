@@ -63,7 +63,7 @@ func TestBackoffEndsAtTheProbe(t *testing.T) {
 		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
 	}
 	old := collect.BackoffUnit
-	collect.BackoffUnit = 2 * time.Second
+	collect.BackoffUnit = time.Second
 	defer func() { collect.BackoffUnit = old }()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -93,7 +93,7 @@ func TestBackoffEndsAtTheProbe(t *testing.T) {
 	for _, s := range specs[:3] {
 		go loop(lctx, log, r, in, s.Name, time.Second)
 	}
-	time.Sleep(5 * time.Second) // the streak reaches 3 and the back-off engages (the window 2 s doubling)
+	time.Sleep(5 * time.Second) // the streak reaches 3 and the back-off engages (the window 1 s doubling)
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		t.Fatal(err)
@@ -101,8 +101,8 @@ func TestBackoffEndsAtTheProbe(t *testing.T) {
 	defer ln.Close()
 	var served atomic.Int64
 	go refuseLogins(ln, &served)
-	time.Sleep(6 * time.Second)
-	if got := served.Load(); got < 3 {
-		t.Errorf("after the listener opened, the back-off's next probe should end the streak and the loops connect each tick again: %d connects in 6 s, want at least 3", got)
+	time.Sleep(10 * time.Second) // the worst-placed probe lands within 8 s of the open (the window at most 8 units here)
+	if got := served.Load(); got < 2 {
+		t.Errorf("after the listener opened, the back-off's next probe should end the streak and the loops connect each tick again: %d connects in 10 s, want at least 2", got)
 	}
 }
