@@ -327,8 +327,6 @@ func (d DBADashRepo) Every() time.Duration {
 	return d.Interval.Duration
 }
 
-// inlinePassword says whether an inline connection string carries a password: a URL's user:password@ or a password /
-// pwd query key, or an ADO or ODBC segment whose key (trimmed, any case: the driver trims it so) is password or pwd.
 // HasInlinePGPassword says whether a PostgreSQL connection string carries a password inline: a URL's userinfo or
 // password= query (inlinePassword's URL reading), or a libpq keyword/value string's password keyword with a value
 // ('pgvigil check' warns on it, L181/L9; inlinePassword alone reads the sqlserver forms - URL and ';'-separated -
@@ -413,6 +411,8 @@ func kvPassword(s string) bool {
 	return false
 }
 
+// inlinePassword says whether an inline connection string carries a password: a URL's user:password@ or a password /
+// pwd query key, or an ADO or ODBC segment whose key (trimmed, any case: the driver trims it so) is password or pwd.
 func inlinePassword(v string) bool {
 	l := strings.ToLower(strings.TrimSpace(v))
 	if i := strings.Index(l, "://"); i >= 0 {

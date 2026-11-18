@@ -76,7 +76,9 @@ func runCheck(ctx context.Context, log *slog.Logger, args []string) error {
 		fmt.Println(string(b))
 	} else {
 		for _, r := range rows {
-			fmt.Fprintf(os.Stdout, "%-4s %s: %s\n", r.Level, r.What, r.Words)
+			if _, err := fmt.Fprintf(os.Stdout, "%-4s %s: %s\n", r.Level, r.What, r.Words); err != nil {
+				return err
+			}
 		}
 	}
 	if exit == 0 {

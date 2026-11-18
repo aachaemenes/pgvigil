@@ -63,7 +63,7 @@ func TestProbeNotHeldByAGatedCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	var served atomic.Int64
 	go refuseLogins(ln, &served)
 	time.Sleep(12 * time.Second) // the window at the open is at most 4 s; then a connect every 1.5 s

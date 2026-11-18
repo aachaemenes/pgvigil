@@ -28,7 +28,7 @@ func refuseLogins(ln net.Listener, served *atomic.Int64) {
 		}
 		served.Add(1)
 		go func(c net.Conn) {
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 			buf := make([]byte, 512)
 			_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 			if _, err := c.Read(buf); err != nil {
@@ -98,7 +98,7 @@ func TestBackoffEndsAtTheProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	var served atomic.Int64
 	go refuseLogins(ln, &served)
 	time.Sleep(10 * time.Second) // the worst-placed probe lands within 8 s of the open (the window at most 8 units here)
