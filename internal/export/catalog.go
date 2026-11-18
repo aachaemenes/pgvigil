@@ -147,6 +147,7 @@ var tables = []Table{
 	out("collection_runs_long_since", whyMark),
 	window("collector_beats", "at"),
 	state("collector_heartbeat"),
+	state("collector_inline_password"), // L9 (0455): names only, never a connection string
 	state("collector_instances"),
 	window("collector_load", "minute"),
 	window("collector_probe", "minute"),
