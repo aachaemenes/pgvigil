@@ -323,8 +323,9 @@ func writeIfAbsent(path, content string, mode os.FileMode) (bool, error) {
 
 // ownFiles are the files the installer itself puts beside the config (and the folder of the Windows log); reports.dsn
 // is the store reports' login on Windows (reportsDSNFor), which -purge removes with repo.dsn.
-// instances/ and sources/ are the page's credential folders (task 204, config.SecretDir / SourceSecretDir), beside the config.
-var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "reports.dsn", "pgvigil.log", "logs", "instances", "sources"}
+// instances/ and sources/ are the page's credential folders (task 204, config.SecretDir / SourceSecretDir), beside the config;
+// secrets/ is 'pgvigil secret seal''s (L9, config.FileSecretDir).
+var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "reports.dsn", "pgvigil.log", "logs", "instances", "sources", "secrets"}
 
 // dedicatedFolder refuses a config folder that is not the installer's own. The installer sets that
 // folder's permissions and -purge removes it, so it must be named pgvigil, or not exist yet, or hold

@@ -70,3 +70,7 @@ func ResolveDPAPI(path string) (string, error) {
 	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }()
 	return strings.TrimRight(string(unsafe.Slice(out.Data, out.Size)), "\r\n"), nil
 }
+
+// ownedLikeParent (Windows): nothing to do - a folder or file made under the configuration's folder inherits its
+// access list (the installer's: SYSTEM, the Administrators and the service's own account).
+func ownedLikeParent(string) error { return nil }

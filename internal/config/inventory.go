@@ -347,6 +347,46 @@ func WriteSecret(dir, name, value string) (string, error) {
 	return writeSecret(dir, name+"-"+hex.EncodeToString(rnd[:]), value)
 }
 
+// FileSecretDir is the folder 'pgvigil secret seal' writes a file instance's sealed connection string into: secrets/
+// beside the config file (apart from the page's instances/ and sources/).
+func FileSecretDir(configPath string) string { return besideConfig(configPath, "secrets") }
+
+// SealFileSecret stores value for a file instance in dir (FileSecretDir) and returns its reference (L9): the same
+// forms as WriteSecret - a DPAPI blob at machine scope on Windows (dpapi:), a file of mode 0600 elsewhere (file:) -
+// but the folder takes its access from the configuration's own folder, which the installer made for the service
+// account: on Windows the new folder inherits that access list, elsewhere folder and file take that folder's owner.
+// WriteSecret's own access list is the page's, set for the account serve runs as; an administrator sealing a secret
+// from a prompt must not become its only reader. Each seal is a file of its own (<name>-<random>).
+func SealFileSecret(dir, name, value string) (string, error) {
+	if !pageName.MatchString(name) {
+		return "", fmt.Errorf("not a valid instance name for a secret file: %q", name)
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", errors.New("nothing to store")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := ownedLikeParent(dir); err != nil {
+		return "", fmt.Errorf("the secrets folder's access: %w", err)
+	}
+	var rnd [6]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return "", err
+	}
+	ref, err := writeSecret(dir, name+"-"+hex.EncodeToString(rnd[:]), value)
+	if err != nil {
+		return "", err
+	}
+	if p, ok := strings.CutPrefix(ref, "file:"); ok {
+		if err := ownedLikeParent(p); err != nil {
+			_ = os.Remove(p)
+			return "", fmt.Errorf("the secret file's access: %w", err)
+		}
+	}
+	return ref, nil
+}
+
 // RemoveSecret deletes the file a reference names when it lies in dir; a reference elsewhere is left alone.
 func RemoveSecret(dir, ref string) error {
 	_, p, ok := strings.Cut(ref, ":")
