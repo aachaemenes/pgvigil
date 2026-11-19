@@ -121,6 +121,31 @@ DBA Dash reads none of this; pgvigil shows it on the database's Availability tab
 - **Its door** is an `azure:` block on the instance (`subscription`, `resource_group`, `server`, and `cloud`: public, usgov or china). The token is the instance's own Entra identity when its connection signs in with one (a service principal written `<application id>@<tenant>`, or a managed identity), else azidentity's default chain (the environment, a workload identity, a managed identity, the Azure CLI's sign-in). The identity needs `Microsoft.Sql/servers/failoverGroups/read` on the server (Reader, or a custom role with that action), and `Microsoft.Insights/eventtypes/values/read` for the Activity Log, on this server and on each partner (the log is read on both). The Activity Log's call is made at the subscription's scope: whether a grant on the server or its resource group is enough for it is not proven (no identity of the lab's own was made). A refusal is stored with Resource Manager's code and the right it needs; a throttle waits for its Retry-After. Without the block nothing calls Resource Manager: the collection says so. A configuration file's door runs under either site profile; the host's administrator turns it on in pgvigil.yaml on that host, never the page. A discovered (page) instance carries no `azure:` block yet: task B24p.
 - Managed Instance's geo-replication is not read yet (its view is per database).
 
+### A read-only replica (read scale-out)
+
+DBA Dash monitors one as its own instance (3.10.0); so does pgvigil. On Premium, Business Critical and Hyperscale (with
+a secondary replica) read scale-out is on by default, and a connection whose string carries `ApplicationIntent=ReadOnly`
+is routed to a read-only replica of the database (Microsoft Learn, "Read queries on replicas", read 2026-11-19; not in
+Basic, Standard or General Purpose). Name the replica as a second instance: the same server and database, the option
+in its dsn (`applicationintent=ReadOnly`, go-mssqldb's keyword; the page's form takes it, as for an availability
+group's read routing). On it `DATABASEPROPERTYEX(DB_NAME(), 'Updateability')` reads `READ_ONLY`.
+
+- **What it shows is the replica's own.** Microsoft: "When connected to a read-only replica, Dynamic Management Views
+  (DMVs) reflect the state of the replica" - its resource minutes (`sys.dm_db_resource_stats`, with its `replica_role`
+  stored beside each minute), waits, sessions, plan cache and file I/O. master's `sys.resource_stats` and
+  `sys.elastic_pool_resource_stats` return the primary's.
+- **Extended Events.** A session cannot be created on a read-only replica; the four database-scoped sessions made on
+  the primary (`pgvigil mssql-xe -print -form azuresqldb`) replicate to it and are started there on their own
+  (`ALTER EVENT SESSION <name> ON DATABASE STATE = START` over a read-only connection). Until then pgvigil shows each
+  as `stopped`.
+- **Which replica.** Premium and Business Critical route to one read-only replica at a time; Hyperscale can route a new
+  connection to another of its replicas, and a reconnect can land on a replica at another point in time (Microsoft),
+  so one instance's history may come from more than one replica.
+
+Not proven: all of it (no lab has had a Premium, Business Critical or Hyperscale database); Query Store's reads on a
+replica (Microsoft keeps a secondary's queries apart by `replica_group_id`, which pgvigil's reads do not filter by); a
+pooled database's pool figures from a replica.
+
 ## Azure SQL Database elastic pools
 
 A database in an elastic pool is an Azure SQL Database instance like any other; `mssql_pool` adds its pool's figures, a row a minute, and the Elastic pool page (DBA Dash's Azure Summary pool grid and its pool's Pool tab).
