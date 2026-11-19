@@ -66,3 +66,31 @@ func TestKerberosBlockPGAUTH(t *testing.T) {
 		t.Errorf("KRB5_KTNAME alone: %+v, want no PostgreSQL identity (a keytab needs the block's principal)", id)
 	}
 }
+
+// TestPageKerberosKindPGAUTH (PGAUTH M3 task 4): an instance of Admin > Instances signs in by the process's Kerberos
+// identity with auth 'kerberos' - BuildDSN gives the role as the user, no password, and keeps krbsrvname / krbspn
+// from the driver options; a password or a missing role is refused in words; the page door refuses it for a page
+// instance's tools as SQL Server's 'windows' (it is this server's own identity).
+func TestPageKerberosKindPGAUTH(t *testing.T) {
+	dsn, err := BuildDSN(Conn{Engine: EnginePostgres, Auth: "kerberos", Host: "db1.pgv.test", Login: "pgvigil", Extra: "krbsrvname=postgres sslmode=verify-full sslrootcert=system"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"host=db1.pgv.test", "user=pgvigil", "krbsrvname=postgres", "sslmode=verify-full"} {
+		if !strings.Contains(dsn, want) {
+			t.Errorf("BuildDSN = %q: no %q", dsn, want)
+		}
+	}
+	if strings.Contains(dsn, "password") {
+		t.Errorf("BuildDSN = %q: a Kerberos sign-in carries no password", dsn)
+	}
+	if _, err := BuildDSN(Conn{Engine: EnginePostgres, Auth: "kerberos", Host: "db1", Login: "pgvigil", Password: "x"}); err == nil || !strings.Contains(err.Error(), "no password") {
+		t.Errorf("a password with kerberos: %v, want a refusal saying no password is stored", err)
+	}
+	if _, err := BuildDSN(Conn{Engine: EnginePostgres, Auth: "kerberos", Host: "db1"}); err == nil || !strings.Contains(err.Error(), "role") {
+		t.Errorf("no login with kerberos: %v, want a refusal naming the role", err)
+	}
+	if why := PageDoorRefusal("k1", EnginePostgres, "kerberos", ""); !strings.Contains(why, "this server's own identity (kerberos)") {
+		t.Errorf("the page door on kerberos: %q, want the own-identity refusal", why)
+	}
+}
