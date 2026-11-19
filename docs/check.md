@@ -28,7 +28,12 @@ any WARN or a failed instance - so an install script can gate on the code.
   the store's growth; otherwise the line says *not read: the store is on \<host\>*.
 - **Each instance** - the file's and Admin > Instances' enabled inventory, both engines - gets the one connection test
   the Admin page itself uses (10 seconds, at most 8 at a time): who answered, and the collections that will not run
-  there and why. `-instance <name>` narrows the connection tests; the configuration and repository checks still run.
+  there and why. A server this build does not know is a WARN beside its OK line: a PostgreSQL major outside 13 to 18,
+  a SQL Server major outside 13 to 17 (2016 to 2025; Azure SQL Database and Managed Instance answer 12 whatever they
+  run and are not judged by it), or an engine edition pgvigil does not run on (Microsoft Fabric's SQL database, 12,
+  among them). Nothing is refused for it: each collection keeps its own version rule and one whose read breaks fails
+  alone (a named difference from DBA Dash, which refuses an unknown version or edition unless its check is skipped).
+  `-instance <name>` narrows the connection tests; the configuration and repository checks still run.
 
 ## Keeping a password out of pgvigil.yaml
 

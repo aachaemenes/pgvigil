@@ -239,24 +239,8 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 	}
 	wg.Wait()
 	for _, r := range out {
-		switch {
-		case r.why != "":
-			add("FAIL", "instance "+r.in.Name, r.why)
-		case !r.t.OK:
-			add("FAIL", "instance "+r.in.Name, r.t.Detail)
-		default:
-			words := r.t.Detail
-			if r.t.ListNote != "" {
-				words += "; " + r.t.ListNote
-			}
-			if n := len(r.t.NotRun); n > 0 {
-				parts := make([]string, 0, n)
-				for _, nr := range r.t.NotRun {
-					parts = append(parts, nr.Name+" ("+nr.Why+")")
-				}
-				words += fmt.Sprintf("; %d of %d collections will not run there: %s", n, r.t.Collections, strings.Join(parts, ", "))
-			}
-			add("OK", "instance "+r.in.Name, words)
+		for _, row := range instanceCheckRows(r.in.Name, r.t, r.why) {
+			add(row.Level, row.What, row.Words)
 		}
 	}
 	// C5: the exit
@@ -271,6 +255,34 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 		}
 	}
 	return rows, 0
+}
+
+// instanceCheckRows: one instance's rows - a FAIL (why: a dsn that resolved to nothing; or the connection test's own
+// words), or its OK row and, for a server this build does not know (L217), a WARN with what was read.
+func instanceCheckRows(name string, t web.CheckResult, why string) []checkRow {
+	what := "instance " + name
+	switch {
+	case why != "":
+		return []checkRow{{"FAIL", what, why}}
+	case !t.OK:
+		return []checkRow{{"FAIL", what, t.Detail}}
+	}
+	words := t.Detail
+	if t.ListNote != "" {
+		words += "; " + t.ListNote
+	}
+	if n := len(t.NotRun); n > 0 {
+		parts := make([]string, 0, n)
+		for _, nr := range t.NotRun {
+			parts = append(parts, nr.Name+" ("+nr.Why+")")
+		}
+		words += fmt.Sprintf("; %d of %d collections will not run there: %s", n, t.Collections, strings.Join(parts, ", "))
+	}
+	rows := []checkRow{{"OK", what, words}}
+	if t.Unknown != "" {
+		rows = append(rows, checkRow{"WARN", what, t.Unknown})
+	}
+	return rows
 }
 
 // referenceRows (RELNOTES L241): one FAIL for each env: / file: / dpapi: reference of the file that resolves to

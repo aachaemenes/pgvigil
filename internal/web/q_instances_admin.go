@@ -877,6 +877,7 @@ type testResult struct {
 	notRun      []engines.NotRun
 	collections int
 	listNote    string // why the list is missing or partial ("" = read)
+	unknown     string // engines.UnknownServer's words ("" = a server this build knows, or no detect)
 }
 
 // testConnectionList opens one connection (10 s in all, the secret's read inside it), reads who answered, then on the
@@ -917,6 +918,7 @@ func testConnectionList(ctx context.Context, engine, dsn string, sec *secrets.Re
 			return t
 		}
 		t.notRun, t.collections = engines.NotRunning(cfg, in, nil, &info)
+		t.unknown = engines.UnknownServer(nil, &info)
 		return t
 	case config.EnginePostgres:
 		pcfg, err := pgx.ParseConfig(dsn)
@@ -943,6 +945,7 @@ func testConnectionList(ctx context.Context, engine, dsn string, sec *secrets.Re
 			return t
 		}
 		t.notRun, t.collections = engines.NotRunning(cfg, in, &info, nil)
+		t.unknown = engines.UnknownServer(&info, nil)
 		return t
 	}
 	return testResult{detail: "unknown engine " + engine}
