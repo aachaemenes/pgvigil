@@ -3,6 +3,7 @@ package pgkrb
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -97,5 +98,61 @@ func TestProviderReloadPGAUTH(t *testing.T) {
 	p.drop()
 	if p.cl != nil || p.cachedFor(t1) {
 		t.Error("drop kept the client")
+	}
+}
+
+// TestCacheVersionPGAUTH (the lead's 00:35): a credential cache's version is its modification time, its size and its
+// file. kinit -k writes a new file and renames it over the cache, so a rewrite inside the file system's time
+// resolution with the same size is still a new version: the client read from the old file is not reused.
+func TestCacheVersionPGAUTH(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "krb5cc")
+	if err := os.WriteFile(f, []byte("ticket-1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st1, err := os.Stat(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &provider{id: config.KerberosIdentity{CCache: f}, cl: new(client.Client), cc: versionOf(st1)}
+	if !p.cachedFor(versionOf(st1)) {
+		t.Error("the same cache file: the client is not reused")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("no inode in a Windows file's FileInfo: the version there is its time and size")
+	}
+	nf := filepath.Join(dir, "krb5cc.new")
+	if err := os.WriteFile(nf, []byte("ticket-2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(nf, st1.ModTime(), st1.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(nf, f); err != nil {
+		t.Fatal(err)
+	}
+	st2, err := os.Stat(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st2.ModTime().Equal(st1.ModTime()) || st2.Size() != st1.Size() {
+		t.Fatalf("the rig: the new file's time %v and size %d, want %v and %d", st2.ModTime(), st2.Size(), st1.ModTime(), st1.Size())
+	}
+	if p.cachedFor(versionOf(st2)) {
+		t.Error("a new cache file renamed over the old one, of the same time and size (a kinit inside one second): the old client is reused")
+	}
+	if err := os.WriteFile(f, []byte("ticket-3-longer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(f, st1.ModTime(), st1.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	st3, err := os.Stat(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.cc = versionOf(st2)
+	if p.cachedFor(versionOf(st3)) {
+		t.Error("the same file rewritten in place to another size, its time unchanged: the old client is reused")
 	}
 }
