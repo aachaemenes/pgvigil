@@ -340,7 +340,8 @@ func instanceRows(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) (
 	for _, in := range cfg.Instances {
 		out = append(out, instanceRow{in.Name, "file", in.Engine, "enabled", age(in.Name)})
 	}
-	prow, err := pool.Query(ctx, `SELECT name, engine, disabled FROM pgvigil.admin_inventory() ORDER BY name`)
+	// admin_inventory() answers its state row alone (every instance column NULL) when no page instance exists (0193)
+	prow, err := pool.Query(ctx, `SELECT name, engine, disabled FROM pgvigil.admin_inventory() WHERE name IS NOT NULL ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
