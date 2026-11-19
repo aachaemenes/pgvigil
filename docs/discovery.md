@@ -137,7 +137,7 @@ user `auto:<source>`, with the source's login, exactly as a click with nothing t
 - Nothing is removed by itself: a server gone from the account is marked gone, as before.
 
 Not proven: a real account's servers added by themselves (the store rows use the test store as the servers; a cloud
-lab's read is a later lab's leg, on Allen's word).
+lab's read is a later lab's leg).
 
 ## Not proven
 
