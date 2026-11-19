@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jcmturner/gokrb5/v8/client"
 	"github.com/jcmturner/gokrb5/v8/spnego"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -75,5 +77,25 @@ func TestContinuePGAUTH(t *testing.T) {
 	}
 	if _, _, err := g.Continue([]byte("garbage")); err == nil || !strings.Contains(err.Error(), "kerberos: ") {
 		t.Errorf("garbage: %v, want an error in words", err)
+	}
+}
+
+// TestProviderReloadPGAUTH (PGAUTH M3; found writing the review brief): a long-running collector outlives a ticket. A
+// credential cache cannot be renewed by the client (gokrb5's NewFromCCache has no renewal and no way to log in again),
+// so the client read from it is reused only while the file is the version it was read from - the host's kinit -k
+// writes a new one - and a client whose sign-in failed is dropped, so the next sign-in rebuilds it from the files
+// (a keytab replaced after its key was rotated at the KDC).
+func TestProviderReloadPGAUTH(t *testing.T) {
+	t1 := time.Date(2026, 11, 19, 7, 0, 0, 0, time.UTC)
+	p := &provider{id: config.KerberosIdentity{CCache: "/var/lib/pgvigil/krb5cc"}, cl: new(client.Client), ccMod: t1}
+	if !p.cachedFor(t1) {
+		t.Error("the same cache file version: the client is not reused")
+	}
+	if p.cachedFor(t1.Add(time.Second)) {
+		t.Error("a newer cache file: the old client is reused")
+	}
+	p.drop()
+	if p.cl != nil || p.cachedFor(t1) {
+		t.Error("drop kept the client")
 	}
 }
