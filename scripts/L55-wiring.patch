@@ -1,0 +1,443 @@
+diff --git i/internal/web/apipaths_l55_test.go w/internal/web/apipaths_l55_test.go
+new file mode 100644
+index 000000000..81b21d167
+--- /dev/null
++++ w/internal/web/apipaths_l55_test.go
+@@ -0,0 +1,31 @@
++package web
++
++import (
++	"os"
++	"path/filepath"
++	"regexp"
++	"strings"
++	"testing"
++)
++
++// TestNoAbsoluteAPIPathsL55 (RELNOTES L55, the lead's 00:47): every /api fetch and link in the UI goes through apiURL
++// (web/src/api.ts), so a page served under web.base_path reads under it; a new absolute /api/ path in a string in
++// web/src fails here, naming its file and line.
++func TestNoAbsoluteAPIPathsL55(t *testing.T) {
++	files, err := filepath.Glob(filepath.Join("..", "..", "web", "src", "*.ts"))
++	if err != nil || len(files) == 0 {
++		t.Fatalf("web/src: %v (%d files)", err, len(files))
++	}
++	abs := regexp.MustCompile("['\"`]/api/")
++	for _, f := range files {
++		b, err := os.ReadFile(f)
++		if err != nil {
++			t.Fatal(err)
++		}
++		for i, line := range strings.Split(string(b), "\n") {
++			if abs.MatchString(line) {
++				t.Errorf("%s:%d: an absolute /api/ path - write apiURL(...) (web/src/api.ts): %s", filepath.Base(f), i+1, strings.TrimSpace(line))
++			}
++		}
++	}
++}
+diff --git i/web/src/admin_instances.ts w/web/src/admin_instances.ts
+index 245673e99..f727d2b49 100644
+--- i/web/src/admin_instances.ts
++++ w/web/src/admin_instances.ts
+@@ -5,7 +5,7 @@
+ // /proposals (internal/web/q_instances_admin.go). A password goes to the server once and is never shown again: the
+ // server writes it to a credential file of its own and the repository keeps only the file's name. The collector
+ // takes a change within 15 s, without a restart. The route and the tab's entry are the shell's.
+-import { get, Row, rowsOf, Table } from './api';
++import { get, Row, rowsOf, Table, apiURL } from './api';
+ import { Ctx } from './router';
+ import { fleet, fleetWideNote, inTagScope, tagWords, writtenTag } from './fleet';
+ import { badge, Col, el, fmtTime, grid, offControl } from './ui';
+@@ -55,7 +55,7 @@ function cloudCell(r: Row, note: string | undefined): HTMLElement | string {
+ 
+ // send POSTs and answers the server's outcome: a refusal (409) carries its reason, which the status line shows
+ async function send(path: string, data: Record<string, unknown>): Promise<{ ok: boolean; body: Record<string, unknown> }> {
+-  const res = await fetch('/api/' + path, {
++  const res = await fetch(apiURL(path), {
+     method: 'POST', credentials: 'same-origin',
+     headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
+     body: JSON.stringify(data),
+diff --git i/web/src/api.ts w/web/src/api.ts
+index 0dced2635..5acc07fea 100644
+--- i/web/src/api.ts
++++ w/web/src/api.ts
+@@ -37,6 +37,13 @@ export function onCutRead(f: (c: CutRead) => void) { cutHeard.push(f); }
+ // LoginRequired is thrown on a 401: the shell shows the sign-in form.
+ export class LoginRequired extends Error { constructor() { super('login required'); } }
+ 
++// apiURL is an /api read's URL under the base the page was served from: the shell's <base href> when pgvigil is
++// served under a sub-path (web.base_path), else the root. Every /api fetch and link goes through it (the check
++// row internal/web/apipaths_l55_test.go fails on an absolute /api/ path written in web/src).
++export function apiURL(path: string): string {
++  return (document.querySelector('base')?.getAttribute('href') ?? '/') + 'api/' + path;
++}
++
+ async function body(res: Response): Promise<unknown> {
+   if (res.status === 204) return null;
+   return res.json().catch(() => ({ error: res.statusText }));
+@@ -46,7 +53,7 @@ async function body(res: Response): Promise<unknown> {
+ export async function get<T = Table>(path: string, params: Record<string, string | number | undefined> = {}, signal?: AbortSignal): Promise<T> {
+   const q = new URLSearchParams();
+   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') q.set(k, String(v));
+-  const url = '/api/' + path + (q.toString() ? '?' + q : '');
++  const url = apiURL(path) + (q.toString() ? '?' + q : '');
+   const mine = cuts, heard = cutHeard, span = pageSpan;   // this draw's, before the await
+   const res = await fetch(url, { headers: { Accept: 'application/json' }, credentials: 'same-origin', signal });
+   if (res.status === 401) throw new LoginRequired();
+@@ -66,7 +73,7 @@ export async function get<T = Table>(path: string, params: Record<string, string
+ 
+ // post carries the X-Pgvigil header: a cross-site form cannot set it, so the session cookie alone never acts.
+ export async function post<T = unknown>(path: string, data: unknown = {}): Promise<T> {
+-  const res = await fetch('/api/' + path, {
++  const res = await fetch(apiURL(path), {
+     method: 'POST', credentials: 'same-origin',
+     headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
+     body: JSON.stringify(data),
+diff --git i/web/src/app_import.ts w/web/src/app_import.ts
+index 6ea68a77b..1daf1ca3e 100644
+--- i/web/src/app_import.ts
++++ w/web/src/app_import.ts
+@@ -6,7 +6,7 @@
+ // changes, conflicts with a person's entries (each taken only when ticked), unknown servers and databases, refused
+ // lines - and applied as previewed (the preview's digest: a change in between refuses the apply whole). Contacts are
+ // never in the file either way.
+-import { get, Row, rowsOf, Table } from './api';
++import { get, Row, rowsOf, Table, apiURL } from './api';
+ import { Section, exportSection } from './export';
+ import { Col, el, fmtTime, grid } from './ui';
+ import { markNeed } from './needs';
+@@ -38,7 +38,7 @@ const INV_NOTE = 'every line of the inventory, whatever the grid on the page was
+ // the import's request: the file's own bytes as the body (no base64), its kind read by the server from what it holds;
+ // lost: no answer could be read (a proxy's page, a cut connection) - the server may have done the work all the same
+ async function sendFile(bytes: ArrayBuffer, params: Record<string, string>): Promise<{ ok: boolean; body: Answer; lost: boolean }> {
+-  const res = await fetch('/api/admin/applications/import?' + new URLSearchParams(params), {
++  const res = await fetch(apiURL('admin/applications/import?') + new URLSearchParams(params), {
+     method: 'POST', credentials: 'same-origin',
+     headers: { Accept: 'application/json', 'Content-Type': 'application/octet-stream', 'X-Pgvigil': '1' },
+     body: bytes,
+@@ -71,7 +71,7 @@ export function appFileSection(opts: { whyNot: () => string; changed: () => Prom
+     exportSection(book).then(name => say(`Exported ${rows.length} line(s) of the inventory as ${name}.`),
+       (e: unknown) => say(`The export failed: ${(e as Error).message}`, true));
+   });
+-  const csvLink = el('a', { href: '/api/applications/inventory.csv', download: '' }, 'Download the inventory (CSV)');
++  const csvLink = el('a', { href: apiURL('applications/inventory.csv'), download: '' }, 'Download the inventory (CSV)');
+ 
+   const fileIn = el('input', { type: 'file', name: 'file', accept: '.csv,.json,.xlsx,text/csv,application/json', id: 'app-import-file' }) as HTMLInputElement;
+   // the pattern compiles under the v flag the browser uses (an unescaped - in a class is an error there: review C, 5)
+diff --git i/web/src/applications.ts w/web/src/applications.ts
+index cae85f7cc..d90a85496 100644
+--- i/web/src/applications.ts
++++ w/web/src/applications.ts
+@@ -8,7 +8,7 @@
+ // /assign (internal/web/q_applications.go), each refused in the store's own words. Contacts are personal data: read
+ // only when asked, so an export of this page carries them only while they are shown (the page is never mailed). The route and the
+ // tab's entry are the shell's.
+-import { get, Row, rowsOf, Table } from './api';
++import { get, Row, rowsOf, Table, apiURL } from './api';
+ import { fleet, fleetWideNote, folderWords, inTagScope, tagsOf, tagWords } from './fleet';
+ import { Ctx } from './router';
+ import { Col, el, fmtTime, grid, gridModel, offControl } from './ui';
+@@ -36,7 +36,7 @@ const ROLES: [string, string][] = [['business owner', 'business owner'], ['techn
+ const KINDS: [string, string][] = [['team', 'a team (its group address)'], ['person', 'a person']];
+ 
+ async function send(path: string, data: Record<string, unknown>): Promise<{ ok: boolean; body: Record<string, unknown> }> {
+-  const res = await fetch('/api/' + path, {
++  const res = await fetch(apiURL(path), {
+     method: 'POST', credentials: 'same-origin',
+     headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
+     body: JSON.stringify(data),
+diff --git i/web/src/migrate.ts w/web/src/migrate.ts
+index 9138240e6..9c7c95e37 100644
+--- i/web/src/migrate.ts
++++ w/web/src/migrate.ts
+@@ -6,7 +6,7 @@
+ // checklist; DBA Dash's services, with 'stop' once every server they collect is ready. Nothing here writes to DBA Dash
+ // or to a monitored server. Data from GET /api/admin/dbadash_moves, writes POST /api/admin/dbadash_moves
+ // (internal/web/q_migrate.go). The section is mounted by admin_instances.ts.
+-import { get } from './api';
++import { get, apiURL } from './api';
+ import { addChunks, rowAddress } from './move_address';
+ import { badge, el, fmtTime, offControl } from './ui';
+ import { routeWhy } from './needs';
+@@ -34,7 +34,7 @@ const MOVABLE = new Set(['not yet', 'imported only']);
+ const safeName = (s: string) => s.replace(/[^A-Za-z0-9_.@-]+/g, '-').replace(/^[-._@]+|[-._@]+$/g, '').slice(0, 63);
+ 
+ async function post(data: Obj): Promise<{ ok: boolean; code: number; body: Obj }> {
+-  const res = await fetch('/api/admin/dbadash_moves', {
++  const res = await fetch(apiURL('admin/dbadash_moves'), {
+     method: 'POST', credentials: 'same-origin',
+     headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
+     body: JSON.stringify(data),
+diff --git i/web/src/mssql_deadlocks.ts w/web/src/mssql_deadlocks.ts
+index 704beeec0..41d71470e 100644
+--- i/web/src/mssql_deadlocks.ts
++++ w/web/src/mssql_deadlocks.ts
+@@ -4,7 +4,7 @@
+ // the victim marked VICTIM, the resources between them, the edges labelled with the lock mode) with Save XML, the
+ // victim's details, and the processes and resources as grids (the picture's text form).
+ // Data: /api/mssql/xe (state, findings, deadlocks), /api/mssql/xe/deadlock and deadlock.xdl, /api/blocking/history.
+-import { get, Row, rowsOf, Table } from './api';
++import { get, Row, rowsOf, Table, apiURL } from './api';
+ import { xeLossNote } from './mssql_xe';
+ import { lineChart } from './chart';
+ import { Ctx, rangeLabel, window_ } from './router';
+@@ -79,7 +79,7 @@ async function openDeadlock(ctx: Ctx, row: Row, panel: HTMLElement, focus = true
+     const d = rowsOf(t)[0];
+     if (!d) { show(el('p', { class: 'empty' }, 'This deadlock is no longer stored.')); return; }
+     const q = new URLSearchParams({ instance: String(ctx.instance), at: String(row.event_at), key: String(row.event_key) });
+-    const xdl = `/api/mssql/xe/deadlock.xdl?${q}`;
++    const xdl = apiURL(`mssql/xe/deadlock.xdl?${q}`);
+     // the picture from the XML SQL Server wrote; where the XML is not kept, from the processes the collector took out of it
+     let g: DlGraph | null = null, from = '', why = '';
+     if (d.has_graph === true) {
+@@ -154,7 +154,7 @@ export async function mssqlDeadlocksView(ctx: Ctx): Promise<HTMLElement> {
+     const cols: Col[] = [
+       { key: 'event_at', label: 'when', fmt: fmtTime },
+       { key: 'event_key', label: 'graph', fmt: (_, r) => open(r) },
+-      { key: 'has_graph', label: 'XML', fmt: (v, r) => v === true ? el('a', { href: `/api/mssql/xe/deadlock.xdl?${q(r)}`, download: '', 'aria-label': `Save XML: the deadlock of ${fmtTime(r.event_at)}` }, 'Save XML') : 'not kept' },
++      { key: 'has_graph', label: 'XML', fmt: (v, r) => v === true ? el('a', { href: apiURL(`mssql/xe/deadlock.xdl?${q(r)}`), download: '', 'aria-label': `Save XML: the deadlock of ${fmtTime(r.event_at)}` }, 'Save XML') : 'not kept' },
+       { key: 'victim_spid', label: 'victim session', num: true },
+       { key: 'victim_login', label: 'victim login' }, { key: 'victim_program', label: 'victim program' },
+       { key: 'database_names', label: 'databases' }, { key: 'object_names', label: 'objects', wide: true },
+diff --git i/web/src/mssql_plancache.ts w/web/src/mssql_plancache.ts
+index a1aa818ed..d346a7abc 100644
+--- i/web/src/mssql_plancache.ts
++++ w/web/src/mssql_plancache.ts
+@@ -3,7 +3,7 @@
+ // apart, with a scope for the databases that have no Query Store; and what the cache holds per database (single-use
+ // plans, one statement compiled into many plans, how recent the plans are) with its two lists. Data from
+ // /api/mssql/plancache; the route and the tab's entry are the shell's.
+-import { get, post, Row, rowsOf, Table } from './api';
++import { get, post, Row, rowsOf, Table, apiURL } from './api';
+ import { mssqlActionsState } from './mssql_actions';
+ import { openText } from './filedrop';
+ import { lineChart } from './chart';
+@@ -447,7 +447,7 @@ async function planSources(ctx: Ctx, db: string, qh: string, ph: string, box: HT
+     try {
+       let p: PlanReply;
+       if (r.source === 'Query Store') {
+-        const res = await fetch(`/api/mssql/querystore/plan.sqlplan?${new URLSearchParams({ instance: String(ctx.instance), db, plan: String(r.plan_id) })}`, { credentials: 'same-origin' });
++        const res = await fetch(apiURL(`mssql/querystore/plan.sqlplan?${new URLSearchParams({ instance: String(ctx.instance), db, plan: String(r.plan_id) })}`), { credentials: 'same-origin' });
+         if (!res.ok) throw new Error(`the Query Store plan: ${res.status} ${res.statusText}`);
+         p = { state: 'ok', words: 'the plan the Query Store keeps', plan: await res.text(), file: `plan-${db}-qs-${String(r.plan_id)}.sqlplan` };
+       } else if (r.source === 'running') {
+diff --git i/web/src/mssql_querystore.ts w/web/src/mssql_querystore.ts
+index 36eb7a290..71f7dcf37 100644
+--- i/web/src/mssql_querystore.ts
++++ w/web/src/mssql_querystore.ts
+@@ -9,7 +9,7 @@
+ //
+ // The view, the sort, the database and Regressed's baseline ride the page's hash (qs=, qo=, qdb=, qb=), read here as
+ // stmt_filter.ts reads its own; the lead's wiring keeps them on the tab's own links (router.ts).
+-import { get, Row, rowsOf, Table } from './api';
++import { get, Row, rowsOf, Table, apiURL } from './api';
+ import { lineChart } from './chart';
+ import { qsOverlay, qsStrip } from './mssql_queries';
+ import { Ctx, rangeLabel, window_ } from './router';
+@@ -108,7 +108,7 @@ function detailPanel(title: string): { box: HTMLElement; show: (...kids: (Node |
+ function planFile(ctx: Ctx, db: unknown, planId: unknown, state: unknown, note: unknown, inStore: unknown): HTMLElement | string {
+   if (state === 'stored') {
+     const q = new URLSearchParams({ instance: String(ctx.instance), db: text(db), plan: text(planId) });
+-    return el('a', { href: `/api/mssql/querystore/plan.sqlplan?${q}`, download: '', 'aria-label': `Download .sqlplan of plan ${text(planId)}` }, 'Download .sqlplan');
++    return el('a', { href: apiURL(`mssql/querystore/plan.sqlplan?${q}`), download: '', 'aria-label': `Download .sqlplan of plan ${text(planId)}` }, 'Download .sqlplan');
+   }
+   if (state === 'policy') return 'not stored: this instance\'s query_text policy is not "full"';
+   if (state === 'too large') return text(note) || 'not stored: the plan is too large';
+diff --git i/web/src/mssql_xe.ts w/web/src/mssql_xe.ts
+index f03b948c0..f9dc149ef 100644
+--- i/web/src/mssql_xe.ts
++++ w/web/src/mssql_xe.ts
+@@ -5,7 +5,7 @@
+ // events of one shape and the Attentions section). Each says "not installed" with the script's name where the
+ // server's DBA has not created the session, and "stopped" where the session is defined and not started.
+ // Data from /api/mssql/xe and its detail routes; the lead wires the tabs (router.ts, main.ts, pages.ts).
+-import { get, post, Row, rowsOf, Table } from './api';
++import { get, post, Row, rowsOf, Table, apiURL } from './api';
+ import { lineChart } from './chart';
+ import { Ctx, href, rangeLabel, window_ } from './router';
+ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl, props, tile } from './ui';
+@@ -117,7 +117,7 @@ async function openDeadlock(ctx: Ctx, row: Row, panel: ReturnType<typeof detailP
+     if (!d) { panel.show(el('p', { class: 'empty' }, 'This deadlock is no longer stored.')); return; }
+     const q = new URLSearchParams({ instance: String(ctx.instance), at: String(row.event_at), key: String(row.event_key) });
+     const download = d.has_graph === true
+-      ? el('a', { href: `/api/mssql/xe/deadlock.xdl?${q}`, download: '' }, 'Download the deadlock graph (.xdl, opens in SSMS)')
++      ? el('a', { href: apiURL(`mssql/xe/deadlock.xdl?${q}`), download: '' }, 'Download the deadlock graph (.xdl, opens in SSMS)')
+       : el('span', {}, 'The graph XML is not stored: it carries statement text, and this instance\'s query_text policy is not "full".');
+     panel.show(
+       props([
+diff --git i/web/src/pg_backup_dest.ts w/web/src/pg_backup_dest.ts
+index 4c93f5e0a..3c6705663 100644
+--- i/web/src/pg_backup_dest.ts
++++ w/web/src/pg_backup_dest.ts
+@@ -3,7 +3,7 @@
+ // the tool's own configuration when read_tools is on), the managed platforms' line, and a person's entry shown BESIDE
+ // a read value, never over it. Data from /api/pg/backup_dest; the join wires the section into the Base backups tab and
+ // the fleet columns into the fleet Backups section (pg_backups.ts: one import and a few lines each).
+-import { get, Row, rowsOf, Table } from './api';
++import { get, Row, rowsOf, Table, apiURL } from './api';
+ import { AckData, offBeside, seatWhy } from './ack';
+ import { badge, Col, el, errorBox, fmtTime, grid, props } from './ui';
+ import { markNeed, routeWhy } from './needs';
+@@ -48,7 +48,7 @@ function entryDialog(instanceId: number, name: string, r: Row, after: () => void
+     msg.textContent = 'Saving...';
+     void (async () => {
+       try {
+-        const res = await fetch('/api/pg/backup_dest', { method: 'POST', credentials: 'same-origin',
++        const res = await fetch(apiURL('pg/backup_dest'), { method: 'POST', credentials: 'same-origin',
+           headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
+           body: JSON.stringify({ instance_id: instanceId, role: r.role, text: text.value, note: note.value }) });
+         let b: { outcome?: string; detail?: string; error?: string } = {};
+diff --git i/web/src/pg_backups.ts w/web/src/pg_backups.ts
+index 8a3d2904b..3b0ca97e1 100644
+--- i/web/src/pg_backups.ts
++++ w/web/src/pg_backups.ts
+@@ -12,7 +12,7 @@
+ //   pgThresholdsView        the fleet Thresholds page: every key at the root, a tag, an instance or a database
+ //   pgBaseBackupsFleetSection  the base-backup section of the fleet Backups root (the join adds it to backups.ts)
+ // Every write goes through a dialog that says what it changes; the server answers done or the reason it refused.
+-import { get, Row, rowsOf, Table } from './api';
++import { get, Row, rowsOf, Table, apiURL } from './api';
+ import { AckBody, AckData, ackDialog, ackWhy, loadAckSafe, offBeside, seatWhy, writeButton } from './ack';
+ import { needControl, needWords } from './needs';
+ import { Ctx, href } from './router';
+@@ -83,7 +83,7 @@ export function thresholdDialog(key: Row, place: ThresholdPlace, current: Row |
+     if (op === 'set') { body.warn = warn.value === '' ? null : warn.value; body.crit = crit.value === '' ? null : crit.value; }
+     try {
+       // a refusal is 409 with {outcome, detail, error}: shown as '<outcome>: <detail>' (task 176b)
+-      const res = await fetch('/api/pg/thresholds', { method: 'POST', credentials: 'same-origin',
++      const res = await fetch(apiURL('pg/thresholds'), { method: 'POST', credentials: 'same-origin',
+         headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' }, body: JSON.stringify(body) });
+       let b: { outcome?: string; detail?: string; error?: string } = {};
+       try { b = await res.json(); } catch { /* an empty or non-JSON body */ }
+diff --git i/web/src/reports.ts w/web/src/reports.ts
+index f6889ac64..1702abc34 100644
+--- i/web/src/reports.ts
++++ w/web/src/reports.ts
+@@ -5,7 +5,7 @@
+ // tools), named by its h3, so the shell's Export .xlsx gives one sheet per grid. Data: /api/reports?r=<report>
+ // (internal/web/q_reports.go); New / Deleted Databases read /api/dbchanges, the PostgreSQL deadlocks /api/pg/deadlocks
+ // and the PostgreSQL table sizes /api/tablesize, as their own pages do.
+-import { get, Row, rowsOf, Table } from './api';
++import { get, Row, rowsOf, Table, apiURL } from './api';
+ import { lineChart, ringChart, Slice } from './chart';
+ import { deadlockSvg, DlGraph, graphFromRows, graphFromXml } from './deadlock_graph';
+ import { hrefWith } from './dbinfo';
+@@ -246,7 +246,7 @@ const procsOf = (d: Dl, mode: string) => mode === 'victims' ? d.processes.filter
+ 
+ async function graphPanel(ctx: Ctx, d: Dl, panel: HTMLElement) {
+   const q = new URLSearchParams({ instance: String(d.instance_id), at: d.event_at, key: d.event_key });
+-  const xdl = `/api/mssql/xe/deadlock.xdl?${q}`;
++  const xdl = apiURL(`mssql/xe/deadlock.xdl?${q}`);
+   // SQL Server: the XML the server wrote where it is kept (as the instance's Deadlocks tab draws it); else the processes
+   let g: DlGraph | null = null;
+   if (d.engine === 'sqlserver' && d.has_graph) {
+diff --git i/web/src/request.ts w/web/src/request.ts
+index 3972cc501..3e0373cc2 100644
+--- i/web/src/request.ts
++++ w/web/src/request.ts
+@@ -6,7 +6,7 @@
+ // the Cancel button kept; the wait ends when its status line leaves the page. The result is the asker's alone (another
+ // user's GET is refused by the server).
+ // Data: GET /api/requests/{id}?wait=N, POST /api/requests/{id}/cancel (internal/web/q_requests.go).
+-import { LoginRequired, post } from './api';
++import { LoginRequired, post, apiURL } from './api';
+ import { resultView } from './customreports';
+ import { asRun, RequestEnd, stateWords } from './requestend';
+ import { badge, el, fmtNum } from './ui';
+@@ -31,7 +31,7 @@ class Unanswered extends Error {}
+ async function readEnd(id: number, signal: AbortSignal): Promise<RequestEnd> {
+   let res: Response;
+   try {
+-    res = await fetch(`/api/requests/${id}?wait=25`, { headers: { Accept: 'application/json' }, credentials: 'same-origin', signal });
++    res = await fetch(apiURL(`requests/${id}?wait=25`), { headers: { Accept: 'application/json' }, credentials: 'same-origin', signal });
+   } catch (e) {
+     if (signal.aborted) throw e;
+     throw new Unanswered(String((e as Error).message ?? e));
+diff --git i/web/src/stmt_filter.ts w/web/src/stmt_filter.ts
+index 7dae55afe..faba79b11 100644
+--- i/web/src/stmt_filter.ts
++++ w/web/src/stmt_filter.ts
+@@ -5,7 +5,7 @@
+ //
+ // The ticks and the grouping ride the page's hash (sg=<group>, sdb / suser / scl repeated), so a link keeps them;
+ // the router keeps them on the Statements tab's own links (a sort, a range change) through the lead's wiring in router.ts.
+-import { Row, rowsOf, Table } from './api';
++import { Row, rowsOf, Table, apiURL } from './api';
+ import { LoginRequired } from './api';
+ import { Ctx, window_ } from './router';
+ import { Col, el, errorBox, fmtNum, grid } from './ui';
+@@ -54,7 +54,7 @@ export async function readStmtGroups(ctx: Ctx, signal?: AbortSignal): Promise<St
+   if (w.from) q.set('from', w.from);
+   if (w.to) q.set('to', w.to);
+   for (const [dim, vs] of Object.entries(ticks)) for (const v of vs) q.append(dim, v);
+-  const res = await fetch('/api/stmtgroups?' + q.toString(), { headers: { Accept: 'application/json' }, credentials: 'same-origin', signal });
++  const res = await fetch(apiURL('stmtgroups?') + q.toString(), { headers: { Accept: 'application/json' }, credentials: 'same-origin', signal });
+   if (res.status === 401) throw new LoginRequired();
+   const b = await res.json().catch(() => ({ error: res.statusText }));
+   if (!res.ok) throw new Error((b as { error?: string }).error ?? res.statusText);
+diff --git i/web/src/tree_settings.ts w/web/src/tree_settings.ts
+index f10de00d0..f1cd40de3 100644
+--- i/web/src/tree_settings.ts
++++ w/web/src/tree_settings.ts
+@@ -3,7 +3,7 @@
+ // write (op 'settings', with the settings as read: a change made meanwhile elsewhere is refused, never undone) - it
+ // prints no pgvigil.yaml line, which for an instance added here would make the page's instance drop out. treemenu.ts
+ // draws an instance of pgvigil.yaml as before (the lines to copy) and hands a page instance to these two.
+-import { Row, rowsOf, Table } from './api';
++import { Row, rowsOf, Table, apiURL } from './api';
+ import { badge, el, fmtNum, fmtSecs, fmtTime } from './ui';
+ import { needControl } from './needs';
+ import { Answer, checkEvery, everyWords, fileOffOf, offOf, parseEvery, pauseResumeOf, saveSettings, Stored, withSchedule } from './settings_model';
+@@ -26,7 +26,7 @@ function readOnlyNote(d: PageCollections): HTMLElement {
+ 
+ // postAdmin POSTs a write of Admin > Instances and answers the server's outcome (a refusal, 409, carries its reason)
+ async function postAdmin(path: string, data: Record<string, unknown>): Promise<Answer> {
+-  const res = await fetch('/api/' + path, {
++  const res = await fetch(apiURL(path), {
+     method: 'POST', credentials: 'same-origin',
+     headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
+     body: JSON.stringify(data),
+diff --git i/web/src/uptimedialog.ts w/web/src/uptimedialog.ts
+index 62a53f781..87638b720 100644
+--- i/web/src/uptimedialog.ts
++++ w/web/src/uptimedialog.ts
+@@ -11,7 +11,7 @@
+ // The writes go through POST /api/pg/thresholds with its doors (the header, a signed-in user, the actions
+ // configuration); Clear Alert and Acknowledge are pgvigil's acknowledgements (POST /api/ack), held until the start or
+ // the newest dump changes. summaryCellAction is the Summary cell's hook: Uptime opens its dialog in place.
+-import { get, Row, rowsOf, Table } from './api';
++import { get, Row, rowsOf, Table, apiURL } from './api';
+ import { ackOn, ackWhy, addAck, checkAcks, endAck, loadAckSafe, liveRows, offBeside, onDoor, seatWhy } from './ack';
+ import { humanize, sinceState } from './fleet';
+ import { badge, el, fmtTime } from './ui';
+@@ -19,7 +19,7 @@ import { needControl } from './needs';
+ 
+ // a POST that shows a refusal as '<outcome>: <detail>' (the thresholds write answers 409 with {outcome, detail, error})
+ async function send(body: Record<string, unknown>): Promise<{ outcome: string; detail: string }> {
+-  const res = await fetch('/api/pg/thresholds', {
++  const res = await fetch(apiURL('pg/thresholds'), {
+     method: 'POST', credentials: 'same-origin',
+     headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
+     body: JSON.stringify(body),
+diff --git i/web/src/views.ts w/web/src/views.ts
+index b0ce9200c..42502619e 100644
+--- i/web/src/views.ts
++++ w/web/src/views.ts
+@@ -12,7 +12,7 @@
+ // viewControl is the page's 'View: <name>' button and its lines: the page's own items, {None}, the shared views and
+ // the user's own, the loaded one ticked; Save, Save as..., Rename..., Delete... - each off with the server's reason
+ // when this user may not (saving off: demo, -no-login, no audit login; a shared view below the admin role: B24f).
+-import { Table, rowsOf } from './api';
++import { Table, rowsOf, apiURL } from './api';
+ import { Layout, layerState, layoutsOf, setLayer } from './gridtools';
+ import { Ctx, hashKeys, href, noteAddress, pageKeyOf, viewPageKeys } from './router';
+ import { el, showMenu } from './ui';
+@@ -37,7 +37,7 @@ const lists = new Map<string, Promise<ListReply | null>>();   // per page key fo
+ const toRow = (r: Record<string, unknown>): ViewRow => ({ ...r, view_id: Number(r.view_id), version: Number(r.version) } as unknown as ViewRow);
+ 
+ async function call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ code: number; body: Record<string, unknown> | null }> {
+-  const res = await fetch('/api/' + path, {
++  const res = await fetch(apiURL(path), {
+     method, credentials: 'same-origin',
+     headers: { Accept: 'application/json', 'X-Pgvigil': '1', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+     ...(body ? { body: JSON.stringify(body) } : {}),
