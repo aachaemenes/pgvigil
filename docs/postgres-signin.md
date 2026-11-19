@@ -39,7 +39,8 @@ directory account's password and a session that checks the server's certificate:
   from a public CA): a server whose certificate comes from a private CA needs its CA file, which is `pgvigil.yaml`'s.
 - **pgvigil.yaml:** the dsn with `sslmode=verify-full` and `sslrootcert=/path/to/ca.pem` (or `system`), the password
   from a passfile, `env:NAME`, `file:/path` or `password_secret` - never inline in the dsn (an inline password warns at
-  load).
+  load). pgvigil's driver (pgx) knows no `hostaddr`: it would reach the server as a setting the server refuses, so
+  the address goes in `host`.
 
 ```yaml
 instances:

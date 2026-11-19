@@ -27,7 +27,7 @@
 # Expected (written before the first run):
 #  D  the three images pulled, their digests printed.
 #  L1 ldap, sslmode=verify-full with the proof's CA: psql signs in; SYSTEM_USER = 'ldap:uid=pgvigil,ou=people,dc=pgv,dc=test';
-#     pg_stat_ssl.ssl true; 'pgvigil check' on the instance: OK 'connected: PostgreSQL <PG>..., as pgvigil', no WARN.
+#     pg_stat_ssl.ssl true (as text 'true'); 'pgvigil check' on the instance: OK 'connected: PostgreSQL <PG>..., as pgvigil', no WARN.
 #  L2 ldap, sslmode=require: check OK and a WARN 'the server signs this login in by ldap ... sslmode=require checks no
 #     server certificate', exit 3.
 #  L3 ldap, sslmode=disable: the WARN begins 'this session runs without TLS:'.
@@ -39,8 +39,8 @@
 #     P3 a wrong password: FAIL ('PAM authentication failed for user "pgvpam"').
 #  S  scram-sha-256, sslmode=prefer: SYSTEM_USER 'scram-sha-256:pgvscram', check OK, no WARN (no password crosses).
 #  T  trust: SYSTEM_USER NULL, check OK, no WARN.
-#  X1 (M2) cert, verify-full, the client certificate for CN=pgvcert: SYSTEM_USER 'cert:pgvcert|t' [inferred: clientname
-#     defaults to CN, auth.c's CheckCertAuth sets the CN as the identity], check OK, no WARN (no password crosses);
+#  X1 (M2) cert, verify-full, the client certificate for CN=pgvcert: SYSTEM_USER 'cert:CN=pgvcert|true' (the
+#     certificate's DN: read in pga-3, where the first EXPECTED's [inferred] CN alone was wrong), check OK, no WARN;
 #     X2 a certificate of another CN: FAIL 'certificate authentication failed for user "pgvcert"'; X3 sslkey naming a file
 #     that is not there: FAIL in words naming the key file.
 #  C  per method (ldap, radius, pam at verify-full): every PostgreSQL collection once ('collect -once'), each ok or
@@ -149,9 +149,10 @@ printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$WORK/m.ya
 "$BIN" migrate -config "$WORK/m.yaml" > "$WORK/migrate.out" 2>&1 || { tail -3 "$WORK/migrate.out"; fail "the store did not migrate"; }
 
 # pf <name> <user> <password> <sslmode> [sslrootcert]: the instance's passfile and dsn (the password never inline)
-# (a passfile line is matched against host=, never hostaddr=: its host field is '*')
+# (pgx knows no hostaddr - it would send it to the server as a setting - so host=localhost alone: the published port is
+# 127.0.0.1's and pgx tries each address localhost resolves to; a passfile line is matched against host=, its field '*')
 pf() { printf '*:%s:*:%s:%s\n' "$PORT" "$2" "$3" > "$WORK/$1.pgpass"
-  echo "host=localhost hostaddr=127.0.0.1 port=$PORT dbname=postgres user=$2 sslmode=$4${5:+ sslrootcert=$5} passfile=$WORK/$1.pgpass connect_timeout=10"; }
+  echo "host=localhost port=$PORT dbname=postgres user=$2 sslmode=$4${5:+ sslrootcert=$5} passfile=$WORK/$1.pgpass connect_timeout=10"; }
 # check <name> <dsn>: 'pgvigil check' on one instance; its output and exit into $WORK/<name>.check
 check() { printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances:\n  - name: %s\n    engine: postgres\n    dsn: "%s"\n' "$1" "$2" > "$WORK/$1.yaml"
   set +e; "$BIN" check -config "$WORK/$1.yaml" > "$WORK/$1.check" 2>&1; echo "exit $?" >> "$WORK/$1.check"; set -e; }
@@ -176,27 +177,27 @@ row() { # row <label> <name> <dsn> <system_user|ssl wanted or -> <OK|WARN|FAIL> 
 }
 CA=$WORK/certs/ca.pem
 echo "== L: ldap"
-row L1 l1 "$(pf l1 pgvigil "$LDAP_PW" verify-full "$CA")" "ldap:uid=pgvigil,ou=people,dc=pgv,dc=test|t" OK ""
+row L1 l1 "$(pf l1 pgvigil "$LDAP_PW" verify-full "$CA")" "ldap:uid=pgvigil,ou=people,dc=pgv,dc=test|true" OK ""
 row L2 l2 "$(pf l2 pgvigil "$LDAP_PW" require)" - WARN "by ldap"
 has l2 "sslmode=require checks no server certificate" || bad "L2: the WARN does not name sslmode=require"
 row L3 l3 "$(pf l3 pgvigil "$LDAP_PW" disable)" - WARN "this session runs without TLS:"
 row L4 l4 "$(pf l4 pgvigil wrong-password verify-full "$CA")" - FAIL 'LDAP authentication failed for user "pgvigil"'
 row L5 l5 "$(pf l5 pgvigil "$LDAP_PW" verify-full "$WORK/certs/other.pem")" - FAIL "certificate"
 echo "== R: radius"
-row R1 r1 "$(pf r1 pgvrad "$RAD_PW" verify-full "$CA")" "radius:pgvrad|t" OK ""
+row R1 r1 "$(pf r1 pgvrad "$RAD_PW" verify-full "$CA")" "radius:pgvrad|true" OK ""
 row R2 r2 "$(pf r2 pgvrad "$RAD_PW" require)" - WARN "by radius"
 row R3 r3 "$(pf r3 pgvrad wrong-password verify-full "$CA")" - FAIL 'RADIUS authentication failed for user "pgvrad"'
 echo "== P: pam"
-row P1 p1 "$(pf p1 pgvpam "$PAM_PW" verify-full "$CA")" "pam:pgvpam|t" OK ""
+row P1 p1 "$(pf p1 pgvpam "$PAM_PW" verify-full "$CA")" "pam:pgvpam|true" OK ""
 row P2 p2 "$(pf p2 pgvpam "$PAM_PW" require)" - WARN "by pam"
 row P3 p3 "$(pf p3 pgvpam wrong-password verify-full "$CA")" - FAIL 'PAM authentication failed for user "pgvpam"'
 echo "== S, T: the controls"
-row S s1 "$(pf s1 pgvscram "$SCRAM_PW" prefer)" "scram-sha-256:pgvscram|t" OK ""
-row T t1 "$(pf t1 pgvtrust x prefer)" "NULL|t" OK ""
+row S s1 "$(pf s1 pgvscram "$SCRAM_PW" prefer)" "scram-sha-256:pgvscram|true" OK ""
+row T t1 "$(pf t1 pgvtrust x prefer)" "NULL|true" OK ""
 
 echo "== X: client certificates (M2)"
-cd0="host=localhost hostaddr=127.0.0.1 port=$PORT dbname=postgres user=pgvcert sslmode=verify-full sslrootcert=$CA connect_timeout=10"
-row X1 x1 "$cd0 sslcert=$WORK/certs/pgvcert.pem sslkey=$WORK/certs/pgvcert.key" "cert:pgvcert|t" OK ""
+cd0="host=localhost port=$PORT dbname=postgres user=pgvcert sslmode=verify-full sslrootcert=$CA connect_timeout=10"
+row X1 x1 "$cd0 sslcert=$WORK/certs/pgvcert.pem sslkey=$WORK/certs/pgvcert.key" "cert:CN=pgvcert|true" OK ""
 row X2 x2 "$cd0 sslcert=$WORK/certs/pgvother.pem sslkey=$WORK/certs/pgvother.key" - FAIL 'certificate authentication failed for user "pgvcert"'
 row X3 x3 "$cd0 sslcert=$WORK/certs/pgvcert.pem sslkey=$WORK/certs/no-such.key" - FAIL "no-such.key"
 
