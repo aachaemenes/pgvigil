@@ -13,12 +13,17 @@ import (
 )
 
 // TestSecretSealWritesAFileRefL9 (L9): 'pgvigil secret seal -name <instance>' takes the connection string on stdin
-// and writes it to secrets/ beside the configuration - a file of mode 0600 in a folder of mode 0700 (the form on
-// Linux; a DPAPI blob and a dpapi: reference on Windows) - and prints the reference line for pgvigil.yaml. The value
-// is never printed; config.Resolve reads it back; each seal is a file of its own; an empty value and a name that is
-// not an instance name are refused and write nothing.
+// and writes it to secrets/ beside the configuration - under an owner-only (0700) configuration folder a file of mode
+// 0600 in a folder of mode 0700 (the form on Linux; a DPAPI blob and a dpapi: reference on Windows; a folder its group
+// may read is TestSecretSealFollowsTheInstallersAccessL9's) - and prints the reference line for pgvigil.yaml. The
+// value is never printed; config.Resolve reads it back; each seal is a file of its own; an empty value and a name that
+// is not an instance name are refused and write nothing.
 func TestSecretSealWritesAFileRefL9(t *testing.T) {
 	dir := t.TempDir()
+	// t.TempDir's mode follows the umask, and the sealed file's access follows the folder's
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	cfg := filepath.Join(dir, "pgvigil.yaml")
 	if err := os.WriteFile(cfg, []byte("repository:\n  dsn: env:X\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -41,10 +46,10 @@ func TestSecretSealWritesAFileRefL9(t *testing.T) {
 	}
 	p := strings.TrimPrefix(ref, "file:")
 	if st, err := os.Stat(p); err != nil || st.Mode().Perm() != 0o600 {
-		t.Errorf("the sealed file's mode: %v %v, want 0600", st.Mode().Perm(), err)
+		t.Errorf("the sealed file's mode under a 0700 configuration folder: %v %v, want 0600", st.Mode().Perm(), err)
 	}
 	if st, err := os.Stat(filepath.Dir(p)); err != nil || st.Mode().Perm() != 0o700 {
-		t.Errorf("the secrets folder's mode: %v %v, want 0700", st.Mode().Perm(), err)
+		t.Errorf("the secrets folder's mode under a 0700 configuration folder: %v %v, want 0700", st.Mode().Perm(), err)
 	}
 	// a second seal of the same name is a file of its own: the first reference still reads
 	var out2 bytes.Buffer
