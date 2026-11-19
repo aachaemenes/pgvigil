@@ -10,8 +10,10 @@ package pgkrb
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jcmturner/gokrb5/v8/client"
@@ -23,13 +25,26 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
-// provider is the process's one identity: its client is made and signed in at the first gss sign-in and kept (its
-// ticket-granting ticket and service tickets are reused and renewed by gokrb5); a failure is kept for no one - the next
-// sign-in tries again.
+// provider is the process's one identity: its client is made and signed in at the first gss sign-in and kept. From a
+// keytab gokrb5 renews the ticket-granting ticket and logs in again by itself; a credential cache cannot be renewed by
+// the client, so its client is kept only while the cache file is the version it was read from (the host's kinit -k
+// writes a new one). A sign-in that fails drops the client: the next one rebuilds it from the files (a keytab
+// replaced after its key was rotated at the KDC).
 type provider struct {
-	id config.KerberosIdentity
-	mu sync.Mutex
-	cl *client.Client
+	id    config.KerberosIdentity
+	mu    sync.Mutex
+	cl    *client.Client
+	ccMod time.Time // the credential cache file's modification time the client was read from
+}
+
+// cachedFor says whether the kept client was read from the cache file of this modification time
+func (p *provider) cachedFor(mod time.Time) bool { return p.cl != nil && mod.Equal(p.ccMod) }
+
+// drop forgets the client (a failed sign-in): the next sign-in builds a new one
+func (p *provider) drop() {
+	p.mu.Lock()
+	p.cl = nil
+	p.mu.Unlock()
 }
 
 // Provider is the function pgconn.RegisterGSSProvider takes, for id.
@@ -53,6 +68,17 @@ func (p *provider) who() string {
 func (p *provider) client() (*client.Client, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	var mod time.Time
+	if p.id.Keytab == "" {
+		st, err := os.Stat(p.id.CCache)
+		if err != nil {
+			p.cl = nil
+			return nil, fmt.Errorf("kerberos: the credential cache %s: %w", p.id.CCache, err)
+		}
+		if mod = st.ModTime(); !p.cachedFor(mod) {
+			p.cl = nil
+		}
+	}
 	if p.cl != nil {
 		return p.cl, nil
 	}
@@ -80,7 +106,7 @@ func (p *provider) client() (*client.Client, error) {
 	if err := cl.AffirmLogin(); err != nil {
 		return nil, fmt.Errorf("kerberos: %s could not sign in at the KDC: %w", p.who(), err)
 	}
-	p.cl = cl
+	p.cl, p.ccMod = cl, mod
 	return cl, nil
 }
 
@@ -101,6 +127,7 @@ func (g *gss) GetInitTokenFromSPN(spn string) ([]byte, error) {
 	}
 	st, err := spnego.SPNEGOClient(cl, spn).InitSecContext()
 	if err != nil {
+		g.p.drop()
 		return nil, fmt.Errorf("kerberos: no service ticket for %s as %s: %w", spn, g.p.who(), err)
 	}
 	b, err := st.Marshal()
