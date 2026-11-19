@@ -124,3 +124,16 @@ func (g *gss) Continue(inToken []byte) (bool, []byte, error) {
 	}
 	return true, nil, nil
 }
+
+// errNoIdentity is a gss sign-in's answer when the process has no Kerberos identity
+var errNoIdentity = errors.New("kerberos: the server signs this login in by gss (Kerberos), and pgvigil has no Kerberos identity: set pgvigil.yaml's kerberos: block (a keytab with its principal, or a credential cache) or KRB5CCNAME in the service's environment (docs/postgres-signin.md)")
+
+// RegisterFor makes the process's GSS provider (pgx's one) the identity cfg names, or, with none, one that answers a gss
+// server in pgvigil's words (pgx's own words name a module pgvigil does not use).
+func RegisterFor(cfg *config.Config) {
+	if id, ok := cfg.PGKerberos(); ok {
+		Register(id)
+		return
+	}
+	pgconn.RegisterGSSProvider(func() (pgconn.GSS, error) { return nil, errNoIdentity })
+}

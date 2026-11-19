@@ -43,6 +43,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
+	"github.com/aachaemenes/pgvigil/internal/pgkrb"
 	"github.com/aachaemenes/pgvigil/internal/repo"
 	"github.com/aachaemenes/pgvigil/internal/reportmail"
 	"github.com/aachaemenes/pgvigil/internal/sched"
@@ -226,6 +227,7 @@ func loadConfigAt(path string, needInstance bool) (*config.Config, error) {
 		return nil, &configError{err}
 	}
 	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
+	pgkrb.RegisterFor(cfg)          // PGAUTH M3: the process's one Kerberos identity for gss servers (pgx takes one provider)
 	if needInstance && len(cfg.Instances) == 0 {
 		return nil, &configError{fmt.Errorf("config %s: at least one instance is required", path)}
 	}

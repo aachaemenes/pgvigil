@@ -21,6 +21,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
+	"github.com/aachaemenes/pgvigil/internal/pgkrb"
 	"github.com/aachaemenes/pgvigil/internal/reportmail"
 	"github.com/aachaemenes/pgvigil/internal/web"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -59,6 +60,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
+	pgkrb.RegisterFor(cfg)          // PGAUTH M3: the process's one Kerberos identity for gss servers (pgx takes one provider)
 	base, err := serveBasePath(*basePath, cfg)
 	if err != nil {
 		return err
