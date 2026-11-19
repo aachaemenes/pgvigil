@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proof of PGAUTH M1 (docs/postgres-signin.md): a pg_monitor read login with no password role of its own signs in by
+# Proof of PGAUTH M1 and M2 (docs/postgres-signin.md): a pg_monitor read login with no password role of its own signs in by
 # pg_hba's ldap, radius and pam methods, and pgvigil's guard warns - never refuses - when such a method signs in
 # without sslmode=verify-full. Containers only, on one docker network of the proof's own; nothing else is touched.
 #
@@ -19,6 +19,7 @@
 #   host all pgvpam   0.0.0.0/0 pam pamservice=pgvigil-proof
 #   host all pgvscram 0.0.0.0/0 scram-sha-256
 #   host all pgvtrust 0.0.0.0/0 trust
+#   hostssl all pgvcert 0.0.0.0/0 cert          (M2: the client certificate's CN is the role; the server's ssl_ca_file the CA)
 # each role LOGIN with pg_monitor and no password of its own but pgvscram's. PAM is pam_unix on an OS user of the
 # container: PostgreSQL's docs warn that PAM reading /etc/shadow fails as a non-root server, so the proof puts the
 # postgres account in the shadow group (the lab's own container only). The store is a second postgres:<PG>.
@@ -38,6 +39,10 @@
 #     P3 a wrong password: FAIL ('PAM authentication failed for user "pgvpam"').
 #  S  scram-sha-256, sslmode=prefer: SYSTEM_USER 'scram-sha-256:pgvscram', check OK, no WARN (no password crosses).
 #  T  trust: SYSTEM_USER NULL, check OK, no WARN.
+#  X1 (M2) cert, verify-full, the client certificate for CN=pgvcert: SYSTEM_USER 'cert:pgvcert|t' [inferred: clientname
+#     defaults to CN, auth.c's CheckCertAuth sets the CN as the identity], check OK, no WARN (no password crosses);
+#     X2 a certificate of another CN: FAIL 'certificate authentication failed for user "pgvcert"'; X3 sslkey naming a file
+#     that is not there: FAIL in words naming the key file.
 #  C  per method (ldap, radius, pam at verify-full): every PostgreSQL collection once ('collect -once'), each ok or
 #     skipped - a 'partial' or an 'error' is a finding, listed; pg_signin among them ok, its stored row the method word
 #     and sslmode verify-full.
@@ -77,7 +82,10 @@ echo "== the CA, the server certificate (localhost, 127.0.0.1) and another CA"
   printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > server.ext &&
   openssl req -newkey rsa:2048 -nodes -subj /CN=localhost -keyout server.key -out server.csr 2>/dev/null &&
   openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile server.ext -out server.pem 2>/dev/null &&
-  openssl verify -CAfile ca.pem server.pem >/dev/null ) || fail "the certificates were not made"
+  openssl verify -CAfile ca.pem server.pem >/dev/null &&
+  printf 'extendedKeyUsage=clientAuth\n' > client.ext &&
+  for cn in pgvcert pgvother; do openssl req -newkey rsa:2048 -nodes -subj "/CN=$cn" -keyout "$cn.key" -out "$cn.csr" 2>/dev/null &&
+    openssl x509 -req -in "$cn.csr" -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile client.ext -out "$cn.pem" 2>/dev/null || exit 1; done ) || fail "the certificates were not made"
 
 echo "== the directory (uid=pgvigil,ou=people,dc=pgv,dc=test)"
 docker run -d --name "$N-ldap" --network "$NET" --network-alias ldap -e LDAP_ORGANISATION=pgv -e LDAP_DOMAIN=pgv.test \
@@ -101,7 +109,7 @@ docker run -d --name "$N-radius" --network "$NET" --network-alias radius \
 
 echo "== the monitored server (postgres:$PG, TLS, the pg_hba lines above)"
 mkdir -p "$WORK/pgconf"
-cp "$WORK/certs/server.pem" "$WORK/certs/server.key" "$WORK/pgconf/"
+cp "$WORK/certs/server.pem" "$WORK/certs/server.key" "$WORK/certs/ca.pem" "$WORK/pgconf/"
 cat > "$WORK/pgconf/pg_hba.conf" <<EOF
 local all all trust
 host all pgvigil 0.0.0.0/0 ldap ldapserver=ldap ldapprefix="uid=" ldapsuffix=",ou=people,dc=pgv,dc=test"
@@ -109,6 +117,7 @@ host all pgvrad 0.0.0.0/0 radius radiusservers=radius radiussecrets=$RAD_SECRET
 host all pgvpam 0.0.0.0/0 pam pamservice=pgvigil-proof
 host all pgvscram 0.0.0.0/0 scram-sha-256
 host all pgvtrust 0.0.0.0/0 trust
+hostssl all pgvcert 0.0.0.0/0 cert
 EOF
 chmod 755 "$WORK/pgconf"; chmod 644 "$WORK/pgconf/"*
 # as root before the image's entrypoint: the server's files the postgres account's own (a key file of another owner is
@@ -116,17 +125,17 @@ chmod 755 "$WORK/pgconf"; chmod 644 "$WORK/pgconf/"*
 # shadow group (pam_unix reads /etc/shadow; the lab's own container only) - then the entrypoint, which starts the
 # server as postgres with the TLS files and the hba file named
 docker run -d --name "$N-pg" --network "$NET" -p 127.0.0.1::5432 -e POSTGRES_HOST_AUTH_METHOD=trust -e PGVSI_PAM_PW="$PAM_PW" \
-  -v "$WORK/pgconf:/pgconf:ro" --entrypoint sh "postgres:$PG" -c 'set -e; mkdir -p /etc/pgvsi; cp /pgconf/server.pem /pgconf/server.key /pgconf/pg_hba.conf /etc/pgvsi/
+  -v "$WORK/pgconf:/pgconf:ro" --entrypoint sh "postgres:$PG" -c 'set -e; mkdir -p /etc/pgvsi; cp /pgconf/server.pem /pgconf/server.key /pgconf/ca.pem /pgconf/pg_hba.conf /etc/pgvsi/
 chown postgres:postgres /etc/pgvsi/*; chmod 600 /etc/pgvsi/server.key
 useradd -M pgvpam; echo "pgvpam:$PGVSI_PAM_PW" | chpasswd; unset PGVSI_PAM_PW; usermod -a -G shadow postgres
 printf "auth required pam_unix.so\naccount required pam_unix.so\n" > /etc/pam.d/pgvigil-proof
-exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/etc/pgvsi/server.pem -c ssl_key_file=/etc/pgvsi/server.key -c hba_file=/etc/pgvsi/pg_hba.conf' >/dev/null
+exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/etc/pgvsi/server.pem -c ssl_key_file=/etc/pgvsi/server.key -c ssl_ca_file=/etc/pgvsi/ca.pem -c hba_file=/etc/pgvsi/pg_hba.conf' >/dev/null
 up=0; for _ in $(seq 1 90); do docker exec "$N-pg" pg_isready -q -h /var/run/postgresql >/dev/null 2>&1 && docker exec "$N-pg" psql -U postgres -XAtqc 'select 1' >/dev/null 2>&1 && { up=1; break; }; sleep 1; done
 [ "$up" = 1 ] || { docker logs --tail 20 "$N-pg" 2>&1 | sed 's/^/     /'; fail "the monitored server did not start"; }
 docker exec -i "$N-pg" psql -U postgres -XAtq -v ON_ERROR_STOP=1 >/dev/null <<SQL || fail "the roles were not made"
-CREATE ROLE pgvigil LOGIN; CREATE ROLE pgvrad LOGIN; CREATE ROLE pgvpam LOGIN; CREATE ROLE pgvtrust LOGIN;
+CREATE ROLE pgvigil LOGIN; CREATE ROLE pgvrad LOGIN; CREATE ROLE pgvpam LOGIN; CREATE ROLE pgvtrust LOGIN; CREATE ROLE pgvcert LOGIN;
 CREATE ROLE pgvscram LOGIN PASSWORD '$SCRAM_PW';
-GRANT pg_monitor TO pgvigil, pgvrad, pgvpam, pgvscram, pgvtrust;
+GRANT pg_monitor TO pgvigil, pgvrad, pgvpam, pgvscram, pgvtrust, pgvcert;
 SQL
 PORT=$(docker port "$N-pg" 5432/tcp | head -1 | sed 's/.*://')
 [ "$(docker exec "$N-pg" psql -U postgres -XAtc 'show ssl')" = on ] || fail "TLS is not on in the server"
@@ -180,6 +189,12 @@ row P3 p3 "$(pf p3 pgvpam wrong-password verify-full "$CA")" - FAIL 'PAM authent
 echo "== S, T: the controls"
 row S s1 "$(pf s1 pgvscram "$SCRAM_PW" prefer)" "scram-sha-256:pgvscram|t" OK ""
 row T t1 "$(pf t1 pgvtrust x prefer)" "NULL|t" OK ""
+
+echo "== X: client certificates (M2)"
+cd0="host=localhost hostaddr=127.0.0.1 port=$PORT dbname=postgres user=pgvcert sslmode=verify-full sslrootcert=$CA connect_timeout=10"
+row X1 x1 "$cd0 sslcert=$WORK/certs/pgvcert.pem sslkey=$WORK/certs/pgvcert.key" "cert:pgvcert|t" OK ""
+row X2 x2 "$cd0 sslcert=$WORK/certs/pgvother.pem sslkey=$WORK/certs/pgvother.key" - FAIL 'certificate authentication failed for user "pgvcert"'
+row X3 x3 "$cd0 sslcert=$WORK/certs/pgvcert.pem sslkey=$WORK/certs/no-such.key" - FAIL "no-such.key"
 
 echo "== C: every PostgreSQL collection once, per method at verify-full"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -F '|' -c "$1"; }
