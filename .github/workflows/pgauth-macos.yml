@@ -1,0 +1,57 @@
+name: pgauth-macos
+
+# PGAUTH M3 on macOS: scripts/proof-pg-kerberos-native.sh on GitHub's macos-15 (Apple silicon) and macos-15-intel
+# (x86_64) runners - the binary built from the tree, an MIT KDC and PostgreSQL 18 from Homebrew run as the runner's
+# user (no Docker on these runners), pgvigil signing in with its one Kerberos identity (a keytab, a credential cache,
+# a cache renewed under a long-running collector), the refusals in words. Its ok / FAIL / NOT PROVEN lines are the job
+# summary. Nothing secret is used: the realm and its keys are made in the job.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/pgauth-macos.yml
+      - scripts/proof-pg-kerberos-native.sh
+      - internal/pgkrb/**
+      - internal/config/kerberos.go
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pgauth-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  proof:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: proof-pg-kerberos-native (${{ matrix.os }})
+        run: |
+          set -o pipefail
+          scripts/proof-pg-kerberos-native.sh 2>&1 | tee proof-pg-kerberos.log
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo "### proof-pg-kerberos-native on ${{ matrix.os }}"
+            echo '```'
+            grep -E '^(== |ok   |FAIL|NOT PROVEN|   |Z: |proof-pg-kerberos-native:)' proof-pg-kerberos.log || echo "no proof lines (the job stopped before the proof)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proof-pg-kerberos-${{ matrix.os }}
+          path: proof-pg-kerberos.log
+          if-no-files-found: ignore
+          retention-days: 14
