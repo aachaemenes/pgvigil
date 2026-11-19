@@ -64,8 +64,12 @@ func run(args []string) int {
 	if handled, code := maybeRunAsService(args); handled { // Windows: `run` under the service control manager
 		return code
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged
+	bad := applyLogLevel("")
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+	if bad != "" {
+		log.Warn("PGVIGIL_LOG_LEVEL is not a log level (debug, info, warn or error): ignored", "value", bad)
+	}
+	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged (B24e review 10)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -213,6 +217,7 @@ func loadConfigAt(path string, needInstance bool) (*config.Config, error) {
 		return nil, &configError{err}
 	}
 	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
+	applyLogLevel(cfg.LogLevel)     // log_level (RELNOTES L172); PGVIGIL_LOG_LEVEL wins
 	if needInstance && len(cfg.Instances) == 0 {
 		return nil, &configError{fmt.Errorf("config %s: at least one instance is required", path)}
 	}
@@ -475,4 +480,24 @@ func emptyWhy(raw string) string {
 		return " - " + w
 	}
 	return ""
+}
+
+// logLevel is the level every logger of this process reads (RELNOTES L172): info until the environment's
+// PGVIGIL_LOG_LEVEL or the configuration's log_level says otherwise.
+var logLevel = new(slog.LevelVar)
+
+// applyLogLevel sets logLevel from PGVIGIL_LOG_LEVEL, which wins, else from file (the configuration's log_level, ""
+// at start); it returns the variable's value when that is no level word (it is then ignored).
+func applyLogLevel(file string) (bad string) {
+	if env := strings.TrimSpace(os.Getenv("PGVIGIL_LOG_LEVEL")); env != "" {
+		if lv, err := config.ParseLogLevel(env); err == nil {
+			logLevel.Set(lv)
+			return ""
+		}
+		bad = env
+	}
+	if lv, err := config.ParseLogLevel(file); err == nil && file != "" {
+		logLevel.Set(lv)
+	}
+	return bad
 }

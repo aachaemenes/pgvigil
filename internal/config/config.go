@@ -8,6 +8,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"regexp"
@@ -59,6 +60,9 @@ type Config struct {
 	// of docs/sqlserver-cloud.md). Never the machine account (DOMAIN\\HOST$): no other service of the host shares a gMSA.
 	// Empty (the default) = no Windows sign-in on that page.
 	GMSA string `yaml:"gmsa"`
+	// LogLevel is the collector's and serve's log verbosity: debug, info (the default), warn or error (RELNOTES L172);
+	// the environment's PGVIGIL_LOG_LEVEL wins over it for a one-off.
+	LogLevel string `yaml:"log_level"`
 	// Doors holds the switches of serve's doors that only this file turns on, never the page (pagedoor.go):
 	// doors: page_instance_reads: on lets Community tools and custom reports run on instances added in Admin > Instances.
 	// A later release (task 330) lists these switches on a Site settings page, one switch per door in one named place,
@@ -790,6 +794,9 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Repository.DSNRaw) == "" {
 		return fmt.Errorf("repository.dsn is required")
 	}
+	if _, err := ParseLogLevel(c.LogLevel); err != nil {
+		return fmt.Errorf("log_level: %w", err)
+	}
 	if c.QueryText == "" {
 		c.QueryText = DefaultQueryText
 	}
@@ -1218,4 +1225,19 @@ func (i Instance) SecretRef() *secrets.Ref {
 		return &secrets.Ref{ID: strings.TrimSpace(ps.Ref), Invalid: err.Error()}
 	}
 	return &r
+}
+
+// ParseLogLevel reads a log level word: debug, info, warn or error, in any case; empty is info (RELNOTES L172).
+func ParseLogLevel(v string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return slog.LevelInfo, fmt.Errorf("%q is not a log level: debug, info, warn or error", v)
 }

@@ -406,8 +406,9 @@ func maybeRunAsService(args []string) (bool, int) {
 		defer func() { _ = f.Close() }()
 		w = f
 	}
-	log := slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged
+	applyLogLevel("") // PGVIGIL_LOG_LEVEL in the service's environment; the configuration's log_level at its load
+	log := slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: logLevel}))
+	secrets.Default.SetLog(log) // B24e review 10
 	log.Info("service starting", "version", version)
 	if err := svc.Run(serviceName, &pgvigilService{args: args[1:], log: log}); err != nil {
 		log.Error("service run failed", "err", err)

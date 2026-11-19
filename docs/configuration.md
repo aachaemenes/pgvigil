@@ -464,3 +464,16 @@ handle /pgvigil/* {
 behind a proxy that ends TLS, keep serve on loopback.
 
 Not proven: Apache httpd and IIS as the proxy; a proxy that rewrites the pages it passes.
+
+## Log verbosity (log_level)
+
+```yaml
+log_level: info        # debug | info (the default) | warn | error
+```
+
+The level of every line the collector (`pgvigil run`), `pgvigil serve` and the other commands write to their log -
+stderr, the journal under systemd, `%ProgramData%\pgvigil\logs\pgvigil.log` for the Windows service. `warn` keeps
+the warnings and failures only; `debug` adds the few lines written for a problem's read. The environment's
+`PGVIGIL_LOG_LEVEL` wins over the file for a one-off (a command run by hand, or the service's own environment), and
+an unknown word there is ignored with one warning; an unknown word in the file is refused at load. The level is read
+at each start: a change needs the service restarted.
