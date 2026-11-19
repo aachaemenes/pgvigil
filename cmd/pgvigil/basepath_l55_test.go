@@ -23,3 +23,17 @@ func TestServeBasePathL55(t *testing.T) {
 		t.Error("a bad -base-path is taken")
 	}
 }
+
+// TestOpenURLUnderBaseL55 (L55 task 4): 'serve -open' and the start line's address carry the base, so the window
+// opens on the UI and not on the 404 outside it.
+func TestOpenURLUnderBaseL55(t *testing.T) {
+	for _, c := range []struct{ url, base, want string }{
+		{"http://127.0.0.1:8080/", "/pgvigil", "http://127.0.0.1:8080/pgvigil/"},
+		{"https://[::1]:8443/", "/tools/pgvigil", "https://[::1]:8443/tools/pgvigil/"},
+		{"http://127.0.0.1:8080/", "", "http://127.0.0.1:8080/"},
+	} {
+		if got := underBase(c.url, c.base); got != c.want {
+			t.Errorf("underBase(%q, %q) = %q, want %q", c.url, c.base, got, c.want)
+		}
+	}
+}
