@@ -91,12 +91,17 @@ type installOptions struct {
 	set map[string]bool // the flags named on the command line
 }
 
+// userFlagHelp is -user's help: what the account is on each OS (RELNOTES L131).
+const userFlagHelp = "the service's account. Linux: a system user, made when missing. Windows: the service's virtual account " +
+	`NT SERVICE\pgvigil` + " (the default), or a group Managed Service Account " + `DOMAIN\name$` +
+	" (gMSA: no password anywhere, Windows changes it; preferred)"
+
 func parseInstallArgs(name string, args []string, def installOptions) (installOptions, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	o := def
 	fs.StringVar(&o.Bin, "bin", def.Bin, "path the binary is installed to")
 	fs.StringVar(&o.Config, "config", def.Config, "path of the configuration file")
-	fs.StringVar(&o.User, "user", def.User, "service account (Linux; install creates it as a system user when missing)")
+	fs.StringVar(&o.User, "user", def.User, userFlagHelp)
 	// the repository owner's connection and the dump: -upgrade's (install) and -drop-repository's (uninstall -all)
 	with := "-upgrade"
 	if name == "install" {
@@ -156,6 +161,9 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 
 func runInstall(log *slog.Logger, args []string) error {
 	o, err := parseInstallArgs("install", args, defaultInstallOptions())
+	if errors.Is(err, flag.ErrHelp) {
+		return nil // -h: the flags are printed, nothing is wrong
+	}
 	if err != nil {
 		return err
 	}
@@ -168,6 +176,9 @@ func runInstall(log *slog.Logger, args []string) error {
 
 func runUninstall(log *slog.Logger, args []string) error {
 	o, err := parseInstallArgs("uninstall", args, defaultInstallOptions())
+	if errors.Is(err, flag.ErrHelp) {
+		return nil // -h: the flags are printed, nothing is wrong
+	}
 	if err != nil {
 		return err
 	}
