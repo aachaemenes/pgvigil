@@ -146,7 +146,9 @@ Kerberos, against an MIT KDC in a container and PostgreSQL 18's GSSAPI (`scripts
 credential cache and `krbsrvname` sign in; no identity, a principal mapped to another role and a key rotated at the KDC
 fail in words; every PostgreSQL collection runs by the keytab.
 
-Not proven: Active Directory itself (a domain controller as the KDC or the directory); a page instance's private-CA
-verify-full (a private CA's file is `pgvigil.yaml`'s); a public-CA client certificate (the proof's comes from its own
-CA); a real host name for the SPN (the proof's is `localhost`); the guard under PostgreSQL 16 (the method cannot be
-read there); Kerberos on macOS.
+Not proven: Active Directory itself, for LDAP (a domain controller as the directory) and Active Directory as the KDC;
+a page instance's private-CA verify-full (a private CA's file is `pgvigil.yaml`'s); a public-CA client certificate
+(the proof's comes from its own CA); a real host name for the SPN (the proof's is `localhost`); a Windows keytab (a
+keytab on a Windows collector; SSPI is not in this release); the guard under PostgreSQL 16 (the method cannot be read
+there); Kerberos on macOS until its GitHub run (`.github/workflows/pgauth-macos.yml`; the same rows ran on Linux with
+no Docker: `scripts/proof-pg-kerberos-native.sh`).
