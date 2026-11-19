@@ -134,6 +134,17 @@ connection test says nothing about the method.
 
 ## What is proven
 
-Not proven yet against a real directory: the lab rows (an OpenLDAP, a FreeRADIUS and a PAM server in containers beside
-a PostgreSQL 18, and a client certificate from the proof's own CA: `scripts/proof-pg-signin.sh`) come with this
-release's proof.
+LDAP, RADIUS, PAM and a client certificate, against an OpenLDAP, a FreeRADIUS, PAM and the proof's own CA in
+containers beside PostgreSQL 18 (`scripts/proof-pg-signin.sh`): each method signs the collector in and `SYSTEM_USER`
+reads `ldap:` with the bind DN, `radius:` and `pam:` with the user, `cert:` with the certificate's DN; `pgvigil check`
+gives OK at `sslmode=verify-full`, the warning at `sslmode=require`, and says first when the session runs without TLS;
+a wrong password, another CA, another certificate name and a missing key fail with the server's own words; every
+PostgreSQL collection runs under each method, and `pg_signin` stores the method word (never the identity) and gives
+its warning finding at `sslmode=require`, none at `verify-full`.
+
+Kerberos, against an MIT KDC in a container and PostgreSQL 18's GSSAPI (`scripts/proof-pg-kerberos.sh`): a keytab, a
+credential cache and `krbsrvname` sign in; no identity, a principal mapped to another role and a key rotated at the KDC
+fail in words; every PostgreSQL collection runs by the keytab.
+
+Not proven: Active Directory itself (a domain controller as the KDC or the directory); a real host name for the SPN
+(the proof's is `localhost`); the guard under PostgreSQL 16 (the method cannot be read there); Kerberos on macOS.
