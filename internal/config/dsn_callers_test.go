@@ -26,6 +26,7 @@ func TestEveryInstanceDSNCallerIsKnown(t *testing.T) {
 		"internal/collect/tables.go":     "a per-database connect: connectCounted",
 		"internal/collect/vacuum.go":     "a per-database connect: connectCounted",
 		"internal/collect/secret.go":     "reads the dsn's user as written: no dial",
+		"internal/collect/pgsignin.go":   "reads the dsn's sslmode (SSLModeOf): no dial",
 		"internal/collect/rolechange.go": "the Patroni REST host from the dsn: no database dial",
 		"internal/mssql/mssql.go":        "Connect: readSecret",
 		// task 390a: the Entra sign-in of the dsn for Resource Manager's token, no database dial
