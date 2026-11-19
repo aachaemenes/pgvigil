@@ -21,7 +21,10 @@ func TestResolveWhyL145(t *testing.T) {
 	}
 	t.Setenv("PGV_L145_SET", "host=h")
 	t.Setenv("PGV_L145_EMPTY", "")
-	os.Unsetenv("PGV_L145_UNSET")
+	t.Setenv("PGV_L145_UNSET", "")
+	if err := os.Unsetenv("PGV_L145_UNSET"); err != nil {
+		t.Fatal(err)
+	}
 	missing := filepath.Join(dir, "missing")
 	for _, c := range []struct {
 		ref, want string
