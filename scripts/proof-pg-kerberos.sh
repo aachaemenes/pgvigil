@@ -28,6 +28,9 @@
 #  K6 no kerberos: block, no KRB5CCNAME: check FAIL with 'pgvigil has no Kerberos identity'.
 #  K7 the dsn user=pgvigil with the principal pgvkrb (include_realm=0 maps it to pgvkrb): check FAIL with the server's
 #     'GSSAPI authentication failed for user "pgvigil"'.
+#  K8 a long-running collector ('pgvigil run', 200 s) on a credential cache of 1-minute tickets that the KDC's side
+#     writes anew every 30 s (kinit -l 1m -k): the minute collections still end ok after 120 s (the provider reads a
+#     new cache file; gokrb5 alone cannot renew a cache's ticket).
 #  K3 the principal's key rotated at the KDC (cpw -randkey): the old keytab's check FAIL with 'kerberos: pgvkrb@PGV.TEST
 #     could not sign in at the KDC'.
 #  C  (before K3) every PostgreSQL collection once by the keytab, each ok or skipped - a 'partial' or an 'error' is a
@@ -124,6 +127,22 @@ yml k2 pgvkrb "kerberos:
 yml k5 pgvkrb "$KT" "krbsrvname=pgsvc"; okrow K5 k5
 yml k6 pgvkrb ""; failrow K6 k6 "pgvigil has no Kerberos identity"
 yml k7 pgvigil "$KT"; failrow K7 k7 'GSSAPI authentication failed for user "pgvigil"'
+
+echo "== K8: a long-running collector on a credential cache of 1-minute tickets, a new cache every 30 s"
+kc() { docker exec "$N-kdc" sh -c 'kinit -l 1m -k -t /out/client.keytab -c /out/k8.ccache.new pgvkrb@PGV.TEST && chmod 644 /out/k8.ccache.new && mv /out/k8.ccache.new /out/k8.ccache'; }
+kc || bad "K8: the first kinit"
+( for _ in 1 2 3 4 5 6 7; do sleep 30; kc >/dev/null 2>&1 || echo "K8: a kinit failed" >> "$WORK/k8.loop"; done ) & KL=$!
+yml k8 pgvkrb "kerberos:
+  ccache: $WORK/krb/k8.ccache
+  krb5_conf: $WORK/krb5.conf"
+K8T0=$(date -u +%s)
+timeout 200 "$BIN" run -config "$WORK/k8.yaml" > "$WORK/k8.run" 2>&1 || true
+kill "$KL" 2>/dev/null; wait "$KL" 2>/dev/null || true
+K8=$(psql "$PGVIGIL_REPO_DSN" -XAt -F '|' -c "select count(*) filter (where d.status = 'ok' and d.snapshot_at > to_timestamp($K8T0 + 120)), count(*) filter (where d.status = 'error') from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'k8' and d.collection in ('activity', 'dbstats', 'connections', 'waits')")
+echo "   K8: minute collections ok after 120 s | in error: $K8; $(grep -c . "$WORK/k8.loop" 2>/dev/null || echo 0) failed kinit(s)"
+IFS='|' read -r K8OK K8ERR <<<"$K8"
+if [ "${K8OK:-0}" -ge 2 ] && [ "${K8ERR:-1}" = 0 ]; then ok "K8: the minute collections ok past the first ticket's minute, none in error"
+else bad "K8: want 2 or more minute collections ok after 120 s and none in error"; grep -iE 'kerberos|gss' "$WORK/k8.run" | tail -5 | sed 's/^/     /'; fi
 
 echo "== C: every PostgreSQL collection once, by the keytab"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -F '|' -c "$1"; }
