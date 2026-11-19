@@ -46,6 +46,9 @@
 #  C  per method (ldap, radius, pam at verify-full): every PostgreSQL collection once ('collect -once'), each ok or
 #     skipped - a 'partial' or an 'error' is a finding, listed; pg_signin among them ok, its stored row the method word
 #     and sslmode verify-full.
+#  F  (the store, 0467) 'collect -once pg_signin' on L2's instance (ldap at sslmode=require): one warning in
+#     pgvigil.pg_signin_findings, 'a directory password without a certificate check', its detail naming ldap and
+#     sslmode=require; on L1's (verify-full) none; the stored row holds the method word, never the bind DN.
 #  Z  the containers and the network removed, read back 0.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -211,8 +214,17 @@ for m in l1:ldap r1:radius p1:pam; do
   BADC=$(q "select d.collection || ' ' || d.status || ' ' || left(coalesce(d.note, ''), 120) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = '$name' and d.status not in ('ok', 'skipped') order by 1")
   NC=$(q "select count(*) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = '$name'")
   if [ -z "$BADC" ]; then ok "C $meth: $NC collections, each ok or skipped"; else bad "C $meth: not ok or skipped:"; sed 's/^/     /' <<<"$BADC"; fi
-  SI=$(q "select d.status from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = '$name' and d.collection = 'pg_signin'")
-  [ "$SI" = ok ] && ok "C $meth: pg_signin ok" || bad "C $meth: pg_signin '$SI'"
+  SI=$(q "select d.status || '|' || coalesce(s.method, '') || '|' || coalesce(s.sslmode, '') from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) left join pgvigil.pg_signin s using (instance_id) where i.name = '$name' and d.collection = 'pg_signin'")
+  [ "$SI" = "ok|$meth|verify-full" ] && ok "C $meth: pg_signin ok, stored '$meth' at verify-full" || bad "C $meth: pg_signin status|method|sslmode '$SI'"
 done
+
+echo "== F: the finding (0467)"
+"$BIN" collect -config "$WORK/l2.yaml" -once pg_signin -instance l2 > "$WORK/f.out" 2>&1 || true
+FD=$(q "select count(*) || '|' || coalesce(min(f.detail), '') from pgvigil.pg_signin_findings f join pgvigil.instances i using (instance_id) where i.name = 'l2' and f.severity = 'warning' and f.setting = 'a directory password without a certificate check'")
+[[ "$FD" == 1\|*"by ldap"*"sslmode=require"* ]] && ok "F: one warning on l2 naming ldap and sslmode=require" || { bad "F: l2's finding '$FD'"; tail -3 "$WORK/f.out" | sed 's/^/     /'; }
+F1=$(q "select count(*) from pgvigil.pg_signin_findings f join pgvigil.instances i using (instance_id) where i.name = 'l1'")
+[ "$F1" = 0 ] && ok "F: none on l1 (verify-full)" || bad "F: l1 has $F1 finding(s)"
+DN=$(q "select count(*) from pgvigil.pg_signin s where s.method like '%=%' or s.method like '%,%'")
+[ "$DN" = 0 ] && ok "F: no stored method holds an identity" || bad "F: $DN stored row(s) hold more than the method word"
 echo "proof-pg-signin: $VERDICT"
 [ "$VERDICT" = PASS ]
