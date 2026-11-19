@@ -55,6 +55,8 @@ func armCredential(dsn string) (azcore.TokenCredential, error) {
 		return credentialFor(identity{flow: ServicePrincipal, clientID: client, tenant: tenant, secret: sha256.Sum256([]byte(cfg.Password))}, cfg.Password)
 	case strings.EqualFold(fa, ManagedIdentity) || strings.EqualFold(fa, "ActiveDirectoryMSI"):
 		return credentialFor(identity{flow: ManagedIdentity, clientID: strings.TrimSpace(cfg.User), resourceID: strings.TrimSpace(cfg.Parameters["resource id"])}, "")
+	case strings.EqualFold(fa, AzCli):
+		return credentialFor(identity{flow: AzCli}, "")
 	}
 	defaultMu.Lock()
 	defer defaultMu.Unlock()
