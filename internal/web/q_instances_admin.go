@@ -252,10 +252,10 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 		{"sources", `SELECT name, kind, CASE WHEN kind = 'cms' THEN 'the CMS login''s credential file' WHEN kind IN ('aws', 'azure', 'gcp') THEN 'its settings file (the read-only credential)' ELSE ref END AS ref,
 		        credential_ref IS NOT NULL AS has_credential, auth, every_s, enabled, last_run, last_ok, last_error, last_notes, last_count, created_at, created_by,
 		        array_to_string(cloud_regions, ' ') AS regions, regions_read_at, array_to_string(tag_keys, ' ') AS tag_keys,
-		        array_to_string(seen_tag_keys, ' ') AS seen_tag_keys, claim_until > now() AS reading FROM pgvigil.admin_sources ORDER BY name`},
+		        array_to_string(seen_tag_keys, ' ') AS seen_tag_keys, claim_until > now() AS reading, auto_add FROM pgvigil.admin_sources ORDER BY name`},
 		{"proposals", `SELECT proposal_id, source, server, engine, host, port, dbname, display_name, array_to_string(tags, ' ') AS tags, state, gone,
 		        first_seen, last_seen, gone_at, decided_at, decided_by, instance_name,
-		        alt_host, master_user, note, entra_only, serverless, auto_pause, resource_id
+		        alt_host, master_user, note, entra_only, serverless, auto_pause, resource_id, auto_note
 		   FROM pgvigil.admin_proposals ORDER BY gone, CASE state WHEN 'proposed' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, source, server`},
 		{"audit", `SELECT at, ui_user, client, op, target, outcome, detail FROM pgvigil.admin_audit ORDER BY audit_id DESC LIMIT 200`},
 	}
@@ -288,6 +288,8 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 	}
 	out["cloud_blocks"] = map[string]any{"on": config.PageCloudOn(),
 		"off_words": config.PageCloudBlocksOff, "notes": notes}
+	// L237: whether a cloud source's 'add the servers it finds by itself' may be ticked on this install
+	out["auto_add_door"] = map[string]any{"on": config.DiscoveryAutoAddOn(), "off_words": config.DiscoveryAutoAddOff}
 	s.reply(w, r, out, nil)
 }
 
@@ -978,6 +980,12 @@ func (s *Server) SourcesAdminWrite(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	op, name, kind := str(in, "op"), str(in, "name"), str(in, "kind")
 	pay := map[string]any{"op": op, "ui_user": user, "client": clientIP(r), "name": name}
+	// RELNOTES L237: the source's switch, and the door as this serve's pgvigil.yaml holds it (import_admin_source
+	// refuses the switch on without it)
+	if v, ok := in["auto_add"].(bool); ok {
+		pay["auto_add"] = v
+	}
+	pay["auto_add_door"] = config.DiscoveryAutoAddOn()
 	if op == "sync" || op == "sweep" {
 		res, err := s.syncSource(ctx, name, inRequestRead, "", user, false, op == "sweep")
 		if err != nil {
@@ -1158,15 +1166,17 @@ type sourceRow struct {
 	// until the next sweep; a note older than a week is asked again by the hourly read, so a
 	// source never swept does not leave a region out for good)
 	Silent []string
+	// AutoAdd: the source adds the servers it finds by itself (RELNOTES L237; the door is pgvigil.yaml's)
+	AutoAdd bool
 }
 
 func (s *Server) sourceByName(ctx context.Context, name string) (*sourceRow, error) {
 	var x sourceRow
 	err := s.pool.QueryRow(ctx, `SELECT name, kind, ref, credential_ref, auth, enabled, cloud_regions, tag_keys, seen_scopes,
 		        ARRAY(SELECT x->>'key' FROM jsonb_array_elements(note_items) x WHERE x->>'key' <> 'source' AND x->>'text' LIKE (x->>'key') || ': not reachable%'
-		                 AND (x->>'last')::timestamptz > now() - $2 * interval '1 second' ORDER BY 1)
+		                 AND (x->>'last')::timestamptz > now() - $2 * interval '1 second' ORDER BY 1), auto_add
 		   FROM pgvigil.admin_sources WHERE name = $1`, name, weeklySweep.Seconds()).
-		Scan(&x.Name, &x.Kind, &x.Ref, &x.Cred, &x.Auth, &x.Enabled, &x.Regions, &x.TagKeys, &x.Scopes, &x.Silent)
+		Scan(&x.Name, &x.Kind, &x.Ref, &x.Cred, &x.Auth, &x.Enabled, &x.Regions, &x.TagKeys, &x.Scopes, &x.Silent, &x.AutoAdd)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("no source %s", name)
 	}
@@ -1561,6 +1571,16 @@ func (s *Server) syncSource(ctx context.Context, name string, limit time.Duratio
 	if rerr != nil {
 		return res, fmt.Errorf("the source %s could not be read: %w", name, rerr)
 	}
+	// L237: a cloud source with its switch on (and the door open) adds what this read proposed, under a claim of its
+	// own; a page's read does not wait for it (a Test is 10 s a server)
+	if autoAddOn(src) {
+		if due {
+			res["auto"] = s.autoAdd(ctx, src)
+		} else {
+			go s.autoAdd(context.WithoutCancel(ctx), src)
+			res["auto"] = "adding the servers it found by itself: the changes list says what was added"
+		}
+	}
 	return res, nil
 }
 
@@ -1778,10 +1798,38 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	d := s.decideProposal(r.Context(), user, clientIP(r), in)
+	switch {
+	case d.replyErr != nil:
+		s.reply(w, r, nil, d.replyErr)
+	case d.err != nil:
+		writeErr(w, d.code, d.err)
+	case d.test != nil:
+		s.reply(w, r, d.test, nil)
+	default:
+		s.answer(w, d.ans, d.raw, d.extra)
+	}
+}
+
+// proposalOut is one decision on a proposal as the page's handler writes it: replyErr (a read that failed: 500 through
+// s.reply), code and err (a refusal before the write, or a write that failed), test (a Test's answer), or the import's
+// answer. decideProposal serves the page and the auto step of a cloud source (autoadd.go) alike.
+type proposalOut struct {
+	replyErr error
+	code     int
+	err      error
+	test     map[string]any
+	ans      importAnswer
+	raw      json.RawMessage
+	extra    map[string]any
+}
+
+// decideProposal is the body of a proposal's approve, ignore or test (the page's ProposalsAdminWrite): user and client
+// are who asks; in is the page's fields.
+func (s *Server) decideProposal(ctx context.Context, user, client string, in map[string]any) proposalOut {
 	a := s.instAdmin()
-	ctx := r.Context()
 	op, id := str(in, "op"), str(in, "proposal_id")
-	pay := map[string]any{"op": op, "ui_user": user, "client": clientIP(r), "proposal_id": id, "file_names": a.fileNames()}
+	pay := map[string]any{"op": op, "ui_user": user, "client": client, "proposal_id": id, "file_names": a.fileNames()}
 	var restore func()
 	var cloudPay map[string]any // B24p task 6: the approved instance's cloud block, from the proposal's own identity
 	if op == "approve" || op == "test" {
@@ -1792,16 +1840,13 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 		err := s.pool.QueryRow(ctx, `SELECT source, server, engine, host, port, dbname, login, platform, tags FROM pgvigil.admin_proposals WHERE proposal_id::text = $1`, id).
 			Scan(&src, &server, &engine, &host, &port, &db, &login, &platform, &ptags)
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeErr(w, http.StatusConflict, fmt.Errorf("no proposal %s", id))
-			return
+			return proposalOut{code: http.StatusConflict, err: fmt.Errorf("no proposal %s", id)}
 		} else if err != nil {
-			s.reply(w, r, nil, err)
-			return
+			return proposalOut{replyErr: err}
 		}
 		sr, err := s.sourceByName(ctx, src)
 		if err != nil {
-			s.reply(w, r, nil, err)
-			return
+			return proposalOut{replyErr: err}
 		}
 		name := str(in, "name")
 		if name == "" {
@@ -1812,12 +1857,10 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 		if sr.Cred != nil {
 			v, err := resolveRef(*sr.Cred)
 			if err != nil {
-				writeErr(w, http.StatusConflict, fmt.Errorf("the source's credential: %w", err))
-				return
+				return proposalOut{code: http.StatusConflict, err: fmt.Errorf("the source's credential: %w", err)}
 			}
 			if err := json.Unmarshal([]byte(v), &cred); err != nil {
-				writeErr(w, http.StatusConflict, errors.New("the source's credential file is not the page's own (JSON)"))
-				return
+				return proposalOut{code: http.StatusConflict, err: errors.New("the source's credential file is not the page's own (JSON)")}
 			}
 		}
 		// a login typed at the approve (or its Test) stands for the source's: a cloud proposal carries none (its
@@ -1830,14 +1873,12 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 		if sr.Kind == "pg_service" {
 			var perr error
 			if dsn, perr = pgServiceDSN(server, sr.Ref, sr.Auth, str(in, "login") != "", cred); perr != nil {
-				writeErr(w, http.StatusConflict, perr)
-				return
+				return proposalOut{code: http.StatusConflict, err: perr}
 			}
 		} else {
 			auth, l, pw, aerr := approveLogin(engine, sr.Auth, str(in, "auth"), str(in, "login"), rawStr(in, "password"), cred, orZero(login), server)
 			if aerr != nil {
-				writeErr(w, http.StatusConflict, aerr)
-				return
+				return proposalOut{code: http.StatusConflict, err: aerr}
 			}
 			cred.Password = pw
 			pay["auth"] = auth
@@ -1850,22 +1891,20 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 			}
 			dsn, err = config.BuildDSN(config.Conn{Engine: engine, Auth: auth, Host: host, Port: orZero(port), DBName: orZero(db), Login: l, Password: cred.Password, Extra: extra})
 			if err != nil {
-				writeErr(w, http.StatusConflict, err)
-				return
+				return proposalOut{code: http.StatusConflict, err: err}
 			}
 		}
 		if op == "test" {
 			// 204's connection test before the instance is made: nothing written but the audit row
 			okc, detail := testConnection(ctx, engine, dsn)
-			ans, _, err := s.callImport(ctx, "import_admin_proposal_test", map[string]any{"ui_user": user, "client": clientIP(r), "proposal_id": id, "ok": okc, "detail": detail})
+			ans, _, err := s.callImport(ctx, "import_admin_proposal_test", map[string]any{"ui_user": user, "client": client, "proposal_id": id, "ok": okc, "detail": detail})
 			if err != nil || ans.Outcome != "done" {
 				s.log.Warn("admin proposal: the test was not audited", "proposal", id, "err", err, "detail", ans.Detail)
 			}
-			s.reply(w, r, map[string]any{"ok": okc, "detail": detail}, nil)
-			return
+			return proposalOut{test: map[string]any{"ok": okc, "detail": detail}}
 		}
 		if aws, az, note := proposalCloud(sr, server, engine, orZero(platform), ptags); aws != nil || az != nil {
-			cloudPay = map[string]any{"op": "set", "ui_user": user, "client": clientIP(r), "name": name, "file_names": a.fileNames(), "aws": aws, "azure": az}
+			cloudPay = map[string]any{"op": "set", "ui_user": user, "client": client, "name": name, "file_names": a.fileNames(), "aws": aws, "azure": az}
 			if note != "" {
 				s.log.Info("admin proposal: the source's profile is not copied", "proposal", id, "why", note)
 			}
@@ -1880,8 +1919,7 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 		} else {
 			ref, err := config.WriteSecret(a.secretDir(), name, dsn)
 			if err != nil {
-				writeErr(w, http.StatusConflict, fmt.Errorf("the credential file: %w", err))
-				return
+				return proposalOut{code: http.StatusConflict, err: fmt.Errorf("the credential file: %w", err)}
 			}
 			pay["dsn_ref"] = ref
 			restore = func() { _ = config.RemoveSecret(a.secretDir(), ref) } // this attempt's own file only
@@ -1903,8 +1941,7 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 		if restore != nil {
 			restore()
 		}
-		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
-		return
+		return proposalOut{code: http.StatusInternalServerError, err: fmt.Errorf("not written: %v", err)}
 	}
 	if ans.Outcome != "done" && restore != nil {
 		restore()
@@ -1914,7 +1951,7 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 	if cloudNote != "" && ans.Outcome == "done" {
 		extra = map[string]any{"detail": ans.Detail + " - " + cloudNote, "cloud_note": cloudNote} // the page's words carry it
 	}
-	s.answer(w, ans, raw, extra)
+	return proposalOut{ans: ans, raw: raw, extra: extra}
 }
 
 // testConfigured tests a configuration-file instance by name with its own door: its read login and its
