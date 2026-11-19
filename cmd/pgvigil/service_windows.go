@@ -140,6 +140,19 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 			log.Info("kept", "path", f.path)
 		}
 	}
+	// 'Log on as a service' for every account but the virtual one (RELNOTES L150): CreateService grants no right. A
+	// fresh install stops on a refused grant before the service is made; an existing service (an upgrade, the account
+	// that already ran it) is told and goes on with the rights it holds
+	if needsLogonRight(o.User) {
+		switch err := grantServiceLogon(o.User); {
+		case err == nil:
+			fmt.Println(logonRightGranted(o.User))
+		case existing != nil:
+			log.Warn("the right 'Log on as a service' was not granted; the service keeps the rights its account holds", "account", o.User, "err", err)
+		default:
+			return false, "", fmt.Errorf("the right 'Log on as a service' for %s: %w (grant it in secpol.msc, or install as the virtual account)", o.User, err)
+		}
+	}
 	cfg := mgr.Config{
 		DisplayName:      "pgvigil collector",
 		Description:      "PostgreSQL monitoring collector: polls the instances named in its configuration and writes to the pgvigil repository.",
@@ -933,7 +946,14 @@ func windowsItems(inst installOptions, found bool) []removal {
 			_ = m.Disconnect()
 		}
 	}
-	items = append(items, removal{what: "the service " + serviceName + " (its virtual account " + serviceAccount + " ends with it)", present: found, kept: pending, remove: func() error {
+	runsAs := "(its virtual account " + serviceAccount + " ends with it)"
+	if needsLogonRight(inst.User) {
+		runsAs = "(it runs as " + inst.User + ", an account the install did not make: it stays)"
+	}
+	if found && needsLogonRight(inst.User) {
+		items = append(items, removal{what: "the 'Log on as a service' right of " + inst.User, present: true, kept: logonRightKept(inst.User)})
+	}
+	items = append(items, removal{what: "the service " + serviceName + " " + runsAs, present: found, kept: pending, remove: func() error {
 		m, err := connectSCM()
 		if err != nil {
 			return err

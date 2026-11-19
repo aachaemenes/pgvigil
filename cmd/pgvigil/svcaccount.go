@@ -142,3 +142,22 @@ func netbiosHost(host string) string {
 	}
 	return h
 }
+
+// needsLogonRight says whether the install gives user 'Log on as a service' (RELNOTES L150): every account but the
+// service's virtual one, which Windows lets run as its service by itself.
+func needsLogonRight(user string) bool {
+	dom, _, _ := strings.Cut(strings.TrimSpace(user), `\`)
+	return !strings.EqualFold(dom, "NT SERVICE")
+}
+
+// logonRightGranted is the install's line once the right is read back held.
+func logonRightGranted(user string) string {
+	return fmt.Sprintf("'Log on as a service' (SeServiceLogonRight) granted to %s and read back held. A Group Policy that "+
+		"defines this right replaces the local list at its next refresh: add %s to that policy too.", user, user)
+}
+
+// logonRightKept is the uninstall's reason for leaving the right in place.
+func logonRightKept(user string) string {
+	return fmt.Sprintf("another service may run as %s too, so its 'Log on as a service' right stays; when nothing else "+
+		"does, take it away by hand: secpol.msc > Local Policies > User Rights Assignment > Log on as a service", user)
+}
