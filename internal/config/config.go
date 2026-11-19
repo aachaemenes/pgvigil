@@ -66,6 +66,8 @@ type Config struct {
 	// LogLevel is the collector's and serve's log verbosity: debug, info (the default), warn or error (RELNOTES L172);
 	// the environment's PGVIGIL_LOG_LEVEL wins over it for a one-off.
 	LogLevel string `yaml:"log_level"`
+	// Kerberos is the one Kerberos identity of the process for PostgreSQL's gss sign-ins (PGAUTH M3, kerberos.go)
+	Kerberos Kerberos `yaml:"kerberos"`
 	// Doors holds the switches of serve's doors that only this file turns on, never the page (pagedoor.go):
 	// doors: page_instance_reads: on lets Community tools and custom reports run on instances added in Admin > Instances.
 	// A later release (task 330) lists these switches on a Site settings page, one switch per door in one named place,
@@ -809,6 +811,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.validateGMSA(); err != nil {
+		return err
+	}
+	if err := c.validateKerberos(); err != nil {
 		return err
 	}
 	if err := validateCounterEdits("root", c.MSSQLCounters); err != nil {
