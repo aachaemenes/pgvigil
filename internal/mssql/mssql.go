@@ -375,7 +375,7 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 	connects.Add(1)
 	dsn := in.DSN()
 	if strings.TrimSpace(dsn) == "" {
-		return nil, nil, collect.InstanceConnect(in.Name, fmt.Errorf("connect %s: the dsn resolved to an empty string (unset variable or unreadable file)", in.Name))
+		return nil, nil, collect.InstanceConnect(in.Name, fmt.Errorf("connect %s: the dsn resolved to an empty string (%s)", in.Name, collect.EmptyDSNWhy(in.DSNRaw)))
 	}
 	dl := &deadlineDialer{keepAlive: 30 * time.Second}
 	var target string

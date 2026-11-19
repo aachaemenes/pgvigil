@@ -80,11 +80,11 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		d = config.Resolve(*dsn)
 	}
 	if strings.TrimSpace(d) == "" {
-		src := "repository.dsn " + cfg.Repository.DSNRaw
+		src, why := "repository.dsn "+cfg.Repository.DSNRaw, emptyWhy(cfg.Repository.DSNRaw)
 		if *dsn != "" {
-			src = "-dsn " + *dsn
+			src, why = "-dsn "+*dsn, emptyWhy(*dsn)
 		}
-		return &configError{fmt.Errorf("config %s: the repository dsn (%s) resolves to nothing: fill in the env file or the file it names", *path, src)}
+		return &configError{fmt.Errorf("config %s: the repository dsn (%s) resolves to nothing%s: fill in the env file or the file it names", *path, src, why)}
 	}
 	host, _, err := net.SplitHostPort(*listen)
 	if err != nil {

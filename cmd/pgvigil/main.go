@@ -370,8 +370,8 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	// an empty repository dsn (a fresh install's env file not filled yet) is a config error: exit 3, which the unit's
 	// RestartPreventExitStatus=3 and the Windows service's recovery leave stopped - never a restart loop
 	if strings.TrimSpace(cfg.Repository.DSN()) == "" {
-		return &configError{fmt.Errorf("config %s: the repository dsn (%s) resolves to nothing: fill in the env file or the file it names",
-			fs.Lookup("config").Value.String(), cfg.Repository.DSNRaw)}
+		return &configError{fmt.Errorf("config %s: the repository dsn (%s) resolves to nothing%s: fill in the env file or the file it names",
+			fs.Lookup("config").Value.String(), cfg.Repository.DSNRaw, emptyWhy(cfg.Repository.DSNRaw))}
 	}
 	// the alerts: list (task 60): the sender runs beside the scheduler as alerts_dsn (a login IN ROLE pgvigil_alerter), else the repository's dsn
 	ast, err := alerts.LoadFile(fs.Lookup("config").Value.String())
@@ -466,4 +466,13 @@ func queryTextByName(cfg *config.Config) map[string]string {
 		m[in.Name] = in.QueryText
 	}
 	return m
+}
+
+// emptyWhy is " - <why>" for a dsn reference that resolves to nothing (RELNOTES L145: the variable, the file, a dpapi:
+// blob sealed on another host), "" when there is no reason to add.
+func emptyWhy(raw string) string {
+	if w := config.WhyEmpty(strings.TrimSpace(raw)); w != "" {
+		return " - " + w
+	}
+	return ""
 }

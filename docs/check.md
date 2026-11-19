@@ -35,3 +35,10 @@ configuration folder's owner and group - mode 0640 under the installer's 0750 fo
 group, 0600 elsewhere (run it as root or as the folder's owner); on Windows a DPAPI blob at
 machine scope and a `dpapi:` reference, readable through the configuration folder's own access list. Each seal
 writes a new file; `pgvigil uninstall -all` removes the folder.
+
+A `dpapi:` blob opens only on the host that sealed it (machine scope): a configuration folder copied to a new server,
+or a host rebuilt, keeps the reference and loses the secret. pgvigil has no key to offer for it and keeps no
+encrypted configuration (a named difference from DBA Dash's temporary key: here every secret is a reference read at
+each connect). The connect, `pgvigil check` and, for the repository's own dsn, the service's start (exit 3) then say
+which reference resolved to nothing and why - the blob that did not open and the fix (seal it again on this host),
+the file and the system's error, the variable not set - never what was read.

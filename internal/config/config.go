@@ -1014,27 +1014,61 @@ func validateCloud(in Instance) error {
 
 func validQueryText(v string) bool { return v == "full" || v == "normalized" || v == "none" }
 
-// Resolve applies the env:/file: indirection.
+// Resolve applies the env:/file:/dpapi: indirection; "" = it resolved to nothing (ResolveWhy keeps why).
 func Resolve(v string) string {
+	s, _ := ResolveWhy(v)
+	return s
+}
+
+// ResolveWhy is Resolve with the reason a reference resolved to nothing (RELNOTES L145): an env: variable not set or
+// empty, a file: that cannot be read (the OS's words) or is empty, a dpapi: blob that does not open here - a seal at
+// machine scope opens only on the host that made it. The reason names the reference, never what it read; a value that
+// is no reference is itself, with no error.
+func ResolveWhy(v string) (string, error) {
 	switch {
 	case strings.HasPrefix(v, "env:"):
-		return os.Getenv(strings.TrimPrefix(v, "env:"))
+		name := strings.TrimPrefix(v, "env:")
+		s, ok := os.LookupEnv(name)
+		if !ok {
+			return "", fmt.Errorf("the variable %s is not set for this process", name)
+		}
+		if s == "" {
+			return "", fmt.Errorf("the variable %s is empty", name)
+		}
+		return s, nil
 	case strings.HasPrefix(v, "dpapi:"):
-		// a credential Admin > Instances sealed on Windows (task 204, inventory_windows.go)
-		s, err := ResolveDPAPI(strings.TrimPrefix(v, "dpapi:"))
+		// a credential sealed on Windows by Admin > Instances or 'pgvigil secret seal' (inventory_windows.go)
+		path := strings.TrimPrefix(v, "dpapi:")
+		s, err := ResolveDPAPI(path)
 		if err != nil {
-			return ""
+			return "", fmt.Errorf("the dpapi: secret %s did not open on this host (%v): a machine-scope seal opens only on the host that sealed it - seal it again here with 'pgvigil secret seal', or enter it again in Admin > Instances", path, err)
 		}
-		return s
+		if s == "" {
+			return "", fmt.Errorf("the dpapi: secret %s is empty", path)
+		}
+		return s, nil
 	case strings.HasPrefix(v, "file:"):
-		b, err := os.ReadFile(strings.TrimPrefix(v, "file:"))
+		path := strings.TrimPrefix(v, "file:")
+		b, err := os.ReadFile(path)
 		if err != nil {
-			return ""
+			return "", fmt.Errorf("the file: secret cannot be read: %v", err)
 		}
-		return strings.TrimRight(string(b), "\r\n")
+		s := strings.TrimRight(string(b), "\r\n")
+		if s == "" {
+			return "", fmt.Errorf("the file: secret %s is empty", path)
+		}
+		return s, nil
 	default:
-		return v
+		return v, nil
 	}
+}
+
+// WhyEmpty is why a reference resolves to nothing ("" when it resolves, or is no reference): the words a refusal adds.
+func WhyEmpty(raw string) string {
+	if _, err := ResolveWhy(raw); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 // renamedCollections: a collection whose read moved to another (task 401: the counters of mssql_cpu and mssql_activity

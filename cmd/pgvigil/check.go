@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/repo"
@@ -211,7 +212,7 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 			defer func() { <-sem }()
 			r := res{in: in}
 			if dsn := in.DSN(); dsn == "" {
-				r.why = fmt.Sprintf("dsn %q resolved to an empty string (unset variable or unreadable file)", in.DSNRaw)
+				r.why = fmt.Sprintf("dsn %q resolved to an empty string (%s)", in.DSNRaw, collect.EmptyDSNWhy(in.DSNRaw))
 			} else {
 				r.t = web.CheckConnection(ctx, engineName(in), dsn, in.SecretRef(), in, cfg)
 			}

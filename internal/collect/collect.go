@@ -150,7 +150,7 @@ SET application_name = 'pgvigil';`
 func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	dsn := in.DSN()
 	if dsn == "" {
-		return nil, InstanceConnect(in.Name, fmt.Errorf("connect %s: dsn %q resolved to an empty string (unset variable or unreadable file)", in.Name, in.DSNRaw))
+		return nil, InstanceConnect(in.Name, fmt.Errorf("connect %s: dsn %q resolved to an empty string (%s)", in.Name, in.DSNRaw, EmptyDSNWhy(in.DSNRaw)))
 	}
 	// task 201 DONE-2 (N10): pgx.Connect's own two steps, with DefaultConnectTimeout where the DSN sets no
 	// connect_timeout; a DSN that does not parse is a failed connect, as before
@@ -320,4 +320,13 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
 	return Result{Rows: len(rows), Duration: d, Outcome: partialOutcome(status), Import: imp.Import, Imported: imp.Imported}
+}
+
+// EmptyDSNWhy is why a dsn reference resolved to nothing (RELNOTES L145), or the general words when there is no reason
+// to add.
+func EmptyDSNWhy(raw string) string {
+	if w := config.WhyEmpty(raw); w != "" {
+		return w
+	}
+	return "unset variable or unreadable file"
 }
