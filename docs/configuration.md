@@ -228,6 +228,7 @@ turns them on, off by default on every install:
 doors:
   page_cloud_blocks: on          # let the instances of Admin > Instances carry an aws: or azure: block
   page_aws_profiles: [prod-read] # the AWS profiles such a block may name (empty = none: the host's default chain)
+  discovery_auto_add: on         # a cloud discovery source may add the servers it finds by itself (its own switch too)
 ```
 
 - **Off** (the default): every page block is kept in the repository but not used - the collector logs 'a page

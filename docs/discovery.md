@@ -107,6 +107,38 @@ words). The collector checks an AWS block against the endpoint RDS gives for it 
 ([Configuration](configuration.md#cloud-blocks-on-a-page-instance)). An instance approved before this release has no
 block: give it one in Admin > Instances > Edit > Cloud.
 
+## Adding what a source finds by itself
+
+A cloud source (aws, azure, gcp) can add the servers it finds without a click - DBA Dash's way with an Azure SQL
+logical server's databases - but only on two keys, both off by default:
+
+```yaml
+doors:
+  discovery_auto_add: on   # a cloud source of Admin > Instances may add the servers it finds by itself
+```
+
+and the source's own switch, **Add the servers this source finds by itself**, in the source's Edit (shown off, with
+the door's words, while the door is shut; the store refuses it on then, and on a list, CMS or DBA Dash source). A
+change of the switch is in the changes list as the source's edit is. Turning it off clears what it noted.
+
+After each read of such a source (the hourly read, or Read now, which does not wait for it), every proposed server
+not gone, oldest first, gets the approve's **Test** (audited as a person's Test is) and then the approve itself, as the
+user `auto:<source>`, with the source's login, exactly as a click with nothing typed and nothing ticked:
+
+- **Needs a person.** Whatever the approve asks a person to confirm or refuses is never done by itself: a login that is
+  the server's master user, a server that pauses when idle, a server already an instance, a name already taken, an
+  Entra-only server without an Entra login. The server stays a proposal, its note saying *not added by itself: needs a
+  person: <the approve's words>*; approve it by hand, with its tick.
+- **The Test failed.** The server stays a proposal with the Test's words and is tried again at the next read.
+- **25 a read.** One read adds at most 25 servers; the rest are noted *waits for the next read*, so a subscription named
+  by mistake does not add hundreds of servers in one hour.
+- **The changes list** gets one row per step beside the read's own: *added n by itself; needs a person n; the test
+  failed n; waits for the next read n*, and each added server's approve row names `auto:<source>`.
+- Nothing is removed by itself: a server gone from the account is marked gone, as before.
+
+Not proven: a real account's servers added by themselves (the store rows use the test store as the servers; a cloud
+lab's read is a later lab's leg, on Allen's word).
+
 ## Not proven
 
 - GovCloud, the China regions, Azure Government and Azure China: no lab.
