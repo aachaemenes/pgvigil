@@ -11,7 +11,7 @@ import (
 
 // The 'secret files' part of 'pgvigil check' (RELNOTES L169; PerformanceMonitor 3.5.0's --harden-files, the lead's
 // 04:29 (a)): every file of the configuration's folder that can hold a secret, judged by who may read it. check
-// changes nothing: a FAIL prints its fix, and 'pgvigil install' run again re-applies the installer's own access.
+// changes nothing: a FAIL prints its fix (on Windows 'pgvigil install' run again also re-applies the folder's list).
 
 // secretFileFolders hold secrets beside the configuration: the seals, the page's and the discovery sources'
 // credentials, serve's own keys.

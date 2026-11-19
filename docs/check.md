@@ -14,7 +14,7 @@ any WARN or a failed instance - so an install script can gate on the code.
   `sources/` and `keys/` - and the folders. On Linux any bit for others is a FAIL and a group bit beyond read a WARN
   (a folder's group may pass through it); on Windows read for anyone but SYSTEM, the Administrators and the service's
   account is a FAIL. Each prints its fix (`chmod o-rwx <file>`, `icacls "<file>" /remove:g *<SID>`); check changes
-  nothing, and `pgvigil install` run again sets the installer's own access once more.
+  nothing (on Windows `pgvigil install` run again sets the installer's access list on the folder once more).
 - **The repository**: the connect, its schema level against this build (behind: *run pgvigil migrate*; ahead: a FAIL -
   this build must not run on it), and its size. Free space beside the store is read only when the store is on this
   host and its `data_directory` is readable to the login and the process: a WARN under 10 GiB free or under 30 days of
