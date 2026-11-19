@@ -41,6 +41,7 @@ function Row([string]$name, [bool]$ok, [string]$what) {
 function Invoke-App([string[]]$argList, [int]$waitMs) {
     $out = Join-Path $env:TEMP ('pgvow-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.out')
     $proc = Start-Process -FilePath $App -ArgumentList $argList -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+    $null = $proc.Handle   # held, so ExitCode reads after WaitForExit under 5.1 (else it can read null)
     $done = $proc.WaitForExit($waitMs)
     $text = ''
     foreach ($file in @($out, "$out.err")) { if (Test-Path -LiteralPath $file) { $text += (Get-Content -LiteralPath $file -Raw); Remove-Item -LiteralPath $file -Force } }
