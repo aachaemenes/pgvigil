@@ -146,6 +146,16 @@ func TestInstanceListAgesReadErrorL170(t *testing.T) {
 	if _, err := owner.Exec(ctx, `GRANT USAGE ON SCHEMA pgvigil TO `+role+`; GRANT EXECUTE ON FUNCTION pgvigil.admin_inventory() TO `+role); err != nil {
 		t.Fatal(err)
 	}
+	// one page instance, so admin_inventory() answers a real row (an empty inventory is its own row below): the
+	// refusal of the ages read alone is what this row judges (l170-2's red met the empty inventory's NULL row first)
+	page := "l170-rpage-" + strings.TrimPrefix(role, "t_l170_r_")
+	c := config.Conn{Engine: config.EnginePostgres, Auth: "password", Host: "pg-l170r", Port: 5432, DBName: "app", Login: "mon"}
+	if err := instanceWrite(ctx, owner, addPayload(page, "auto", nil, c, "file:/nonexistent/l170r.dsn", "tester", nil)); err != nil {
+		t.Fatalf("add %s: %v", page, err)
+	}
+	defer func() {
+		_ = instanceWrite(context.Background(), owner, map[string]any{"op": "remove", "ui_user": "cli:tester", "client": "cli", "name": page, "file_names": []string{}})
+	}()
 	pc, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -164,4 +174,25 @@ func TestInstanceListAgesReadErrorL170(t *testing.T) {
 		t.Fatalf("a login that may not read the ages: no error and %d row(s) - an unread age must be an error, never 'never'", len(rows))
 	}
 	t.Logf("the refusal: %v", err)
+}
+
+// TestInstanceListEmptyInventoryL170 (RELNOTES L170, l170-2's red): on a store with no page instance, admin_inventory()
+// answers its state row with every instance column NULL (0193: admin_inventory_state LEFT JOIN admin_instances), and
+// 'pgvigil instance list' must answer the file's instances, never 'cannot scan NULL'. A fresh migrated store of its own.
+func TestInstanceListEmptyInventoryL170(t *testing.T) {
+	dsn := checkStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	rows, err := instanceRows(ctx, pool, &config.Config{Instances: []config.Instance{{Name: "file-one", Engine: config.EnginePostgres}}})
+	if err != nil {
+		t.Fatalf("list on a store with no page instance: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Name != "file-one" || rows[0].Source != "file" || rows[0].LastAge != "never" {
+		t.Errorf("list on a store with no page instance: want the file's one instance, never collected; got %+v", rows)
+	}
 }
