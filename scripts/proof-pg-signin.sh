@@ -137,24 +137,28 @@ CREATE ROLE pgvigil LOGIN; CREATE ROLE pgvrad LOGIN; CREATE ROLE pgvpam LOGIN; C
 CREATE ROLE pgvscram LOGIN PASSWORD '$SCRAM_PW';
 GRANT pg_monitor TO pgvigil, pgvrad, pgvpam, pgvscram, pgvtrust, pgvcert;
 SQL
-PORT=$(docker port "$N-pg" 5432/tcp | head -1 | sed 's/.*://')
+PORT=$(docker port "$N-pg" 5432/tcp | sed -n '1s/.*://p')
 [ "$(docker exec "$N-pg" psql -U postgres -XAtc 'show ssl')" = on ] || fail "TLS is not on in the server"
 
 echo "== the store"
 docker run -d --name "$N-store" -p 127.0.0.1::5432 -e POSTGRES_HOST_AUTH_METHOD=trust "postgres:$PG" >/dev/null
-SPORT=$(docker port "$N-store" 5432/tcp | head -1 | sed 's/.*://')
+SPORT=$(docker port "$N-store" 5432/tcp | sed -n '1s/.*://p')
 for _ in $(seq 1 60); do psql "host=127.0.0.1 port=$SPORT user=postgres dbname=postgres" -XAtqc 'select 1' >/dev/null 2>&1 && break; sleep 1; done
 export PGVIGIL_REPO_DSN="host=127.0.0.1 port=$SPORT user=postgres dbname=postgres"
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$WORK/m.yaml"
 "$BIN" migrate -config "$WORK/m.yaml" > "$WORK/migrate.out" 2>&1 || { tail -3 "$WORK/migrate.out"; fail "the store did not migrate"; }
 
 # pf <name> <user> <password> <sslmode> [sslrootcert]: the instance's passfile and dsn (the password never inline)
-pf() { printf '127.0.0.1:%s:*:%s:%s\n' "$PORT" "$2" "$3" > "$WORK/$1.pgpass"
+# (a passfile line is matched against host=, never hostaddr=: its host field is '*')
+pf() { printf '*:%s:*:%s:%s\n' "$PORT" "$2" "$3" > "$WORK/$1.pgpass"
   echo "host=localhost hostaddr=127.0.0.1 port=$PORT dbname=postgres user=$2 sslmode=$4${5:+ sslrootcert=$5} passfile=$WORK/$1.pgpass connect_timeout=10"; }
 # check <name> <dsn>: 'pgvigil check' on one instance; its output and exit into $WORK/<name>.check
 check() { printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances:\n  - name: %s\n    engine: postgres\n    dsn: "%s"\n' "$1" "$2" > "$WORK/$1.yaml"
   set +e; "$BIN" check -config "$WORK/$1.yaml" > "$WORK/$1.check" 2>&1; echo "exit $?" >> "$WORK/$1.check"; set -e; }
-sysuser() { psql "$1" -XAtc "select coalesce(system_user, 'NULL') || '|' || (select ssl from pg_stat_ssl where pid = pg_backend_pid())" 2>&1 | head -1; }
+# sysuser <dsn>: SYSTEM_USER|ssl as psql reads it - its whole output kept in SU_ALL (an error is several lines: under
+# pipefail a 'head' would end the proof on SIGPIPE), the first line printed
+SU_ALL=
+sysuser() { SU_ALL=$(psql "$1" -XAtc "select coalesce(system_user, 'NULL') || '|' || (select ssl from pg_stat_ssl where pid = pg_backend_pid())" 2>&1) || true; printf '%s' "${SU_ALL%%$'\n'*}"; }
 has() { grep -qF -- "$2" "$WORK/$1.check"; }
 row() { # row <label> <name> <dsn> <system_user|ssl wanted or -> <OK|WARN|FAIL> <words>
   local label=$1 name=$2 dsn=$3 want=$4 level=$5 words=$6 got=
@@ -162,7 +166,7 @@ row() { # row <label> <name> <dsn> <system_user|ssl wanted or -> <OK|WARN|FAIL> 
   check "$name" "$dsn"
   local warn=; has "$name" "WARN instance $name" && warn=1
   case $level in
-    OK) if [ "$want" != - ] && [ "$got" != "$want" ]; then bad "$label: SYSTEM_USER|ssl '$got', want '$want'"; return; fi
+    OK) if [ "$want" != - ] && [ "$got" != "$want" ]; then bad "$label: SYSTEM_USER|ssl '$got', want '$want'"; sed 's/^/     psql: /' <<<"$SU_ALL"; sed 's/^/     /' "$WORK/$name.check"; return; fi
         if has "$name" "OK   instance $name" || has "$name" "OK instance $name"; then :; else bad "$label: no OK line"; sed 's/^/     /' "$WORK/$name.check"; return; fi
         if [ -n "$warn" ]; then bad "$label: a WARN where none is wanted"; sed 's/^/     /' "$WORK/$name.check"; return; fi
         ok "$label: SYSTEM_USER|ssl '$got', check OK, no WARN" ;;
