@@ -323,7 +323,7 @@ var knownKeys = map[string]bool{
 	"password_secret": true, "ref": true,
 	"web": true, "readyz_without_login": true, "base_path": true, // B6.4: the probes; L55: the sub-path
 	"doors": true, "page_instance_reads": true, "reports_dsn": true,
-	"page_cloud_blocks": true, "page_aws_profiles": true,
+	"page_cloud_blocks": true, "page_aws_profiles": true, "discovery_auto_add": true,
 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
 	"gcp": true, "project": true, "instance": true, "credentials_file": true, "replicas": true,
 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
