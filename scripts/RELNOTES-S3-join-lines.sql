@@ -12,3 +12,9 @@
 -- 2. pgvigil.collector_shared_cause (0300): NOT joined - 'inline password' is a configuration fact, never a symptom a
 --    host or network cut explains, so it is sent as any finding while a parent stands (named here so the join leaves it out
 --    on purpose).
+
+-- 3. pgvigil.import_admin_source (RELNOTES L237, 0476): RE-MADE whole by 0476 from 0123's text with auto_add (the
+--    v_auto / v_door lines, the two refusals, the insert's and the edit's auto_add, the notes cleared on off, the
+--    audit's '; adds what it finds by itself'). A NAMED CHECK of the join: a file of another branch that re-makes
+--    import_admin_source after 0476 (or one 0476 lands after) carries these lines, else the switch is lost or a
+--    newer line of that file is.
