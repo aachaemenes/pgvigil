@@ -335,7 +335,8 @@ func failedAsReference(rows []checkRow, err error) bool {
 }
 
 // instanceCheckRows: one instance's rows - a FAIL (why: a dsn that resolved to nothing; or the connection test's own
-// words), or its OK row and, for a server this build does not know (L217), a WARN with what was read.
+// words), or its OK row and, for a server this build does not know (L217), a WARN with what was read, and (PGAUTH M1)
+// a WARN with the sign-in guard's words.
 func instanceCheckRows(name string, t web.CheckResult, why string) []checkRow {
 	what := "instance " + name
 	switch {
@@ -363,6 +364,10 @@ func instanceCheckRows(name string, t web.CheckResult, why string) []checkRow {
 		// the connection answered but what the list adds failed (a detect refused - an Azure Synapse pool - or cut
 		// short): the collections there fail at the same step
 		rows = append(rows, checkRow{"WARN", what, t.ListNote})
+	}
+	if t.Warn != "" {
+		// PGAUTH M1 (decision 2): the sign-in guard's words - a password-shaped method short of verify-full; nothing refused
+		rows = append(rows, checkRow{"WARN", what, t.Warn})
 	}
 	return rows
 }

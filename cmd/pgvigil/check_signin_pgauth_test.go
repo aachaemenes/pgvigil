@@ -11,14 +11,14 @@ import (
 // is refused.
 func TestCheckSignInWarnPGAUTH(t *testing.T) {
 	warn := "the server signs this login in by ldap, which has pgvigil send the password in clear inside the session, and sslmode=prefer checks no server certificate"
-	rows := instanceRows("dir1", web.CheckResult{OK: true, Detail: "connected: PostgreSQL 16.4, as pgvigil", Warn: warn})
+	rows := instanceCheckRows("dir1", web.CheckResult{OK: true, Detail: "connected: PostgreSQL 16.4, as pgvigil", Warn: warn}, "")
 	if !rowWith(rows, "OK", "instance dir1", "connected: PostgreSQL 16.4") || !rowWith(rows, "WARN", "instance dir1", "by ldap") {
 		t.Errorf("rows:\n%s", rowsText(rows))
 	}
-	if rows := instanceRows("db2", web.CheckResult{OK: true, Detail: "connected"}); len(rows) != 1 || rows[0].Level != "OK" {
+	if rows := instanceCheckRows("db2", web.CheckResult{OK: true, Detail: "connected"}, ""); len(rows) != 1 || rows[0].Level != "OK" {
 		t.Errorf("no sign-in warning: rows\n%s", rowsText(rows))
 	}
-	if rows := instanceRows("db3", web.CheckResult{Detail: "connection refused"}); len(rows) != 1 || rows[0].Level != "FAIL" {
+	if rows := instanceCheckRows("db3", web.CheckResult{Detail: "connection refused"}, ""); len(rows) != 1 || rows[0].Level != "FAIL" {
 		t.Errorf("a failed test: rows\n%s", rowsText(rows))
 	}
 }

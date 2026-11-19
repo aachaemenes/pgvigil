@@ -846,6 +846,9 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 	}
 	t := testConnectionList(ctx, engine, dsn, nil, tin, s.schedConfig())
 	okc, detail := t.ok, t.detail
+	if t.warn != "" {
+		detail += " - WARN: " + t.warn
+	}
 	out := map[string]any{"ok": okc, "detail": detail}
 	if okc {
 		out["not_running"], out["collections"], out["list_note"] = t.notRun, t.collections, t.listNote
@@ -881,6 +884,7 @@ type testResult struct {
 	collections int
 	listNote    string // why the list is missing or partial ("" = read)
 	unknown     string // engines.UnknownServer's words ("" = a server this build knows, or no detect)
+	warn        string // PGAUTH M1: the sign-in guard's words (signInNote; "" = none)
 }
 
 // testConnectionList opens one connection (10 s in all, the secret's read inside it), reads who answered, then on the
@@ -939,10 +943,19 @@ func testConnectionList(ctx context.Context, engine, dsn string, sec *secrets.Re
 		}
 		defer func() { _ = conn.Close(context.Background()) }()
 		var ver, login string
-		if err := conn.QueryRow(cctx, `SELECT current_setting('server_version'), current_user`).Scan(&ver, &login); err != nil {
+		var vnum int
+		if err := conn.QueryRow(cctx, `SELECT current_setting('server_version'), current_user, current_setting('server_version_num')::int`).Scan(&ver, &login, &vnum); err != nil {
 			return testResult{detail: err.Error()}
 		}
 		t := testResult{ok: true, detail: fmt.Sprintf("connected: PostgreSQL %s, as %s", ver, login)}
+		// PGAUTH M1: how the server signed the login in (SYSTEM_USER, 16+) and whether the session runs inside TLS
+		if vnum >= 160000 {
+			var su string
+			var ssl bool
+			if err := conn.QueryRow(cctx, `SELECT coalesce(system_user, ''), coalesce((SELECT s.ssl FROM pg_stat_ssl s WHERE s.pid = pg_backend_pid()), false)`).Scan(&su, &ssl); err == nil {
+				t.warn = signInNote(vnum, su, ssl, dsn)
+			}
+		}
 		info, err := platform.Detect(cctx, conn, "")
 		if err != nil {
 			t.listNote = listNoteFor(cctx, err)
