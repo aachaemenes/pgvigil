@@ -31,9 +31,11 @@ DECLARE
   v_cred text := nullif(p_payload->>'credential_ref', '');
   v_why  text;
   v_have boolean;
-  -- L237: the source's switch (null = not named) and pgvigil.yaml's doors.discovery_auto_add as serve read it
+  -- L237: the source's switch (null = not named) and pgvigil.yaml's doors.discovery_auto_add as serve read it; a payload
+  -- without the door is the door shut (coalesce: jsonb_typeof of an absent key is NULL, and NOT NULL would skip the
+  -- refusal below - l237-1b's red)
   v_auto boolean := CASE WHEN jsonb_typeof(p_payload->'auto_add') = 'boolean' THEN (p_payload->>'auto_add')::boolean END;
-  v_door boolean := jsonb_typeof(p_payload->'auto_add_door') = 'boolean' AND (p_payload->>'auto_add_door')::boolean;
+  v_door boolean := coalesce(jsonb_typeof(p_payload->'auto_add_door') = 'boolean' AND (p_payload->>'auto_add_door')::boolean, false);
 BEGIN
   IF v_user IS NULL THEN
     RAISE EXCEPTION 'import_admin_source: no ui_user' USING ERRCODE = '22023';
