@@ -9,6 +9,12 @@ any WARN or a failed instance - so an install script can gate on the code.
 - **The configuration** loads exactly as `pgvigil run` loads it, or the check fails with the loader's own error. It
   warns on a PostgreSQL instance whose dsn carries an inline password (move it to a passfile, `env:NAME`, `file:/path`
   or `password_secret`; the inline form is discouraged) and on an instance with no collection left to run.
+- **The secret files**: who may read each file of the configuration's folder that can hold a secret - the file,
+  the installer's dsn files (`repo.dsn`, `reports.dsn`, `pgvigil.env`), everything under `secrets/`, `instances/`,
+  `sources/` and `keys/` - and the folders. On Linux any bit for others is a FAIL and a group bit beyond read a WARN
+  (a folder's group may pass through it); on Windows read for anyone but SYSTEM, the Administrators and the service's
+  account is a FAIL. Each prints its fix (`chmod o-rwx <file>`, `icacls "<file>" /remove:g *<SID>`); check changes
+  nothing, and `pgvigil install` run again sets the installer's own access once more.
 - **The repository**: the connect, its schema level against this build (behind: *run pgvigil migrate*; ahead: a FAIL -
   this build must not run on it), and its size. Free space beside the store is read only when the store is on this
   host and its `data_directory` is readable to the login and the process: a WARN under 10 GiB free or under 30 days of

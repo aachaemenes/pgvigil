@@ -121,6 +121,10 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 	for _, name := range cfg.InlinePasswordInstances() {
 		add("WARN", "instance "+name, inlinePasswordWords)
 	}
+	// L169: who may read the files that can hold a secret (check changes nothing; a FAIL prints its fix)
+	for _, r := range secretFileRows(path) {
+		add(r.Level, r.What, r.Words)
+	}
 	for _, in := range cfg.Instances {
 		eng := engineName(in)
 		runnable := 0
