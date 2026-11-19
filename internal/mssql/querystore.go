@@ -254,7 +254,8 @@ func qsCandidatesQuery(hasWaits bool, role int, filtered bool) string {
 }
 
 // qsRoleSQL runs inside one database: whether it is writable, and on Azure SQL Database its replica role; no row
-// where sys.query_store_replicas does not exist (SQL Server 2022 and before). %s: the replica role's expression.
+// where sys.query_store_replicas does not exist (before SQL Server 2022: Microsoft's page names 2025, yet 2022 CU28
+// holds the view, rn-8). %s: the replica role's expression.
 const qsRoleSQL = `SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'Updateability') AS nvarchar(60)) AS updateability, %s AS replica_role
 WHERE OBJECT_ID('sys.query_store_replicas') IS NOT NULL`
 

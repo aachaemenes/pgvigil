@@ -96,14 +96,17 @@ n=$(grep -c 'a request outside web.base_path' "$WORK/demo.log" || true); [ "$n" 
 
 echo "== P3: the session cookie under the base (the login on)"
 L="$G/login/pgvigil"
-curl -s -D "$WORK/h1" -o /dev/null -H 'Content-Type: application/json' -d "{\"username\":\"bpuser\",\"password\":\"$UPW\"}" "$L/api/login"
-SC=$(grep -i '^set-cookie: pgvigil_session=' "$WORK/h1" | head -1 | tr -d '\r')
+# every read here may find nothing: under set -e a grep with no match inside an assignment ended the script without a
+# word (rn-9), so each one says what it saw instead
+said() { echo "status $1, body '$(head -c 200 "$2" 2>/dev/null | tr '\n' ' ')', headers '$(grep -i '^HTTP\|^set-cookie\|^location' "$3" 2>/dev/null | tr -d '\r' | tr '\n' ' ')', the serve's log '$(tail -3 "$WORK/serve.log" | cut -c1-200 | tr '\n' ' ')'"; }
+lc=$(curl -s -D "$WORK/h1" -o "$WORK/login.body" -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"username\":\"bpuser\",\"password\":\"$UPW\"}" "$L/api/login" || true)
+SC=$(grep -i '^set-cookie: pgvigil_session=' "$WORK/h1" 2>/dev/null | head -1 | tr -d '\r' || true)
 TOK=$(sed -n 's/^[Ss]et-[Cc]ookie: pgvigil_session=\([^;]*\).*/\1/p' <<<"$SC")
-[[ -n "$TOK" && "$SC" == *"Path=/pgvigil/"* ]] && ok "P3 the login's cookie: Path=/pgvigil/" || bad "P3 the login's cookie: '${SC%%=*}... $(grep -o 'Path=[^;]*' <<<"$SC")'"
-c=$(code -H "Cookie: pgvigil_session=$TOK" "$L/api/session"); grep -q 'bpuser' "$WORK/body" && ok "P3 /pgvigil/api/session with it: the user ($c)" || bad "P3 the session: $c $(head -c 120 "$WORK/body")"
-curl -s -D "$WORK/h2" -o /dev/null -X POST -H "Cookie: pgvigil_session=$TOK" -H 'Content-Type: application/json' -d '{}' "$L/api/logout"
-SC2=$(grep -i '^set-cookie: pgvigil_session=' "$WORK/h2" | head -1 | tr -d '\r')
-[[ "$SC2" == *"Path=/pgvigil/"* && ( "$SC2" == *"Max-Age=0"* || "$SC2" == *"Expires="* ) ]] && ok "P3 the logout clears it under Path=/pgvigil/" || bad "P3 the logout's cookie: $(grep -o 'Path=[^;]*\|Max-Age=[^;]*' <<<"$SC2" | tr '\n' ' ')"
+[[ -n "$TOK" && "$SC" == *"Path=/pgvigil/"* ]] && ok "P3 the login's cookie: Path=/pgvigil/" || bad "P3 the login's cookie: $(said "$lc" "$WORK/login.body" "$WORK/h1")"
+c=$(code -H "Cookie: pgvigil_session=$TOK" "$L/api/session" || true); grep -q 'bpuser' "$WORK/body" && ok "P3 /pgvigil/api/session with it: the user ($c)" || bad "P3 the session: $c $(head -c 120 "$WORK/body")"
+oc=$(curl -s -D "$WORK/h2" -o "$WORK/logout.body" -w '%{http_code}' -X POST -H "Cookie: pgvigil_session=$TOK" -H 'Content-Type: application/json' -d '{}' "$L/api/logout" || true)
+SC2=$(grep -i '^set-cookie: pgvigil_session=' "$WORK/h2" 2>/dev/null | head -1 | tr -d '\r' || true)
+[[ "$SC2" == *"Path=/pgvigil/"* && ( "$SC2" == *"Max-Age=0"* || "$SC2" == *"Expires="* ) ]] && ok "P3 the logout clears it under Path=/pgvigil/" || bad "P3 the logout's cookie: $(said "$oc" "$WORK/logout.body" "$WORK/h2")"
 
 echo "== W1: the click-through walk through the proxy under /pgvigil/"
 PGVIGIL_DEMO_URL="$G/pgvigil/" PGVIGIL_CLICKTHROUGH_OUT="$WORK/w1" bash scripts/proof-clickthrough.sh > "$WORK/w1.log" 2>&1 && ok "W1 the walk under /pgvigil/: PASS" || { bad "W1 the walk under /pgvigil/"; tail -25 "$WORK/w1.log" | cut -c1-240 | sed 's/^/     /'; }

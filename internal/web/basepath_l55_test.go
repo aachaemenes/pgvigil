@@ -16,7 +16,7 @@ import (
 // query kept. No base = the handler as it is.
 func TestUnderBaseL55(t *testing.T) {
 	var gotPath, gotBase string
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { gotPath, gotBase = r.URL.Path, baseFrom(r) })
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { gotPath, gotBase = r.URL.Path, baseFrom(r) })
 	var logs bytes.Buffer
 	h := UnderBase("/pgvigil", inner, slog.New(slog.NewTextHandler(&logs, nil)))
 	rec := httptest.NewRecorder()
