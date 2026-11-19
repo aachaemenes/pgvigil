@@ -88,15 +88,16 @@ func TestContinuePGAUTH(t *testing.T) {
 // (a keytab replaced after its key was rotated at the KDC).
 func TestProviderReloadPGAUTH(t *testing.T) {
 	t1 := time.Date(2026, 11, 19, 7, 0, 0, 0, time.UTC)
-	p := &provider{id: config.KerberosIdentity{CCache: "/var/lib/pgvigil/krb5cc"}, cl: new(client.Client), ccMod: t1}
-	if !p.cachedFor(t1) {
+	v1 := ccVersion{mod: t1, size: 1024, file: 7}
+	p := &provider{id: config.KerberosIdentity{CCache: "/var/lib/pgvigil/krb5cc"}, cl: new(client.Client), cc: v1}
+	if !p.cachedFor(v1) {
 		t.Error("the same cache file version: the client is not reused")
 	}
-	if p.cachedFor(t1.Add(time.Second)) {
+	if p.cachedFor(ccVersion{mod: t1.Add(time.Second), size: 1024, file: 7}) {
 		t.Error("a newer cache file: the old client is reused")
 	}
 	p.drop()
-	if p.cl != nil || p.cachedFor(t1) {
+	if p.cl != nil || p.cachedFor(v1) {
 		t.Error("drop kept the client")
 	}
 }
