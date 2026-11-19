@@ -78,6 +78,9 @@ type installOptions struct {
 	// never written, logged or put in an error (RELNOTES L131, the lead's 01:14 (b))
 	PasswordStdin bool
 	Password      string
+	// PrintGMSA: print the script that makes the gMSA -user names, for the principals in GMSAHosts (RELNOTES L142)
+	PrintGMSA bool
+	GMSAHosts string
 
 	Purge bool // uninstall: remove the config folder and the binary too
 
@@ -114,6 +117,8 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 		fs.BoolVar(&o.NoStart, "no-start", false, "install and enable, but do not start the service")
 		fs.BoolVar(&o.Upgrade, "upgrade", false, "upgrade the installed collector: stop, dump, migrate, swap, start (docs/upgrade.md)")
 		fs.BoolVar(&o.PasswordStdin, "password-stdin", false, passwordStdinHelp)
+		fs.BoolVar(&o.PrintGMSA, "print-gmsa", false, "print the PowerShell a domain admin runs to make the gMSA -user names (DOMAIN\\name$), and the SQL Server login line; pgvigil runs none of it and changes nothing")
+		fs.StringVar(&o.GMSAHosts, "host", "", "with -print-gmsa: the computers (NAME$) or the group allowed to use the gMSA, comma separated (default: this host)")
 	} else {
 		with = "-drop-repository"
 		fs.BoolVar(&o.Purge, "purge", false, "also remove the installer's files, their folder when empty, and the binary")
@@ -163,6 +168,9 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	if o.User == "" {
 		return o, errors.New("-user must name an account")
 	}
+	if o.set["host"] && !o.PrintGMSA {
+		return o, errors.New("-host goes with -print-gmsa only")
+	}
 	return o, nil
 }
 
@@ -174,8 +182,20 @@ func runInstall(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	// the account's check and its password before anything changes (RELNOTES L131)
 	host, _ := os.Hostname()
+	if o.PrintGMSA {
+		hosts := []string{netbiosHost(host) + "$"}
+		if o.set["host"] {
+			hosts = strings.Split(o.GMSAHosts, ",")
+		}
+		script, err := gmsaScript(o.User, hosts)
+		if err != nil {
+			return err
+		}
+		fmt.Print(script)
+		return nil
+	}
+	// the account's check and its password before anything changes (RELNOTES L131)
 	if _, err := prepareAccount(&o, runtime.GOOS, netbiosHost(host), os.Stdin); err != nil {
 		return err
 	}
