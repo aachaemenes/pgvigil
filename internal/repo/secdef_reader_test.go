@@ -48,9 +48,13 @@ func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 		// ST5a, 0263: a page instance's name and its own schedules and query_text, STABLE, no secret, from admin_instances,
 		// which the reader SELECTs anyway; SECURITY DEFINER for the collector's login, which has no SELECT
 		"admin_instance_settings()": true,
-		// 0300: apply_roles takes the reader's EXECUTE back from the Parquet export's door
-		// (export_run_record, export_off: 0256, granted in 0300) and the agent door (the seven
-		// agent_investigation_*: 0268, granted in 0300) - owner-only there, then granted to pgvigil_exporter
+		// RELNOTES L170, 0480: each instance's name and its newest status 'ok' collection time, STABLE, no write, no secret,
+		// from instances and collection_dates, which the reader SELECTs anyway; SECURITY DEFINER for the collector's login
+		// ('pgvigil instance list' under the configuration's repository login), which has no SELECT
+		"admin_instance_ages()": true,
+		// the join file (0300): apply_roles takes the reader's EXECUTE back from the Parquet export's door
+		// (export_run_record, export_off: 0256, scripts/parquet-join-lines.sql 1) and the agent door (the seven
+		// agent_investigation_*: 0268, scripts/agent-join-lines.sql 1) - owner-only there, then granted to pgvigil_exporter
 		// and pgvigil_investigator - so the nine left this list; and findings_history_partition (0154: the history's month
 		// partition, DDL as the owner, its guard the alerter or the owner) is on apply_roles' owner-only list there, never
 		// on this one
