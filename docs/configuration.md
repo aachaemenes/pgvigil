@@ -338,6 +338,25 @@ Prometheus text format, read with a signed-in session or `metrics.token` (`file:
 least); it opens server names, engines, platforms, versions and every figure to whoever reads that Prometheus. Its
 `metrics:` block holds `token`, `cache_seconds`, `databases`, `max_databases`, `include_databases` and `tags`.
 
+
+### From the command line (pgvigil instance)
+
+On serve's host, after `pgvigil install`, the page's add, list and disable run headless:
+
+```
+pgvigil instance add -config <pgvigil.yaml> -name pg7 -engine postgres -dsn-stdin [-platform auto] [-tag prod]... [-no-test] < the connection string
+pgvigil instance list -config <pgvigil.yaml>
+pgvigil instance disable -config <pgvigil.yaml> -name pg7
+```
+
+`add` takes the page's own path: the connection string on stdin (never a flag; at a terminal it is not shown) read
+into the page's fields - the sign-ins the page takes, an az or Kerberos one stays in `pgvigil.yaml` - the page's
+connection test first (a refusal writes nothing; `-no-test` skips it), the credential sealed in `instances/` for the
+installed service's account (never for the administrator running the command: serve must keep reading it), and the
+page's repository function with the configuration's repository login, audited as `cli:<the account>`. `list` shows
+the file's and the page's instances with each one's last collection (`never` before the first). Where no pgvigil
+service is installed `add` is refused: the service's account owns the page's credentials.
+
 ## SQL Server schema history (mssql_schema)
 
 A SQL Server instance's `mssql_schema: {databases: [...]}` turns the schema history on for those databases (`*` every
