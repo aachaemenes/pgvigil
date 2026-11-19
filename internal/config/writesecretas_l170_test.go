@@ -1,10 +1,11 @@
+//go:build !windows
+
 package config
 
 import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -12,11 +13,9 @@ import (
 
 // TestWriteSecretAsL170 (RELNOTES L170): 'pgvigil instance add' writes a page credential for the service's account,
 // never for the account running it - the folder 0700 and the file 0600, both owned by the named account; an account
-// that does not exist is refused before anything is written.
+// that does not exist is refused before anything is written. Linux only (the modes and owners; syscall.Stat_t has no
+// Windows form, so GOOS=windows vet could not compile the file): Windows gives the folder's list the account's SID.
 func TestWriteSecretAsL170(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the Linux modes and owners; Windows gives the folder's list the account's SID")
-	}
 	me, err := user.Current()
 	if err != nil {
 		t.Fatal(err)
