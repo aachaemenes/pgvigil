@@ -5,10 +5,12 @@
 # the dsn on stdin - the cluster (a password sign-in) and this machine's SQL Server (a Windows sign-in) -, reads each
 # credential file's access list, lets the service collect, lists, disables, and removes all of it. It writes nothing
 # on SQL Server unless -GrantServiceLogin (OFF by default): then a login for NT SERVICE\pgvigil with VIEW SERVER STATE
-# and VIEW ANY DEFINITION, dropped at the end and read back gone. It refuses to start where the service pgvigil, its
-# instances folder or (with -GrantServiceLogin) that login already exists.
+# and VIEW ANY DEFINITION, dropped at the end and read back gone - on a NAMED instance only (-SqlServer host\NAME):
+# the lab's default instance is DBA Dash's and is never written to, so the switch refuses an instance whose
+# SERVERPROPERTY('InstanceName') reads NULL. It refuses to start where the service pgvigil, its instances folder or
+# (with -GrantServiceLogin) that login already exists.
 #   powershell.exe -NoProfile -File scripts\proof-instance-win.ps1 -Exe C:\proof\pgvigil.exe -PgBin 'C:\pgsql\bin'
-#     [-BaseExe C:\proof\pgvigil-base.exe] [-SqlServer localhost] [-GrantServiceLogin]
+#     [-BaseExe C:\proof\pgvigil-base.exe] [-SqlServer localhost | -SqlServer localhost\NAME -GrantServiceLogin]
 # Expected (written before its first run, 2026-11-19):
 #  C  the cluster up; 'pgvigil install' exit 0, the service as NT SERVICE\pgvigil; migrate exit 0; the agent and
 #     monitor logins made from 'pgvigil roles'; repo.dsn holds the agent login (the documented repository login)
@@ -18,8 +20,8 @@
 #  F1 its credential file instances\win-pg-<hex>.dpapi: the folder's list protected (nothing inherited); the file's
 #     readers exactly SYSTEM, the Administrators and the service's SID - not this administrator's own SID; the
 #     password not in the file's bytes
-#  A2 'instance add -engine sqlserver -dsn-stdin' (sqlserver://<SqlServer>?database=master, a Windows sign-in: its
-#     connection test runs as this administrator, read only) exit 0
+#  A2 'instance add -engine sqlserver -dsn-stdin' (sqlserver://<host>[/<NAME>]?database=master, a Windows sign-in:
+#     its connection test runs as this administrator, read only) exit 0
 #  F2 its credential file instances\win-sql-<hex>.dpapi: the same list
 #  S1 the service started collects win-pg within 180 s (a collection_dates row with status ok), so its account opened
 #     the credential through that list; with -GrantServiceLogin win-sql too
@@ -68,6 +70,9 @@ if ($GrantServiceLogin) {
     $found = Get-Command sqlcmd.exe -ErrorAction SilentlyContinue
     if (-not $found) { Write-Host 'REFUSED: -GrantServiceLogin needs sqlcmd.exe on PATH'; exit 2 }
     $SqlCmd = $found.Source
+    $res = Invoke-TSql "SELECT ISNULL(CONVERT(nvarchar(128), SERVERPROPERTY('InstanceName')), N'<default>');"
+    $instName = "$($res.Out)".Trim()
+    if ($res.Code -ne 0 -or $instName -eq '' -or $instName -eq '<default>') { Write-Host "REFUSED: -GrantServiceLogin takes a NAMED instance (-SqlServer host\NAME); $SqlServer answers instance '$instName' (exit $($res.Code)) - the default instance is DBA Dash's and is never written to"; exit 2 }
     $had = Get-LoginCount
     if ($had -ne 0) { Write-Host "REFUSED: -GrantServiceLogin: the login $SvcLogin reads $had on $SqlServer (-1 = not readable) - this proof drops only a login it made"; exit 2 }
 }
@@ -80,7 +85,10 @@ $Cfg = Join-Path $env:ProgramData 'pgvigil\pgvigil.yaml'
 $suPw = 'su' + [Guid]::NewGuid().ToString('N'); $agentPw = 'ag' + [Guid]::NewGuid().ToString('N'); $monPw = 'mo' + [Guid]::NewGuid().ToString('N')
 $pgData = Join-Path $Work 'pgdata'
 $pgDsn = "host=127.0.0.1 port=$Port user=pgvigil_monitor password=$monPw dbname=postgres sslmode=disable"
-$sqlDsn = "sqlserver://$SqlServer`?database=master&encrypt=true&trustservercertificate=true"
+# go-mssqldb's URL names an instance as its path (sqlserver://host/NAME), never host\NAME
+$sqlHost = $SqlServer; $sqlPath = ''
+if ($SqlServer -match '^([^\\]+)\\(.+)$') { $sqlHost = $Matches[1]; $sqlPath = '/' + $Matches[2] }
+$sqlDsn = "sqlserver://$sqlHost$sqlPath`?database=master&encrypt=true&trustservercertificate=true"
 $sidSystem = 'S-1-5-18'; $sidAdmins = 'S-1-5-32-544'
 $sidMe = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $sidSvc = ''
