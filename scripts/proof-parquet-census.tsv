@@ -422,6 +422,7 @@ pg_repl_standby_state	state							receiver_status,sender_host,primary_slot,last_
 pg_role_changes	window	changed_at						changed_at_source,change,from_role,to_role,from_system_identifier,to_system_identifier
 pg_role_passwords	state		audit					role_name,method
 pg_role_state	state							timeline_source,system_identifier,cluster_name,history_file,since_source
+pg_signin	state							method,sslmode
 pg_threshold_keys	state							key,label,unit,direction,levels,engines
 pg_thresholds	state					created_by,client,ended_by		key,level,tag,datname,created_by,client,ended_by
 pg_wal_replay	state							

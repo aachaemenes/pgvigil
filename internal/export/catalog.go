@@ -509,6 +509,7 @@ var tables = []Table{
 	window("pg_role_changes", "changed_at"),
 	state("pg_role_passwords").carry(CarryAudit),
 	state("pg_role_state"),
+	state("pg_signin"), // PGAUTH M1 (0467): how the server signed the read login in, a row per instance
 	state("pg_threshold_keys"),
 	state("pg_thresholds").audit("created_by", "client", "ended_by"),
 	state("pg_wal_replay"),
