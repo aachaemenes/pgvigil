@@ -203,8 +203,9 @@ func (a *authState) clearFails(ip, user string) {
 	delete(a.fails, "user:"+user)
 }
 
-func (a *authState) cookie(tok string, maxAge int) *http.Cookie {
-	return &http.Cookie{Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, Secure: a.secure,
+// cookie is the session cookie, scoped to the base path the request came in under ('/' at the root)
+func (a *authState) cookie(r *http.Request, tok string, maxAge int) *http.Cookie {
+	return &http.Cookie{Name: sessionCookie, Value: tok, Path: baseFrom(r) + "/", HttpOnly: true, Secure: a.secure,
 		SameSite: http.SameSiteStrictMode, MaxAge: maxAge}
 }
 
@@ -323,7 +324,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.clearFails(ip, user)
-	http.SetCookie(w, a.cookie(tok, int(a.ttl.Seconds())))
+	http.SetCookie(w, a.cookie(r, tok, int(a.ttl.Seconds())))
 	s.log.Info("login", "user", user, "role", role, "from", ip)
 	s.reply(w, r, map[string]any{"login": true, "user": user, "role": role}, nil)
 }
@@ -341,7 +342,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		s.auth.revoke(c.Value)
 	}
-	http.SetCookie(w, s.auth.cookie("", -1))
+	http.SetCookie(w, s.auth.cookie(r, "", -1))
 	w.WriteHeader(http.StatusNoContent)
 }
 

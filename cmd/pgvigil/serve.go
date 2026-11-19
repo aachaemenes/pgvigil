@@ -59,7 +59,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
-	if _, err := serveBasePath(*basePath, cfg); err != nil {
+	base, err := serveBasePath(*basePath, cfg)
+	if err != nil {
 		return err
 	}
 	// the Daily checks mail's block (reports.daily_checks): a missing or unknown key stops serve here, by its name
@@ -316,7 +317,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	go srv.RunReportMail(ctx)
 
 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
-	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg}
+	hs := &http.Server{Handler: web.UnderBase(base, srv.Handler(), log), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg}
 	errc := make(chan error, 1)
 	scheme := "http"
 	if useTLS {

@@ -538,6 +538,10 @@ func (s *Server) Handler() http.Handler {
 		panic(err) // the embed path is fixed at build time
 	}
 	files := http.FileServerFS(sub)
+	shell, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		panic(err) // the embed path is fixed at build time
+	}
 	// no method in the pattern: "GET /" and the method-less "/api/" gate would be two patterns
 	// neither of which is more specific, which the mux refuses
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -551,6 +555,11 @@ func (s *Server) Handler() http.Handler {
 			if _, err := fs.Stat(sub, strings.TrimPrefix(r.URL.Path, "/")); err != nil {
 				r.URL.Path = "/"
 			}
+		}
+		if base := baseFrom(r); base != "" && r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(withBaseHref(shell, base))
+			return
 		}
 		files.ServeHTTP(w, r)
 	})
