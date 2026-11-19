@@ -133,7 +133,7 @@ chown postgres:postgres /etc/pgvsi/*; chmod 600 /etc/pgvsi/server.key
 useradd -M pgvpam; echo "pgvpam:$PGVSI_PAM_PW" | chpasswd; unset PGVSI_PAM_PW; usermod -a -G shadow postgres
 printf "auth required pam_unix.so\naccount required pam_unix.so\n" > /etc/pam.d/pgvigil-proof
 exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/etc/pgvsi/server.pem -c ssl_key_file=/etc/pgvsi/server.key -c ssl_ca_file=/etc/pgvsi/ca.pem -c hba_file=/etc/pgvsi/pg_hba.conf' >/dev/null
-up=0; for _ in $(seq 1 90); do docker exec "$N-pg" pg_isready -q -h /var/run/postgresql >/dev/null 2>&1 && docker exec "$N-pg" psql -U postgres -XAtqc 'select 1' >/dev/null 2>&1 && { up=1; break; }; sleep 1; done
+up=0; for _ in $(seq 1 90); do docker exec "$N-pg" pg_isready -q -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && docker exec "$N-pg" psql -U postgres -XAtqc 'select 1' >/dev/null 2>&1 && { up=1; break; }; sleep 1; done
 [ "$up" = 1 ] || { docker logs --tail 20 "$N-pg" 2>&1 | sed 's/^/     /'; fail "the monitored server did not start"; }
 docker exec -i "$N-pg" psql -U postgres -XAtq -v ON_ERROR_STOP=1 >/dev/null <<SQL || fail "the roles were not made"
 CREATE ROLE pgvigil LOGIN; CREATE ROLE pgvrad LOGIN; CREATE ROLE pgvpam LOGIN; CREATE ROLE pgvtrust LOGIN; CREATE ROLE pgvcert LOGIN;

@@ -90,7 +90,9 @@ docker run -d --name "$N-pg" --network "$NET" -p 127.0.0.1::5432 -e POSTGRES_HOS
   -v "$WORK/pgconf:/pgconf:ro" --entrypoint sh "postgres:$PG" -c 'set -e; mkdir -p /etc/pgvsi; cp /pgconf/* /etc/pgvsi/
 chown postgres:postgres /etc/pgvsi/*; chmod 600 /etc/pgvsi/server.keytab
 exec docker-entrypoint.sh postgres -c krb_server_keyfile=FILE:/etc/pgvsi/server.keytab -c hba_file=/etc/pgvsi/pg_hba.conf' >/dev/null
-up=0; for _ in $(seq 1 90); do docker exec "$N-pg" psql -U postgres -XAtqc 'select 1' >/dev/null 2>&1 && { up=1; break; }; sleep 1; done
+# ready over TCP: docker-entrypoint.sh's temporary init server answers on the socket alone (listen_addresses '') and
+# stops before the real one starts
+up=0; for _ in $(seq 1 90); do docker exec "$N-pg" pg_isready -q -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && docker exec "$N-pg" psql -U postgres -XAtqc 'select 1' >/dev/null 2>&1 && { up=1; break; }; sleep 1; done
 [ "$up" = 1 ] || { docker logs --tail 20 "$N-pg" 2>&1 | sed 's/^/     /'; fail "the monitored server did not start"; }
 docker exec -i "$N-pg" psql -U postgres -XAtq -v ON_ERROR_STOP=1 >/dev/null <<'SQL' || fail "the roles were not made"
 CREATE ROLE pgvkrb LOGIN; CREATE ROLE pgvigil LOGIN; GRANT pg_monitor TO pgvkrb, pgvigil;
