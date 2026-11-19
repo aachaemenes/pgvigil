@@ -87,7 +87,7 @@ func TestQSOptionColsByVersion(t *testing.T) {
 // (What the filter costs SQL Server inside its own store is not something a test of the text can see: the
 // collector's comment says what the store's indexes allow.)
 func TestQSReadsAreBounded(t *testing.T) {
-	stmt := strings.Join(strings.Fields(strings.ReplaceAll(qsCandidatesSQL, "%s", qsWaitsCTE)), " ")
+	stmt := strings.Join(strings.Fields(qsCandidatesQuery(true, 0, false)), " ")
 	for _, want := range []string{
 		"FROM sys.query_store_runtime_stats r WHERE r.runtime_stats_interval_id BETWEEN @first AND @last",
 		"FROM sys.query_store_wait_stats w WHERE w.runtime_stats_interval_id BETWEEN @first AND @last",
@@ -112,7 +112,7 @@ func TestQSReadsAreBounded(t *testing.T) {
 		t.Error("the recommendations are read without a bound")
 	}
 	// without wait statistics (2016) the statement still has its ws relation, empty
-	if no := strings.ReplaceAll(qsCandidatesSQL, "%s", qsNoWaitsCTE); strings.Contains(no, "query_store_wait_stats") || !strings.Contains(no, "LEFT JOIN ws") {
+	if no := qsCandidatesQuery(false, 0, false); strings.Contains(no, "query_store_wait_stats") || !strings.Contains(no, "LEFT JOIN ws") {
 		t.Error("the 2016 form of the candidate statement reads the wait statistics, or lost its ws relation")
 	}
 }

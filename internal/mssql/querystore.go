@@ -146,10 +146,11 @@ ORDER BY i.end_time, i.runtime_stats_interval_id`
 // (a plan has a row per execution type: regular, aborted, exception), ranked inside each interval by total
 // duration, CPU, logical reads, the largest memory grant and total wait time; a plan in the first @top of any list
 // is kept. tot_* are the interval's totals over every plan, so the page can say what share the kept plans are.
-// Durations and CPU are microseconds, memory is 8 KB pages. %s: the wait statistics' CTE (qsWaitsCTE or
-// qsNoWaitsCTE, the first argument); %[2]s: a plan's wait time over it - qsWaitMS, 0 where no wait was recorded,
-// or qsNoWaitMS, the empty relation's column: NULL where the server keeps no wait statistics (SQL Server 2016),
-// so wait_ms and tot_wait_ms read as not measured (a column, never a constant: a window's ORDER BY refuses one).
+// Durations and CPU are microseconds, memory is 8 KB pages. %[1]s: the wait statistics' CTE (qsWaitsCTE or
+// qsNoWaitsCTE); %[3]s: the runtime read's replica filter (qsReplicaFilter, or nothing); %[2]s: a plan's wait time
+// over it - qsWaitMS, 0 where no wait was recorded, or qsNoWaitMS, the empty relation's column: NULL where the server
+// keeps no wait statistics (SQL Server 2016), so wait_ms and tot_wait_ms read as not measured (a column, never a
+// constant: a window's ORDER BY refuses one).
 const qsCandidatesSQL = `WITH rs AS (
   SELECT r.plan_id, r.runtime_stats_interval_id AS interval_id,
          SUM(r.count_executions) AS executions,
@@ -172,9 +173,9 @@ const qsCandidatesSQL = `WITH rs AS (
          MAX(r.max_dop) AS max_dop,
          MIN(r.first_execution_time) AS first_execution, MAX(r.last_execution_time) AS last_execution
     FROM sys.query_store_runtime_stats r
-   WHERE r.runtime_stats_interval_id BETWEEN @first AND @last
+   WHERE r.runtime_stats_interval_id BETWEEN @first AND @last%[3]s
    GROUP BY r.plan_id, r.runtime_stats_interval_id
-), %s, ranked AS (
+), %[1]s, ranked AS (
   SELECT rs.*, %[2]s AS wait_ms, ws.top_wait,
          ROW_NUMBER() OVER (PARTITION BY rs.interval_id ORDER BY rs.duration_us DESC, rs.plan_id) AS rn_duration,
          ROW_NUMBER() OVER (PARTITION BY rs.interval_id ORDER BY rs.cpu_us DESC, rs.plan_id) AS rn_cpu,
@@ -213,7 +214,7 @@ const (
 	qsWaitsCTE = `w0 AS (
   SELECT w.plan_id, w.runtime_stats_interval_id AS interval_id, w.wait_category_desc, SUM(w.total_query_wait_time_ms) AS ms
     FROM sys.query_store_wait_stats w
-   WHERE w.runtime_stats_interval_id BETWEEN @first AND @last
+   WHERE w.runtime_stats_interval_id BETWEEN @first AND @last%s
    GROUP BY w.plan_id, w.runtime_stats_interval_id, w.wait_category_desc
 ), ws AS (
   SELECT x.plan_id, x.interval_id, SUM(x.ms) AS wait_ms, MAX(CASE WHEN x.rn = 1 THEN x.wait_category_desc END) AS top_wait
@@ -226,6 +227,76 @@ const (
 	qsWaitMS   = `ISNULL(ws.wait_ms, 0)`
 	qsNoWaitMS = `ws.wait_ms`
 )
+
+// qsReplicaFilter cuts a read to the local role's replica groups. Query Store for readable secondaries (always on in
+// Azure SQL Database and on Managed Instance's Always-up-to-date policy; a database's choice on SQL Server 2025) keeps
+// every replica's runtime and wait statistics in one store, "made visible across all replicas" (Microsoft), each row
+// marked by its replica_group_id; sys.query_store_replicas names each group's role_type, the same rows on every
+// replica. The guard keeps every row of a store that never saw the role. %[1]d: the role_type; %[2]s: the alias.
+const qsReplicaFilter = `
+     AND (NOT EXISTS (SELECT 1 FROM sys.query_store_replicas q WHERE q.role_type = %[1]d)
+          OR %[2]s.replica_group_id IN (SELECT q.replica_group_id FROM sys.query_store_replicas q WHERE q.role_type = %[1]d))`
+
+// qsCandidatesQuery is step two's statement: the wait statistics where the version has them, both reads cut to the
+// role's groups when filtered.
+func qsCandidatesQuery(hasWaits bool, role int, filtered bool) string {
+	cut := func(alias string) string {
+		if !filtered {
+			return ""
+		}
+		return fmt.Sprintf(qsReplicaFilter, role, alias)
+	}
+	waits, waitMS := qsNoWaitsCTE, qsNoWaitMS
+	if hasWaits {
+		waits, waitMS = fmt.Sprintf(qsWaitsCTE, cut("w")), qsWaitMS
+	}
+	return fmt.Sprintf(qsCandidatesSQL, waits, waitMS, cut("r"))
+}
+
+// qsRoleSQL runs inside one database: whether it is writable, and on Azure SQL Database its replica role; no row
+// where sys.query_store_replicas does not exist (SQL Server 2022 and before). %s: the replica role's expression.
+const qsRoleSQL = `SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'Updateability') AS nvarchar(60)) AS updateability, %s AS replica_role
+WHERE OBJECT_ID('sys.query_store_replicas') IS NOT NULL`
+
+// qsLocalRole is the role_type of this database's replica: a read-write database is the primary (1); a read-only
+// Azure SQL Database replica by sys.dm_db_resource_stats' replica_role - 1 an HA secondary (2), 2 a geo-replication
+// forwarder (3). A named replica (3) and an HA secondary of a geo-secondary both read otherwise or alike, so they and
+// an unread role give no filter: every replica's rows are read there, as before.
+func qsLocalRole(updateability string, replicaRole sql.NullInt64) (int, bool) {
+	switch {
+	case updateability == "READ_WRITE":
+		return 1, true
+	case updateability != "READ_ONLY" || !replicaRole.Valid:
+		return 0, false
+	case replicaRole.Int64 == 1:
+		return 2, true
+	case replicaRole.Int64 == 2:
+		return 3, true
+	}
+	return 0, false
+}
+
+// qsReplicaRole reads the local role where the store keeps other replicas' rows; filtered false elsewhere.
+func qsReplicaRole(ctx context.Context, conn *sql.Conn, quoted string, info Info) (int, bool, error) {
+	if info.Kind != KindAzureDB && info.Kind != KindAzureMI && info.Major < 16 {
+		return 0, false, nil
+	}
+	rr := "CAST(NULL AS bigint)"
+	if info.Kind == KindAzureDB {
+		rr = "(SELECT TOP (1) CAST(s.replica_role AS bigint) FROM sys.dm_db_resource_stats s ORDER BY s.end_time DESC)"
+	}
+	rows, err := qsRead(ctx, conn, quoted, fmt.Sprintf(qsRoleSQL, rr), "")
+	if err != nil || len(rows) == 0 {
+		return 0, false, err
+	}
+	upd, _ := rows[0]["updateability"].(string)
+	var role sql.NullInt64
+	if v, ok := rows[0]["replica_role"].(int64); ok {
+		role = sql.NullInt64{Int64: v, Valid: true}
+	}
+	r, ok := qsLocalRole(upd, role)
+	return r, ok, nil
+}
 
 // qsPlansSQL reads the candidate plans by id, and every forced plan: the plan's properties, its query, the query's
 // object and text, how many plans the query has. %[1]s: the forcing type (2017+) or NULL; %[2]s: the plan ids.
@@ -475,11 +546,11 @@ func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursor
 			iv["kind"], iv["database_name"] = "interval", name
 			byID[id] = iv
 		}
-		waits, waitMS := qsNoWaitsCTE, qsNoWaitMS
-		if qsHasWaits(info) {
-			waits, waitMS = qsWaitsCTE, qsWaitMS
+		role, filtered, err := qsReplicaRole(ctx, conn, quoted, info)
+		if err != nil {
+			return pre, err
 		}
-		cands, err := qsRead(ctx, conn, quoted, fmt.Sprintf(qsCandidatesSQL, waits, waitMS), "@first bigint, @last bigint, @top int",
+		cands, err := qsRead(ctx, conn, quoted, qsCandidatesQuery(qsHasWaits(info), role, filtered), "@first bigint, @last bigint, @top int",
 			sql.Named("first", first), sql.Named("last", last), sql.Named("top", qsTopN))
 		if err != nil {
 			return pre, err
