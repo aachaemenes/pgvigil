@@ -3,6 +3,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,24 +35,36 @@ func prepareDir(dir string) error {
 // writeSecret (Windows): the value sealed with DPAPI at machine scope (any process of this machine can open it,
 // none elsewhere), written beside its final name and renamed over it.
 func writeSecret(dir, name, value string) (string, error) {
+	p := filepath.Join(dir, name+".dpapi")
+	if err := SealDPAPIAt(p, value); err != nil {
+		return "", err
+	}
+	return "dpapi:" + p, nil
+}
+
+// SealDPAPIAt writes value sealed with DPAPI at machine scope to exactly path, beside it first and renamed over it
+// ('pgvigil config import' puts a moved secret back where the references name it, RELNOTES L155).
+func SealDPAPIAt(path, value string) error {
+	if value == "" {
+		return errors.New("nothing to seal")
+	}
 	in := []byte(value)
 	var out windows.DataBlob
 	if err := windows.CryptProtectData(&windows.DataBlob{Size: uint32(len(in)), Data: &in[0]}, nil, nil, 0, nil,
 		windows.CRYPTPROTECT_LOCAL_MACHINE|windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
-		return "", err
+		return err
 	}
 	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }()
 	blob := unsafe.Slice(out.Data, out.Size)
-	p := filepath.Join(dir, name+".dpapi")
-	tmp := p + ".new"
+	tmp := path + ".new"
 	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
-		return "", err
+		return err
 	}
-	if err := os.Rename(tmp, p); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return "", err
+		return err
 	}
-	return "dpapi:" + p, nil
+	return nil
 }
 
 // ResolveDPAPI opens a dpapi: reference's blob.
@@ -74,3 +87,7 @@ func ResolveDPAPI(path string) (string, error) {
 // ownedLikeParent (Windows): nothing to do - a folder or file made under the configuration's folder inherits its
 // access list (the installer's: SYSTEM, the Administrators and the service's own account).
 func ownedLikeParent(string) error { return nil }
+
+// OwnLikeFolder gives path its folder's owner and the installer's mode (ownedLikeParent); on Windows a new file
+// inherits its folder's access list, so nothing is done.
+func OwnLikeFolder(path string) error { return ownedLikeParent(path) }

@@ -245,3 +245,81 @@ func exportNoSecrets(raw []byte) ([]byte, []string, error) {
 	_ = enc.Close()
 	return []byte(b.String()), notes, nil
 }
+
+// importWriter puts one file of an export into dir.
+type importWriter func(dir string, f exportFile) error
+
+// importWrite is this host's writer: the parent folder made with its folder's owner and mode, a DPAPI entry sealed at
+// machine scope at its path, any other file written beside its path and renamed over it, then given its folder's
+// owner and the installer's mode (config.OwnLikeFolder; on Windows the folder's access list is inherited).
+func importWrite(dir string, f exportFile) error {
+	full := filepath.Join(dir, filepath.FromSlash(f.Path))
+	if parent := filepath.Dir(full); parent != dir {
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return err
+		}
+		if err := config.OwnLikeFolder(parent); err != nil {
+			return err
+		}
+	}
+	if f.DPAPI {
+		return config.SealDPAPIAt(full, string(f.Data))
+	}
+	tmp := full + ".new"
+	if err := os.WriteFile(tmp, f.Data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, full); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return config.OwnLikeFolder(full)
+}
+
+// importExport writes an export's files into cfgPath's folder (RELNOTES L155). Before any write: every path inside
+// the folder, no DPAPI entry where this host cannot seal one (canSealDPAPI), the folder there (made by 'pgvigil
+// install'), and no configuration in it unless force - each file then written over is kept as <file>.previous. The
+// notes say what the new host still has to do (another folder's path: the page's credentials, file: references).
+func importExport(pl exportPayload, cfgPath string, force bool, write importWriter, canSealDPAPI bool) ([]string, error) {
+	dir, err := filepath.Abs(filepath.Dir(cfgPath))
+	if err != nil {
+		return nil, err
+	}
+	sealed := 0
+	for _, f := range pl.Files {
+		if rel, ok := inFolder(dir, filepath.Join(dir, filepath.FromSlash(f.Path))); !ok || rel != f.Path {
+			return nil, fmt.Errorf("the export names a path outside the configuration's folder (%q): refused, nothing written", f.Path)
+		}
+		if f.DPAPI {
+			sealed++
+		}
+	}
+	if sealed > 0 && !canSealDPAPI {
+		return nil, fmt.Errorf("the export holds %d secret(s) sealed by DPAPI on a Windows host: import it on Windows, where each is sealed again for that machine; nothing written", sealed)
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return nil, fmt.Errorf("the folder %s does not exist: install pgvigil first ('pgvigil install' makes it and secures it), then import over its configuration with -force", dir)
+	}
+	if _, err := os.Stat(cfgPath); err == nil && !force {
+		return nil, fmt.Errorf("%s already holds a configuration: import over it with -force (each file written over is kept as <file>.previous)", cfgPath)
+	}
+	for _, f := range pl.Files {
+		full := filepath.Join(dir, filepath.FromSlash(f.Path))
+		if _, err := os.Stat(full); err == nil {
+			if err := os.Rename(full, full+".previous"); err != nil {
+				return nil, fmt.Errorf("%s could not be kept as .previous: %w (nothing of it was written)", f.Path, err)
+			}
+		}
+		if err := write(dir, f); err != nil {
+			return nil, fmt.Errorf("%s: %w", f.Path, err)
+		}
+	}
+	var notes []string
+	if !samePath(pl.Folder, dir) {
+		notes = append(notes, fmt.Sprintf("the export came from %s and is now in %s: the repository's references to instances/ and sources/ (Admin > Instances' and the discovery sources' credentials) and every file: reference in pgvigil.yaml still name %s - enter those credentials again in Admin > Instances and correct the references, or import into %s", pl.Folder, dir, pl.Folder, pl.Folder))
+	}
+	if sealed > 0 {
+		notes = append(notes, fmt.Sprintf("%d DPAPI secret(s) sealed again at machine scope for this host", sealed))
+	}
+	return notes, nil
+}

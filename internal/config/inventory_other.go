@@ -78,3 +78,12 @@ func ownedLikeParent(path string) error {
 	}
 	return nil
 }
+
+// SealDPAPIAt: a DPAPI blob is sealed on Windows only (RELNOTES L155's import refuses such an entry first).
+func SealDPAPIAt(string, string) error {
+	return errors.New("a dpapi: secret is sealed on Windows only")
+}
+
+// OwnLikeFolder gives path its folder's owner and the installer's mode: 0640 where the folder's group reads, else
+// 0600; a folder 07x0 (ownedLikeParent).
+func OwnLikeFolder(path string) error { return ownedLikeParent(path) }
