@@ -75,6 +75,12 @@
 //                     parents '', 0, 0, cost % 20 / 20 / 60 with the lookup's warning, 1 missing index of impact 81.5 (run 3:
 //                     the real drag); a deadlock graph pasted into the tree's search field opens nothing, pasted on the
 //                     page -> 'Deadlock graph: pasted deadlock graph'; a dropped rows.json -> 'Grid: rows.json', 3 rows
+//   AF app files      (L232) the Windows app's files posted as the app posts them (app/openfiles.go PageScripts: base64
+//                     parts): a.sqlplan whole, b.xdl in two parts sent out of order, c.sqlplan a refusal -> ONE viewer
+//                     with three tabs a.sqlplan, b.xdl, c.sqlplan in that order, the last open with the refusal's words;
+//                     a tab click shows 'Query plan: a.sqlplan' (3 operators) and 'Deadlock graph: b.xdl' (its svg);
+//                     Ctrl+W closes the open tab; a file dropped then is a third tab, open; the page told the app each
+//                     file it opened (pgvigilAppOpened, in order) and asked for the next after each, and on a ping
 //   RT retention      (run 3: an activity_sample partition three months back made first) the page's rows = the hand count
 //                     of schema pgvigil's tables; activity_sample's size = its partitions' and its own pg_total_relation_size
 //                     by hand, 'monthly partitions', the partitions a purge at 1 day drops = the hand count of its months
@@ -1253,6 +1259,48 @@ await guard('X drop and paste', async () => {
   check('X drop and paste', p && p.title === 'Query plan: p.sqlplan' && p.ops === 3 && p.cost === '20 % / 20 % / 60 %' && p.parents === ',0,0' && /no statistics/.test(p.warn ?? '') && p.missing === '81.5'
     && inField === '' && pasted === 'Deadlock graph: pasted deadlock graph' && j && j.title === 'Grid: rows.json' && j.rows === 3,
     `${JSON.stringify(p)}; a paste into the search field opened '${inField}'; on the page '${pasted}'; ${JSON.stringify(j)}`);
+});
+
+await guard('AF app files', async () => {
+  // the Windows app (app/win_files.go) posts each file it was given as base64 parts through window.pgvigilAppFile, and the
+  // page calls the app's bound pgvigilAppFiles / pgvigilAppOpened, whose promises never resolve: stand-ins here count them
+  await go('#/summary');
+  await ev(`window.__af = { asks: 0, opened: [] }; window.pgvigilAppFiles = () => { window.__af.asks++; return new Promise(() => {}); };
+    window.pgvigilAppOpened = (n, t) => { window.__af.opened.push(n + '|' + t); return new Promise(() => {}); }`);
+  const receiver = await ev(`typeof window.pgvigilAppFile`);
+  const b64 = (t) => Buffer.from(t, 'utf8').toString('base64');
+  const post = (o) => ev(`window.pgvigilAppFile && window.pgvigilAppFile(${JSON.stringify(o)})`);
+  const half = Math.floor(xdl.length / 2);
+  await post({ id: 101, name: 'a.sqlplan', part: 0, parts: 1, data: b64(sqlplan) });
+  await post({ id: 102, name: 'b.xdl', part: 1, parts: 2, data: b64(xdl.slice(half)) });
+  await post({ id: 102, name: 'b.xdl', part: 0, parts: 2, data: b64(xdl.slice(0, half)) });
+  await post({ id: 103, name: 'c.sqlplan', part: 0, parts: 1, error: 'c.sqlplan is 70000000 bytes: the viewers open files up to 64 MB' });
+  await sleep(1000);
+  const state = () => ev(`(() => { const ds = [...document.querySelectorAll('dialog.fd-viewer[open]')]; const d = ds[0]; if (!d) return { dialogs: 0 };
+    const tabs = [...d.querySelectorAll('[role=tab]')]; const sel = tabs.find(t => t.getAttribute('aria-selected') === 'true');
+    const panel = sel ? d.querySelector('#' + CSS.escape(sel.getAttribute('aria-controls'))) : null;
+    return { dialogs: ds.length, label: d.getAttribute('aria-label'), tabs: tabs.map(t => t.textContent).join(','), selected: sel ? sel.textContent : '',
+      shown: [...d.querySelectorAll('[role=tabpanel]')].filter(x => !x.hidden).length, rows: panel?.querySelector('table.grid')?.querySelectorAll('tbody tr').length ?? 0,
+      svg: !!panel?.querySelector('svg'), error: panel?.querySelector('.error')?.textContent ?? '' }; })()`);
+  const tabClick = (name) => ev(`[...document.querySelectorAll('dialog.fd-viewer[open] [role=tab]')].find(t => t.textContent === ${JSON.stringify(name)})?.click()`);
+  const s1 = await state();
+  await shot('app-files-light');
+  await tabClick('a.sqlplan'); const s2 = await state();
+  await tabClick('b.xdl'); const s3 = await state();
+  await ev(`document.querySelector('dialog.fd-viewer[open] [role=tab][aria-selected=true]').dispatchEvent(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, bubbles: true, cancelable: true }))`);
+  await sleep(200);
+  const s4 = await state();
+  await ev(`(() => { const dt = new DataTransfer(); dt.items.add(new File([${JSON.stringify(sqlplan)}], 'p.sqlplan')); document.body.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt })); })()`);
+  await sleep(800);
+  const s5 = await state();
+  await ev(`window.pgvigilAppPing && window.pgvigilAppPing()`);
+  const af = JSON.parse(await ev(`JSON.stringify(window.__af)`));
+  await closeDialogs();
+  check('AF app files', receiver === 'function' && s1.dialogs === 1 && s1.tabs === 'a.sqlplan,b.xdl,c.sqlplan' && s1.selected === 'c.sqlplan' && s1.shown === 1 && /64 MB/.test(s1.error)
+    && s2.label === 'Query plan: a.sqlplan' && s2.rows === 3 && s3.label === 'Deadlock graph: b.xdl' && s3.svg
+    && s4.dialogs === 1 && s4.tabs === 'a.sqlplan,c.sqlplan' && s5.dialogs === 1 && s5.tabs === 'a.sqlplan,c.sqlplan,p.sqlplan' && s5.selected === 'p.sqlplan' && s5.label === 'Query plan: p.sqlplan'
+    && af.opened.join(';') === 'a.sqlplan|Query plan: a.sqlplan;b.xdl|Deadlock graph: b.xdl;c.sqlplan|c.sqlplan' && af.asks >= 4,
+    `receiver ${receiver}; posted ${JSON.stringify(s1)}; a ${JSON.stringify(s2)}; b ${JSON.stringify(s3)}; Ctrl+W ${JSON.stringify(s4)}; a drop ${JSON.stringify(s5)}; the app's calls ${JSON.stringify(af)}`);
 });
 
 // ---- RT: the Data Retention page against a hand read ----
