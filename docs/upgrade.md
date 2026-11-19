@@ -382,3 +382,34 @@ and docs only), green on each, as lab runs showed on 13 and on 16 (then 18). The
 
 Not proven here: Windows; a start from a version older than v0.3.0 (the one release that carries the installer); a
 store larger than the demo's three days; a repository behind a pooler.
+
+## Moving pgvigil to a new server
+
+The repository moves by its own dump and restore (or stays where it is); the collector's configuration and its
+secrets move with `pgvigil config export` and `pgvigil config import`:
+
+```
+pgvigil config export -config <the folder>\pgvigil.yaml -password-stdin -out move.pgvigil    # on the old host
+pgvigil install                                                                              # on the new host
+pgvigil config import -config <the folder>\pgvigil.yaml -password-stdin -force move.pgvigil   # over the template
+```
+
+- The export holds `pgvigil.yaml`, the installer's dsn files beside it (`repo.dsn` and `reports.dsn` on Windows,
+  `pgvigil.env` on Linux), every file its `file:` references name inside its folder, and every file of `secrets/`
+  (`pgvigil secret seal`), `instances/` and `sources/` (the credentials Admin > Instances and the discovery sources
+  stored). Serve's own `keys/` stays behind: the new host makes its own.
+- It is one file sealed under the password (scrypt, then AES-256-GCM over the whole payload): keep it as you keep a
+  password, and delete it once the move is done. The password comes on stdin (at a terminal it is asked twice, not
+  shown); a wrong password, or a byte changed in the file, is refused before anything is written.
+- A `dpapi:` secret opens only on the host that sealed it: the export opens each one on the old host, and the import
+  seals it again at machine scope for the new one, at the same path - so import a Windows export on Windows. `env:`
+  references stay references: set those variables on the new host.
+- Import into the folder the installer made, at the same path as on the old host: the repository's references to
+  `instances/` and `sources/` and the `file:` references of `pgvigil.yaml` name that path. Into another path the
+  import says so, and the page's credentials are entered again in Admin > Instances. Each file it writes over is
+  kept as `<file>.previous`.
+- `pgvigil config export -no-secrets -out <file>` writes `pgvigil.yaml` alone with every inline secret masked (a
+  connection string's password, a channel's webhook, a key or token), every reference kept, and each `dpapi:`
+  reference marked not portable - a copy to read or to start a new host's file from, not a move.
+
+Not proven yet: the `dpapi:` export and import on Windows (its Windows turn).

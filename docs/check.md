@@ -41,4 +41,6 @@ or a host rebuilt, keeps the reference and loses the secret. pgvigil has no key 
 encrypted configuration (a named difference from DBA Dash's temporary key: here every secret is a reference read at
 each connect). The connect, `pgvigil check` and, for the repository's own dsn, the service's start (exit 3) then say
 which reference resolved to nothing and why - the blob that did not open and the fix (seal it again on this host),
-the file and the system's error, the variable not set - never what was read.
+the file and the system's error, the variable not set - never what was read. To move a host with its sealed
+secrets, `pgvigil config export -password-stdin` opens them on the old host and `pgvigil config import` seals them
+again on the new one ([moving pgvigil to a new server](upgrade.md#moving-pgvigil-to-a-new-server)).
