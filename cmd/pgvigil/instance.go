@@ -306,12 +306,15 @@ type instanceRow struct {
 }
 
 // instanceRows lists the file's instances and the page's, each with its last collection's age (RELNOTES L170 with
-// ST1's command-line half: the newest snapshot of pgvigil.collection_dates, this command's own read; the page has none).
+// ST1's command-line half: the newest successful collection, as the page's last_collected counts it, through
+// pgvigil.admin_instance_ages() - 0480, the collector's login holding no SELECT on the tables).
 func instanceRows(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) ([]instanceRow, error) {
+	// the ages through pgvigil.admin_instance_ages() (0480): the configuration's repository login is the collector's,
+	// which holds no SELECT on the tables; a read that fails is an error, never every instance 'never' (rows.Err())
 	last := map[string]time.Time{}
-	rows, err := pool.Query(ctx, `SELECT i.name, max(c.snapshot_at) FROM pgvigil.instances i JOIN pgvigil.collection_dates c USING (instance_id) GROUP BY i.name`)
+	rows, err := pool.Query(ctx, `SELECT name, last_at FROM pgvigil.admin_instance_ages() WHERE last_at IS NOT NULL`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("the last collections: %w", err)
 	}
 	for rows.Next() {
 		var n string
@@ -323,6 +326,9 @@ func instanceRows(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) (
 		last[n] = at
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("the last collections: %w", err)
+	}
 	age := func(n string) string {
 		at, ok := last[n]
 		if !ok {
