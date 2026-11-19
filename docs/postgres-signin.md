@@ -26,6 +26,7 @@ hostssl all pgvigil 10.0.0.0/8 ldap ldapurl="ldaps://dc1.example.com/dc=example,
 hostssl all pgvigil 10.0.0.0/8 radius radiusservers=r1 radiussecrets=...                          # RADIUS
 hostssl all pgvigil 10.0.0.0/8 pam                                                                # PAM
 hostssl all pgvigil 10.0.0.0/8 cert                                                               # a client certificate
+host    all pgvigil 10.0.0.0/8 gss include_realm=0 krb_realm=EXAMPLE.COM                          # Kerberos (Active Directory)
 ```
 
 ## The instance's sign-in: LDAP, RADIUS, PAM and BSD
@@ -74,6 +75,41 @@ instances:
 A certificate of another CN than the role is refused by the server ("certificate authentication failed for user"); a
 key file that is not there or not readable fails the connection in words naming the file.
 
+## The instance's sign-in: Kerberos (pg_hba gss)
+
+pg_hba's `gss` method signs the login in by a Kerberos ticket (Active Directory, or any KDC). pgvigil signs in with
+**one Kerberos identity for the whole process** - a keytab and its principal, or a credential cache the host keeps
+fresh - named once in `pgvigil.yaml`:
+
+```yaml
+kerberos:
+  keytab: /etc/pgvigil/pgvigil.keytab   # the service account's own file, 0600
+  principal: pgvigil@EXAMPLE.COM        # the keytab's principal: user@REALM
+  krb5_conf: /etc/krb5.conf             # default: KRB5_CONFIG, else /etc/krb5.conf
+# or, for a cache kept by 'kinit -k' outside pgvigil:  kerberos: { ccache: /var/lib/pgvigil/krb5cc }
+```
+
+Without the block, a credential cache named by `KRB5CCNAME` in the service's environment is the identity. Each
+instance's dsn then names only the role the principal maps to (with `include_realm=0`, the principal's name before
+the `@`) and, where the server's service principal is not `postgres/<host>`, `krbsrvname` or `krbspn`:
+
+```yaml
+instances:
+  - name: ad1
+    engine: postgres
+    dsn: "host=ad1.example.com dbname=postgres user=pgvigil"
+```
+
+**One identity, by pgx's rule:** pgvigil's PostgreSQL driver takes ONE Kerberos provider for the whole process, with
+no way to give one connection another principal than the next. A site that needs a second principal runs a second
+collector (the same binary, as a remote collector) with its own `kerberos:` block. This is DBA Dash's shape too: its
+service signs in as one account (a gMSA).
+
+The host's Kerberos name of the server must be the one its service principal is for (`postgres/ad1.example.com`): give
+the host name, not its address. On Admin > Instances the kind is `kerberos` (the login is the role, no password); it
+is this server's own identity, so Community tools and custom reports run on such an instance only from `pgvigil.yaml`.
+A gss server with no identity set fails in words naming the `kerberos:` block.
+
 ## What pgvigil checks
 
 On PostgreSQL 16 and later the server says how it signed the session in (`SYSTEM_USER`: "the authentication method and
@@ -92,8 +128,8 @@ connection test says nothing about the method.
 
 ## Not on this page yet
 
-- Kerberos with a keytab on a Linux or macOS collector (pg_hba `gss`; next: M3).
-- Not in this release: Windows SSPI (the service's own domain account), the cloud tokens (Amazon RDS IAM, Microsoft
+- Not in this release: Windows SSPI (the service's own domain account; a keytab on a Windows collector, as on
+  Linux, is not proven there), the cloud tokens (Amazon RDS IAM, Microsoft
   Entra on Azure Database for PostgreSQL, Cloud SQL IAM), and an LDAP sign-in for pgvigil's own web pages.
 
 ## What is proven

@@ -100,6 +100,16 @@ community tools through the repository, so serve and the collector can run on di
 default. An instance's `community_allow` (all, none or tool names) and `jobs_allow` (names, `*`, `-name`) are DBA Dash's
 allow-lists. What each key opens, and what serve stops doing in queue mode: [queue.md](queue.md).
 
+## Kerberos for PostgreSQL servers (kerberos:)
+
+A PostgreSQL server whose pg_hba line for pgvigil's login is `gss` (Kerberos, Active Directory) is signed in to with the
+process's ONE Kerberos identity: `kerberos:` names a `keytab` with its `principal` (user@REALM), or a `ccache` the host
+keeps fresh (`kinit -k`), and `krb5_conf` (default `KRB5_CONFIG`, else `/etc/krb5.conf`); without the block,
+`KRB5CCNAME` in the service's environment. A keytab without its principal, a principal without its realm, or a
+principal with neither a keytab nor a cache stops the load in words. pgvigil's driver takes one Kerberos provider for
+the whole process: a second principal is a second collector. The instance's dsn names the role
+([PostgreSQL sign-in without a password role](postgres-signin.md)).
+
 ## The custom reports' login on the store (reports_dsn)
 
 ```yaml
