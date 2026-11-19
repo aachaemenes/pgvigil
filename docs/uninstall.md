@@ -75,7 +75,9 @@ A run without a terminal (a script, a configuration tool) names the database ins
    (`pgvigil-export.timer` and `.service`, with `/etc/pgvigil/pgvigil-export.env`; what it wrote at its
    destination is yours and is not touched); on Windows each scheduled task whose action runs a pgvigil
    executable with `purge` or `export` (deleted with `schtasks /Delete`). Then the service definition (Linux: the unit, disabled,
-   `daemon-reload`; Windows: the service, with its virtual account `NT SERVICE\pgvigil`).
+   `daemon-reload`; Windows: the service, with its virtual account `NT SERVICE\pgvigil`; an account it ran as instead -
+   a gMSA or a named account - stays, and so does that account's 'Log on as a service' right, listed as kept: another
+   service may run as it too, and secpol.msc > Local Policies > User Rights Assignment takes the right away by hand).
 9. The binary, its `.previous` copy, the configuration, the environment file (`repo.dsn` and `reports.dsn` on Windows), the purge's env
    file (Linux: the `EnvironmentFile=` the purge unit names, `/etc/pgvigil/pgvigil-purge.env` by README: the
    repository owner's connection string) or its configuration copy (Windows: `pgvigil-purge.yaml` beside the
