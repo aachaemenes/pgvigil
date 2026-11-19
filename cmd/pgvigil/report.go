@@ -321,7 +321,7 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
 var knownKeys = map[string]bool{
 	"repository": true, "dsn": true, "instances": true, "views": true, "shared_editors": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
 	"password_secret": true, "ref": true,
-	"web": true, "readyz_without_login": true, // B6.4: the probes
+	"web": true, "readyz_without_login": true, "base_path": true, // B6.4: the probes; L55: the sub-path
 	"doors": true, "page_instance_reads": true, "reports_dsn": true,
 	"page_cloud_blocks": true, "page_aws_profiles": true,
 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,

@@ -491,6 +491,9 @@ func (c *Config) validateDBADash() error {
 // default. /livez is always open; /readyz is always open with the login off.
 type Web struct {
 	ReadyzWithoutLogin bool `yaml:"readyz_without_login"`
+	// BasePath serves the UI under a sub-path behind a reverse proxy that passes the path whole (/pgvigil); empty =
+	// the root. 'pgvigil serve -base-path' wins.
+	BasePath string `yaml:"base_path"`
 }
 
 // Views is the views store's setting until the per-user roles (B24f) carry a 'change shared views' right.
@@ -797,6 +800,9 @@ func (c *Config) Validate() error {
 	case "", "icmp", "tcp", "off":
 	default:
 		return fmt.Errorf("probe must be icmp, tcp or off (got %q)", c.Probe)
+	}
+	if err := ValidBasePath(c.Web.BasePath); err != nil {
+		return err
 	}
 	if len(c.UI.GroupBy) > MaxGroupLevels {
 		return fmt.Errorf("ui.group_by: at most %d levels (got %d)", MaxGroupLevels, len(c.UI.GroupBy))

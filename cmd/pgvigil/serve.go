@@ -50,6 +50,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	noLogin := fs.Bool("no-login", false, "serve without the UI login (allowed on a loopback listen only)")
 	open := fs.Bool("open", false, "open the UI in an app-mode browser window (Edge or Chrome, its own window) once it listens; the default browser when neither is found")
 	sessionHours := fs.Int("session-hours", 12, "hours a login stays valid")
+	basePath := fs.String("base-path", "", "serve the UI under this path behind a reverse proxy that passes the path whole (e.g. /pgvigil); default pgvigil.yaml's web.base_path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -58,6 +59,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
+	if _, err := serveBasePath(*basePath, cfg); err != nil {
+		return err
+	}
 	// the Daily checks mail's block (reports.daily_checks): a missing or unknown key stops serve here, by its name
 	dailyChecks, err := reportmail.LoadDailyChecks(*path)
 	if err != nil {
@@ -355,4 +359,16 @@ func expectedIntervals(cfg *config.Config) web.Expected {
 		e.Instances[in.Name] = instanceIntervals(cfg, in)
 	}
 	return e
+}
+
+// serveBasePath is the sub-path the UI is served under: -base-path when given, else pgvigil.yaml's web.base_path;
+// either held to config.ValidBasePath's words.
+func serveBasePath(flagValue string, cfg *config.Config) (string, error) {
+	if flagValue == "" {
+		return cfg.Web.BasePath, nil
+	}
+	if err := config.ValidBasePath(flagValue); err != nil {
+		return "", fmt.Errorf("-base-path: %w", err)
+	}
+	return flagValue, nil
 }
