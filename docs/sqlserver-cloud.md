@@ -148,9 +148,14 @@ group's read routing). On it `DATABASEPROPERTYEX(DB_NAME(), 'Updateability')` re
 
 - **Query Store.** Azure SQL Database keeps one Query Store for every replica: a read-only replica's runtime and wait
   statistics are "persisted in Query Store and made visible across all replicas" (Microsoft, "Query Store for
-  secondary replicas", always enabled on Azure SQL Database), each row marked by its `replica_group_id`. pgvigil's read
-  sums every group's rows today, so a replica instance's Query Store figures include the primary's executions, and a
-  primary's include its replicas'.
+  secondary replicas", always enabled on Azure SQL Database), each row marked by its `replica_group_id`. pgvigil cuts
+  both its runtime and its wait read to the local replica's groups, those `sys.query_store_replicas` lists for its role:
+  a writable database reads the primary's (role 1), a read-only replica the role its `replica_role` maps to (an HA
+  secondary 2, a geo-replication forwarder 3 - inferred, as Microsoft publishes no such mapping). Where that view is
+  absent, or holds no row for the role (a named replica, an HA secondary of a geo-secondary, a store that never saw the
+  role), nothing is cut and every group's rows are read. The view is read wherever the database has it: Microsoft's
+  page names SQL Server 2025, yet SQL Server 2022 CU28 holds it too. Untested against a live replica: the cut on a
+  replica's own store and the figures it then shows.
 
 Not proven: all of it (no lab has had a Premium, Business Critical or Hyperscale database); a pooled database's pool
 figures from a replica.
