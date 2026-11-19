@@ -143,8 +143,9 @@ PostgreSQL collection runs under each method, and `pg_signin` stores the method 
 its warning finding at `sslmode=require`, none at `verify-full`.
 
 Kerberos, against an MIT KDC in a container and PostgreSQL 18's GSSAPI (`scripts/proof-pg-kerberos.sh`): a keytab, a
-credential cache and `krbsrvname` sign in; no identity, a principal mapped to another role and a key rotated at the KDC
-fail in words; every PostgreSQL collection runs by the keytab.
+credential cache and `krbsrvname` sign in; a collector running past its tickets' life keeps signing in from a cache
+that `kinit -k` writes anew; no identity, a principal mapped to another role and a key rotated at the KDC fail in
+words; every PostgreSQL collection runs by the keytab.
 
 Not proven: Active Directory itself, for LDAP (a domain controller as the directory) and Active Directory as the KDC;
 a page instance's private-CA verify-full (a private CA's file is `pgvigil.yaml`'s); a public-CA client certificate
