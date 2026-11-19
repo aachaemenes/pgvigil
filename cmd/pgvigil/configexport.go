@@ -3,12 +3,15 @@ package main
 import (
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
@@ -140,4 +143,105 @@ func exportOpen(dir string) exportOpener {
 		b, err := os.ReadFile(p)
 		return b, false, err
 	}
+}
+
+// exportMask stands for a masked secret: plain letters, so a URL's user info carries it unescaped.
+const exportMask = "MASKED"
+
+// exportSecretKeys hold a secret as their whole value when it is not a reference (the configuration's and the alert
+// channels' yaml tags); a channel's url is its webhook.
+var exportSecretKeys = map[string]bool{
+	"password": true, "api_key": true, "bot_token": true, "client_secret": true, "routing_key": true,
+	"signing_secret": true, "token": true, "sas_url": true, "key": true, "webhook": true,
+}
+
+var dsnPassword = regexp.MustCompile(`(?i)\b(password|pwd)(\s*=\s*)('(?:[^'\\]|\\.)*'|"[^"]*"|[^\s;]*)`)
+
+// maskDSN masks the password part of a connection string in each of its forms: a URL's user info and its password /
+// pwd parameter, a libpq or ADO keyword string's password= / pwd=.
+func maskDSN(v string) (string, bool) {
+	if strings.Contains(v, "://") {
+		u, err := url.Parse(v)
+		if err != nil {
+			return exportMask, true
+		}
+		changed := false
+		if u.User != nil {
+			if _, has := u.User.Password(); has {
+				u.User, changed = url.UserPassword(u.User.Username(), exportMask), true
+			}
+		}
+		q := u.Query()
+		for k := range q {
+			if lk := strings.ToLower(k); lk == "password" || lk == "pwd" {
+				q.Set(k, exportMask)
+				changed = true
+			}
+		}
+		if changed {
+			u.RawQuery = q.Encode()
+		}
+		return u.String(), changed
+	}
+	if !dsnPassword.MatchString(v) {
+		return v, false
+	}
+	return dsnPassword.ReplaceAllString(v, "${1}${2}"+exportMask), true
+}
+
+// exportNoSecrets is pgvigil.yaml for 'config export -no-secrets': each inline secret masked, the rest as written, a
+// dpapi: reference marked not portable; notes name what was masked or marked by its key path, never a value.
+func exportNoSecrets(raw []byte) ([]byte, []string, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, nil, fmt.Errorf("the configuration is not valid YAML: %v", err)
+	}
+	var notes []string
+	var walk func(n *yaml.Node, path, key string)
+	walk = func(n *yaml.Node, path, key string) {
+		switch n.Kind {
+		case yaml.DocumentNode:
+			for _, c := range n.Content {
+				walk(c, path, key)
+			}
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				k := n.Content[i].Value
+				sub := k
+				if path != "" {
+					sub = path + "." + k
+				}
+				walk(n.Content[i+1], sub, k)
+			}
+		case yaml.SequenceNode:
+			for _, c := range n.Content {
+				walk(c, path+".[]", key)
+			}
+		case yaml.ScalarNode:
+			v := strings.TrimSpace(n.Value)
+			switch {
+			case strings.HasPrefix(v, "dpapi:"):
+				n.LineComment = "not portable: seal it again on the new host (pgvigil secret seal)"
+				notes = append(notes, "not portable (dpapi:): "+path)
+			case strings.HasPrefix(v, "env:") || strings.HasPrefix(v, "file:") || v == "":
+			case key == "dsn" || strings.HasSuffix(key, "_dsn"):
+				if m, changed := maskDSN(v); changed {
+					n.Value, n.Style = m, 0
+					notes = append(notes, "masked (its password): "+path)
+				}
+			case exportSecretKeys[key] || (key == "url" && strings.Contains(path, "channels")):
+				n.Value, n.Style = exportMask, 0
+				notes = append(notes, "masked: "+path)
+			}
+		}
+	}
+	walk(&doc, "", "")
+	var b strings.Builder
+	enc := yaml.NewEncoder(&b)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return nil, nil, err
+	}
+	_ = enc.Close()
+	return []byte(b.String()), notes, nil
 }
