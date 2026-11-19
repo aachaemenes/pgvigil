@@ -81,7 +81,7 @@ func ownedLikeParent(path string) error {
 	return nil
 }
 
-// SealDPAPIAt: a DPAPI blob is sealed on Windows only (RELNOTES L155's import refuses such an entry first).
+// SealDPAPIAt refuses: a DPAPI blob is sealed on Windows only (RELNOTES L155's import refuses such an entry first).
 func SealDPAPIAt(string, string) error {
 	return errors.New("a dpapi: secret is sealed on Windows only")
 }

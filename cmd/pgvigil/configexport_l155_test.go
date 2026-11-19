@@ -62,7 +62,7 @@ func TestExportPayloadL155(t *testing.T) {
 	}
 	winOpen := func(p string) ([]byte, bool, error) {
 		if strings.Contains(p, "sources") {
-			return nil, false, errors.New("Key not valid for use in specified state.")
+			return nil, false, errors.New("Key not valid for use in specified state.") //nolint:revive // CryptUnprotectData's own message, word for word
 		}
 		b, err := os.ReadFile(p)
 		return append([]byte("opened:"), b...), true, err
