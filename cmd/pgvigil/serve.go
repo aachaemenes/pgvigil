@@ -326,9 +326,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	} else {
 		go func() { errc <- hs.Serve(ln) }()
 	}
-	log.Info("pgvigil serve started", "url", fmt.Sprintf("%s://%s/", scheme, ln.Addr()), "login", !*noLogin)
+	log.Info("pgvigil serve started", "url", underBase(fmt.Sprintf("%s://%s/", scheme, ln.Addr()), base), "login", !*noLogin)
 	if *open {
-		openWindow(log, browseURL(scheme, ln.Addr()))
+		openWindow(log, underBase(browseURL(scheme, ln.Addr()), base))
 	}
 	select {
 	case <-ctx.Done():

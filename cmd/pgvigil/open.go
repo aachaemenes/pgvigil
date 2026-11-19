@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // The -open switch of serve and demo: the UI in an app-mode browser window (the page in its own
@@ -112,4 +113,12 @@ func openWindow(log *slog.Logger, url string) string {
 	}
 	log.Warn("open: no browser could be started; open the URL yourself", "url", url)
 	return ""
+}
+
+// underBase is the UI's address under web.base_path: u (ending in '/') with the base and its '/'; u itself at the root
+func underBase(u, base string) string {
+	if base == "" {
+		return u
+	}
+	return strings.TrimSuffix(u, "/") + base + "/"
 }
