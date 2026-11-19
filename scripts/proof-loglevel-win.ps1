@@ -44,9 +44,23 @@ $SvcKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\pgvigil'
 $suPw = 'su' + [Guid]::NewGuid().ToString('N'); $agentPw = 'ag' + [Guid]::NewGuid().ToString('N'); $monPw = 'mo' + [Guid]::NewGuid().ToString('N')
 $pgData = Join-Path $Work 'pgdata'
 
+# a statement goes to psql on stdin, never its command line (the passwords stay out of the process list)
 function Invoke-Sql([string]$sql, [string]$db) {
     $env:PGPASSWORD = $suPw
-    try { return Invoke-Native { & (Join-Path $PgBin 'psql.exe') -h 127.0.0.1 -p $Port -U postgres -d $db -XAtq -v ON_ERROR_STOP=1 -c $sql } } finally { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
+    try { return Invoke-Native { $sql | & (Join-Path $PgBin 'psql.exe') -h 127.0.0.1 -p $Port -U postgres -d $db -XAtq -v ON_ERROR_STOP=1 -f - } } finally { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
+}
+# pg_ctl start with its output in files: a server started under a captured pipe keeps the pipe open and the capture
+# never ends (rn-l170win-rerun's B1, the same line here); the handle is held so ExitCode reads after WaitForExit
+function Start-Cluster {
+    $outFile = Join-Path $Work 'pg_ctl.out'; $errFile = Join-Path $Work 'pg_ctl.err'
+    $argLine = "-D `"$pgData`" -l `"$(Join-Path $Work 'pg.log')`" -o `"-p $Port -c listen_addresses=127.0.0.1 -c log_min_error_statement=panic`" -w -t 120 start"
+    $proc = Start-Process -FilePath (Join-Path $PgBin 'pg_ctl.exe') -ArgumentList $argLine -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    $null = $proc.Handle
+    if (-not $proc.WaitForExit(180000)) { throw 'pg_ctl start did not return in 180 s' }
+    $status = Invoke-Native { & (Join-Path $PgBin 'pg_ctl.exe') -D $pgData status }
+    if ($proc.ExitCode -ne 0 -or $status.Code -ne 0) {
+        throw "pg_ctl start exit $($proc.ExitCode), status exit $($status.Code): $((Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue) -join ' ')"
+    }
 }
 function Get-LogLength { if (Test-Path -LiteralPath $LogPath) { return (Get-Item -LiteralPath $LogPath).Length } else { return 0 } }
 function Read-LogSince([long]$from) {
@@ -90,15 +104,17 @@ try {
     $res = Invoke-Native { & (Join-Path $PgBin 'initdb.exe') -D $pgData -U postgres --auth=scram-sha-256 --pwfile=$pwFile -E UTF8 }
     Remove-Item -LiteralPath $pwFile -Force
     if ($res.Code -ne 0) { throw "initdb exit $($res.Code): $($res.Out)" }
-    $res = Invoke-Native { & (Join-Path $PgBin 'pg_ctl.exe') -D $pgData -l (Join-Path $Work 'pg.log') -o "-p $Port -c listen_addresses=127.0.0.1" -w start }
-    if ($res.Code -ne 0) { throw "pg_ctl start exit $($res.Code): $($res.Out)" }
+    Start-Cluster
     $null = Invoke-Sql "CREATE ROLE pgvigil_owner LOGIN CREATEROLE PASSWORD '$suPw'" 'postgres'
     $null = Invoke-Sql 'CREATE DATABASE pgvigil OWNER pgvigil_owner' 'postgres'
     $inst = Invoke-Native { & $Exe install }
     $startName = (Get-CimInstance Win32_Service -Filter "Name='pgvigil'").StartName
+    # migrate on its own configuration in the work folder: the installed one names repo.dsn, empty until below, and
+    # nothing in pgvigil reads PGVIGIL_REPO_DSN unless a configuration names it (rn-l170win-rerun's B2, the same here)
+    $migCfg = Join-Path $Work 'migrate.yaml'
+    [IO.File]::WriteAllText($migCfg, "repository:`n  dsn: env:PGVIGIL_REPO_DSN`ninstances: []`n")
     $env:PGVIGIL_REPO_DSN = "host=127.0.0.1 port=$Port user=pgvigil_owner password=$suPw dbname=pgvigil sslmode=disable"
-    $mig = Invoke-Native { & $Exe migrate -config $Cfg }
-    Remove-Item Env:PGVIGIL_REPO_DSN
+    try { $mig = Invoke-Native { & $Exe migrate -config $migCfg } } finally { Remove-Item Env:PGVIGIL_REPO_DSN -ErrorAction SilentlyContinue }
     $roles = (Invoke-Native { & $Exe roles }).Out -split "`n"
     $made = 0
     foreach ($pair in @(@('agent', $agentPw), @('monitor', $monPw))) {
