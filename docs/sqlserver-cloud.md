@@ -123,6 +123,10 @@ DBA Dash reads none of this; pgvigil shows it on the database's Availability tab
 
 ### A read-only replica (read scale-out)
 
+pgvigil has not yet been run against a live read replica: what this section says of the replica's DMVs, of Extended
+Events started there, of Query Store and of the pool's figures is untested, read from Microsoft's pages and pgvigil's
+own code only.
+
 DBA Dash monitors one as its own instance (3.10.0); so does pgvigil. On Premium, Business Critical and Hyperscale (with
 a secondary replica) read scale-out is on by default, and a connection whose string carries `ApplicationIntent=ReadOnly`
 is routed to a read-only replica of the database (Microsoft Learn, "Read queries on replicas", read 2026-11-19; not in
@@ -142,9 +146,14 @@ group's read routing). On it `DATABASEPROPERTYEX(DB_NAME(), 'Updateability')` re
   connection to another of its replicas, and a reconnect can land on a replica at another point in time (Microsoft),
   so one instance's history may come from more than one replica.
 
-Not proven: all of it (no lab has had a Premium, Business Critical or Hyperscale database); Query Store's reads on a
-replica (Microsoft keeps a secondary's queries apart by `replica_group_id`, which pgvigil's reads do not filter by); a
-pooled database's pool figures from a replica.
+- **Query Store.** Azure SQL Database keeps one Query Store for every replica: a read-only replica's runtime and wait
+  statistics are "persisted in Query Store and made visible across all replicas" (Microsoft, "Query Store for
+  secondary replicas", always enabled on Azure SQL Database), each row marked by its `replica_group_id`. pgvigil's read
+  sums every group's rows today, so a replica instance's Query Store figures include the primary's executions, and a
+  primary's include its replicas'.
+
+Not proven: all of it (no lab has had a Premium, Business Critical or Hyperscale database); a pooled database's pool
+figures from a replica.
 
 ## Azure SQL Database elastic pools
 
