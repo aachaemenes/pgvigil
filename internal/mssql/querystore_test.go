@@ -2,6 +2,7 @@ package mssql
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -307,5 +308,57 @@ func TestQSTextPolicy(t *testing.T) {
 		if v, has := r[4]["statement"]; !has || v != nil {
 			t.Errorf("%s left the marker's policy probe as %v (present %v)", mode, v, has)
 		}
+	}
+}
+
+// TestQSLocalRoleL17 (RELNOTES L17, the lead's 00:38): Query Store for readable secondaries keeps every replica's rows
+// in one store (Microsoft: "made visible across all replicas"), so the read is cut to the local role's groups. A
+// read-write database is the primary (role_type 1); a read-only Azure SQL Database replica's role comes from
+// sys.dm_db_resource_stats' replica_role (1 an HA secondary = 2, 2 a geo-replication forwarder = 3); a named replica
+// (3) and an unread role give no filter.
+func TestQSLocalRoleL17(t *testing.T) {
+	for _, c := range []struct {
+		upd  string
+		role sql.NullInt64
+		want int
+		ok   bool
+	}{
+		{"READ_WRITE", sql.NullInt64{}, 1, true},
+		{"READ_WRITE", sql.NullInt64{Int64: 0, Valid: true}, 1, true},
+		{"READ_ONLY", sql.NullInt64{Int64: 1, Valid: true}, 2, true},
+		{"READ_ONLY", sql.NullInt64{Int64: 2, Valid: true}, 3, true},
+		{"READ_ONLY", sql.NullInt64{Int64: 3, Valid: true}, 0, false},
+		{"READ_ONLY", sql.NullInt64{}, 0, false},
+		{"", sql.NullInt64{}, 0, false},
+	} {
+		if got, ok := qsLocalRole(c.upd, c.role); got != c.want || ok != c.ok {
+			t.Errorf("qsLocalRole(%q, %v) = %d, %v; want %d, %v", c.upd, c.role, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// TestQSCandidatesReplicaFilterL17: with a local role both the runtime and the wait statistics are cut to its
+// groups, guarded so a store that never saw that role keeps every row; with none (no sys.query_store_replicas, or an
+// unread role) no read names the view.
+func TestQSCandidatesReplicaFilterL17(t *testing.T) {
+	q := strings.Join(strings.Fields(qsCandidatesQuery(true, 2, true)), " ")
+	for _, alias := range []string{"r", "w"} {
+		if want := alias + ".replica_group_id IN (SELECT q.replica_group_id FROM sys.query_store_replicas q WHERE q.role_type = 2)"; !strings.Contains(q, want) {
+			t.Errorf("the %s read lacks %q", alias, want)
+		}
+	}
+	if n := strings.Count(q, "NOT EXISTS (SELECT 1 FROM sys.query_store_replicas q WHERE q.role_type = 2)"); n != 2 {
+		t.Errorf("the guard is on %d reads, want 2 (the runtime and the wait statistics)", n)
+	}
+	if strings.Contains(q, "%!") {
+		t.Errorf("a verb was left unformatted: %s", q)
+	}
+	for _, waits := range []bool{true, false} {
+		if strings.Contains(qsCandidatesQuery(waits, 0, false), "query_store_replicas") {
+			t.Errorf("no local role (waits %v), yet a read names sys.query_store_replicas", waits)
+		}
+	}
+	if n := strings.Count(qsCandidatesQuery(false, 1, true), "query_store_replicas"); n != 2 {
+		t.Errorf("without the wait statistics the runtime read alone carries the filter and its guard: %d mentions, want 2", n)
 	}
 }
