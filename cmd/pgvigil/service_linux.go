@@ -826,3 +826,6 @@ func processesOf(uid string, skipService bool) []string {
 	}
 	return out
 }
+
+// installedAccount: a Linux re-run names its account by -user as before (the unit's User=).
+func installedAccount() (string, bool) { return "", false }

@@ -1017,3 +1017,12 @@ func windowsItems(inst installOptions, found bool) []removal {
 	}
 	return items
 }
+
+// installedAccount is the account the installed service runs as (found false: no service).
+func installedAccount() (string, bool) {
+	inst, found, err := installedServiceConfig()
+	if err != nil || !found {
+		return "", false
+	}
+	return inst.User, true
+}

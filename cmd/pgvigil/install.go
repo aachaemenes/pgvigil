@@ -79,8 +79,9 @@ type installOptions struct {
 	PasswordStdin bool
 	Password      string
 	// PrintGMSA: print the script that makes the gMSA -user names, for the principals in GMSAHosts (RELNOTES L142)
-	PrintGMSA bool
-	GMSAHosts string
+	PrintGMSA   bool
+	GMSAHosts   string
+	keptAccount bool // the account came from the installed service (keepInstalledAccount), not from -user
 
 	Purge bool // uninstall: remove the config folder and the binary too
 
@@ -195,7 +196,9 @@ func runInstall(log *slog.Logger, args []string) error {
 		fmt.Print(script)
 		return nil
 	}
-	// the account's check and its password before anything changes (RELNOTES L131)
+	// the account's check and its password before anything changes (RELNOTES L131); a re-run keeps the installed one
+	installed, found := installedAccount()
+	keepInstalledAccount(&o, installed, found)
 	if _, err := prepareAccount(&o, runtime.GOOS, netbiosHost(host), os.Stdin); err != nil {
 		return err
 	}

@@ -54,3 +54,6 @@ func uninstallService(log *slog.Logger, o installOptions) error {
 func maybeRunAsService(_ []string) (bool, int) { return false, 0 }
 
 func replaceFile(tmp, dst string) error { return os.Rename(tmp, dst) }
+
+// installedAccount: no wired service manager here.
+func installedAccount() (string, bool) { return "", false }

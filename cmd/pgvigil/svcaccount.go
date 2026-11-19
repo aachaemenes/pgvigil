@@ -81,9 +81,22 @@ func checkWindowsAccount(user, host string, passwordStdin bool) (windowsAccount,
 		return 0, fmt.Errorf(`-user %s must be DOMAIN\user or .\user: a domain of at most 15 characters, a user name of at most 20 characters`, u)
 	}
 	if !passwordStdin {
-		return 0, fmt.Errorf(`-user %s needs its password: give it on stdin with -password-stdin (never on the command line) - or run as a gMSA (DOMAIN\name$), which needs none and is preferred: Windows changes its password itself and none is kept anywhere`, u)
+		return 0, fmt.Errorf(`-user %s %w: give it on stdin with -password-stdin (never on the command line) - or run as a gMSA (DOMAIN\name$), which needs none and is preferred: Windows changes its password itself and none is kept anywhere`, u, errNeedsPassword)
 	}
 	return accountNamed, nil
+}
+
+// errNeedsPassword is a named account's refusal without -password-stdin; an account kept from the installed service
+// keeps its stored password instead.
+var errNeedsPassword = errors.New("needs its password")
+
+// keepInstalledAccount: install run again over an installed service, without -user, keeps the account that service
+// runs as (the default would move a gMSA service back to the virtual account); -upgrade keeps it by its own rule.
+func keepInstalledAccount(o *installOptions, installed string, found bool) {
+	if !found || installed == "" || o.Upgrade || o.set["user"] {
+		return
+	}
+	o.User, o.keptAccount = installed, true
 }
 
 // readServicePassword reads -password-stdin's one line, without its line end.
@@ -115,6 +128,9 @@ func prepareAccount(o *installOptions, goos, host string, stdin io.Reader) (wind
 		return 0, nil
 	}
 	kind, err := checkWindowsAccount(o.User, host, o.PasswordStdin)
+	if o.keptAccount && errors.Is(err, errNeedsPassword) {
+		return accountNamed, nil // the installed service's account: the service manager keeps its password (NULL)
+	}
 	if err != nil || !o.PasswordStdin {
 		return kind, err
 	}
