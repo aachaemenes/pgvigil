@@ -417,3 +417,50 @@ web:
 
 The collector's own state (a collection failing, the alert sender idle, the repository's autovacuum behind) is a
 finding on the Collector page and the Summary, never a probe's answer.
+
+## The UI under a sub-path, behind a reverse proxy (web: base_path)
+
+`pgvigil serve` can answer under a sub-path - `https://tools.example.org/pgvigil/` - for a reverse proxy that passes
+the path whole:
+
+```yaml
+web:
+  base_path: /pgvigil   # a leading '/', no trailing one; empty (the default) = the root
+```
+
+`pgvigil serve -base-path /pgvigil` says the same and wins over the file. With a base path every route is under it:
+the pages, `/pgvigil/api/...`, the probes (`/pgvigil/livez`, `/pgvigil/readyz`), `/pgvigil/metrics`. `/pgvigil` alone
+is sent to `/pgvigil/`; any other path is a 404, and the log names the base path once. The session cookie's path is
+the base path's, so it is not sent to the other sites on the host. pgvigil takes the prefix from this setting only,
+never from a header such as `X-Forwarded-Prefix` (a header any client can send).
+
+The proxy must pass the path as it came, and a Host header pgvigil accepts: on a loopback listen (`-listen
+127.0.0.1:8080`, the default) serve takes only a loopback Host, which nginx sends by default and Caddy must be told.
+
+nginx:
+
+```nginx
+location /pgvigil/ {
+    proxy_pass http://127.0.0.1:8080;   # no URI part: the path goes through whole
+    proxy_http_version 1.1;
+    proxy_buffering off;                # the live pages' event stream is one long answer
+}
+```
+
+Caddy:
+
+```
+redir /pgvigil /pgvigil/ 308
+handle /pgvigil/* {
+    reverse_proxy 127.0.0.1:8080 {
+        header_up Host {upstream_hostport}
+    }
+}
+```
+
+`handle`, not `handle_path` (which strips the prefix). A proxy that strips the prefix is not served: pgvigil answers
+404 to every path. Set `alerts_base_url` (the alerts' links) to the address with the prefix,
+`https://tools.example.org/pgvigil`. The session cookie is `Secure` when serve's own listener is TLS (`-tls-cert`);
+behind a proxy that ends TLS, keep serve on loopback.
+
+Not proven: Apache httpd and IIS as the proxy; a proxy that rewrites the pages it passes.
