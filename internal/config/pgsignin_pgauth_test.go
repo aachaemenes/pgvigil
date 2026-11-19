@@ -41,7 +41,7 @@ func TestSSLModeOfPGAUTH(t *testing.T) {
 func TestPasswordShapedPGAUTH(t *testing.T) {
 	for _, c := range []struct {
 		systemUser, method string
-		clear              bool
+		sends              bool
 	}{
 		{"ldap:cn=pgvigil,ou=svc,dc=example,dc=com", "ldap", true},
 		{"radius:pgvigil", "radius", true},
@@ -54,9 +54,9 @@ func TestPasswordShapedPGAUTH(t *testing.T) {
 		{"gss:pgvigil@PGV.TEST", "gss", false},
 		{"", "", false},
 	} {
-		m, clear := PasswordShaped(c.systemUser)
-		if m != c.method || clear != c.clear {
-			t.Errorf("PasswordShaped(%q) = %q, %v; want %q, %v", c.systemUser, m, clear, c.method, c.clear)
+		m, sends := PasswordShaped(c.systemUser)
+		if m != c.method || sends != c.sends {
+			t.Errorf("PasswordShaped(%q) = %q, %v; want %q, %v", c.systemUser, m, sends, c.method, c.sends)
 		}
 	}
 }

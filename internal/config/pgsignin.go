@@ -33,7 +33,7 @@ var passwordShaped = map[string]bool{"ldap": true, "radius": true, "pam": true, 
 // PasswordShaped reads PostgreSQL 16's SYSTEM_USER ('auth_method:identity'; empty for NULL, trust): the method word,
 // and whether that method has the client send the password in clear. The identity is never returned (under ldap it is
 // the bind DN).
-func PasswordShaped(systemUser string) (method string, clear bool) {
+func PasswordShaped(systemUser string) (method string, sendsPassword bool) {
 	method, _, _ = strings.Cut(systemUser, ":")
 	return method, passwordShaped[method]
 }
