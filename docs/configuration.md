@@ -299,7 +299,8 @@ the form, never for one that signs in as `pgvigil serve` itself:
 
 - SQL Server: auth `sql` and `entra` (a service principal and its secret); `windows` and `entra-identity` are refused,
   being the service's own identity. PostgreSQL: auth `password`; `pgpass` (the service account's own `.pgpass`) is
-  refused.
+  refused. A server that signs logins in against a directory (LDAP, RADIUS, PAM) takes auth `password` with
+  `sslmode=verify-full sslrootcert=system`: [PostgreSQL sign-in without a password role](postgres-signin.md).
 - The driver options it opens with, each for one reason. SQL Server (go-mssqldb's names, without case): `database`,
   `encrypt`, `trustservercertificate`, `hostnameincertificate`, `tlsmin` (TLS on the wire and the certificate's
   check), `connection timeout`, `dial timeout`, `keepalive` (seconds), `applicationintent` (an availability group's
