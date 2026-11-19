@@ -515,6 +515,7 @@ type Conn struct {
 //     user-assigned identity's client id, empty for the host's system-assigned identity)
 //   - postgres, auth password: host=... port=... dbname=... user=... password='...'
 //   - postgres, auth pgpass: no password (the service account's .pgpass or PGPASSFILE)
+//   - postgres, auth kerberos: no password, user=the role the process's Kerberos identity maps to (PGAUTH M3)
 //
 // Extra (a sqlserver query string or postgres keywords, from a source's credential file) is appended; it may set
 // TrustServerCertificate or sslmode, never the host.
@@ -640,8 +641,18 @@ func BuildDSN(c Conn) (string, error) {
 			if c.Login != "" {
 				kv = append(kv, "user="+pq(c.Login))
 			}
+		case "kerberos":
+			// PGAUTH M3: the process's one Kerberos identity (pgvigil.yaml's kerberos: block, config.PGKerberos) signs
+			// in; the login is the role it maps to, krbsrvname / krbspn come through the options
+			if c.Password != "" {
+				return "", errors.New("auth kerberos signs in with the process's Kerberos identity: no password is stored")
+			}
+			if c.Login == "" {
+				return "", errors.New("auth kerberos names the PostgreSQL role the Kerberos principal maps to: the login is that role")
+			}
+			kv = append(kv, "user="+pq(c.Login))
 		default:
-			return "", fmt.Errorf("auth %q is not a PostgreSQL one (password, pgpass)", c.Auth)
+			return "", fmt.Errorf("auth %q is not a PostgreSQL one (password, pgpass, kerberos)", c.Auth)
 		}
 		if x := strings.TrimSpace(c.Extra); x != "" {
 			for _, f := range strings.Fields(x) {

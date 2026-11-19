@@ -176,7 +176,7 @@ func PageDoorRefusal(name, engine, auth, options string) string {
 	case EnginePostgres:
 		switch auth {
 		case "password":
-		case "pgpass":
+		case "pgpass", "kerberos":
 			return ownIdentity(name, auth)
 		default:
 			return "instance " + name + ": its authentication " + auth + " is not one a page door opens: Community tools and custom reports run on it only from pgvigil.yaml"
