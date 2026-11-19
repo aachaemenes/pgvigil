@@ -15,7 +15,14 @@ any WARN or a failed instance - so an install script can gate on the code.
   (a folder's group may pass through it); on Windows read for anyone but SYSTEM, the Administrators and the service's
   account is a FAIL. Each prints its fix (`chmod o-rwx <file>`, `icacls "<file>" /remove:g *<SID>`); check changes
   nothing (on Windows `pgvigil install` run again sets the installer's access list on the folder once more).
-- **The repository**: the connect, its schema level against this build (behind: *run pgvigil migrate*; ahead: a FAIL -
+- **The references**: every `env:`, `file:` and `dpapi:` value of the file, whichever block holds it (`reports_dsn`,
+  `alerts_dsn`, an instance's `actions_dsn`, `explain_dsn`, `stats_dsn` or `pgbouncer`, `export:`, the alert
+  channels), is resolved as its reader resolves it: each that resolves to nothing is a FAIL naming where it sits
+  (`reference instances[pg1].actions_dsn`) and why - the variable not set or empty, the file and the system's error,
+  the `dpapi:` blob that did not open on this host - never what was read; when all resolve, one OK line counts them.
+  The repository's dsn and each instance's dsn are judged in their own lines below with the same words.
+- **The repository**: a dsn that resolves to nothing is a FAIL with why and nothing is connected (an empty dsn
+  would be libpq's defaults: localhost, as the account running the check); otherwise the connect, its schema level against this build (behind: *run pgvigil migrate*; ahead: a FAIL -
   this build must not run on it), and its size. Free space beside the store is read only when the store is on this
   host and its `data_directory` is readable to the login and the process: a WARN under 10 GiB free or under 30 days of
   the store's growth; otherwise the line says *not read: the store is on \<host\>*.

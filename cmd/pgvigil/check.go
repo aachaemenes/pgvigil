@@ -125,6 +125,8 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 	for _, r := range secretFileRows(path) {
 		add(r.Level, r.What, r.Words)
 	}
+	// L241: every env: / file: / dpapi: reference of the file
+	referenceRows(path, add)
 	for _, in := range cfg.Instances {
 		eng := engineName(in)
 		runnable := 0
@@ -145,10 +147,20 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 	repoBad := false
 	all := cfg.Instances
 	rctx, rcancel := context.WithTimeout(ctx, 15*time.Second)
-	rc, err := pgx.Connect(rctx, cfg.Repository.DSN())
+	repoDSN := cfg.Repository.DSN()
+	var rc *pgx.Conn
+	if repoDSN == "" {
+		// never connected: an empty dsn is libpq's defaults (PGHOST / PGPORT, else localhost, as this OS account)
+		err = fmt.Errorf("dsn %q resolved to an empty string (%s): nothing was connected", cfg.Repository.DSNRaw, collect.EmptyDSNWhy(cfg.Repository.DSNRaw))
+	} else {
+		rc, err = pgx.Connect(rctx, repoDSN)
+		if err != nil {
+			err = fmt.Errorf("unreachable: %w", err)
+		}
+	}
 	if err != nil {
 		rcancel()
-		add("FAIL", "repository", "unreachable: "+err.Error())
+		add("FAIL", "repository", err.Error())
 		repoBad = true
 	} else {
 		var newest string
@@ -171,12 +183,12 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 			repoBad = true
 		}
 		if qerr == nil {
-			checkSpace(rctx, rc, cfg.Repository.DSN(), size, add)
+			checkSpace(rctx, rc, repoDSN, size, add)
 		}
 		_ = rc.Close(context.WithoutCancel(ctx))
 		rcancel()
 		// Q3 (a): the scheduler's whole set - the file's instances and Admin > Instances' enabled inventory
-		if r, rerr := repo.Open(ctx, cfg.Repository.DSN()); rerr == nil {
+		if r, rerr := repo.Open(ctx, repoDSN); rerr == nil {
 			ictx, icancel := context.WithTimeout(ctx, 10*time.Second)
 			if page, _, perr := r.Inventory(ictx); perr == nil {
 				merged, skipped := config.Merge(cfg.Instances, page, cfg.QueryText, cfg.MSSQLCounters)
@@ -259,6 +271,31 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 		}
 	}
 	return rows, 0
+}
+
+// referenceRows (RELNOTES L241): one FAIL for each env: / file: / dpapi: reference of the file that resolves to
+// nothing, with config.WhyEmpty's words (the reference, never what it read); one OK row when every one resolves. The
+// repository's dsn and each instance's dsn are left to their own rows, which FAIL them with the same words.
+func referenceRows(path string, add func(level, what, words string)) {
+	refs, err := config.FileReferences(path)
+	if err != nil {
+		add("WARN", "references", "the file was not read for its references: "+err.Error())
+		return
+	}
+	n, bad := 0, 0
+	for _, r := range refs {
+		if r.Where == "repository.dsn" || (strings.HasPrefix(r.Where, "instances[") && strings.HasSuffix(r.Where, "].dsn")) {
+			continue
+		}
+		n++
+		if why := config.WhyEmpty(r.Raw); why != "" {
+			bad++
+			add("FAIL", "reference "+r.Where, r.Raw+" resolves to nothing: "+why)
+		}
+	}
+	if n > 0 && bad == 0 {
+		add("OK", "references", fmt.Sprintf("every env: / file: / dpapi: reference of the file resolves (%d; the repository's and each instance's dsn have their own rows)", n))
+	}
 }
 
 // checkSpace (Q2 a): the free space beside the store, read only when the store is on this host and its data_directory
