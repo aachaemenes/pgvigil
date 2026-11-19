@@ -15,9 +15,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// checkYaml writes a pgvigil.yaml for 'pgvigil check' tests and returns its path.
+// checkYaml writes a pgvigil.yaml for 'pgvigil check' tests and returns its path. The folder is given the mode
+// 'pgvigil install' gives the configuration's folder (0750, service_linux.go's cfgDir): t.TempDir makes it 0777 less
+// the umask (0755 under 022), which check's 'secret files' part (L169) rightly fails as open to every account.
 func checkYaml(t *testing.T, dir, body string) string {
 	t.Helper()
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
 	p := filepath.Join(dir, "pgvigil.yaml")
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
