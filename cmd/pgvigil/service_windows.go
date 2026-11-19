@@ -145,6 +145,7 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 		Description:      "PostgreSQL monitoring collector: polls the instances named in its configuration and writes to the pgvigil repository.",
 		StartType:        mgr.StartAutomatic,
 		ServiceStartName: o.User,
+		Password:         o.Password, // -password-stdin's, else '' = NULL: a virtual account or a gMSA (CreateServiceW)
 	}
 	var s *mgr.Service
 	if existing != nil {
@@ -156,6 +157,7 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 		}
 		c.BinaryPathName = windows.EscapeArg(o.Bin) + " run -config " + windows.EscapeArg(o.Config)
 		c.DisplayName, c.Description, c.StartType, c.ServiceStartName = cfg.DisplayName, cfg.Description, cfg.StartType, cfg.ServiceStartName
+		c.Password = o.Password // '' = NULL: ChangeServiceConfigW keeps the stored password (an upgrade)
 		if err := s.UpdateConfig(c); err != nil {
 			_ = s.Close()
 			return false, "", fmt.Errorf("update service: %w", err)

@@ -300,6 +300,9 @@ type DBADashRepo struct {
 // sAMAccountName rule), neither holding a character Windows refuses in a name.
 var gmsaName = regexp.MustCompile(`^[^\\/:*?"<>|\s.@\[\]]{1,15}\\[^\\/:*?"<>|\s@\[\]$]{1,15}\$$`)
 
+// IsGMSAName says whether s has the gmsa: key's form, DOMAIN\name$ (pgvigil install's -user check reads it too).
+func IsGMSAName(s string) bool { return gmsaName.MatchString(strings.TrimSpace(s)) }
+
 // validateGMSA trims the gmsa: key and refuses a form that is not DOMAIN\name$.
 func (c *Config) validateGMSA() error {
 	c.GMSA = strings.TrimSpace(c.GMSA)

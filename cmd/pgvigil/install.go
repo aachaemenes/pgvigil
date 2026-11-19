@@ -72,9 +72,14 @@ import (
 type installOptions struct {
 	Bin     string // where the binary lives when installed
 	Config  string // the config file
-	User    string // the service account (Linux: a system user; Windows: fixed to the virtual account)
+	User    string // the service account (Linux: a system user; Windows: the virtual account, a gMSA or a named account)
 	NoStart bool   // write everything, start nothing
-	Purge   bool   // uninstall: remove the config folder and the binary too
+	// PasswordStdin (Windows, a named account): Password is read from stdin and handed to the service manager alone -
+	// never written, logged or put in an error (RELNOTES L131, the lead's 01:14 (b))
+	PasswordStdin bool
+	Password      string
+
+	Purge bool // uninstall: remove the config folder and the binary too
 
 	Upgrade      bool   // install: upgrade the installed collector (stop, dump, migrate, swap, start)
 	OwnerDSNEnv  string // the variable holding the repository owner's connection string
@@ -94,7 +99,8 @@ type installOptions struct {
 // userFlagHelp is -user's help: what the account is on each OS (RELNOTES L131).
 const userFlagHelp = "the service's account. Linux: a system user, made when missing. Windows: the service's virtual account " +
 	`NT SERVICE\pgvigil` + " (the default), or a group Managed Service Account " + `DOMAIN\name$` +
-	" (gMSA: no password anywhere, Windows changes it; preferred)"
+	" (gMSA: no password anywhere, Windows changes it; preferred), or a named account " + `DOMAIN\user` + " or " + `.\user` +
+	" with -password-stdin"
 
 func parseInstallArgs(name string, args []string, def installOptions) (installOptions, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
@@ -107,6 +113,7 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	if name == "install" {
 		fs.BoolVar(&o.NoStart, "no-start", false, "install and enable, but do not start the service")
 		fs.BoolVar(&o.Upgrade, "upgrade", false, "upgrade the installed collector: stop, dump, migrate, swap, start (docs/upgrade.md)")
+		fs.BoolVar(&o.PasswordStdin, "password-stdin", false, passwordStdinHelp)
 	} else {
 		with = "-drop-repository"
 		fs.BoolVar(&o.Purge, "purge", false, "also remove the installer's files, their folder when empty, and the binary")
@@ -165,6 +172,11 @@ func runInstall(log *slog.Logger, args []string) error {
 		return nil // -h: the flags are printed, nothing is wrong
 	}
 	if err != nil {
+		return err
+	}
+	// the account's check and its password before anything changes (RELNOTES L131)
+	host, _ := os.Hostname()
+	if _, err := prepareAccount(&o, runtime.GOOS, netbiosHost(host), os.Stdin); err != nil {
 		return err
 	}
 	if o.Upgrade {
