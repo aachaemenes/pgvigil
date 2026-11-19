@@ -21,6 +21,7 @@ require (
 	github.com/aws/smithy-go v1.28.8
 	github.com/golang-sql/sqlexp v0.1.0
 	github.com/jackc/pgx/v5 v5.12.0
+	github.com/jcmturner/gokrb5/v8 v8.4.4
 	github.com/microsoft/go-mssqldb v1.11.2
 	github.com/parquet-go/parquet-go v0.32.0
 	golang.org/x/crypto v0.58.0
@@ -58,7 +59,6 @@ require (
 	github.com/jcmturner/dnsutils/v2 v2.0.0 // indirect
 	github.com/jcmturner/gofork v1.7.6 // indirect
 	github.com/jcmturner/goidentity/v6 v6.0.1 // indirect
-	github.com/jcmturner/gokrb5/v8 v8.4.4 // indirect
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/kr/text v0.2.0 // indirect
