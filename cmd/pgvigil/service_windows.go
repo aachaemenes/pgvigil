@@ -129,7 +129,7 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return false, "", err
 	}
-	for _, f := range []struct{ path, content string }{{o.Config, configTemplate("file:" + dsnFile)}, {dsnFile, ""}} {
+	for _, f := range []struct{ path, content string }{{o.Config, templateWithGMSA(configTemplate("file:"+dsnFile), o.User)}, {dsnFile, ""}} {
 		wrote, err := writeIfAbsent(f.path, f.content, 0o600)
 		if err != nil {
 			return false, "", err
@@ -151,6 +151,12 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 			log.Warn("the right 'Log on as a service' was not granted; the service keeps the rights its account holds", "account", o.User, "err", err)
 		default:
 			return false, "", fmt.Errorf("the right 'Log on as a service' for %s: %w (grant it in secpol.msc, or install as the virtual account)", o.User, err)
+		}
+	}
+	// a kept configuration is never edited: a gMSA with no gmsa: line there is told the line to add (RELNOTES L131)
+	if b, err := os.ReadFile(o.Config); err == nil {
+		if line := gmsaLineToAdd(string(b), o.User); line != "" {
+			fmt.Println(line)
 		}
 	}
 	cfg := mgr.Config{

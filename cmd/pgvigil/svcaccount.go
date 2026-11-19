@@ -161,3 +161,26 @@ func logonRightKept(user string) string {
 	return fmt.Sprintf("another service may run as %s too, so its 'Log on as a service' right stays; when nothing else "+
 		"does, take it away by hand: secpol.msc > Local Policies > User Rights Assignment > Log on as a service", user)
 }
+
+// templateWithGMSA is the configuration template a Windows install writes fresh: with a gMSA -user it names that
+// account in gmsa:, the Windows sign-in's guard (docs/migrate-dbadash.md); any other account leaves it as it is.
+func templateWithGMSA(tmpl, user string) string {
+	u := strings.TrimSpace(user)
+	if !config.IsGMSAName(u) {
+		return tmpl
+	}
+	return tmpl + "\n# The group Managed Service Account the service runs as (pgvigil install -user): the Windows sign-in.\ngmsa: " + u + "\n"
+}
+
+// gmsaTop finds a top-level gmsa: key.
+var gmsaTop = regexp.MustCompile(`(?m)^gmsa:`)
+
+// gmsaLineToAdd is what the install says when it keeps a configuration with no gmsa: for a gMSA -user ("" otherwise):
+// an existing file is never edited.
+func gmsaLineToAdd(text, user string) string {
+	u := strings.TrimSpace(user)
+	if !config.IsGMSAName(u) || gmsaTop.MatchString(text) {
+		return ""
+	}
+	return fmt.Sprintf("the configuration is kept as it is (the install never edits it): add the line 'gmsa: %s' for the Windows sign-in (docs/migrate-dbadash.md)", u)
+}
