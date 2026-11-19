@@ -87,7 +87,7 @@ func TestInlinePasswordFinding0455OnAStore(t *testing.T) {
 		[]string{name("a"), name("b"), name("off"), fmt.Sprintf("l9-none-%d", sfx)}); err != nil {
 		t.Fatal(err)
 	}
-	got := inlineFindings(ctx, tx, ids["a"], ids["b"], ids["off"])
+	got := inlineFindings(ctx, t, tx, ids["a"], ids["b"], ids["off"])
 	if len(got) != 2 || got[0].value != name("a") || got[1].value != name("b") {
 		t.Fatalf("findings %+v, want one for a and one for b (the inactive one and the unknown name none)", got)
 	}
@@ -104,14 +104,14 @@ func TestInlinePasswordFinding0455OnAStore(t *testing.T) {
 	if _, err := tx.Exec(ctx, `SELECT pgvigil.import_collector_inline_passwords($1, $2)`, col, []string{name("a")}); err != nil {
 		t.Fatal(err)
 	}
-	if got := inlineFindings(ctx, tx, ids["a"], ids["b"]); len(got) != 1 || got[0].value != name("a") {
+	if got := inlineFindings(ctx, t, tx, ids["a"], ids["b"]); len(got) != 1 || got[0].value != name("a") {
 		t.Fatalf("after a start that lists a alone: %+v, want a alone", got)
 	}
 	// an empty list clears the host
 	if _, err := tx.Exec(ctx, `SELECT pgvigil.import_collector_inline_passwords($1, $2)`, col, []string{}); err != nil {
 		t.Fatal(err)
 	}
-	if got := inlineFindings(ctx, tx, ids["a"], ids["b"]); len(got) != 0 {
+	if got := inlineFindings(ctx, t, tx, ids["a"], ids["b"]); len(got) != 0 {
 		t.Fatalf("after a start that lists none: %+v, want none", got)
 	}
 	// a retired host's rows raise nothing
@@ -121,7 +121,7 @@ func TestInlinePasswordFinding0455OnAStore(t *testing.T) {
 	if _, err := tx.Exec(ctx, `UPDATE pgvigil.collector_heartbeat SET retired_at = now() WHERE collector_id = $1`, col); err != nil {
 		t.Fatal(err)
 	}
-	if got := inlineFindings(ctx, tx, ids["a"]); len(got) != 0 {
+	if got := inlineFindings(ctx, t, tx, ids["a"]); len(got) != 0 {
 		t.Fatalf("a retired host's list: %+v, want none", got)
 	}
 	// an unknown collector id is refused in words, never a silent row
