@@ -8,11 +8,17 @@
 #   $env:PGVIGIL_VERSION = 'v0.2.0'      a given tag (default: the latest release)
 #   $env:PGVIGIL_BASE_URL = '<url>'      the folder that holds <version>/<asset> (default: the GitHub release downloads)
 #   $env:PGVIGIL_NO_SERVICE = '1'        download and verify only; pgvigil.exe lands in the current folder
+#   $env:PGVIGIL_SERVICE_ACCOUNT = '<a>' the service's account, as -ServiceAccount below (the online form takes no parameters)
 #
 # Offline (no network: a local folder, a mounted USB drive or a UNC share holding the extracted offline bundle,
 # pgvigil-offline-<version>-windows-amd64; docs/airgap.md), from an elevated PowerShell:
 #   & <folder>\install.ps1 -From <folder> [-Fips | -Plain] [-TrustRoot <dir>] [-App] [-UpdateCheck]
 #                           [-OwnerDsnFile <path>] [-Dump <file> | -NoDump] [-PgDump <path>]
+#                           [-ServiceAccount <DOMAIN\name$ | DOMAIN\user | .\user>] [-Help]
+# -ServiceAccount (a fresh install; an upgrade keeps the installed account): the service runs as its virtual account
+# NT SERVICE\pgvigil by default, or as a group Managed Service Account DOMAIN\name$ (no password anywhere: preferred), or
+# as a named account, whose password is asked here (Read-Host, not shown) and handed to 'pgvigil install -password-stdin'
+# on its standard input - never a parameter. The install grants the account 'Log on as a service'.
 # The binary and SHA256SUMS are copied into a new folder for SYSTEM and Administrators only, the copies verified and
 # only the copies run (a share or a drive can change between a check and a use). A fresh install runs
 # 'pgvigil install' and puts the folder on the machine PATH; where the service pgvigil exists it is an upgrade,
@@ -33,9 +39,23 @@ param(
     [string]$OwnerDsnFile,
     [string]$Dump,
     [switch]$NoDump,
-    [string]$PgDump
+    [string]$PgDump,
+    [string]$ServiceAccount,
+    [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
+if ($Help) {
+    Write-Host @'
+pgvigil installer for Windows (elevated). Online: irm https://pgvigil.com/install.ps1 | iex
+  $env:PGVIGIL_VERSION, $env:PGVIGIL_BASE_URL, $env:PGVIGIL_NO_SERVICE = '1', $env:PGVIGIL_SERVICE_ACCOUNT
+Offline: & <folder>\install.ps1 -From <folder> [-Fips | -Plain] [-TrustRoot <dir>] [-App] [-UpdateCheck]
+           [-OwnerDsnFile <path>] [-Dump <file> | -NoDump] [-PgDump <path>]
+           [-ServiceAccount <DOMAIN\name$ | DOMAIN\user | .\user>]
+-ServiceAccount: the virtual account NT SERVICE\pgvigil by default; a gMSA DOMAIN\name$ needs no password and is
+preferred; a named account's password is asked (not shown) and passed on stdin. A fresh install only.
+'@
+    return
+}
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 function Add-MachinePath([string]$dir) {
@@ -75,6 +95,23 @@ function Invoke-Native([scriptblock]$cmd) {
     $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     try { $out = & $cmd 2>&1 | ForEach-Object { "$_" }; return @{ Code = $LASTEXITCODE; Out = ($out -join "`n") } } finally { $ErrorActionPreference = $eap }
 }
+# 'pgvigil install' as the service's account (RELNOTES L131): none named = the virtual account; a gMSA (DOMAIN\name$)
+# or NT SERVICE\<name> without a password; any other account's password read here, not shown, and piped to
+# -password-stdin - never a parameter, never written; the plain copy cleared after the call
+function Invoke-PgvigilInstall([string]$exePath, [string]$account) {
+    if (-not $account) { return Invoke-Native { & $exePath install } }
+    if ($account -match '\$$' -or $account -like 'NT SERVICE\*') { return Invoke-Native { & $exePath install -user $account } }
+    $sec = Read-Host -AsSecureString "the password of $account (not shown)"
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        return Invoke-Native { $plain | & $exePath install -user $account -password-stdin }
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        $plain = $null
+    }
+}
+$account = if ($ServiceAccount) { $ServiceAccount } else { $env:PGVIGIL_SERVICE_ACCOUNT }
 if ($From) {
     if ($Fips -and $Plain) { throw 'pgvigil install: -Fips and -Plain name opposite builds' }
     if ($UpdateCheck -and -not $App) { throw 'pgvigil install: -UpdateCheck goes with -App (it is the app''s setting)' }
@@ -148,6 +185,7 @@ if ($From) {
             return
         }
         if ($svc) {
+            if ($account) { throw 'pgvigil install: -ServiceAccount goes with a fresh install: the upgrade keeps the installed account' }
             Write-Host 'the service pgvigil is installed: upgrading it'
             $up = @('install', '-upgrade')
             if ($OwnerDsnFile) { $up += @('-owner-dsn-file', $OwnerDsnFile) }
@@ -159,7 +197,7 @@ if ($From) {
             if ($r.Code -ne 0) { throw "pgvigil install -upgrade exited with $($r.Code)" }
         } else {
             if ($OwnerDsnFile -or $Dump -or $NoDump -or $PgDump) { throw 'pgvigil install: -OwnerDsnFile, -Dump, -NoDump and -PgDump go with an upgrade; the service pgvigil is not installed' }
-            $r = Invoke-Native { & $exe install }
+            $r = Invoke-PgvigilInstall $exe $account
             if ($r.Out) { Write-Host $r.Out }
             if ($r.Code -ne 0) { throw "pgvigil install exited with $($r.Code)" }
             Add-MachinePath (Join-Path $env:ProgramFiles 'pgvigil')
@@ -222,7 +260,7 @@ try {
         Write-Host ".\pgvigil.exe $version is ready (no service installed)"
         return
     }
-    $r = Invoke-Native { & (Join-Path $work $asset) install }
+    $r = Invoke-PgvigilInstall (Join-Path $work $asset) $account
     if ($r.Out) { Write-Host $r.Out }
     if ($r.Code -ne 0) { throw "pgvigil install exited with $($r.Code)" }
     $binDir = Join-Path $env:ProgramFiles 'pgvigil'
