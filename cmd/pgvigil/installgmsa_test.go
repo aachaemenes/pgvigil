@@ -40,7 +40,7 @@ func TestGMSALineToAddL131(t *testing.T) {
 		t.Errorf("no gmsa: line: %q", s)
 	}
 	for _, c := range []struct{ text, user string }{
-		{"repository:\n  dsn: x\ngmsa: CORP\\other$\n", user},
+		{"repository:\n  dsn: x\ngmsa: CORP\\pgvigil-old$\n", user},
 		{"gmsa: " + user + "\n", user},
 		{"repository:\n  dsn: x\n", `CORP\svc-pgvigil`},
 		{"repository:\n  dsn: x\n", `NT SERVICE\pgvigil`},

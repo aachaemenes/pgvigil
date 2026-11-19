@@ -27,7 +27,7 @@ func TestReinstallKeepsAccountL131(t *testing.T) {
 	for _, c := range []struct {
 		args  []string
 		found bool
-	}{{[]string{"-user", `CORP\other-gmsa$`}, true}, {[]string{"-upgrade"}, true}, {nil, false}} {
+	}{{[]string{"-user", `CORP\pgvigil-new-gmsa$`}, true}, {[]string{"-upgrade"}, true}, {nil, false}} {
 		o := parse(c.args...)
 		before := o.User
 		keepInstalledAccount(&o, gmsa, c.found)

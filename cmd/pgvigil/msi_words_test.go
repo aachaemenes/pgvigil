@@ -101,16 +101,22 @@ func TestInstallScriptRefusesAnMSIMachineL189(t *testing.T) {
 // $ErrorActionPreference = 'Stop', and Windows PowerShell 5.1 turns a native program's stderr into an error record
 // wherever it is redirected (ISE, a remoting session, '2>&1 | Tee-Object'): a SUCCESSFUL 'pgvigil install' then throws on
 // its first slog INFO line. Every call of the downloaded pgvigil.exe goes through the script's Invoke-Native (stderr read
-// under 'Continue', judged by the exit code) - none is a bare '& <exe> install'.
+// under 'Continue', judged by the exit code) - none is a bare '& <exe> install'. Since RELNOTES L131 the offline and the
+// online install call Invoke-PgvigilInstall, whose three calls (no account; a gMSA or NT SERVICE account;
+// -password-stdin) take the exe as $exePath.
 func TestInstallScriptNativeCallsWrapped(t *testing.T) {
 	ps := readRepoFile(t, "docs/install.ps1")
-	bare := regexp.MustCompile(`(?m)^\s*&\s*(\$exe|\(Join-Path \$work \$asset\))\s+(@up|install)\b`)
-	for _, m := range bare.FindAllString(ps, -1) {
-		t.Errorf("install.ps1 runs pgvigil.exe bare under 'Stop' (5.1 throws on its stderr in ISE): %q - call it through Invoke-Native", strings.TrimSpace(m))
+	exe := `(\$exe|\$exePath|\(Join-Path \$work \$asset\))\s+(@up|install)\b`
+	all := regexp.MustCompile(`&\s*`+exe).FindAllString(ps, -1)
+	wrapped := regexp.MustCompile(`Invoke-Native\s*\{\s*(\$plain\s*\|\s*)?&\s*`+exe).FindAllString(ps, -1)
+	if len(all) != len(wrapped) {
+		t.Errorf("install.ps1 runs pgvigil.exe %d time(s), %d of them through Invoke-Native: a bare call throws on its stderr under 'Stop' in 5.1's ISE - call it through Invoke-Native", len(all), len(wrapped))
 	}
-	wrapped := regexp.MustCompile(`Invoke-Native\s*\{\s*&\s*(\$exe|\(Join-Path \$work \$asset\))\s+(@up|install)\b`)
-	if n := len(wrapped.FindAllString(ps, -1)); n != 3 {
-		t.Errorf("install.ps1 has %d install calls through Invoke-Native, want 3 (the offline upgrade and install, the online install)", n)
+	if len(wrapped) != 4 {
+		t.Errorf("install.ps1 has %d install calls through Invoke-Native, want 4 (the offline upgrade; Invoke-PgvigilInstall's three)", len(wrapped))
+	}
+	if n := len(regexp.MustCompile(`Invoke-PgvigilInstall\s+(\$exe|\(Join-Path \$work \$asset\))\s`).FindAllString(ps, -1)); n != 2 {
+		t.Errorf("install.ps1 calls Invoke-PgvigilInstall %d time(s), want 2 (the offline and the online install)", n)
 	}
 	if dep := readRepoFile(t, "deploy/install.ps1"); dep != ps {
 		t.Errorf("deploy/install.ps1 differs from docs/install.ps1 (scripts/proof-install.sh L40 compares them)")
