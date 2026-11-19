@@ -32,7 +32,7 @@ type exportFile struct {
 	Data  []byte `json:"data"`
 }
 
-// exportFolders are the configuration's secret folders (internal/config/inventory.go): 'pgvigil secret seal”s, and
+// exportFolders are the configuration's secret folders (internal/config/inventory.go): the one 'pgvigil secret seal' writes, and
 // the page's Admin > Instances and discovery credentials, whose references the repository holds.
 var exportFolders = []string{"secrets", "instances", "sources"}
 
