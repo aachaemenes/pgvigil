@@ -16,7 +16,7 @@ type FileRef struct {
 	Raw   string
 }
 
-// IsReference: a whole value that is an env:, file: or dpapi: reference (Resolve's forms).
+// IsReference says whether a whole value is an env:, file: or dpapi: reference (Resolve's forms).
 func IsReference(v string) bool {
 	v = strings.TrimSpace(v)
 	return strings.HasPrefix(v, "env:") || strings.HasPrefix(v, "file:") || strings.HasPrefix(v, "dpapi:")
