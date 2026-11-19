@@ -56,9 +56,10 @@ func run(args []string) int {
 	check := fs.Bool("check", false, "headless: attach or start the serve, read it, run the update check, stop what was started")
 	cfg := fs.String("config", "", "the UI configuration the serve reads (default %LOCALAPPDATA%\\pgvigil\\pgvigil.yaml, then %ProgramData%\\pgvigil\\app\\pgvigil.yaml)")
 	ver := fs.Bool("version", false, "print the version")
-	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
+	// the arguments after the flags are files to open (Explorer's Open with: '"pgvigil-app.exe" "%1"')
+	if err := fs.Parse(args); err != nil || (fs.NArg() > 0 && (*quit || *check || *ver)) {
 		attachConsole()
-		fmt.Fprintln(os.Stderr, "usage: pgvigil-app [-tray] [-config file] | -quit | -check [-config file] | install [-user] [-no-autostart] [-no-update-check] | uninstall [-user] [-purge] | -version")
+		fmt.Fprintln(os.Stderr, "usage: pgvigil-app [-tray] [-config file] [file.sqlplan | file.xdl ...] | -quit | -check [-config file] | install [-user] [-no-autostart] [-no-update-check] | uninstall [-user] [-purge] | -version")
 		return 2
 	}
 	switch {
@@ -79,7 +80,7 @@ func run(args []string) int {
 		attachConsole()
 		return report(runCheck(*cfg))
 	}
-	return runApp(*cfg, *tray)
+	return runApp(*cfg, *tray, fs.Args())
 }
 
 func report(err error) int {
@@ -234,18 +235,27 @@ type app struct {
 	// show and quit again (a tray double-click, -quit): show waits it out, a quit is kept for after
 	creating    bool
 	pendingQuit bool
+	// files for the page (win_files.go): waiting to be asked for, one read at a time
+	waiting  []OpenFile
+	handed   []string // a second start's paths, taken in by the next wmFilesAdd
+	inFlight bool
+	nextFile int
 
 	mu       sync.Mutex
 	serve    *Serve
 	serveErr error
 	release  *Release
+	ready    *readyFile // a read file's parts, from its goroutine to the main thread
 }
 
 var the *app
 
-func runApp(cfgFlag string, startInTray bool) int {
+func runApp(cfgFlag string, startInTray bool, files []string) int {
 	m, err := windows.CreateMutex(nil, false, u16(mutexName))
 	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+		if len(files) > 0 { // the running app takes them; this start ends
+			return handOver(files)
+		}
 		if h := findApp(); h != 0 && !startInTray { // a start-at-login launch never opens the running app's window
 			_, _, _ = pPostMessageW.Call(h, wmShow, 0, 0) // the running app shows its window
 		}
@@ -277,6 +287,10 @@ func runApp(cfgFlag string, startInTray bool) int {
 	}
 	if !startInTray {
 		a.show()
+	}
+	if len(files) > 0 {
+		paths, refused := OpenPaths(files, filepath.Abs)
+		a.addFiles(paths, refused, "from the command line")
 	}
 	a.loop()
 	a.shutdown()
@@ -451,6 +465,7 @@ func (a *app) show() {
 			return
 		}
 		a.hwnd = uintptr(a.wv.Window())
+		a.bindFiles() // before the first navigation: a binding is a script run at each document's start
 		a.windowIcons(dpiOf(a.hwnd))
 		a.oldProc, _, _ = pSetWindowLongPtrW.Call(a.hwnd, gwlpWndProc, windows.NewCallback(windowProc))
 		if set.Maximized {
@@ -709,6 +724,17 @@ func trayProc(hwnd, m, wp, lp uintptr) uintptr {
 		return 0
 	case m == wmQuit:
 		a.quit()
+		return 0
+	case m == wmCopyData: // a second start's files
+		return a.onCopyData(lp)
+	case m == wmFilesAdd:
+		a.onFilesAdd()
+		return 0
+	case m == wmFilesAsk:
+		a.deliverNext()
+		return 0
+	case m == wmFilesRead:
+		a.postRead()
 		return 0
 	case m == wmEndSession && wp != 0: // sign-out or shutdown: no WM_CLOSE comes, the process ends after this
 		a.saveWindow()

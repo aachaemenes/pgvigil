@@ -25,6 +25,9 @@ import (
 //	pgvigil-app install -user [-no-autostart] [-no-update-check]                        as the user: %LOCALAPPDATA%\pgvigil
 //	pgvigil-app uninstall [-user] [-purge]
 //
+// Both tiers list the app in Open with for .sqlplan and .xdl (win_assoc.go), never as their default program; both
+// uninstalls take those entries out.
+//
 // Machine-wide: `pgvigil install` (beside the app) puts pgvigil.exe in %ProgramFiles%\pgvigil and the
 // collector in the service pgvigil under its virtual account NT SERVICE\pgvigil; the app goes beside
 // it; %ProgramData%\pgvigil\app\pgvigil.yaml (the UI login, readable by the machine's users) is
@@ -161,6 +164,10 @@ func installMachine(self, srcServe string, ch installChoice) error {
 		return fmt.Errorf("start at login: %w", err)
 	}
 	fmt.Println("start at login for every user:", !noAuto)
+	if err := writeAssoc(registry.LOCAL_MACHINE, app); err != nil {
+		return fmt.Errorf("open with: %w", err)
+	}
+	fmt.Println("open with: .sqlplan and .xdl list pgvigil for every user (HKLM\\Software\\Classes; never their default program)")
 	if ch.update || ch.noUpdate {
 		pk, _, err := registry.CreateKey(registry.LOCAL_MACHINE, policyKey, registry.SET_VALUE)
 		if err != nil {
@@ -219,6 +226,10 @@ func installUser(self, srcServe string, noAuto, noUpdate bool) error {
 		return fmt.Errorf("start at login: %w", err)
 	}
 	fmt.Println("start at login:", !noAuto)
+	if err := writeAssoc(registry.CURRENT_USER, app); err != nil {
+		return fmt.Errorf("open with: %w", err)
+	}
+	fmt.Println("open with: .sqlplan and .xdl list pgvigil (HKCU\\Software\\Classes; never their default program)")
 	if noUpdate {
 		if err := writeUser(func(k registry.Key) error { return k.SetDWordValue("UpdateCheck", 0) }); err != nil {
 			return err
@@ -256,6 +267,9 @@ func runUninstall(args []string) error {
 			return &exitErr{fmt.Errorf("not removed (in use: quit pgvigil and run the uninstall again): %s", strings.Join(left, ", ")), 1}
 		}
 		_ = setRun(registry.CURRENT_USER, "", false)
+		if err := removeAssoc(registry.CURRENT_USER); err != nil {
+			fmt.Println("open with entries not all removed:", err)
+		}
 		if purge {
 			_ = registry.DeleteKey(registry.CURRENT_USER, userKey)
 			_ = registry.DeleteKey(registry.CURRENT_USER, `Software\pgvigil`)
@@ -281,6 +295,9 @@ func runUninstall(args []string) error {
 		}
 	}
 	_ = setRun(registry.LOCAL_MACHINE, "", false)
+	if err := removeAssoc(registry.LOCAL_MACHINE); err != nil {
+		fmt.Println("open with entries not all removed:", err)
+	}
 	if purge {
 		_ = os.RemoveAll(filepath.Join(os.Getenv("ProgramData"), "pgvigil", "app"))
 		_ = registry.DeleteKey(registry.LOCAL_MACHINE, policyKey)
