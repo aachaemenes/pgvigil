@@ -76,7 +76,7 @@ func TestReadOpenL232(t *testing.T) {
 	if MaxOpenBytes != 64*1024*1024 {
 		t.Errorf("the limit is the page's 64 MB: %d", MaxOpenBytes)
 	}
-	// the read itself stops at the limit too (a file that grows after its size was read)
+	// a smaller limit: one byte over it refused, the limit exactly read
 	if f := readOpen(write("grow.sqlplan", []byte("0123456789A")), 10); f.Why == "" || f.Data != nil {
 		t.Errorf("a read past the limit is refused: %+v", f)
 	}
@@ -86,7 +86,7 @@ func TestReadOpenL232(t *testing.T) {
 }
 
 func TestCopyDataL232(t *testing.T) {
-	in := []string{"/plans/a.sqlplan", "/plans/Ünïcode plan.sqlplan", "/d/b.xdl"}
+	in := []string{"/plans/a.sqlplan", "/plans/\u00dcn\u00efcode plan.sqlplan", "/d/b.xdl"}
 	b, err := EncodeCopyData(in)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
