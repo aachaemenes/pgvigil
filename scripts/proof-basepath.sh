@@ -22,6 +22,11 @@
 #     scripts/clickthrough-expected.txt).
 #  W2 scripts/proof-clickthrough.sh at the root (its own seeded demo, no base): PASS as before.
 #  Z  the containers removed, read back 0.
+# Expected (rn-9c, after rn-9b's fold - written before it): D, P1, P2 as rn-9; P3 all three ok now that the login and
+#  the logout carry the X-Pgvigil header (rn-9b's 401 / 403 were the proof's own requests); W1 and W2 [unverified]: if
+#  either fails, its NEW rows are listed by kind and page, and the rows new under /pgvigil/ but not at the root are the
+#  base path's own (0 of them = L55 adds no click-through FAIL; the root walk's rows are then the base tree's, said
+#  apart). Each walk about 1 h 40 min on the box.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -99,21 +104,36 @@ L="$G/login/pgvigil"
 # every read here may find nothing: under set -e a grep with no match inside an assignment ended the script without a
 # word (rn-9), so each one says what it saw instead
 said() { echo "status $1, body '$(head -c 200 "$2" 2>/dev/null | tr '\n' ' ')', headers '$(grep -i '^HTTP\|^set-cookie\|^location' "$3" 2>/dev/null | tr -d '\r' | tr '\n' ' ')', the serve's log '$(tail -3 "$WORK/serve.log" | cut -c1-200 | tr '\n' ' ')'"; }
-lc=$(curl -s -D "$WORK/h1" -o "$WORK/login.body" -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"username\":\"bpuser\",\"password\":\"$UPW\"}" "$L/api/login" || true)
+lc=$(curl -s -D "$WORK/h1" -o "$WORK/login.body" -w '%{http_code}' -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"bpuser\",\"password\":\"$UPW\"}" "$L/api/login" || true)
 SC=$(grep -i '^set-cookie: pgvigil_session=' "$WORK/h1" 2>/dev/null | head -1 | tr -d '\r' || true)
 TOK=$(sed -n 's/^[Ss]et-[Cc]ookie: pgvigil_session=\([^;]*\).*/\1/p' <<<"$SC")
 [[ -n "$TOK" && "$SC" == *"Path=/pgvigil/"* ]] && ok "P3 the login's cookie: Path=/pgvigil/" || bad "P3 the login's cookie: $(said "$lc" "$WORK/login.body" "$WORK/h1")"
 c=$(code -H "Cookie: pgvigil_session=$TOK" "$L/api/session" || true); grep -q 'bpuser' "$WORK/body" && ok "P3 /pgvigil/api/session with it: the user ($c)" || bad "P3 the session: $c $(head -c 120 "$WORK/body")"
-oc=$(curl -s -D "$WORK/h2" -o "$WORK/logout.body" -w '%{http_code}' -X POST -H "Cookie: pgvigil_session=$TOK" -H 'Content-Type: application/json' -d '{}' "$L/api/logout" || true)
+oc=$(curl -s -D "$WORK/h2" -o "$WORK/logout.body" -w '%{http_code}' -X POST -H "Cookie: pgvigil_session=$TOK" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d '{}' "$L/api/logout" || true)
 SC2=$(grep -i '^set-cookie: pgvigil_session=' "$WORK/h2" 2>/dev/null | head -1 | tr -d '\r' || true)
 [[ "$SC2" == *"Path=/pgvigil/"* && ( "$SC2" == *"Max-Age=0"* || "$SC2" == *"Expires="* ) ]] && ok "P3 the logout clears it under Path=/pgvigil/" || bad "P3 the logout's cookie: $(said "$oc" "$WORK/logout.body" "$WORK/h2")"
 
+# each walk's output is kept outside the work folder, which the cleanup removes: the grader prints its NEW rows before
+# the expected rows, so a tail of its log never showed them (rn-9b: 240 and 203 rows, all lost)
+KEEP="${PGVIGIL_BASEPATH_OUT:-.out/basepath-$(date +%Y%m%d-%H%M%S)}"; mkdir -p "$KEEP"
+newrows() { [ -f "$1/clickthrough.tsv" ] || return 0; awk -F'\t' '$7 == "NEW" {print $2 "\t" $3 "\t" $4 "\t" $5}' "$1/clickthrough.tsv" | LC_ALL=C sort -u; }
+walked() { grep -E '^(pages|rows): ' "$KEEP/$1.log" | cut -c1-300 | sed 's/^/     /' || true; }
+
 echo "== W1: the click-through walk through the proxy under /pgvigil/"
-PGVIGIL_DEMO_URL="$G/pgvigil/" PGVIGIL_CLICKTHROUGH_OUT="$WORK/w1" bash scripts/proof-clickthrough.sh > "$WORK/w1.log" 2>&1 && ok "W1 the walk under /pgvigil/: PASS" || { bad "W1 the walk under /pgvigil/"; tail -25 "$WORK/w1.log" | cut -c1-240 | sed 's/^/     /'; }
-grep -E '^(ok|FAIL|NOT)' "$WORK/w1.log" | tail -8 | sed 's/^/     /'
+PGVIGIL_DEMO_URL="$G/pgvigil/" PGVIGIL_CLICKTHROUGH_OUT="$KEEP/w1" bash scripts/proof-clickthrough.sh > "$KEEP/w1.log" 2>&1 && ok "W1 the walk under /pgvigil/: PASS" || bad "W1 the walk under /pgvigil/: $(grep '^click-through: \|^FAIL: ' "$KEEP/w1.log" | tail -1 | cut -c1-200)"
+walked w1
 
 echo "== W2: the same walk at the root (its own seeded demo, no base)"
-PGVIGIL_CLICKTHROUGH_OUT="$WORK/w2" bash scripts/proof-clickthrough.sh > "$WORK/w2.log" 2>&1 && ok "W2 the walk at the root: PASS" || { bad "W2 the walk at the root"; tail -25 "$WORK/w2.log" | cut -c1-240 | sed 's/^/     /'; }
-grep -E '^(ok|FAIL|NOT)' "$WORK/w2.log" | tail -8 | sed 's/^/     /'
+PGVIGIL_CLICKTHROUGH_OUT="$KEEP/w2" bash scripts/proof-clickthrough.sh > "$KEEP/w2.log" 2>&1 && ok "W2 the walk at the root: PASS" || bad "W2 the walk at the root: $(grep '^click-through: \|^FAIL: ' "$KEEP/w2.log" | tail -1 | cut -c1-200)"
+walked w2
+
+echo "== the walks' NEW rows (kept in $KEEP: w1/ and w2/ each with clickthrough.tsv, grade.txt and contact.html)"
+for w in w1 w2; do
+  echo "   $w: $(newrows "$KEEP/$w" | wc -l) distinct NEW row(s); by kind, scope and page:"
+  { newrows "$KEEP/$w" | awk -F'\t' '{print $4 " | " $1 " " $2}' | sort | uniq -c | sort -rn | head -30 | sed 's/^/     /'; } || true
+done
+LC_ALL=C comm -23 <(newrows "$KEEP/w1") <(newrows "$KEEP/w2") > "$KEEP/new-under-base-only.tsv" || true
+echo "   NEW under /pgvigil/ and not at the root (the base path's own): $(wc -l < "$KEEP/new-under-base-only.tsv") row(s)"
+{ head -60 "$KEEP/new-under-base-only.tsv" | tr '\t' '|' | cut -c1-240 | sed 's/^/     /'; } || true
 echo "proof-basepath: $VERDICT"
 [ "$VERDICT" = PASS ]
