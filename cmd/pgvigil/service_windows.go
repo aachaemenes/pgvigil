@@ -1027,3 +1027,6 @@ func installedAccount() (string, bool) {
 	}
 	return inst.User, true
 }
+
+// unitAccount: Windows names its service's account through installedAccount.
+func unitAccount() string { return "" }

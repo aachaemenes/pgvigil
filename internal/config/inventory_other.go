@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"syscall"
 )
 
@@ -87,3 +89,43 @@ func SealDPAPIAt(string, string) error {
 // OwnLikeFolder gives path its folder's owner and the installer's mode: 0640 where the folder's group reads, else
 // 0600; a folder 07x0 (ownedLikeParent).
 func OwnLikeFolder(path string) error { return ownedLikeParent(path) }
+
+// accountIDs is an account's uid and gid (the system's account list; no cgo).
+func accountIDs(account string) (int, int, error) {
+	u, err := user.Lookup(account)
+	if err != nil {
+		return 0, 0, fmt.Errorf("the account %s: %w", account, err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return 0, 0, err
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return 0, 0, err
+	}
+	return uid, gid, nil
+}
+
+func knownAccount(account string) error { _, _, err := accountIDs(account); return err }
+
+// prepareDirAs: the folder 0700, owned by the account (root changes the owner; the account itself needs not).
+func prepareDirAs(dir, account string) error {
+	uid, gid, err := accountIDs(account)
+	if err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	return os.Lchown(dir, uid, gid)
+}
+
+// ownFileAs: the file the account's own, its mode kept (0600).
+func ownFileAs(path, account string) error {
+	uid, gid, err := accountIDs(account)
+	if err != nil {
+		return err
+	}
+	return os.Lchown(path, uid, gid)
+}

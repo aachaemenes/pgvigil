@@ -109,6 +109,8 @@ func run(args []string) int {
 		err = runReport(ctx, args[1:])
 	case "config":
 		err = runConfig(args[1:])
+	case "instance":
+		err = runInstance(ctx, args[1:])
 	case "install":
 		err = runInstall(log, args[1:])
 	case "uninstall":
@@ -188,7 +190,7 @@ func runMSSQLXE(args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|check|secret|roles|serve|user|cert|demo|purge|export|tag|report|config|install|uninstall|mcp|mssql-xe|mssql-agent-alerts|import|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|check|secret|roles|serve|user|cert|demo|purge|export|tag|report|config|instance|install|uninstall|mcp|mssql-xe|mssql-agent-alerts|import|version> [-config file] [-once collection] [-instance name]")
 	fmt.Fprintln(os.Stderr, "       "+dbadash.ImportUsage)
 }
 

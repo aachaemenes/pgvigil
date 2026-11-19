@@ -57,3 +57,6 @@ func replaceFile(tmp, dst string) error { return os.Rename(tmp, dst) }
 
 // installedAccount: no wired service manager here.
 func installedAccount() (string, bool) { return "", false }
+
+// unitAccount: no wired service manager here, so no service account.
+func unitAccount() string { return "" }

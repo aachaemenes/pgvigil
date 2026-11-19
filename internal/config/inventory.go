@@ -347,6 +347,42 @@ func WriteSecret(dir, name, value string) (string, error) {
 	return writeSecret(dir, name+"-"+hex.EncodeToString(rnd[:]), value)
 }
 
+// WriteSecretAs is WriteSecret for an account that is not this process's (RELNOTES L170: 'pgvigil instance add', run
+// by an administrator, writes the page's credential for the service's account): the folder's access and the file's
+// owner are that account's, so serve keeps reading every page credential. An account that does not exist is refused
+// before anything is written.
+func WriteSecretAs(dir, name, value, account string) (string, error) {
+	if !pageName.MatchString(name) {
+		return "", fmt.Errorf("not a valid name for a credential file: %q", name)
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", errors.New("nothing to store")
+	}
+	if err := knownAccount(account); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := prepareDirAs(dir, account); err != nil {
+		return "", fmt.Errorf("the credential folder's access for %s: %w", account, err)
+	}
+	var rnd [6]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return "", err
+	}
+	ref, err := writeSecret(dir, name+"-"+hex.EncodeToString(rnd[:]), value)
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimPrefix(strings.TrimPrefix(ref, "file:"), "dpapi:")
+	if err := ownFileAs(path, account); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("the credential file's owner %s: %w", account, err)
+	}
+	return ref, nil
+}
+
 // FileSecretDir is the folder 'pgvigil secret seal' writes a file instance's sealed connection string into: secrets/
 // beside the config file (apart from the page's instances/ and sources/).
 func FileSecretDir(configPath string) string { return besideConfig(configPath, "secrets") }

@@ -829,3 +829,12 @@ func processesOf(uid string, skipService bool) []string {
 
 // installedAccount: a Linux re-run names its account by -user as before (the unit's User=).
 func installedAccount() (string, bool) { return "", false }
+
+// unitAccount is the installed unit's User= ("" = no unit): the account the page's credentials belong to.
+func unitAccount() string {
+	o, found, err := installedUnit()
+	if err != nil || !found {
+		return ""
+	}
+	return o.User
+}

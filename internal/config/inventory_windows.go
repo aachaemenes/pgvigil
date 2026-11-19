@@ -4,6 +4,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,3 +92,30 @@ func ownedLikeParent(string) error { return nil }
 // OwnLikeFolder gives path its folder's owner and the installer's mode (ownedLikeParent); on Windows a new file
 // inherits its folder's access list, so nothing is done.
 func OwnLikeFolder(path string) error { return ownedLikeParent(path) }
+
+func knownAccount(account string) error {
+	if _, _, _, err := windows.LookupSID("", account); err != nil {
+		return fmt.Errorf("the account %s: %w", account, err)
+	}
+	return nil
+}
+
+// prepareDirAs (Windows): prepareDir's protected list with the named account's SID in place of this process's.
+func prepareDirAs(dir, account string) error {
+	sid, _, _, err := windows.LookupSID("", account)
+	if err != nil {
+		return fmt.Errorf("the account %s: %w", account, err)
+	}
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;" + sid.String() + ")")
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+}
+
+// ownFileAs (Windows): nothing - the file inherits the folder's list.
+func ownFileAs(string, string) error { return nil }
