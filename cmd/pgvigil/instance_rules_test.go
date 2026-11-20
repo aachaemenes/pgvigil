@@ -101,3 +101,14 @@ func TestOSAccountNotFromUSER(t *testing.T) {
 		t.Errorf("osAccount %q took $USER", a)
 	}
 }
+
+// TestOtherConfigRefusalWords: add's refusal of another -config where a service is installed says why and what to do
+// instead (the service's own -config, or a host without the service), and that nothing was read or written.
+func TestOtherConfigRefusalWords(t *testing.T) {
+	err := otherConfigRefusal("/home/alice/stage/pgvigil.yaml", "/etc/pgvigil/pgvigil.yaml")
+	for _, want := range []string{"is not the installed service's configuration", "beside the configuration the service reads", "-config /etc/pgvigil/pgvigil.yaml", "a host where no pgvigil service is installed", "nothing read, nothing written"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %v does not say %q", err, want)
+		}
+	}
+}

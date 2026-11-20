@@ -348,7 +348,7 @@ func runInstanceAdd(ctx context.Context, args []string, stdin io.Reader) error {
 		return &usageError{errors.New("-platform: " + why)}
 	}
 	if svcCfg, ok := installedConfigPath(); ok && !samePath(svcCfg, *path) {
-		return fmt.Errorf("-config %s is not the installed service's configuration (%s): a page credential goes beside the configuration the service reads - name that one", *path, svcCfg)
+		return otherConfigRefusal(*path, svcCfg)
 	}
 	cfg, err := loadConfigAt(*path, false)
 	if err != nil {
@@ -547,4 +547,10 @@ func splitTags(tags []string) []string {
 		out = append(out, strings.Fields(t)...)
 	}
 	return out
+}
+
+// otherConfigRefusal is add's refusal of a -config that is not the installed service's: why (the credential goes beside
+// the configuration the service reads, and the row into that one's repository) and what to do instead.
+func otherConfigRefusal(given, svcCfg string) error {
+	return fmt.Errorf("-config %s is not the installed service's configuration (%s): a page instance's credential goes beside the configuration the service reads and its row into that configuration's repository, so add takes that one alone - run it again with -config %s, or, for another configuration, on a host where no pgvigil service is installed (nothing read, nothing written)", given, svcCfg, svcCfg)
 }
