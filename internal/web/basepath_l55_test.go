@@ -85,3 +85,41 @@ func TestCookiePathUnderBaseL55(t *testing.T) {
 		t.Errorf("under the base the cookie's Path is %q, want /pgvigil/", c.Path)
 	}
 }
+
+// TestUnderBaseRedirectsL55: the mux's own redirects under the base stay under it - '/pgvigil/api' to '/pgvigil/api/',
+// '/pgvigil//api/health' to '/pgvigil/api/health', and an escaped slash's answer never leaves '/pgvigil/'; outside the
+// base, through Secure, the 404 and the bare base's 301 carry the security headers; the shell's own links are relative
+// (a root link would break every base).
+func TestUnderBaseRedirectsL55(t *testing.T) {
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	h := s.Secure(UnderBase("/pgvigil", s.Handler(), s.log))
+	for _, c := range []struct{ path, want string }{
+		{"/pgvigil/api", "/pgvigil/api/"},
+		{"/pgvigil//api/health", "/pgvigil/api/health"},
+		{"/pgvigil%2Fapi/health", ""},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", c.path, nil))
+		loc := rec.Header().Get("Location")
+		switch {
+		case c.want != "" && loc != c.want:
+			t.Errorf("%s: %d to %q, want the redirect to %q", c.path, rec.Code, loc, c.want)
+		case loc != "" && !strings.HasPrefix(loc, "/pgvigil/"):
+			t.Errorf("%s: %d to %q - a redirect outside the base", c.path, rec.Code, loc)
+		}
+	}
+	for _, p := range []string{"/other", "/pgvigil"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
+		if rec.Header().Get("X-Frame-Options") != "DENY" || rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s (%d): no security headers outside the base: %v", p, rec.Code, rec.Header())
+		}
+	}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	for _, root := range []string{`href="/`, `src="/`} {
+		if strings.Contains(strings.ReplaceAll(rec.Body.String(), root+"/", ""), root) {
+			t.Errorf("the shell holds a root link %s...: under a base it would leave the base", root)
+		}
+	}
+}

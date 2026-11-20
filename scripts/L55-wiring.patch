@@ -1,3 +1,10 @@
+L55's UI wiring (RELNOTES L55). AT THE JOIN, apply this UI part LAST and BY ITS RULE, not by 'git apply': branches in
+flight change web/src/api.ts and its importers (rel-csrcnone: get()'s signature and the './api' imports of mssql_xe.ts,
+reports.ts, mssql_querystore.ts; rel-sqltb-s3-qsfresh and rel-sqltb-s3-d426: mssql_querystore.ts with a new absolute
+plan.sqlplan fetch; tmp-h2jg4: api.ts, mssql_xe.ts, reports.ts, stmt_filter.ts), so hunks reject. The rule: every quoted
+'/api/...' read or link in web/src becomes apiURL('...') with './api''s import, then TestNoAbsoluteAPIPathsL55 (this
+patch's own row) reads every file. git apply skips this text before the first diff.
+
 diff --git i/internal/web/apipaths_l55_test.go w/internal/web/apipaths_l55_test.go
 new file mode 100644
 index 000000000..81b21d167
@@ -22,7 +29,7 @@ index 000000000..81b21d167
 +	if err != nil || len(files) == 0 {
 +		t.Fatalf("web/src: %v (%d files)", err, len(files))
 +	}
-+	abs := regexp.MustCompile("['\"`]/api/")
++	abs := regexp.MustCompile("['\"`]/(api/|api['\"`]|livez|readyz|metrics)|origin\\}/api/|new URL\\(['\"`]/?api/")
 +	for _, f := range files {
 +		b, err := os.ReadFile(f)
 +		if err != nil {

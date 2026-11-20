@@ -63,6 +63,11 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	if *open && !*serve {
 		return errors.New("demo: -open needs -serve (there is no page to open without it)")
 	}
+	// the base path judged before the seed (minutes of work a bad flag would waste)
+	base, err := serveBasePath(*basePath, &config.Config{})
+	if err != nil {
+		return err
+	}
 
 	repoDSN := ""
 	switch {
@@ -139,18 +144,14 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer srv.Close()
-	base, err := serveBasePath(*basePath, &config.Config{})
-	if err != nil {
-		return err
-	}
-	hs := &http.Server{Handler: web.UnderBase(base, srv.Handler(), log), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second,
+	hs := &http.Server{Handler: srv.Secure(web.UnderBase(base, srv.Handler(), log)), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second,
 		// net/http's own lines (a TLS handshake error) at Warn on this logger, so log_level governs them
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
 	log.Info("pgvigil demo serving", "url", underBase(fmt.Sprintf("http://%s/", ln.Addr()), base), "login", false)
 	if *open {
-		openWindow(log, browseURL("http", ln.Addr()))
+		openWindow(log, underBase(browseURL("http", ln.Addr()), base))
 	}
 
 	tick := time.NewTicker(time.Minute)

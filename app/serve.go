@@ -65,8 +65,9 @@ func Probe(ctx context.Context, client *http.Client, base string) bool {
 
 func loopbackHost(h string) bool { return h == "127.0.0.1" || h == "localhost" || h == "::1" }
 
-// servedURL finds the URL in serve's start line: msg="pgvigil serve started" url=http://127.0.0.1:N/
-var servedURL = regexp.MustCompile(`msg="pgvigil serve started" url=(http://127\.0\.0\.1:[0-9]+/)`)
+// servedURL finds the URL in serve's start line, its base path too: msg="pgvigil serve started" url=http://127.0.0.1:N/
+// or url=http://127.0.0.1:N/pgvigil/ (web.base_path's segments)
+var servedURL = regexp.MustCompile(`msg="pgvigil serve started" url=(http://127\.0\.0\.1:[0-9]+/(?:[A-Za-z0-9._~-]+/)*)`)
 
 // ServeArgs are the arguments of the serve this app starts: loopback, a free port, the UI login on
 // unless the user chose -no-login (which serve allows on loopback only).

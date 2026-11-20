@@ -18,12 +18,12 @@ func TestWebBasePathL55(t *testing.T) {
 	if err := c.Validate(); err != nil || c.Web.BasePath != "/pgvigil" {
 		t.Fatalf("web.base_path /pgvigil: %q, %v", c.Web.BasePath, err)
 	}
-	for _, ok := range []string{"", "/pgvigil", "/tools/pgvigil", "/a-b_c.d"} {
+	for _, ok := range []string{"", "/pgvigil", "/tools/pgvigil", "/a-b_c.d", "/a~b"} {
 		if err := ValidBasePath(ok); err != nil {
 			t.Errorf("%q refused: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"pgvigil", "/pgvigil/", "/", "/a/../b", "/a/./b", "/a?x=1", "/a#f", "/a//b", "/a b", `/a\b`} {
+	for _, bad := range []string{"pgvigil", "/pgvigil/", "/", "/a/../b", "/a/./b", "/a?x=1", "/a#f", "/a//b", "/a b", `/a\b`, "/pgv\u00edgil", "/db%tools", "/a;b"} {
 		err := ValidBasePath(bad)
 		if err == nil {
 			t.Errorf("%q taken", bad)

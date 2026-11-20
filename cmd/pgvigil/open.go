@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -121,4 +122,17 @@ func underBase(u, base string) string {
 		return u
 	}
 	return strings.TrimSuffix(u, "/") + base + "/"
+}
+
+// alertsBaseWarning: the words when alerts_base_url's path is not the base path the UI is served under (every alert's
+// link would land outside it), or "" - no base, no address, or the address carries the base.
+func alertsBaseWarning(alertsBase, base string) string {
+	if alertsBase == "" || base == "" {
+		return ""
+	}
+	u, err := url.Parse(alertsBase)
+	if err != nil || strings.TrimSuffix(u.Path, "/") == base {
+		return ""
+	}
+	return "alerts_base_url does not carry the UI's base path: each alert's link would open outside the UI - give it the address with the prefix (docs/configuration.md, The UI under a sub-path)"
 }

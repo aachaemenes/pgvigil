@@ -582,6 +582,10 @@ func LoopbackHosts(port string) []string {
 	return []string{"localhost:" + port, "127.0.0.1:" + port, "[::1]:" + port, "localhost", "127.0.0.1", "[::1]"}
 }
 
+// Secure is secure for a handler around Handler() - serve's UnderBase, so its 404 outside the base and its redirect of
+// the bare base are answered only to a Host the server takes, with the same headers.
+func (s *Server) Secure(h http.Handler) http.Handler { return s.secure(h) }
+
 // secure refuses a Host the server does not answer to (a DNS-rebinding page would send its
 // own name) and adds the headers an admin UI wants: no framing, no sniffing, same origin, HSTS under TLS.
 func (s *Server) secure(h http.Handler) http.Handler {

@@ -246,6 +246,12 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if why := srv.StoreReportsOff(ctx); why != "" {
 		log.Warn("custom reports on the store are off", "reason", why)
 	}
+	// the alerts' links: alerts_base_url without the base path lands every link outside the UI (one WARN)
+	if ast, aerr := alerts.LoadFile(*path); aerr == nil {
+		if w := alertsBaseWarning(ast.BaseURL(), base); w != "" {
+			log.Warn(w, "alerts_base_url", ast.BaseURL(), "base_path", base)
+		}
+	}
 	// task 403b K5: the Slack door (doors.slack_actions and slack_apps: in the file), off by default. serve reads only
 	// the door's part of the file and its apps' signing secrets (never the channels, whose tokens are not on serve);
 	// with the switch on, a fault there stops serve with its reason, and the door needs the UI login's users
@@ -258,7 +264,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 			return errors.New("doors.slack_actions needs the UI login (a click writes as the pgvigil user its Slack user maps to): serve without -no-login, or turn the door off")
 		}
 		web.SetSlackDoor(door)
-		log.Info("the Slack door is on", "path", alerts.SlackPath, "apps", strings.Join(door.AppIDs(), ","))
+		log.Info("the Slack door is on", "path", base+alerts.SlackPath, "apps", strings.Join(door.AppIDs(), ","))
 	}
 	pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}, Hypo: map[string]bool{}, DefaultQueryText: cfg.QueryText}
 	for _, in := range cfg.Instances {
@@ -321,7 +327,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	go srv.RunReportMail(ctx)
 
 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
-	hs := &http.Server{Handler: web.UnderBase(base, srv.Handler(), log), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg,
+	hs := &http.Server{Handler: srv.Secure(web.UnderBase(base, srv.Handler(), log)), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg,
 		// net/http's own lines (a TLS handshake error) at Warn on this logger, so log_level governs them
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
 	errc := make(chan error, 1)
