@@ -47,7 +47,7 @@ Resource Graph leaves out a subscription the identity cannot read without saying
 
 What a read could not see is kept as the source's notes (Admin > Instances, 'not seen'), one per region where it names one, each with the time it was first seen. A read replaces the notes of the regions it asked (a region read clean loses its note) and its notes about the source as a whole; a region it did not ask keeps its note, so the hourly read still shows a sweep's refused or silent regions.
 
-One read of a source runs at a time, whether the hourly loop's or a page request's. A request that finds a read running answers "a read of this source is running". A read's start is taken on the repository's clock, and a read that started before the last applied one is never applied over it.
+One read of a source runs at a time, whether the hourly loop's or a page request's. A request that finds a read running - or the step that adds what a cloud source found by itself - answers "a read of this source, or its step adding the servers it found, is running". A read's start is taken on the repository's clock, and a read that started before the last applied one is never applied over it.
 
 A read done while the page waits ("Add the source", "Read now") has 50 seconds; the hourly read has 3 minutes. On a large estate the add's read may not finish in time; the hourly read follows by itself. A read cut by its limit fails and marks nothing gone.
 
@@ -117,30 +117,44 @@ doors:
   discovery_auto_add: on   # a cloud source of Admin > Instances may add the servers it finds by itself
 ```
 
-and the source's own switch, **Add the servers this source finds by itself**, in the source's Edit (shown off, with
-the door's words, while the door is shut; the store refuses it on then, and on a list, CMS or DBA Dash source). A
-change of the switch is in the changes list as the source's edit is. Turning it off clears what it noted.
+and the source's own switch, **Add the servers this source finds by itself**, in the source's Edit. While the door is
+shut the switch cannot be turned on (it is shown off, with the door's words; the store refuses it then), and a list,
+CMS, DBA Dash, pg_service or pg_csv source never has it. A switch that is on can always be turned off, door or not;
+with the door shut a switch left on adds nothing, and its row says so. A change of the switch is in the changes list
+as the source's edit is (only a change: a save that leaves it as it was does not name it). Turning it off clears what
+it noted.
 
-After each read of such a source (the hourly read, or Read now, which does not wait for it), every proposed server
-not gone, oldest first, gets the approve's **Test** (audited as a person's Test is) and then the approve itself, as the
-user `auto:<source>`, with the source's login, exactly as a click with nothing typed and nothing ticked:
+After each read of such a source (the hourly read, or Read now; neither waits for it), every proposed server not
+gone is taken through the approve as the user `auto:<source>`, with the source's login and nothing ticked, those
+whose Test never failed first, oldest first:
 
-- **Needs a person.** Whatever the approve asks a person to confirm or refuses is never done by itself: a login that is
-  the server's master user, a server that pauses when idle, a server already an instance, a name already taken, an
-  Entra-only server without an Entra login. The server stays a proposal, its note saying *not added by itself: needs a
-  person: <the approve's words>*; approve it by hand, with its tick.
-- **The Test failed.** The server stays a proposal with the Test's words and is tried again at the next read.
-- **25 a read.** One read adds at most 25 servers; the rest are noted *waits for the next read*, so a subscription named
-  by mistake does not add hundreds of servers in one hour.
+1. **The approve is tried first and undone.** Whatever it would refuse or ask a person to tick - a login that is the
+   server's master user, a server that pauses when idle, a server already an instance, a name already taken, an
+   Entra-only server without an Entra login - stays a proposal, its note saying *not added by itself: needs a person:
+   <the approve's words>*, and **nothing connects to that server**: a pausing server is not woken, a master user never
+   signs in. Approve it by hand, with its tick. A source that holds no login is left to a person the same way (an
+   approve with nothing typed would sign in as serve's own operating-system account).
+2. **The Test** (audited as a person's Test is). A failed one leaves the server a proposal with the Test's words; it
+   is tried again an hour later, then two, four, eight, sixteen, then once a day while it keeps failing.
+3. **The approve.** The instance's name is the page's own (the proposal's name without its role, made safe, 63
+   characters at most), with a short hash of the server added when that name was cut or is taken - so two databases
+   of one Azure SQL server, or two members of one cluster, are two instances.
+
+The source's switch and the proposal are read again before each Test and each approve: a switch turned off stops the
+step, and a server a person decided meanwhile is left as decided.
+
+- **The bounds.** One step adds at most 25 servers and runs at most 50 Tests, inside 9 minutes; the rest are noted
+  *waits for the next read*, so a subscription named by mistake does not add hundreds of servers in one hour.
 - **The changes list** gets one row per step beside the read's own: *added n by itself; needs a person n; the test
-  failed n; waits for the next read n*, and each added server's approve row names `auto:<source>`.
+  failed n; waits for the next read n; a read failed n*, and each added server's approve row names `auto:<source>`. A
+  step stopped by its switch is a refused row with its counts.
+- **Read now while a step runs** answers "a read of this source, or its step adding the servers it found, is
+  running": one of them at a time.
 - Nothing is removed by itself: a server gone from the account is marked gone, as before.
-
-Not proven: a real account's servers added by themselves (the store rows use the test store as the servers; a cloud
-lab's read is a later lab's leg).
 
 ## Not proven
 
+- A real account's servers added by themselves: the store rows use the test store as the servers; a cloud lab's read is a later lab's leg.
 - GovCloud, the China regions, Azure Government and Azure China: no lab.
 - A live mapping of Azure and GCP servers: the labs hold none (a new server is a billed resource). The unit tests prove the mapping on recorded answers.
 - Aurora readers, Multi-AZ DB clusters, read replicas and read pools live: the AWS lab's cluster has one instance.

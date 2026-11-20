@@ -1470,7 +1470,7 @@ func (s *Server) readList(ctx context.Context, src *sourceRow) ([]config.Proposa
 }
 
 // errReadRunning: another read of the source holds its claim (a request's or the hourly loop's).
-var errReadRunning = errors.New("a read of this source is running: try again when it ends")
+var errReadRunning = errors.New("a read of this source, or its step adding the servers it found, is running: try again when it ends")
 
 // syncSource reads one source within limit and hands the list to import_admin_proposals (a failed read is recorded,
 // nothing marked gone; a proposal under an unseen prefix is kept as it is). token: the add's access token. by: who
@@ -1575,14 +1575,9 @@ func (s *Server) syncSource(ctx context.Context, name string, limit time.Duratio
 		return res, fmt.Errorf("the source %s could not be read: %w", name, rerr)
 	}
 	// L237: a cloud source with its switch on (and the door open) adds what this read proposed, under a claim of its
-	// own; a page's read does not wait for it (a Test is 10 s a server)
-	if autoAddOn(src) {
-		if due {
-			res["auto"] = s.autoAdd(ctx, src)
-		} else {
-			go s.autoAdd(context.WithoutCancel(ctx), src)
-			res["auto"] = "adding the servers it found by itself: the changes list says what was added"
-		}
+	// own, detached: neither a page's read nor the hourly loop waits for it
+	if w := s.startAutoAdd(ctx, src, due); w != nil {
+		res["auto"] = w
 	}
 	return res, nil
 }
@@ -1801,7 +1796,7 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	d := s.decideProposal(r.Context(), user, clientIP(r), in)
+	d := s.decideProposal(r.Context(), user, clientIP(r), in, false)
 	switch {
 	case d.replyErr != nil:
 		s.reply(w, r, nil, d.replyErr)
@@ -1828,8 +1823,10 @@ type proposalOut struct {
 }
 
 // decideProposal is the body of a proposal's approve, ignore or test (the page's ProposalsAdminWrite): user and client
-// are who asks; in is the page's fields.
-func (s *Server) decideProposal(ctx context.Context, user, client string, in map[string]any) proposalOut {
+// are who asks; in is the page's fields. auto is a cloud source's auto step (autoadd.go): it leaves to a person a
+// proposal whose login has no name (autoLoginHeld), and its Test is preceded by the approve tried and rolled back
+// (trialDecision), so a server the approve would refuse or ask a tick for is never connected to.
+func (s *Server) decideProposal(ctx context.Context, user, client string, in map[string]any, auto bool) proposalOut {
 	a := s.instAdmin()
 	op, id := str(in, "op"), str(in, "proposal_id")
 	pay := map[string]any{"op": op, "ui_user": user, "client": client, "proposal_id": id, "file_names": a.fileNames()}
@@ -1838,10 +1835,10 @@ func (s *Server) decideProposal(ctx context.Context, user, client string, in map
 	if op == "approve" || op == "test" {
 		var src, server, engine, host string
 		var port *int
-		var db, login, platform *string
+		var db, login, platform, display *string
 		var ptags []string
-		err := s.pool.QueryRow(ctx, `SELECT source, server, engine, host, port, dbname, login, platform, tags FROM pgvigil.admin_proposals WHERE proposal_id::text = $1`, id).
-			Scan(&src, &server, &engine, &host, &port, &db, &login, &platform, &ptags)
+		err := s.pool.QueryRow(ctx, `SELECT source, server, engine, host, port, dbname, login, platform, tags, display_name FROM pgvigil.admin_proposals WHERE proposal_id::text = $1`, id).
+			Scan(&src, &server, &engine, &host, &port, &db, &login, &platform, &ptags, &display)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return proposalOut{code: http.StatusConflict, err: fmt.Errorf("no proposal %s", id)}
 		} else if err != nil {
@@ -1853,7 +1850,13 @@ func (s *Server) decideProposal(ctx context.Context, user, client string, in map
 		}
 		name := str(in, "name")
 		if name == "" {
-			name = nameFor(server)
+			// the page's own rule (it prefills the same), a short hash of the server added when that name was cut or is
+			// taken: two databases of one Azure SQL server, or two cluster members, never meet on one name
+			base, cut := proposalName(orZero(display), server)
+			name = uniqueName(base, cut, server, func(n string) bool {
+				have, _ := s.pageInstance(ctx, n)
+				return have != nil || slicesContains(a.fileNames(), n)
+			})
 		}
 		pay["name"] = name
 		var cred sourceCred
@@ -1883,6 +1886,9 @@ func (s *Server) decideProposal(ctx context.Context, user, client string, in map
 			if aerr != nil {
 				return proposalOut{code: http.StatusConflict, err: aerr}
 			}
+			if why := autoLoginHeld(auth, l); auto && why != "" {
+				return proposalOut{code: http.StatusConflict, err: errors.New(why)}
+			}
 			cred.Password = pw
 			pay["auth"] = auth
 			pay["login_used"] = l
@@ -1898,6 +1904,22 @@ func (s *Server) decideProposal(ctx context.Context, user, client string, in map
 			}
 		}
 		if op == "test" {
+			if auto {
+				// the approve tried first and rolled back: what it would refuse or ask a person to tick is never
+				// connected to (a pausing server is not woken, a master user never signs in)
+				trial := map[string]any{}
+				for k, v := range pay {
+					trial[k] = v
+				}
+				trial["op"], trial["dsn_ref"] = "approve", "file:/not-written"
+				why, err := s.trialDecision(ctx, trial)
+				if err != nil {
+					return proposalOut{replyErr: err}
+				}
+				if why != "" {
+					return proposalOut{code: http.StatusConflict, err: errors.New(why)}
+				}
+			}
 			// 204's connection test before the instance is made: nothing written but the audit row
 			okc, detail := testConnection(ctx, engine, dsn)
 			ans, _, err := s.callImport(ctx, "import_admin_proposal_test", map[string]any{"ui_user": user, "client": client, "proposal_id": id, "ok": okc, "detail": detail})

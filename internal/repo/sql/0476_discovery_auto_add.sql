@@ -3,12 +3,14 @@
 --
 -- Two keys, both off: pgvigil.yaml's doors.discovery_auto_add (serve passes it as auto_add_door - a migration cannot
 -- read the file) and each cloud source's own auto_add, ticked by an admin in the source's form and audited as the
--- source's add or edit is. Serve's auto step after a read (internal/web/autoadd.go) gives each proposed server of such
--- a source the page's Test and then the page's own approve as auto:<source>, never with a tick: what import_admin_decision
--- refuses (the master user as the login, a server that pauses when idle, a server already an instance, a taken name,
--- an Entra-only server), a failed Test and the servers past the 25 of one read stay proposals, each with its words in
--- auto_note; import_admin_auto_add keeps those notes and writes one 'source read' audit row that counts them. A gone
--- server is never removed by itself (task 205's rule, unchanged).
+-- source's add or edit is. Serve's auto step after a read (internal/web/autoadd.go) takes each proposed server of such
+-- a source through the page's own approve as auto:<source>, never with a tick: the approve tried and rolled back first
+-- (what import_admin_decision refuses - the master user as the login, a server that pauses when idle, a server already
+-- an instance, a taken name, an Entra-only server - is never connected to), then the page's Test, then the approve.
+-- Those, a failed Test (tried again an hour later, doubling to a day: auto_fails, auto_tested_at) and the servers past
+-- one read's bounds stay proposals, each with its words in auto_note; import_admin_auto_add keeps those notes and the
+-- Tests' counts and writes one 'source read' audit row that counts them - and refuses, clearing the notes, when the
+-- source no longer adds by itself. A gone server is never removed by itself (task 205's rule, unchanged).
 --
 -- Above 0300, so this file makes its own objects (the join-file rule) - two columns and import_admin_auto_add - and
 -- RE-MAKES import_admin_source whole from its NEWEST text (0123_discovery.sql) with the switch: a j17 named check (a
@@ -17,9 +19,12 @@
 
 ALTER TABLE pgvigil.admin_sources ADD COLUMN IF NOT EXISTS auto_add boolean NOT NULL DEFAULT false;
 ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS auto_note text;
+ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS auto_fails int NOT NULL DEFAULT 0;
+ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS auto_tested_at timestamptz;
 
--- import_admin_source as 0123's, with auto_add on add and edit: on only with the door open and on a cloud source (in
--- words otherwise); off clears the source's auto notes; the audit's detail names a change of it.
+-- import_admin_source as 0123's, with auto_add on add and edit: on only on a cloud source and, when it is turned on,
+-- with the door open (in words otherwise; turning it off needs no door); off clears the source's auto notes and its
+-- Tests' counts; the audit's detail names the switch only when it changes.
 CREATE OR REPLACE FUNCTION pgvigil.import_admin_source(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
@@ -36,11 +41,13 @@ DECLARE
   -- refusal below - l237-1b's red)
   v_auto boolean := CASE WHEN jsonb_typeof(p_payload->'auto_add') = 'boolean' THEN (p_payload->>'auto_add')::boolean END;
   v_door boolean := coalesce(jsonb_typeof(p_payload->'auto_add_door') = 'boolean' AND (p_payload->>'auto_add_door')::boolean, false);
+  v_was  boolean;   -- the switch as the row holds it (null: no such source yet)
 BEGIN
   IF v_user IS NULL THEN
     RAISE EXCEPTION 'import_admin_source: no ui_user' USING ERRCODE = '22023';
   END IF;
   v_have := EXISTS (SELECT 1 FROM pgvigil.admin_sources WHERE name = v_name);
+  v_was := (SELECT auto_add FROM pgvigil.admin_sources WHERE name = v_name);
   IF v_op IS NULL OR v_op NOT IN ('add', 'remove', 'enable', 'disable', 'edit') THEN
     v_why := 'op must be add, remove, enable, disable or edit';
   ELSIF v_name !~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$' THEN
@@ -77,11 +84,11 @@ BEGIN
         AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p_payload->'tag_keys') k
                      WHERE k !~ '^[a-z0-9_.-]{1,40}$' OR k IN ('cloud', 'region', 'account', 'subscription', 'resource-group', 'project', 'cluster', 'role', 'source-instance', 'source-cluster', 'pool', 'tag')) THEN
     v_why := 'a tag key is 1 to 40 lower-case letters, digits, _ . or -, and not one of pgvigil''s own (cloud, region, account, subscription, resource-group, project, cluster, role, source-instance, source-cluster, pool)';
-  ELSIF v_op IN ('add', 'edit') AND v_auto IS TRUE AND NOT v_door THEN
-    v_why := 'off on this install: doors.discovery_auto_add in pgvigil.yaml lets a cloud source add the servers it finds by itself';
   ELSIF v_op IN ('add', 'edit') AND v_auto IS TRUE
         AND coalesce(CASE WHEN v_op = 'add' THEN v_kind END, (SELECT kind FROM pgvigil.admin_sources WHERE name = v_name)) NOT IN ('aws', 'azure', 'gcp') THEN
     v_why := 'only a cloud source (aws, azure or gcp) adds the servers it finds by itself';
+  ELSIF v_op IN ('add', 'edit') AND v_auto IS TRUE AND v_was IS NOT TRUE AND NOT v_door THEN
+    v_why := 'off on this install: doors.discovery_auto_add in pgvigil.yaml lets a cloud source add the servers it finds by itself';
   END IF;
   IF v_why IS NOT NULL THEN
     PERFORM pgvigil.admin_log(v_user, v_cli, 'source ' || coalesce(v_op, '?'), v_name, 'refused', v_why);
@@ -114,7 +121,8 @@ BEGIN
            auto_add = coalesce(v_auto, auto_add)
      WHERE name = v_name;
     IF v_auto IS FALSE THEN
-      UPDATE pgvigil.admin_proposals SET auto_note = NULL WHERE source = v_name AND auto_note IS NOT NULL;
+      UPDATE pgvigil.admin_proposals SET auto_note = NULL, auto_fails = 0, auto_tested_at = NULL
+       WHERE source = v_name AND (auto_note IS NOT NULL OR auto_fails <> 0 OR auto_tested_at IS NOT NULL);
     END IF;
     UPDATE pgvigil.admin_sources SET last_notes = pgvigil.admin_notes_text(note_items) WHERE name = v_name;
   ELSE
@@ -124,27 +132,57 @@ BEGIN
     CASE WHEN v_op = 'add' THEN format('%s from %s', v_kind, CASE WHEN v_kind IN ('cms', 'aws', 'azure', 'gcp') THEN 'its settings file' ELSE p_payload->>'ref' END)
          WHEN v_op = 'edit' THEN format('regions %s, tag keys %s%s', coalesce(p_payload->'regions', '"unchanged"'), coalesce(p_payload->'tag_keys', '"unchanged"'),
                                         CASE WHEN (p_payload->>'swept')::boolean IS TRUE THEN ' (a sweep)' ELSE '' END) END
-    || CASE WHEN v_auto IS TRUE THEN '; adds what it finds by itself' WHEN v_auto IS FALSE AND v_op = 'edit' THEN '; no longer adds what it finds' ELSE '' END);
+    || CASE WHEN v_auto IS NOT DISTINCT FROM coalesce(v_was, false) OR v_auto IS NULL THEN ''
+            WHEN v_auto THEN '; adds what it finds by itself' ELSE '; no longer adds what it finds' END);
   RETURN jsonb_build_object('outcome', 'done', 'detail', v_op || ' ' || v_name);
 END $$;
 
--- import_admin_auto_add: the end of one auto step of a source (payload: source, notes [{proposal_id, note}], added,
--- person, failed, waiting). The step's notes replace the source's last ones (a server added, or no longer held back,
--- has none); one 'source read' audit row as auto:<source>, beside the read's own.
+-- import_admin_auto_add: the end of one auto step of a source (payload: source, notes [{proposal_id, note}], tested
+-- [{proposal_id, ok}], added, person, failed, waiting, errors, stopped). The step's notes replace the source's last
+-- ones (a server added, or no longer held back, has none); a Test that failed counts one more in a row, one that passed
+-- clears the count; one 'source read' audit row as auto:<source>, beside the read's own. A source that no longer adds
+-- by itself (its switch off, or not a cloud source) keeps no note and no count: they are cleared, the audit row says
+-- so, and the answer is refused. Each count is digits.
 CREATE OR REPLACE FUNCTION pgvigil.import_admin_auto_add(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
-  v_src text := p_payload->>'source';
+  v_src  text := p_payload->>'source';
+  v_s    pgvigil.admin_sources%ROWTYPE;
+  v_k    text;
+  v_n    text;
+  v_cnt  text := '';
+  v_stop text := left(btrim(coalesce(p_payload->>'stopped', '')), 200);
 BEGIN
-  IF v_src IS NULL OR NOT EXISTS (SELECT 1 FROM pgvigil.admin_sources WHERE name = v_src) THEN
+  SELECT * INTO v_s FROM pgvigil.admin_sources WHERE name = v_src;
+  IF v_s.name IS NULL THEN
     RETURN jsonb_build_object('outcome', 'refused', 'detail', format('no source %s', coalesce(v_src, '(none)')));
+  END IF;
+  FOREACH v_k IN ARRAY ARRAY['added', 'person', 'failed', 'waiting', 'errors'] LOOP
+    v_n := coalesce(p_payload->>v_k, '0');
+    IF v_n !~ '^[0-9]{1,6}$' THEN
+      RETURN jsonb_build_object('outcome', 'refused', 'detail', format('%s is a count (digits), not %s', v_k, left(v_n, 40)));
+    END IF;
+  END LOOP;
+  v_cnt := format('added %s by itself; needs a person %s; the test failed %s; waits for the next read %s; a read failed %s',
+                  coalesce(p_payload->>'added', '0'), coalesce(p_payload->>'person', '0'), coalesce(p_payload->>'failed', '0'),
+                  coalesce(p_payload->>'waiting', '0'), coalesce(p_payload->>'errors', '0'))
+           || CASE WHEN v_stop <> '' THEN '; stopped: ' || v_stop ELSE '' END;
+  IF NOT v_s.auto_add OR v_s.kind NOT IN ('aws', 'azure', 'gcp') THEN
+    UPDATE pgvigil.admin_proposals SET auto_note = NULL, auto_fails = 0, auto_tested_at = NULL
+     WHERE source = v_src AND (auto_note IS NOT NULL OR auto_fails <> 0 OR auto_tested_at IS NOT NULL);
+    PERFORM pgvigil.admin_log('auto:' || v_src, NULL, 'source read', v_src, 'refused',
+      'the source no longer adds what it finds (its switch is off, or it is not a cloud source): its notes cleared; ' || v_cnt);
+    RETURN jsonb_build_object('outcome', 'refused', 'detail', format('%s no longer adds what it finds: its notes cleared', v_src));
   END IF;
   UPDATE pgvigil.admin_proposals SET auto_note = NULL WHERE source = v_src AND auto_note IS NOT NULL;
   UPDATE pgvigil.admin_proposals p SET auto_note = left(n->>'note', 2000)
     FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p_payload->'notes') = 'array' THEN p_payload->'notes' ELSE '[]' END) n
    WHERE p.source = v_src AND coalesce(n->>'proposal_id', '') ~ '^[0-9]{1,18}$' AND p.proposal_id = (n->>'proposal_id')::bigint;
-  PERFORM pgvigil.admin_log('auto:' || v_src, NULL, 'source read', v_src, 'done',
-    format('added %s by itself; needs a person %s; the test failed %s; waits for the next read %s',
-           coalesce(p_payload->>'added', '0'), coalesce(p_payload->>'person', '0'), coalesce(p_payload->>'failed', '0'), coalesce(p_payload->>'waiting', '0')));
+  UPDATE pgvigil.admin_proposals p
+     SET auto_fails = CASE WHEN (t->>'ok')::boolean IS TRUE THEN 0 ELSE p.auto_fails + 1 END, auto_tested_at = p_at
+    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p_payload->'tested') = 'array' THEN p_payload->'tested' ELSE '[]' END) t
+   WHERE p.source = v_src AND coalesce(t->>'proposal_id', '') ~ '^[0-9]{1,18}$' AND p.proposal_id = (t->>'proposal_id')::bigint
+     AND jsonb_typeof(t->'ok') = 'boolean';
+  PERFORM pgvigil.admin_log('auto:' || v_src, NULL, 'source read', v_src, 'done', v_cnt);
   RETURN jsonb_build_object('outcome', 'done', 'detail', format('auto step of %s recorded', v_src));
 END $$;

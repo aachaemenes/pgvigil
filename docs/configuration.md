@@ -228,7 +228,6 @@ turns them on, off by default on every install:
 doors:
   page_cloud_blocks: on          # let the instances of Admin > Instances carry an aws: or azure: block
   page_aws_profiles: [prod-read] # the AWS profiles such a block may name (empty = none: the host's default chain)
-  discovery_auto_add: on         # a cloud discovery source may add the servers it finds by itself (its own switch too)
 ```
 
 - **Off** (the default): every page block is kept in the repository but not used - the collector logs 'a page
@@ -262,6 +261,20 @@ doors:
 - A block set, changed or cleared restarts the instance's loops within the collector's next read of the list (15 s).
   Its Clear is its own control; an emptied fieldset clears nothing.
 - Not in this release: a `gcp:` block on a page instance (its credentials file is a path on the host).
+
+### A cloud discovery source that adds what it finds
+
+A cloud discovery source of Admin > Instances (aws, azure, gcp) may add the servers it finds without a click, through
+the approve a person would make and never past one of its ticks - only on this door, off by default, and the source's
+own switch ([Discovery](discovery.md#adding-what-a-source-finds-by-itself)):
+
+```yaml
+doors:
+  discovery_auto_add: on   # a cloud discovery source may add the servers it finds by itself (its own switch too)
+```
+
+Serve reads the door at its start; the store refuses the switch turned on without it. The servers it adds are read
+with the source's login, as an approve with nothing typed: give the source a least-privilege login first.
 
 ### Community tools and custom reports on a page instance
 
