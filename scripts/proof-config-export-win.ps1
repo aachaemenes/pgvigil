@@ -64,7 +64,8 @@ $dsn = "host=pg1.example user=mon password=$pwSecret dbname=postgres"
 $exportPw = 'Ex9!' + [Guid]::NewGuid().ToString('N')
 try {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    Set-Content -LiteralPath $cfg -Value "repository:`n  dsn: env:PGVIGIL_PROOF_UNSET`ninstances: []`n" -Encoding Ascii
+    # pg1 named as a PostgreSQL instance before the seal: 'secret seal' refuses a -name the configuration does not hold
+    Set-Content -LiteralPath $cfg -Value "repository:`n  dsn: env:PGVIGIL_PROOF_UNSET`ninstances:`n  - name: pg1`n    dsn: env:PGVIGIL_PROOF_PG1`n" -Encoding Ascii
 
     # S1
     $res = Invoke-Native { $dsn | & $Exe secret seal -name pg1 -config $cfg }
