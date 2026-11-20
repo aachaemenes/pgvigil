@@ -74,7 +74,7 @@ func aclReaders(dacl *windows.ACL, dir bool) []aclReader {
 			continue
 		}
 		flags := ace.Header.AceFlags
-		if flags&windows.INHERIT_ONLY_ACE != 0 && !(dir && flags&windows.OBJECT_INHERIT_ACE != 0) {
+		if flags&windows.INHERIT_ONLY_ACE != 0 && (!dir || flags&windows.OBJECT_INHERIT_ACE == 0) {
 			continue
 		}
 		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))

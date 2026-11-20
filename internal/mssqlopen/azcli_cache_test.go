@@ -4,6 +4,7 @@ package mssqlopen
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,7 +110,7 @@ func TestAzCliSignInFailure(t *testing.T) {
 	}
 	if mark == nil {
 		var si *SignInError
-		if ok := asSignIn(err, &si); ok {
+		if ok := errors.As(err, &si); ok {
 			mark = si
 		}
 	}

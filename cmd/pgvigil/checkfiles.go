@@ -245,7 +245,7 @@ func secretPaths(cfgPath string) (paths []secretPath, unlisted int, notDedicated
 		_ = filepath.WalkDir(top, func(p string, d fs.DirEntry, err error) error {
 			switch {
 			case err != nil:
-				if !(os.IsNotExist(err) && p == top) {
+				if !os.IsNotExist(err) || p != top {
 					unlisted++
 				}
 				return nil

@@ -84,6 +84,3 @@ func IsSignInFailure(err error) bool {
 	var s *SignInError
 	return errors.As(err, &s)
 }
-
-// asSignIn is errors.As for a SignInError.
-func asSignIn(err error, target **SignInError) bool { return errors.As(err, target) }

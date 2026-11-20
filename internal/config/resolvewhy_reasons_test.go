@@ -10,6 +10,9 @@ import (
 	"testing"
 )
 
+// windowsInvalidData is the message Windows gives ERROR_INVALID_DATA, word for word.
+const windowsInvalidData = "The data is invalid."
+
 // TestWhyEmptyWhiteSpace: a reference whose value is only white space resolves as before (Resolve unchanged) but
 // connects nowhere: WhyEmpty says so, naming the reference, never the value.
 func TestWhyEmptyWhiteSpace(t *testing.T) {
@@ -40,6 +43,8 @@ func TestDPAPIReasonsSorted(t *testing.T) {
 	old := dpapiOpen
 	defer func() { dpapiOpen = old }()
 	const secret = "hunter2-planted"
+	// Windows' own text for a blob sealed on another host (CryptUnprotectData's ERROR_INVALID_DATA), as it arrives
+	moved := errors.New(windowsInvalidData)
 	page := filepath.Join("C:", "ProgramData", "pgvigil", "instances", "win-pg-1a.dpapi")
 	sealed := filepath.Join("C:", "ProgramData", "pgvigil", "secrets", "pg1.dpapi")
 	for _, c := range []struct {
@@ -51,8 +56,8 @@ func TestDPAPIReasonsSorted(t *testing.T) {
 		{"unreadable", sealed, "", &fs.PathError{Op: "open", Path: sealed, Err: fs.ErrPermission}, []string{"cannot be read"}, []string{"did not open on this host"}},
 		{"zero bytes", sealed, "", os.ErrInvalid, []string{"is empty"}, []string{"did not open on this host"}},
 		{"off windows", sealed, "", ErrDPAPIOffWindows, []string{"opens on Windows only"}, []string{"did not open on this host"}},
-		{"moved, a page instance", page, "", errors.New("The data is invalid."), []string{"did not open on this host", "Admin > Instances"}, []string{"secret seal"}},
-		{"moved, a sealed line", sealed, "", errors.New("The data is invalid."), []string{"did not open on this host", "pgvigil secret seal"}, []string{"Admin > Instances"}},
+		{"moved, a page instance", page, "", moved, []string{"did not open on this host", "Admin > Instances"}, []string{"secret seal"}},
+		{"moved, a sealed line", sealed, "", moved, []string{"did not open on this host", "pgvigil secret seal"}, []string{"Admin > Instances"}},
 		{"decrypted to nothing", sealed, "", nil, []string{"is empty"}, nil},
 	} {
 		dpapiOpen = func(string) (string, error) { return c.val, c.err }
