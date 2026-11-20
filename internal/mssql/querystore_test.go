@@ -311,7 +311,7 @@ func TestQSTextPolicy(t *testing.T) {
 	}
 }
 
-// TestQSLocalRoleL17 (RELNOTES L17, the lead's 00:38): Query Store for readable secondaries keeps every replica's rows
+// TestQSLocalRoleL17: Query Store for readable secondaries keeps every replica's rows
 // in one store (Microsoft: "made visible across all replicas"), so the read is cut to the local role's groups. A
 // read-write database is the primary (role_type 1); a read-only database gets no cut (rn-l17 S1: replica_role 1 is
 // any readable secondary with ReadOnly intent, a geo-secondary's HA replica among them; Azure SQL Database's map waits

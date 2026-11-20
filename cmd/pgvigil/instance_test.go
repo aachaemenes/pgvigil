@@ -11,7 +11,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
-// TestConnFromDSNL170 (RELNOTES L170, the lead's 04:43 (2)(a)): the dsn on stdin is read back into the page's own
+// TestConnFromDSNL170: the dsn on stdin is read back into the page's own
 // fields, so the page's BuildDSN and its checks apply unchanged; a sign-in the page does not take is refused in words.
 func TestConnFromDSNL170(t *testing.T) {
 	for _, c := range []struct {
@@ -76,7 +76,7 @@ func TestInstanceNeedsServiceL170(t *testing.T) {
 }
 
 // TestInstanceStoreL170: add, list (with each instance's last collection age) and disable through the page's own
-// function on a migrated store (PGVIGIL_REPO_TEST_DSN; the box job's).
+// function on a migrated store (PGVIGIL_REPO_TEST_DSN).
 func TestInstanceStoreL170(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {

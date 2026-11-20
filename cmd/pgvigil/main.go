@@ -73,7 +73,7 @@ func run(args []string) int {
 	// library) and loadFile's override line follow the level
 	slog.SetDefault(log)
 	warnBadLevel(log, bad)
-	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged (B24e review 10)
+	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

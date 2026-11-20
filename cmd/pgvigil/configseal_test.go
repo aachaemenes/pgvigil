@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestConfigSealL155 (RELNOTES L155, the lead's 04:29 (3)): one versioned file, scrypt over the password, AES-256-GCM
+// TestConfigSealL155: one versioned file, scrypt over the password, AES-256-GCM
 // with the header as additional data; open refuses a wrong password, a changed byte anywhere and another version
 // before returning anything.
 func TestConfigSealL155(t *testing.T) {

@@ -204,7 +204,7 @@ func TestOutcomeTimedOut(t *testing.T) {
 
 // TestHeldRunKeepsTheCollectionStreak (rn-l214 B-2): a run the back-off held ends no failing streak of the instance's
 // collections - 0121's 'collection failing' stands through an outage (a held run did not try); the hour counts it
-// skipped. The reviewer's case: 'roles' failing 5 runs in a row on a missing grant, then the server reboots.
+// skipped. The case: 'roles' failing 5 runs in a row on a missing grant, then the server reboots.
 func TestHeldRunKeepsTheCollectionStreak(t *testing.T) {
 	h, restore := testHeartbeat()
 	defer restore()
@@ -301,7 +301,7 @@ func TestBackoffStartProbesAtOnce(t *testing.T) {
 	}
 }
 
-// TestBackoffStartCapsTheWindow (rn-l214 B-1 as the lead ruled 21:55; the repository's half is
+// TestBackoffStartCapsTheWindow (the repository's half is
 // TestParentHoldsThroughTheBackoffOnAStore): the host's span - the least shortest interval of the instances started,
 // clamped to 1 to 5 units, 0121's span - caps EVERY instance's wait at span + 2 units: a 2-minute instance beside a
 // 1-minute one probes 3 minutes after its last attempt, not after its own 4; a host of 15-minute instances waits at

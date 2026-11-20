@@ -124,7 +124,7 @@ func TestRunDeadlineCutsAHungRun(t *testing.T) {
 		t.Errorf("the cancelled run is logged 'timed out after <d>'; the log holds: %.400s", buf.String())
 	}
 	// rn-l214 S-1: the cut run's failure reaches collection_log (the Collector errors page, the instance's Collection
-	// dates line) - written on a context the run's deadline does not cut; before the fold the write rode the cut
+	// dates line) - written on a context the run's deadline does not cut; without that the write rode the cut
 	// context and was dropped, and the deadline read as a stop dropped it too
 	conn, err := pgx.Connect(context.Background(), dsn)
 	if err != nil {

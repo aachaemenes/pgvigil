@@ -26,7 +26,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/web"
 )
 
-// 'pgvigil instance add | list | disable' (RELNOTES L170, PerformanceMonitor 3.5.0's --add-server; the lead's 04:43):
+// 'pgvigil instance add | list | disable' (PerformanceMonitor 3.5.0's --add-server):
 // Admin > Instances from the command line, run on serve's host. add takes the page's own path - the connection test
 // first, the credential sealed for the service's account, the page's repository function with the configuration's
 // repository login - and the audit names 'cli:<the OS account>'.

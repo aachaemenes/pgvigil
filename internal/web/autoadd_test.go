@@ -53,7 +53,7 @@ func l237LastEdit(ctx context.Context, t *testing.T, pool *pgxpool.Pool, source 
 	return d
 }
 
-// TestSourceAutoAddSwitchL237 (RELNOTES L237, the lead's 05:32 (1)): the source's switch 'add the servers it finds by
+// TestSourceAutoAddSwitchL237: the source's switch 'add the servers it finds by
 // itself' is off on a new source; turning it on is refused unless the file's door doors.discovery_auto_add is open
 // (serve passes it), and on a source that is not a cloud one in its own words, whatever the door; a switch that is on
 // may be turned off, and left on, with the door shut; the audit names the switch only when it changes; off clears the
@@ -159,7 +159,7 @@ func TestAutoAddGateL237(t *testing.T) {
 		t.Errorf("startAutoAdd with the door shut: %v, want nothing started", w)
 	}
 	if autoAddLimit != 25 || autoAddTests != 50 {
-		t.Errorf("25 adds and 50 Tests a read (the lead's 05:32 (4)): %d, %d", autoAddLimit, autoAddTests)
+		t.Errorf("25 adds and 50 Tests a read: %d, %d", autoAddLimit, autoAddTests)
 	}
 	t0 := time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC)
 	for fails, want := range map[int]time.Duration{1: 55 * time.Minute, 2: 115 * time.Minute, 5: 16*time.Hour - 5*time.Minute, 6: 24*time.Hour - 5*time.Minute, 40: 24*time.Hour - 5*time.Minute} {

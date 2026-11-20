@@ -75,7 +75,7 @@ type installOptions struct {
 	User    string // the service account (Linux: a system user; Windows: the virtual account, a gMSA or a named account)
 	NoStart bool   // write everything, start nothing
 	// PasswordStdin (Windows, a named account): Password is read from stdin and handed to the service manager alone -
-	// never written, logged or put in an error (RELNOTES L131, the lead's 01:14 (b))
+	// never written, logged or put in an error
 	PasswordStdin bool
 	Password      string
 	// PrintGMSA: print the script that makes the gMSA -user names, for the principals in GMSAHosts (RELNOTES L142)

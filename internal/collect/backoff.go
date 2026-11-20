@@ -7,7 +7,7 @@ import (
 
 // The connect back-off (L214): after backoffAfter failed connects of an instance in a row, no loop of the instance
 // connects again before a wait of BackoffUnit from the last attempt, doubling each further failure up to backoffCap
-// units and never past the host's span + backoffSlack units (rn-l214 B-1 as the lead ruled 21:55: the span 0121's
+// units and never past the host's span + backoffSlack units (the span 0121's
 // freshness uses - the least collection interval of the host's instances, 1 to 5 units - never the instance's own); then ONE loop
 // probes while the rest keep skipping (the probe is its loop's until that run ends). A connect already in flight
 // that fails inside an open window is counted on the minute's load row but neither doubles the wait nor moves it
@@ -21,8 +21,8 @@ var BackoffUnit = time.Minute
 
 const (
 	backoffAfter = 3  // failed connects in a row before the instance backs off
-	backoffCap   = 15 // the longest wait, in units, while no interval of the host is known (Q1's 15 minutes)
-	// backoffSlack: the wait is never longer than the host's span + this many units (rn-l214 B-1, the lead's (a) of
+	backoffCap   = 15 // the longest wait, in units, while no interval of the host is known (15 minutes)
+	// backoffSlack: the wait is never longer than the host's span + this many units (
 	// 21:19 as ruled 21:55): the span is 0121's - the least collection interval of the host's instances, 1 to 5 units -
 	// so a backed-off instance's 'dead' spell stays read inside the 'collector or network' parent's freshness (the
 	// span + 3 minutes), an instance slower than its host's fastest one too; the parent holds through the outage
@@ -117,7 +117,7 @@ func (h *Heartbeat) connectBackoff(instance string, now time.Time) (bool, string
 	}
 }
 
-// hostSpan is 0121's span as the gate knows it (rn-l214 B-1, the lead's 21:55): the least shortest interval of the
+// hostSpan is 0121's span as the gate knows it: the least shortest interval of the
 // instances this run started (BackoffStart), clamped to 1 to 5 units; 0 while none is known. The repository reads
 // the same span from the load rows (collector_span_take), so the window and the parent's freshness share it. Called
 // under h.mu.

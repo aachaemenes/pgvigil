@@ -11,7 +11,7 @@
 -- or was retired lists nothing, and its rows go with its heartbeat row (N9). A page instance (Admin > Instances) never
 -- has an inline form: its credential is a file: or dpapi: reference.
 --
--- Above 0300, so this file makes only its own objects (the join-file rule): the table, its import, and the finding's
+-- Above 0300, so this file makes only its own objects: the table, its import, and the finding's
 -- own view in the findings shape; the arm that puts the view into pgvigil.findings is line 1 of
 -- scripts/RELNOTES-S3-join-lines.sql.
 
@@ -50,7 +50,7 @@ BEGIN
   ON CONFLICT (collector_id, instance) DO UPDATE SET seen_at = EXCLUDED.seen_at;
 END $$;
 
--- the finding, in the findings shape: one 'info' per active instance a LIVE run lists (rn-l9 S3 as the lead ruled
+-- the finding, in the findings shape: one 'info' per active instance a LIVE run lists (
 -- 21:55: the instance and Findings pages and 'pgvigil check' show it; an alert channel sends it only with
 -- min_severity: info - a daily warning to every channel, a PagerDuty incident per instance, for a form the admin chose
 -- and that keeps loading, is noise) - not stopped, not retired,

@@ -4,7 +4,7 @@
 -- pgvigil table or view (0300's loop). One SECURITY DEFINER function answers the newest successful collection of each
 -- instance (status 'ok', as the page's last_collected counts; NULL when none succeeded) and nothing else, granted to
 -- pgvigil_collector as admin_inventory() is (0122): apply_roles revokes functions from PUBLIC only, and its last branch
--- grants the reader, so this grant stays. Above 0300: its own object only (the join-file rule); PARALLEL SAFE (it reads
+-- grants the reader, so this grant stays. Above 0300: its own object only; PARALLEL SAFE (it reads
 -- two tables and reaches no scope policy: PARSAFE's schema-wide row at j17).
 CREATE OR REPLACE FUNCTION pgvigil.admin_instance_ages()
 RETURNS TABLE (name text, last_at timestamptz)

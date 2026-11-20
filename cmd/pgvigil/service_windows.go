@@ -429,7 +429,7 @@ func maybeRunAsService(args []string) (bool, int) {
 	bad := applyLogLevel("") // PGVIGIL_LOG_LEVEL in the service's environment; the configuration's log_level at its load
 	log := slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: logLevel}))
 	slog.SetDefault(log)        // slog's default writes to the service's log file too, at its level
-	secrets.Default.SetLog(log) // B24e review 10
+	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged
 	log.Info("service starting", "version", version)
 	warnBadLevel(log, bad) // an unknown word in the service's environment said in its log, as the console says it
 	if err := svc.Run(serviceName, &pgvigilService{args: args[1:], log: log}); err != nil {

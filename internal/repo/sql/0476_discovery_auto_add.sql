@@ -12,7 +12,7 @@
 -- Tests' counts and writes one 'source read' audit row that counts them - and refuses, clearing the notes, when the
 -- source no longer adds by itself. A gone server is never removed by itself (task 205's rule, unchanged).
 --
--- Above 0300, so this file makes its own objects (the join-file rule) - its columns and import_admin_auto_add - and
+-- Above 0300, so this file makes its own objects - its columns and import_admin_auto_add - and
 -- RE-MAKES import_admin_source whole from its NEWEST text (0123_discovery.sql) with the switch, and import_admin_decision
 -- whole from its NEWEST text (0123's) with its proposal read FOR UPDATE: two j17 named checks (a later re-make of either
 -- on another branch carries these lines). apply_roles gives both import_
@@ -79,7 +79,7 @@ BEGIN
   ELSIF v_op IN ('add', 'edit') AND jsonb_typeof(p_payload->'regions') = 'array'
         AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p_payload->'regions') r WHERE r !~ '^[a-z0-9]+(-[a-z0-9]+)+$' OR length(r) > 40) THEN
     -- the shape only (a host name's): which partition a region is in is the credentials' answer at the read, never a
-    -- name table here (the join's TestNoHardCodedAWSPartition scans this file too)
+    -- name table here (TestNoHardCodedAWSPartition scans this file too)
     v_why := 'a region is lower-case letters and digits in parts joined by hyphens, 40 characters at most';
   ELSIF v_op = 'edit' AND jsonb_typeof(p_payload->'tag_keys') = 'array'
         AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p_payload->'tag_keys') k
@@ -211,7 +211,7 @@ BEGIN
       'name', p_payload->>'name', 'engine', v_p.engine, 'platform', v_p.platform, 'dsn_ref', p_payload->>'dsn_ref', 'auth', coalesce(nullif(p_payload->>'auth', ''), v_s.auth), 'host', v_p.host,
       'port', v_p.port, 'dbname', v_p.dbname,
       -- a managed identity's login is the client id the approve used, or none (the host's own identity): never the
-      -- proposal's SQL login, which a later Edit would put into the identity's DSN (the wire review's blocker 2)
+      -- proposal's SQL login, which a later Edit would put into the identity's DSN
       'login', CASE WHEN coalesce(nullif(p_payload->>'auth', ''), v_s.auth) = 'entra-identity' THEN nullif(p_payload->>'login_used', '')
                     ELSE coalesce(nullif(p_payload->>'login_used', ''), v_p.login) END, 'tags', to_jsonb(v_p.tags), 'source', v_s.kind || ':' || v_s.name,
       'file_names', p_payload->'file_names'));

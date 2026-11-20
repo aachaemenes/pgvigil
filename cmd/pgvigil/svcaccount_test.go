@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestWindowsAccountFormL131 (RELNOTES L131, the lead's 01:14 rulings): -user on Windows is the virtual account or a
+// TestWindowsAccountFormL131: -user on Windows is the virtual account or a
 // gMSA with no password, or a named account only with -password-stdin; every other form is refused in words.
 func TestWindowsAccountFormL131(t *testing.T) {
 	cases := []struct {

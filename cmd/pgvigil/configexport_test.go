@@ -34,7 +34,7 @@ func exportFolder(t *testing.T) (dir, cfg string) {
 	return dir, filepath.Join(dir, "pgvigil.yaml")
 }
 
-// TestExportPayloadL155 (the lead's 04:29 (2)): the payload is pgvigil.yaml, the installer's dsn files, the files its
+// TestExportPayloadL155: the payload is pgvigil.yaml, the installer's dsn files, the files its
 // file: references name inside the folder and every file of secrets/, instances/ and sources/ - each by its path in
 // the folder, its mode and its content, the folder's absolute path recorded; a note and serve's keys stay out. On
 // Windows each file of the three folders is a DPAPI blob opened on this host (a test opener here), and one that does

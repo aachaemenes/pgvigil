@@ -31,7 +31,7 @@ func runWith(t *testing.T, in string, args ...string) (int, string) {
 	return code, <-got + errOut
 }
 
-// TestConfigCommandsL155 (the lead's 04:29): 'pgvigil config export' writes -out only (0600), in one of its two forms;
+// TestConfigCommandsL155: 'pgvigil config export' writes -out only (0600), in one of its two forms;
 // 'pgvigil config import' opens it with the same password before any write; no secret reaches stdout or stderr.
 func TestConfigCommandsL155(t *testing.T) {
 	src, cfg := exportFolder(t)

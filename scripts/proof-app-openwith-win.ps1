@@ -28,7 +28,7 @@
 #      its leftovers read back gone; the seeded value removed (and a key the proof made); on any path the proof's own
 #      pgvigil.yaml restored byte for byte, the app it started quit (-quit, then its processes by Id) and the install
 #      removed when U1 did not run
-# Not proven here: Explorer's own Open with menu (a person's click: an 'ALLEN TRY'), the default-program choice
+# Not proven here: Explorer's own Open with menu (a person's click), the default-program choice
 # ('Always'), an app started elevated and a start that is not (its mutex refused: the start says so), concurrent
 # starts and the 10 s wait, -tray with files, a machine without WebView2, the 16th file of a start, a foreign
 # WM_COPYDATA. H1-H4 need a person's logged-on desktop session: a WMI-started run is session 0 and prints them NOT RUN.

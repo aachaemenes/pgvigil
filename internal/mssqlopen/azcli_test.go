@@ -14,7 +14,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
-// TestAzCliFlowL173 (RELNOTES L173, PerformanceMonitor 3.7.0's Azure Existing Sign-In; the lead's 04:43): a dsn with
+// TestAzCliFlowL173 (PerformanceMonitor 3.7.0's Azure Existing Sign-In): a dsn with
 // fedauth=ActiveDirectoryAzCli signs in with the az CLI sign-in of the account the process runs as - here a stand-in
 // az on PATH printing a token - through one credential, the audience check kept; a login or a secret beside it is
 // refused in words; the page's door refuses the form as it refuses the host's other own identities.

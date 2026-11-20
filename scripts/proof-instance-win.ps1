@@ -10,11 +10,11 @@
 # default instance is DBA Dash's and is never written to, so the switch refuses an instance whose
 # SERVERPROPERTY('InstanceName') reads NULL. Pass a named instance whenever the VM has one, even with the switch off
 # (the service's refused sign-ins then land in that instance's error log, not DBA Dash's).
-# -Exe must be a build with the L170 list fix (rel-relnotes-s3 2d7c12abd or later: migration 0480).
+# -Exe must be a build with the L170 list fix (migration 0480 or later).
 #   powershell.exe -NoProfile -File scripts\proof-instance-win.ps1 -Exe C:\proof\pgvigil.exe -PgBin 'C:\pgsql\bin'
 #     [-BaseExe C:\proof\pgvigil-base.exe] [-SqlServer localhost | -SqlServer localhost\NAME -GrantServiceLogin]
 #   a run cut before its end (a time limit, a dropped session): the same command with -Undo runs the undo alone
-# Expected (written before its first run, 2026-11-19; the review's fold 2026-11-19 14:5x):
+# Expected (written before its first run, 2026-11-19; amended the same day):
 #  C  the cluster up; 'pgvigil install' exit 0, the service as NT SERVICE\pgvigil; migrate (its own configuration
 #     in the work folder) exit 0; the agent and monitor logins made from 'pgvigil roles'; repo.dsn holds the agent
 #     login (the documented repository login); with -GrantServiceLogin the login made with exactly its two grants
@@ -177,7 +177,7 @@ function Get-Number([string]$sql) {
     return [int]$text
 }
 # pg_ctl start with its output in files: a server started under a captured pipe keeps the pipe open and the capture
-# never ends (the review's B1); the handle is held so ExitCode reads after WaitForExit
+# never ends; the handle is held so ExitCode reads after WaitForExit
 function Start-Cluster {
     $outFile = Join-Path $Work 'pg_ctl.out'; $errFile = Join-Path $Work 'pg_ctl.err'
     $argLine = "-D `"$pgData`" -l `"$(Join-Path $Work 'pg.log')`" -o `"-p $Port -c listen_addresses=127.0.0.1 -c log_min_error_statement=panic`" -w -t 120 start"
@@ -250,7 +250,7 @@ try {
     $startName = (Get-CimInstance Win32_Service -Filter "Name='pgvigil'").StartName
     $sidSvc = (New-Object Security.Principal.NTAccount($SvcLogin)).Translate([Security.Principal.SecurityIdentifier]).Value
     # migrate on its own configuration in the work folder: the installed one names repo.dsn, empty until below, and
-    # nothing in pgvigil reads PGVIGIL_REPO_DSN unless a configuration names it (the review's B2)
+    # nothing in pgvigil reads PGVIGIL_REPO_DSN unless a configuration names it
     $migCfg = Join-Path $Work 'migrate.yaml'
     [IO.File]::WriteAllText($migCfg, "repository:`n  dsn: env:PGVIGIL_REPO_DSN`ninstances: []`n")
     $env:PGVIGIL_REPO_DSN = "host=127.0.0.1 port=$Port user=pgvigil_owner password=$suPw dbname=pgvigil sslmode=disable"

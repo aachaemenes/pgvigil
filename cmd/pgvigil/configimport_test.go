@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestConfigImportL155 (the lead's 04:29 (1), (2)): import writes every file of the export back at its path with the
+// TestConfigImportL155: import writes every file of the export back at its path with the
 // folder's mode, refuses a folder that holds a configuration unless -force (the old file kept as .previous), refuses a
 // path outside the folder and - where DPAPI cannot seal - a DPAPI entry before any write, and says in words when the
 // folder's path is not the exporting host's.

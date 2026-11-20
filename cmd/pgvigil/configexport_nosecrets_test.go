@@ -7,7 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TestExportNoSecretsL155 (the lead's 04:29 (1)): -no-secrets writes pgvigil.yaml with each inline secret masked -
+// TestExportNoSecretsL155: -no-secrets writes pgvigil.yaml with each inline secret masked -
 // a connection string's password part in every form, a channel's webhook, a key or token - and the rest as written:
 // hosts, users, every reference; a dpapi: reference is marked not portable. The notes name keys, never values.
 func TestExportNoSecretsL155(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
-// TestTemplateGMSAL131 (the lead's 01:14 (4)): a configuration the Windows install writes fresh carries gmsa: set to a
+// TestTemplateGMSAL131: a configuration the Windows install writes fresh carries gmsa: set to a
 // gMSA -user; any other account leaves the template as it is.
 func TestTemplateGMSAL131(t *testing.T) {
 	const user = `CORP\pgvigil-gmsa$`

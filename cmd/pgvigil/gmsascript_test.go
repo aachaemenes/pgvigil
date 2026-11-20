@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestPrintGMSAL142 (RELNOTES L142, the lead's 01:14 (3)): the script a domain admin runs to make the gMSA, printed by
+// TestPrintGMSAL142: the script a domain admin runs to make the gMSA, printed by
 // pgvigil and never run by it.
 func TestPrintGMSAL142(t *testing.T) {
 	s, err := gmsaScript(`CORP\pgvigil-gmsa$`, []string{"SQL01$", "pgvigil-hosts"})

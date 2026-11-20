@@ -1,5 +1,5 @@
 # proof-install-native-win.ps1 - Windows PowerShell 5.1 (powershell.exe), any account; changes nothing on the machine.
-# The row behind docs/install.ps1's Invoke-Native (L189, the fold of sqltoolsbuild-s2's finding): under
+# The row behind docs/install.ps1's Invoke-Native (L189): under
 # $ErrorActionPreference = 'Stop', 5.1 turns a native program's stderr into a terminating error wherever that stderr is
 # redirected - ISE does it for every native call, so do a remoting session and '2>&1 | Tee-Object' - and pgvigil writes
 # its INFO lines to stderr, so a SUCCESSFUL 'pgvigil install' threw there. The stand-in program is cmd.exe writing one
@@ -30,7 +30,7 @@ try {
     $oldThrew = $true
 }
 if ($oldThrew) { Write-Host 'OK   OLD: a bare call of a successful program throws under Stop with its stderr redirected (the red)' }
-else { Write-Host 'FAIL OLD: the bare call did not throw - the red this fold answers did not show here'; $failed++ }
+else { Write-Host 'FAIL OLD: the bare call did not throw - the failure this row guards against did not show here'; $failed++ }
 
 # NEW: through Invoke-Native, inside the same redirection
 try {

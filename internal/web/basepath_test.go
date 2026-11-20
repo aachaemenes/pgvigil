@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// TestUnderBaseL55 (RELNOTES L55, the lead's 00:47): serve's listener under web.base_path - the prefix stripped
+// TestUnderBaseL55: serve's listener under web.base_path - the prefix stripped
 // before the routes (which stay as written) and kept in the request for the pages that write links; a path outside
 // it is a 404 naming the base, and the log names the base once; the base without its '/' is sent to it with the
 // query kept. No base = the handler as it is.

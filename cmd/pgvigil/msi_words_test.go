@@ -52,7 +52,7 @@ func TestMSIPackageWordsL189(t *testing.T) {
 	}
 }
 
-// TestMSIWorkflowWordsL189 (L189, Q4 a): the CI job builds the MSI on windows-latest from the tree's own
+// TestMSIWorkflowWordsL189: the CI job builds the MSI on windows-latest from the tree's own
 // windows/amd64 binary, validates it (ICE inside the WiX build; the Binary table checked empty of custom-action DLLs),
 // and proves a silent install, an upgrade over the previous MSI, a refused downgrade and an uninstall; unsigned until
 // the code-signing certificate's secret exists, said in the docs with SmartScreen's warning.
@@ -75,10 +75,10 @@ func TestMSIWorkflowWordsL189(t *testing.T) {
 			t.Errorf("docs/msi.md lacks %q", want)
 		}
 	}
-	// Q3 (a): no operator group - a named difference from PerformanceMonitor, for a principle: pgvigil's access is one
+	// no operator group - a named difference from PerformanceMonitor, for a principle: pgvigil's access is one
 	// model (roles in its own store); a Windows group would be a second door beside it
 	if !strings.Contains(docs, "operator group") {
-		t.Errorf("docs/msi.md does not name the operator-group difference (Q3 a)")
+		t.Errorf("docs/msi.md does not name the operator-group difference")
 	}
 }
 
@@ -97,7 +97,7 @@ func TestInstallScriptRefusesAnMSIMachineL189(t *testing.T) {
 	}
 }
 
-// TestInstallScriptNativeCallsWrapped (L189, the lead's 15:28 - sqltoolsbuild-s2's finding): install.ps1 runs under
+// TestInstallScriptNativeCallsWrapped: install.ps1 runs under
 // $ErrorActionPreference = 'Stop', and Windows PowerShell 5.1 turns a native program's stderr into an error record
 // wherever it is redirected (ISE, a remoting session, '2>&1 | Tee-Object'): a SUCCESSFUL 'pgvigil install' then throws on
 // its first slog INFO line. Every call of the downloaded pgvigil.exe goes through the script's Invoke-Native (stderr read
@@ -162,7 +162,7 @@ func TestMSIUpgradeCodeTiedL189(t *testing.T) {
 	}
 }
 
-// TestMSIActionsL189 (rn-l189 B1, N1, N2, N5, S6, S7): the package's actions as the fold built them - every one
+// TestMSIActionsL189: the package's actions as they are built - every one
 // deferred and not impersonated; the install without its start (-no-start, -bin the MSI's own file) and checked; the
 // start, the stop and the uninstall ignored; net.exe by its full path; each action's condition (the stop on an
 // upgrade's removal alone, the uninstall on a removal that is no upgrade, the install and the start on no removal);
@@ -233,7 +233,7 @@ func TestInstallScriptMSIOrderL189(t *testing.T) {
 
 // TestMSIDocsWordsL189 (rn-l189 S4, S5, S6, N12): docs/msi.md says what is true today - not yet a release asset, the
 // removal retires the host, the upgrade's order (migrate, then the MSI, then Start-Service), repo.dsn and the start
-// after a fresh install, four actions - and none of the sentences the review found false.
+// after a fresh install, four actions - and none of the sentences that were false.
 func TestMSIDocsWordsL189(t *testing.T) {
 	docs := readRepoFile(t, "docs/msi.md")
 	for _, w := range []string{"not yet a release asset", "retired as a collector", "repo.dsn", "Start-Service pgvigil", "four actions", "/norestart"} {

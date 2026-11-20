@@ -73,7 +73,7 @@ func DiscoveryAutoAddOn() bool {
 // DiscoveryAutoAddOff is the page's words for the source's switch while the door is shut.
 const DiscoveryAutoAddOff = "off on this install: doors.discovery_auto_add in pgvigil.yaml lets a cloud source add the servers it finds by itself"
 
-// PageAWSProfileListed says whether pgvigil.yaml's doors.page_aws_profiles lists the profile (decision Q5).
+// PageAWSProfileListed says whether pgvigil.yaml's doors.page_aws_profiles lists the profile.
 func PageAWSProfileListed(profile string) bool {
 	d := pageCloudDoor.Load()
 	return d != nil && slices.Contains(d.PageAWSProfiles, profile)

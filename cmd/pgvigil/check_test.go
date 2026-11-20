@@ -277,7 +277,7 @@ func TestCheckAsTheCollectorLogin(t *testing.T) {
 
 // TestCheckPoolKeysInTheDSN (rn-l181 B2): README tells a site to cap the pool with pool_max_conns in the repository
 // dsn; check parses it as the pool does, so the key never reaches the server as a startup parameter (FATAL
-// 'unrecognized configuration parameter' before the fold: FAIL unreachable, exit 2).
+// 'unrecognized configuration parameter' - FAIL unreachable, exit 2 - which this row refuses).
 func TestCheckPoolKeysInTheDSN(t *testing.T) {
 	dsn := checkStore(t)
 	plentyFree(t)

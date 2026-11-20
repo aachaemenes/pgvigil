@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The 'secret files' part of 'pgvigil check' (RELNOTES L169; PerformanceMonitor 3.5.0's --harden-files, the lead's
+// The 'secret files' part of 'pgvigil check' (PerformanceMonitor 3.5.0's --harden-files
 // 04:29 (a)): every file that can hold a secret, judged by who may read it. check changes nothing: a FAIL prints its
 // fix (on Windows 'pgvigil install' run again also re-applies the folder's list).
 

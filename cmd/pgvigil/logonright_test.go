@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestNeedsLogonRightL150 (RELNOTES L150, the lead's 01:14 (2)): every account the install names but the service's
+// TestNeedsLogonRightL150: every account the install names but the service's
 // virtual one is given 'Log on as a service'.
 func TestNeedsLogonRightL150(t *testing.T) {
 	for user, want := range map[string]bool{

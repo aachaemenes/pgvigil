@@ -7,7 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TestWebBasePathL55 (RELNOTES L55, the lead's 00:47): web.base_path serves the UI under a sub-path behind a reverse
+// TestWebBasePathL55: web.base_path serves the UI under a sub-path behind a reverse
 // proxy that passes the path whole. A leading '/', no trailing '/', no '..' segment, no query or fragment; empty is the
 // root, as before. A bad value fails the load in words naming the key.
 func TestWebBasePathL55(t *testing.T) {

@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TestParentHoldsThroughTheBackoffOnAStore (rn-l214 B-1, the lead's (a) of 21:19; the reviewer's repository fixture):
+// TestParentHoldsThroughTheBackoffOnAStore (a repository fixture):
 // one collector host reads 6 instances, each collection every minute; at t five of them stop answering together (a
 // shared cause) while the sixth is read every minute on. The gate decides every tick (the real rule: connectBackoff,
 // instanceConnectTimed, record, take - a held tick writes no load row), so the five write load rows only at their
@@ -30,7 +30,7 @@ func TestParentHoldsThroughTheBackoffOnAStore(t *testing.T) {
 	for _, after := range []int{20, 30} {
 		t.Run(fmt.Sprintf("t+%d", after), func(t *testing.T) { parentAfterOutage(t, dsn, after, false) })
 	}
-	// the lead's 21:55: a mixed host - pg4 read every 2 minutes beside 1-minute instances - fails with them; its wait is
+	// a mixed host - pg4 read every 2 minutes beside 1-minute instances - fails with them; its wait is
 	// capped by the HOST's span, so it stays a member every minute: with its own interval's cap (2 + 2) its probes fall
 	// 6 minutes apart (t+16, t+22, t+28 at its phase), behind the host's span + 3 minutes at t+22 and t+28, and the
 	// parent holds 4 instances there, not 5 - so every minute from t+20 to t+30 is read, not the two ends alone

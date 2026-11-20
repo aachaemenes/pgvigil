@@ -18,14 +18,14 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
-// A cloud discovery source that adds the servers it finds by itself (RELNOTES L237, the lead's 05:32): two keys, both
+// A cloud discovery source that adds the servers it finds by itself: two keys, both
 // off - pgvigil.yaml's doors.discovery_auto_add and the source's own switch (0476's auto_add). After each applied read
 // of such a source, its auto step takes every proposed server through the page's own approve as auto:<source>, never
 // with a tick: first the approve tried and rolled back (what it would refuse or ask a person to tick is left to a
 // person, and nothing connects to that server), then the page's Test, then the approve itself. The switch and the
 // proposal are read again before each Test and each approve: a switch turned off stops the step.
 
-// autoAddLimit is the servers one auto step adds (the lead's 05:32 (4)); autoAddTests the Tests it runs (a failed
+// autoAddLimit is the servers one auto step adds; autoAddTests the Tests it runs (a failed
 // one counts too). The rest wait for the next read.
 var (
 	autoAddLimit = 25

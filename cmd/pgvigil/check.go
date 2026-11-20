@@ -230,7 +230,7 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 		}
 		_ = rc.Close(context.WithoutCancel(ctx))
 		rcancel()
-		// Q3 (a): the scheduler's whole set - the file's instances and Admin > Instances' enabled inventory; every
+		// the scheduler's whole set - the file's instances and Admin > Instances' enabled inventory; every
 		// path that reads no inventory says so (rn-l181 N3), the open bounded with the read
 		ictx, icancel := context.WithTimeout(ctx, 10*time.Second)
 		if r, rerr := repo.Open(ictx, repoDSN); rerr != nil {
@@ -407,7 +407,7 @@ func referenceRows(path string, add func(level, what, words string), own map[str
 	}
 }
 
-// checkSpace (Q2 a): the free space beside the store, read only when the store is on this host (judged by the
+// checkSpace: the free space beside the store, read only when the store is on this host (judged by the
 // address the connection reached, rn-l181 N2: a dsn's first host may not be the one that answered) and its
 // data_directory is readable to this login and this process; a WARN under 10 GiB free or under 30 days of the store's
 // growth - the beats' repo_bytes reading of one to two days ago, scaled by its age (N1). The collector's login reads

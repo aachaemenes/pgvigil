@@ -10,7 +10,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
-// TestInlinePasswordWarnsAtLoadL9 (L9, the lead's 17:32 (1) a): a PostgreSQL instance whose dsn in pgvigil.yaml
+// TestInlinePasswordWarnsAtLoadL9: a PostgreSQL instance whose dsn in pgvigil.yaml
 // carries an inline password still loads, and the collector's load WARNS once for it, naming the instance and the fix
 // forms; a dsn through env: or file:, one without a password, and a sqlserver instance (its inline password is
 // refused at load already) raise nothing.

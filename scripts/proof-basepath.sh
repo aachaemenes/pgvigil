@@ -3,7 +3,7 @@
 # served with -base-path /pgvigil behind an nginx container that passes the path whole, its own and the API's answers
 # read through it, the session cookie under the base, and the click-through walk (scripts/proof-clickthrough.sh) run
 # through the proxy; then the same walk at the root, unchanged. Needs go, psql, docker, curl, chromium, node 22+ and
-# the web bundle built with scripts/L55-wiring.patch applied (the UI's /api reads under the base).
+# the web bundle built from a web/src whose /api reads go through apiURL (web/src/api.ts: the reads under the base).
 #   PGVIGIL_ADMIN_DSN    keyword-form connection to a cluster as a login that may create a database
 #   NGINX_IMG            the proxy's image (default nginx:1.27-alpine), its digest printed
 #   PGVIGIL_DEMO_WAIT_S  seconds to wait for the seeded demo (default 300)
@@ -40,7 +40,7 @@ cd "$(dirname "$0")/.."
 NGINX_IMG=${NGINX_IMG:-nginx:1.27-alpine}
 fail() { echo "FAIL: $*" >&2; exit 1; }
 for t in go psql docker curl chromium node python3 openssl; do command -v "$t" >/dev/null || fail "$t is not on this machine"; done
-grep -q 'apiURL' web/src/api.ts || fail "web/src has no apiURL: apply scripts/L55-wiring.patch and build the bundle first"
+grep -q 'apiURL' web/src/api.ts || fail "web/src has no apiURL: its /api reads must go through apiURL (web/src/api.ts) and the bundle be built from it"
 grep -qF 'querySelector("base")' internal/web/dist/app.js || fail "the embedded bundle internal/web/dist/app.js was not built from the wired source: build it (npm run build) after the patch"
 WORK=$(mktemp -d); N=pgvbp$RANDOM; DB="pgvigil_bp_$RANDOM"; DB2="${DB}_l"; SRV=""; SRV2=""
 freeport() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }

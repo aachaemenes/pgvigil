@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// TestSecretFileModesL169 (RELNOTES L169, PerformanceMonitor 3.5.0's --harden-files; the lead's 04:29 (2) = (a)): on
+// TestSecretFileModesL169 (PerformanceMonitor 3.5.0's --harden-files): on
 // Linux any bit for others is a FAIL and a group bit beyond read a WARN (a folder's group may traverse), each with its
 // chmod line.
 func TestSecretFileModesL169(t *testing.T) {
