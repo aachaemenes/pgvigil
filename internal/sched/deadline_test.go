@@ -40,6 +40,32 @@ func TestRunDeadlineRule(t *testing.T) {
 	}
 }
 
+// TestRunLimitNeverUnderTheEngines (rn-l214 S-2): the loop's deadline never cuts a SQL Server run before its own limit
+// and its write - mssql_indexes (5 minutes on the SQL Server side) overridden to every minute gets 5 min 30 s, not 2
+// minutes, so its error names one limit; a collection without a longer own limit, and PostgreSQL's, keep the
+// interval's rule.
+func TestRunLimitNeverUnderTheEngines(t *testing.T) {
+	pg := engines.Specs(config.EnginePostgres)[0].Name
+	for _, c := range []struct {
+		iv    time.Duration
+		first bool
+		name  string
+		want  time.Duration
+	}{
+		{time.Minute, false, "mssql_indexes", 5*time.Minute + 30*time.Second},
+		{time.Minute, false, "mssql_backups", 2*time.Minute + 30*time.Second},
+		{time.Minute, false, "mssql_waits", 2 * time.Minute}, // its own 60 s + 30 s: under the floor
+		{time.Hour, false, "mssql_indexes", 30 * time.Minute},
+		{time.Minute, true, "mssql_indexes", 30 * time.Minute},
+		{time.Minute, false, pg, 2 * time.Minute},
+		{time.Minute, false, "no_such_collection", 2 * time.Minute},
+	} {
+		if got := runLimit(c.iv, c.first, c.name); got != c.want {
+			t.Errorf("runLimit(%v, first=%v, %s) = %v, want %v", c.iv, c.first, c.name, got, c.want)
+		}
+	}
+}
+
 // TestRunDeadlineCutsAHungRun (L250, proof R3): a run hung on its connect (a listener that accepts and never answers,
 // the connect bound lifted) is cancelled at the run deadline (the floor scaled to 2 s by the test hook), logged as
 // 'timed out after', and the next tick runs - the listener sees a second connect. Today the run holds its loop for

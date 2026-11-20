@@ -351,6 +351,12 @@ var (
 	runDeadlineCap   = 30 * time.Minute
 )
 
+// runLimit: one run's deadline - runDeadline from its interval, never under the engine's own limit for the
+// collection (rn-l214 S-2: SQL Server's own timeout and its write; 0 for PostgreSQL).
+func runLimit(iv time.Duration, first bool, name string) time.Duration {
+	return max(runDeadline(iv, first), engines.RunLimit(name))
+}
+
 // runDeadline: one run's limit from its interval; the first run after a start gets the cap.
 func runDeadline(iv time.Duration, first bool) time.Duration {
 	if first {
@@ -392,7 +398,7 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 		// the run deadline (L250): a hung run is cancelled, its loop ticks on; the cancel reaches the driver (pgx
 		// sends a cancel request, go-mssqldb an attention) and a repository write in flight rolls back. Never under
 		// the engine's own limit for the collection (rn-l214 S-2: SQL Server's own timeout, then its write)
-		limit := max(runDeadline(iv, first), engines.RunLimit(name))
+		limit := runLimit(iv, first, name)
 		rctx, rcancel := context.WithTimeout(ctx, limit)
 		defer rcancel()
 		// the run's imports taken again after a deadlock (repo.Import counts them) go to its heartbeat row (N4)
