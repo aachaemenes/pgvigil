@@ -8,7 +8,7 @@
 -- reference clears it at its first good run).
 --
 -- Above 0300, so this file makes only its own object (the view); its arm in pgvigil.findings - and so in alerting and
--- the Summary - is in the release's join lines for the next join, as 0192's was.
+-- the Summary - comes with the next re-creation of that union, as 0192's did.
 CREATE OR REPLACE VIEW pgvigil.reference_findings AS
 SELECT d.instance_id,
        'critical'::text AS severity,
