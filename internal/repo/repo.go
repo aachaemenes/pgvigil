@@ -611,6 +611,26 @@ func (r *Repo) LogConnectFailure(ctx context.Context, name, engine, platform str
 	return err
 }
 
+// LogReferenceFailure records a run whose connection string reference resolved to nothing (an env: variable not set, a
+// file: not read, a dpapi: seal that does not open on this host): the collection's error on the instance (made first
+// when it has no row yet), never a connect failure - the server was not asked. The note is 'reference: <ref> resolved
+// to nothing: <why>' (the reference as written, never its value), which pgvigil.reference_findings reads (0497).
+func (r *Repo) LogReferenceFailure(ctx context.Context, name, engine, platform string, tags []string, collection string, at time.Time, d time.Duration, ref, why string) error {
+	if tags == nil {
+		tags = []string{}
+	}
+	if platform == "" {
+		platform = "auto"
+	}
+	var id int
+	if err := r.pool.QueryRow(ctx, `SELECT instance_id FROM pgvigil.instances WHERE name = $1`, name).Scan(&id); err != nil {
+		if err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, NULL::text, NULL::int, false, $3::text[], $4)`, name, platform, tags, engine).Scan(&id); err != nil {
+			return err
+		}
+	}
+	return r.LogCollection(ctx, id, collection, at, d, "error", "reference: "+ref+" resolved to nothing: "+why)
+}
+
 // LogSecretFailure records a run whose login's password could not be read from AWS Secrets Manager, or whose secret
 // the connect's rule refused (task B24e): the collection's error on the instance (made first when it has no row
 // yet), never a connect failure - the server was not asked, so 'server unreachable' must not count it. The note is

@@ -386,7 +386,7 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 	connects.Add(1)
 	dsn := in.DSN()
 	if strings.TrimSpace(dsn) == "" {
-		return nil, nil, collect.InstanceConnect(in.Name, fmt.Errorf("connect %s: the dsn resolved to an empty string (%s)", in.Name, collect.EmptyDSNWhy(in.DSNRaw)))
+		return nil, nil, collect.InstanceConnect(in.Name, &collect.UnresolvedRefError{Instance: in.Name, Ref: in.DSNRaw, Why: collect.EmptyDSNWhy(in.DSNRaw)})
 	}
 	dl := &deadlineDialer{keepAlive: 30 * time.Second}
 	var target string
@@ -610,6 +610,16 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			if lerr := r.LogSecretFailure(rctx, in.Name, config.EngineSQLServer, in.Platform, in.Tags, name, start, time.Since(start), err); lerr != nil {
 				log.Warn("the secret's failure was not recorded", "instance", in.Name, "collection", name, "err", lerr)
+			}
+			rcancel()
+			return collect.Result{Err: err, Duration: time.Since(start)}
+		}
+		var ue *collect.UnresolvedRefError
+		if errors.As(err, &ue) && !errors.Is(ctx.Err(), context.Canceled) {
+			// the connection string reference resolved to nothing: the server was not asked
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+			if lerr := r.LogReferenceFailure(rctx, in.Name, config.EngineSQLServer, in.Platform, in.Tags, name, start, time.Since(start), ue.Ref, ue.Why); lerr != nil {
+				log.Warn("the unresolved reference was not recorded", "instance", in.Name, "collection", name, "err", lerr)
 			}
 			rcancel()
 			return collect.Result{Err: err, Duration: time.Since(start)}
