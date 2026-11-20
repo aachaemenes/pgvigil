@@ -102,7 +102,7 @@ func TestInstanceStoreL170(t *testing.T) {
 		got = append(got, r.Name+" "+r.Source+" "+r.State+" "+r.LastAge)
 	}
 	all := strings.Join(got, "\n")
-	if !strings.Contains(all, name+" page enabled never") || !strings.Contains(all, "file-one file") {
+	if !strings.Contains(all, name+" page enabled no successful run now") || !strings.Contains(all, "file-one file") {
 		t.Errorf("list:\n%s", all)
 	}
 	if err := instanceWrite(ctx, pool, map[string]any{"op": "disable", "ui_user": "cli:tester", "client": "cli", "name": name, "file_names": []string{}}); err != nil {
