@@ -105,7 +105,7 @@ function Invoke-Undo {
         Write-Host "     the msiexec logs copied to $LogDir as msi-*.log"
     }
     if ($script:failed -gt $failedBefore) {
-        Write-Host "KEPT $Work: an undo step above failed - the -Undo line runs the undo again"
+        Write-Host "KEPT ${Work}: an undo step above failed - the -Undo line runs the undo again"
         return
     }
     try {
