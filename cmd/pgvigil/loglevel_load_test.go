@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	stdlog "log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -154,5 +155,28 @@ func TestWarnBadLevelWritesOneLine(t *testing.T) {
 	got := strings.TrimSpace(buf.String())
 	if strings.Count(got, "\n") != 0 || !strings.Contains(got, "level=WARN") || !strings.Contains(got, "value=loud") {
 		t.Errorf("bad word 'loud': %q, want one WARN line with value=loud", got)
+	}
+}
+
+// TestStandardLogLineAfterSetDefault: after slog.SetDefault (run and the Windows service do it with the process's
+// logger), a line of the standard log package - a library's - is written through that logger's handler at INFO, so
+// log_level governs it: shown at info, dropped at warn.
+func TestStandardLogLineAfterSetDefault(t *testing.T) {
+	old := logLevel.Level()
+	defer logLevel.Set(old)
+	defLog, flags, out := slog.Default(), stdlog.Flags(), stdlog.Writer()
+	defer func() { slog.SetDefault(defLog); stdlog.SetFlags(flags); stdlog.SetOutput(out) }()
+	var buf bytes.Buffer
+	logLevel.Set(slog.LevelInfo)
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: logLevel})))
+	stdlog.Print("a library line at info")
+	logLevel.Set(slog.LevelWarn)
+	stdlog.Print("a library line at warn")
+	got := buf.String()
+	if !strings.Contains(got, `level=INFO msg="a library line at info"`) {
+		t.Errorf("at info the standard log line reads %q, want it at level=INFO through the handler", got)
+	}
+	if strings.Contains(got, "a library line at warn") {
+		t.Errorf("at warn the standard log line was written: %q, want it dropped (it is an INFO line)", got)
 	}
 }
