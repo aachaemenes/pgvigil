@@ -148,16 +148,14 @@ group's read routing). On it `DATABASEPROPERTYEX(DB_NAME(), 'Updateability')` re
   connection to another of its replicas, and a reconnect can land on a replica at another point in time (Microsoft),
   so one instance's history may come from more than one replica.
 
-- **Query Store.** Azure SQL Database keeps one Query Store for every replica: a read-only replica's runtime and wait
-  statistics are "persisted in Query Store and made visible across all replicas" (Microsoft, "Query Store for
-  secondary replicas", always enabled on Azure SQL Database), each row marked by its `replica_group_id`. pgvigil cuts
-  both its runtime and its wait read to the local replica's groups, those `sys.query_store_replicas` lists for its role:
-  a writable database reads the primary's (role 1), a read-only replica the role its `replica_role` maps to (an HA
-  secondary 2, a geo-replication forwarder 3 - inferred, as Microsoft publishes no such mapping). Where that view is
-  absent, or holds no row for the role (a named replica, an HA secondary of a geo-secondary, a store that never saw the
-  role), nothing is cut and every group's rows are read. The view is read wherever the database has it: Microsoft's
-  page names SQL Server 2025, yet SQL Server 2022 CU28 holds it too. Untested against a live replica: the cut on a
-  replica's own store and the figures it then shows.
+- **Query Store.** The database's Query Store is not read on Azure SQL Database in this release (`mssql_querystore`
+  is skipped there, above; a later wave). Azure SQL Database keeps one Query Store for every replica - a read-only
+  replica's runtime and wait statistics are "persisted in Query Store and made visible across all replicas"
+  (Microsoft, "Query Store for secondary replicas") - and the replica cut that pass needs (which groups are the local
+  replica's) is not built: `replica_role` reports 1 for ANY readable secondary reached with ReadOnly intent, a
+  geo-secondary's HA replica and a named replica among them, so it cannot place the local role; it waits for that pass
+  and a live replica. The cut that runs today is SQL Server 2022 and later's, RDS's, Cloud SQL's and Managed
+  Instance's: docs/sqlserver-querystore.md (a READ_WRITE database cut to role 1's groups; a read-only one not cut).
 
 Not proven: all of it (no lab has had a Premium, Business Critical or Hyperscale database); a pooled database's pool
 figures from a replica.

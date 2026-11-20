@@ -313,9 +313,9 @@ func TestQSTextPolicy(t *testing.T) {
 
 // TestQSLocalRoleL17 (RELNOTES L17, the lead's 00:38): Query Store for readable secondaries keeps every replica's rows
 // in one store (Microsoft: "made visible across all replicas"), so the read is cut to the local role's groups. A
-// read-write database is the primary (role_type 1); a read-only Azure SQL Database replica's role comes from
-// sys.dm_db_resource_stats' replica_role (1 an HA secondary = 2, 2 a geo-replication forwarder = 3); a named replica
-// (3) and an unread role give no filter.
+// read-write database is the primary (role_type 1); a read-only database gets no cut (rn-l17 S1: replica_role 1 is
+// any readable secondary with ReadOnly intent, a geo-secondary's HA replica among them; Azure SQL Database's map waits
+// for its pass).
 func TestQSLocalRoleL17(t *testing.T) {
 	for _, c := range []struct {
 		upd  string
@@ -325,8 +325,8 @@ func TestQSLocalRoleL17(t *testing.T) {
 	}{
 		{"READ_WRITE", sql.NullInt64{}, 1, true},
 		{"READ_WRITE", sql.NullInt64{Int64: 0, Valid: true}, 1, true},
-		{"READ_ONLY", sql.NullInt64{Int64: 1, Valid: true}, 2, true},
-		{"READ_ONLY", sql.NullInt64{Int64: 2, Valid: true}, 3, true},
+		{"READ_ONLY", sql.NullInt64{Int64: 1, Valid: true}, 0, false},
+		{"READ_ONLY", sql.NullInt64{Int64: 2, Valid: true}, 0, false},
 		{"READ_ONLY", sql.NullInt64{Int64: 3, Valid: true}, 0, false},
 		{"READ_ONLY", sql.NullInt64{}, 0, false},
 		{"", sql.NullInt64{}, 0, false},
@@ -337,18 +337,19 @@ func TestQSLocalRoleL17(t *testing.T) {
 	}
 }
 
-// TestQSCandidatesReplicaFilterL17: with a local role both the runtime and the wait statistics are cut to its
-// groups, guarded so a store that never saw that role keeps every row; with none (no sys.query_store_replicas, or an
-// unread role) no read names the view.
+// TestQSCandidatesReplicaFilterL17: with a local role both the runtime and the wait statistics drop only the rows
+// whose group the view assigns to other roles alone (rn-l17 S2: an unlisted or NULL group kept); with none (no
+// sys.query_store_replicas, or an unread role) no read names the view.
 func TestQSCandidatesReplicaFilterL17(t *testing.T) {
 	q := strings.Join(strings.Fields(qsCandidatesQuery(true, 2, true)), " ")
 	for _, alias := range []string{"r", "w"} {
-		if want := alias + ".replica_group_id IN (SELECT q.replica_group_id FROM sys.query_store_replicas q WHERE q.role_type = 2)"; !strings.Contains(q, want) {
+		want := "AND NOT (EXISTS (SELECT 1 FROM sys.query_store_replicas q WHERE q.replica_group_id = " + alias + ".replica_group_id) AND NOT EXISTS (SELECT 1 FROM sys.query_store_replicas q WHERE q.replica_group_id = " + alias + ".replica_group_id AND q.role_type = 2))"
+		if !strings.Contains(q, want) {
 			t.Errorf("the %s read lacks %q", alias, want)
 		}
 	}
-	if n := strings.Count(q, "NOT EXISTS (SELECT 1 FROM sys.query_store_replicas q WHERE q.role_type = 2)"); n != 2 {
-		t.Errorf("the guard is on %d reads, want 2 (the runtime and the wait statistics)", n)
+	if strings.Contains(q, "WHERE q.role_type = 2)") && !strings.Contains(q, "q.replica_group_id") {
+		t.Error("the cut is per role, not per group: an unlisted or NULL group would be cut for good")
 	}
 	if strings.Contains(q, "%!") {
 		t.Errorf("a verb was left unformatted: %s", q)

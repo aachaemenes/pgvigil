@@ -36,6 +36,13 @@ func TestQSReplicaFilterLive(t *testing.T) {
 	if filtered && role != 1 {
 		t.Errorf("a read-write database's role_type %d, want 1", role)
 	}
+	// rn-l17 N1: what the view held and the runtime rows' groups, so 'lost 0' says which branch held - rows the view
+	// assigns to other roles cut, or none to cut (an unlisted group kept)
+	if view {
+		reps, err := qsRead(ctx, conn, quoted, "SELECT CAST(q.replica_group_id AS bigint) AS g, CAST(q.role_type AS int) AS r FROM sys.query_store_replicas q", "")
+		groups, gerr := qsRead(ctx, conn, quoted, "SELECT DISTINCT CAST(s.replica_group_id AS bigint) AS g FROM sys.query_store_runtime_stats s", "")
+		t.Logf("sys.query_store_replicas: %v (%v); the runtime rows' groups: %v (%v)", reps, err, groups, gerr)
+	}
 	decl := "@first bigint, @last bigint, @top int"
 	args := []any{sql.Named("first", int64(0)), sql.Named("last", int64(1)<<62), sql.Named("top", 1000)}
 	plain, err := qsRead(ctx, conn, quoted, qsCandidatesQuery(qsHasWaits(info), 0, false), decl, args...)

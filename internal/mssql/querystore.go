@@ -45,7 +45,7 @@ import (
 // yet (one database is the instance there; the per-database pass is a later wave). Nothing is written on the
 // server: each read is one SELECT run through that database's sys.sp_executesql, which changes no session
 // setting. The collector's own statements run inside the database and are captured by its Query Store like any
-// other session's (two to seven short statements per database a run).
+// other session's (two to eight short statements per database a run: the replica role's probe is the eighth, rn-l17 S3).
 type queryStoreCollector struct{}
 
 func init() { Register(queryStoreCollector{}) }
@@ -232,10 +232,12 @@ const (
 // Azure SQL Database and on Managed Instance's Always-up-to-date policy; a database's choice on SQL Server 2025) keeps
 // every replica's runtime and wait statistics in one store, "made visible across all replicas" (Microsoft), each row
 // marked by its replica_group_id; sys.query_store_replicas names each group's role_type, the same rows on every
-// replica. The guard keeps every row of a store that never saw the role. %[1]d: the role_type; %[2]s: the alias.
+// replica. Only a row whose group the view assigns to OTHER roles alone is cut (rn-l17 S2): a group the view does not
+// list, or a NULL one, is kept - a row cut is cut for good (the cursor moves past its interval), so the cut never
+// guesses. %[1]d: the role_type; %[2]s: the alias.
 const qsReplicaFilter = `
-     AND (NOT EXISTS (SELECT 1 FROM sys.query_store_replicas q WHERE q.role_type = %[1]d)
-          OR %[2]s.replica_group_id IN (SELECT q.replica_group_id FROM sys.query_store_replicas q WHERE q.role_type = %[1]d))`
+     AND NOT (EXISTS (SELECT 1 FROM sys.query_store_replicas q WHERE q.replica_group_id = %[2]s.replica_group_id)
+              AND NOT EXISTS (SELECT 1 FROM sys.query_store_replicas q WHERE q.replica_group_id = %[2]s.replica_group_id AND q.role_type = %[1]d))`
 
 // qsCandidatesQuery is step two's statement: the wait statistics where the version has them, both reads cut to the
 // role's groups when filtered.
@@ -253,26 +255,21 @@ func qsCandidatesQuery(hasWaits bool, role int, filtered bool) string {
 	return fmt.Sprintf(qsCandidatesSQL, waits, waitMS, cut("r"))
 }
 
-// qsRoleSQL runs inside one database: whether it is writable, and on Azure SQL Database its replica role; no row
+// qsRoleSQL runs inside one database: whether it is writable (the replica role's column stays for the Azure SQL
+// Database pass, read as NULL until then: rn-l17 S1); no row
 // where sys.query_store_replicas does not exist (before SQL Server 2022: Microsoft's page names 2025, yet 2022 CU28
 // holds the view, rn-8). %s: the replica role's expression.
 const qsRoleSQL = `SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'Updateability') AS nvarchar(60)) AS updateability, %s AS replica_role
 WHERE OBJECT_ID('sys.query_store_replicas') IS NOT NULL`
 
-// qsLocalRole is the role_type of this database's replica: a read-write database is the primary (1); a read-only
-// Azure SQL Database replica by sys.dm_db_resource_stats' replica_role - 1 an HA secondary (2), 2 a geo-replication
-// forwarder (3). A named replica (3) and an HA secondary of a geo-secondary both read otherwise or alike, so they and
-// an unread role give no filter: every replica's rows are read there, as before.
-func qsLocalRole(updateability string, replicaRole sql.NullInt64) (int, bool) {
-	switch {
-	case updateability == "READ_WRITE":
+// qsLocalRole is the role_type of this database's replica: a read-write database is the primary (1). A read-only
+// database gets no cut - every replica's rows are read there, as before (rn-l17 S1: sys.dm_db_resource_stats'
+// replica_role reports 1 'with ReadOnly intent to any readable secondary', a geo-secondary's HA replica and a named
+// replica among them, so it cannot place the local role; and Query Store is not read on Azure SQL Database in this
+// release - its replica map waits for that pass, proven on a live replica first). replicaRole is kept for that pass.
+func qsLocalRole(updateability string, _ sql.NullInt64) (int, bool) {
+	if updateability == "READ_WRITE" {
 		return 1, true
-	case updateability != "READ_ONLY" || !replicaRole.Valid:
-		return 0, false
-	case replicaRole.Int64 == 1:
-		return 2, true
-	case replicaRole.Int64 == 2:
-		return 3, true
 	}
 	return 0, false
 }
@@ -282,10 +279,9 @@ func qsReplicaRole(ctx context.Context, conn *sql.Conn, quoted string, info Info
 	if info.Kind != KindAzureDB && info.Kind != KindAzureMI && info.Major < 16 {
 		return 0, false, nil
 	}
+	// rn-l17 S1 / B1: no replica role read - the collection does not run on Azure SQL Database (Applies), and a
+	// replica_role of 1 cannot tell an HA secondary from a geo-secondary's replica
 	rr := "CAST(NULL AS bigint)"
-	if info.Kind == KindAzureDB {
-		rr = "(SELECT TOP (1) CAST(s.replica_role AS bigint) FROM sys.dm_db_resource_stats s ORDER BY s.end_time DESC)"
-	}
 	rows, err := qsRead(ctx, conn, quoted, fmt.Sprintf(qsRoleSQL, rr), "")
 	if err != nil || len(rows) == 0 {
 		return 0, false, err
