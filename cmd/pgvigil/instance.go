@@ -137,7 +137,12 @@ func connFromDSN(engine, dsn string) (config.Conn, error) {
 		if err != nil {
 			return config.Conn{}, errors.New("the dsn does not read as a PostgreSQL connection string")
 		}
-		if len(pc.Fallbacks) > 0 {
+		// pgconn makes a fallback of the same host for sslmode prefer (its default): only another host:port is a second
+		hosts := map[string]bool{fmt.Sprintf("%s:%d", pc.Host, pc.Port): true}
+		for _, f := range pc.Fallbacks {
+			hosts[fmt.Sprintf("%s:%d", f.Host, f.Port)] = true
+		}
+		if len(hosts) > 1 {
 			return config.Conn{}, errors.New("the dsn names more than one host: a page instance has one (name a list in pgvigil.yaml)")
 		}
 		// pgconn fills what the dsn leaves out from this shell (PGPASSWORD, PGPORT, PGDATABASE, the running account's

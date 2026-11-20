@@ -209,7 +209,7 @@ func TestInstanceListEmptyInventoryL170(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list on a store with no page instance: %v", err)
 	}
-	if len(rows) != 1 || rows[0].Name != "file-one" || rows[0].Source != "file" || rows[0].LastAge != "never" {
+	if len(rows) != 1 || rows[0].Name != "file-one" || rows[0].Source != "file" || rows[0].LastAge != "no successful run now" {
 		t.Errorf("list on a store with no page instance: want the file's one instance, never collected; got %+v", rows)
 	}
 }
