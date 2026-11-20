@@ -164,10 +164,13 @@ func installMachine(self, srcServe string, ch installChoice) error {
 		return fmt.Errorf("start at login: %w", err)
 	}
 	fmt.Println("start at login for every user:", !noAuto)
+	// an Open with entry refused (security software guarding shell\open\command keys) is said and the install goes on:
+	// the app and its Programs and Features entry matter more than the menu entry
 	if err := writeAssoc(registry.LOCAL_MACHINE, app); err != nil {
-		return fmt.Errorf("open with: %w", err)
+		fmt.Println("open with: not written (the app opens files from its Tools menu):", err)
+	} else {
+		fmt.Println("open with: .sqlplan and .xdl list pgvigil for every user (HKLM\\Software\\Classes; never their default program)")
 	}
-	fmt.Println("open with: .sqlplan and .xdl list pgvigil for every user (HKLM\\Software\\Classes; never their default program)")
 	if ch.update || ch.noUpdate {
 		pk, _, err := registry.CreateKey(registry.LOCAL_MACHINE, policyKey, registry.SET_VALUE)
 		if err != nil {
@@ -227,9 +230,10 @@ func installUser(self, srcServe string, noAuto, noUpdate bool) error {
 	}
 	fmt.Println("start at login:", !noAuto)
 	if err := writeAssoc(registry.CURRENT_USER, app); err != nil {
-		return fmt.Errorf("open with: %w", err)
+		fmt.Println("open with: not written (the app opens files from its Tools menu):", err)
+	} else {
+		fmt.Println("open with: .sqlplan and .xdl list pgvigil (HKCU\\Software\\Classes; never their default program)")
 	}
-	fmt.Println("open with: .sqlplan and .xdl list pgvigil (HKCU\\Software\\Classes; never their default program)")
 	if noUpdate {
 		if err := writeUser(func(k registry.Key) error { return k.SetDWordValue("UpdateCheck", 0) }); err != nil {
 			return err
@@ -267,8 +271,9 @@ func runUninstall(args []string) error {
 			return &exitErr{fmt.Errorf("not removed (in use: quit pgvigil and run the uninstall again): %s", strings.Join(left, ", ")), 1}
 		}
 		_ = setRun(registry.CURRENT_USER, "", false)
+		// Open with entries left behind keep the Programs and Features entry, so the uninstall can be run again
 		if err := removeAssoc(registry.CURRENT_USER); err != nil {
-			fmt.Println("open with entries not all removed:", err)
+			return &exitErr{fmt.Errorf("open with entries not all removed (run the uninstall again): %w", err), 1}
 		}
 		if purge {
 			_ = registry.DeleteKey(registry.CURRENT_USER, userKey)
@@ -296,7 +301,7 @@ func runUninstall(args []string) error {
 	}
 	_ = setRun(registry.LOCAL_MACHINE, "", false)
 	if err := removeAssoc(registry.LOCAL_MACHINE); err != nil {
-		fmt.Println("open with entries not all removed:", err)
+		return &exitErr{fmt.Errorf("open with entries not all removed (run the uninstall again): %w", err), 1}
 	}
 	if purge {
 		_ = os.RemoveAll(filepath.Join(os.Getenv("ProgramData"), "pgvigil", "app"))

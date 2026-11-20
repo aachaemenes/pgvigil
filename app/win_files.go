@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -59,13 +60,20 @@ func handOver(args []string) int {
 	deadline := time.Now().Add(handOverWait)
 	for {
 		if h := findApp(); h != 0 {
+			// the running app may bring its window forward: Windows lets only the foreground process (this start, which
+			// Explorer made) hand that on
+			var pid uint32
+			_, _, _ = pGetWindowThreadProcessID.Call(h, uintptr(unsafe.Pointer(&pid)))
+			if pid != 0 {
+				_, _, _ = pAllowSetForegroundWindow.Call(uintptr(pid))
+			}
 			var res uintptr
 			r, _, callErr := pSendMessageTimeoutW.Call(h, wmCopyData, 0, uintptr(unsafe.Pointer(&cds)), smtoAbortIfHung, uintptr(handOverWait/time.Millisecond), uintptr(unsafe.Pointer(&res)))
 			runtime.KeepAlive(b)
 			if r != 0 && res != 0 {
 				return 0
 			}
-			why := "it refused them"
+			why := "it refused them: an older pgvigil runs, or it is closing - quit it from its tray icon and open the file(s) again"
 			if r == 0 {
 				why = callErr.Error() // a hung app, or one started elevated (Windows keeps a lower start's messages from it)
 			}
@@ -85,6 +93,10 @@ func (a *app) onCopyData(lp uintptr) uintptr {
 	cds := *(**copyDataStruct)(unsafe.Pointer(&lp))
 	if cds == nil || cds.dwData != CopyDataMagic {
 		return 0 // another program's WM_COPYDATA: not read
+	}
+	if a.isQuitting() { // taken now they would be lost: the second start says so instead
+		log.Printf("files: a hand-over refused: the app is quitting")
+		return 0
 	}
 	if cds.cbData == 0 || cds.cbData > MaxCopyData || cds.lpData == nil {
 		log.Printf("files: a hand-over of %d bytes refused", cds.cbData)
@@ -110,31 +122,88 @@ func (a *app) onFilesAdd() {
 	}
 }
 
-// addFiles queues files for the page, opens the window and asks the page to fetch them.
+// addFiles queues files for the page, opens the window and asks the page to fetch them. Without WebView2 (read before
+// any window or browser opens) the files go the browser's way: noWVFiles.
 func (a *app) addFiles(paths []string, refused []OpenFile, from string) {
+	log.Printf("files: %d %s", len(paths)+len(refused), from)
+	if !a.noWV && a.hwnd == 0 && !a.creating && webView2Version() == "" {
+		a.noWV = true
+		log.Printf("WebView2 is not installed: the browser shows the UI")
+	}
+	var names []string
+	for _, p := range paths {
+		names = append(names, filepath.Base(p))
+	}
+	for _, f := range refused {
+		names = append(names, f.Name)
+	}
+	if a.noWV {
+		a.noWVFiles(names, true)
+		return
+	}
 	for _, p := range paths {
 		a.waiting = append(a.waiting, OpenFile{Path: p, Name: filepath.Base(p)})
 	}
 	a.waiting = append(a.waiting, refused...)
-	log.Printf("files: %d %s", len(paths)+len(refused), from)
 	a.show()
-	if a.noWV { // the browser shows the UI: a file cannot be handed to it
-		var names []string
+	if a.noWV { // the window failed to start just now (show said so and opened the browser)
+		var left []string
 		for _, f := range a.waiting {
-			names = append(names, f.Name)
+			left = append(left, f.Name)
 		}
 		a.waiting = nil
-		messageBox("pgvigil's window could not start, so it cannot show "+strings.Join(names, ", ")+": open them from the Tools menu of the page in your browser.", mbOK|mbIconWarning)
+		a.noWVFiles(left, false)
 		return
 	}
 	a.ping()
 }
 
+// noWVFiles tells, one box at a time, which files the browser's page cannot be handed: the names that come while a box
+// is on screen (its loop lets the next start's files in) go in the next box, never a box each; the browser opens once
+// for them.
+func (a *app) noWVFiles(names []string, openBrowser bool) {
+	a.noWVNames = append(a.noWVNames, names...)
+	if a.noWVBox {
+		return
+	}
+	a.noWVBox = true
+	if openBrowser {
+		a.mu.Lock()
+		sv := a.serve
+		a.mu.Unlock()
+		if sv != nil {
+			openExternal(sv.URL)
+		}
+	}
+	for len(a.noWVNames) > 0 {
+		batch := a.noWVNames
+		a.noWVNames = nil
+		messageBox("pgvigil's window could not start (the WebView2 runtime is missing), so it cannot show "+strings.Join(batch, ", ")+": open them from the Tools menu of the page in your browser.", mbOK|mbIconWarning)
+	}
+	a.noWVBox = false
+}
+
+// origin is the serve's own origin (scheme://host:port), "" before it is known: every script the app sends the page is
+// guarded by it (PageGuard).
+func (a *app) origin() string {
+	a.mu.Lock()
+	sv := a.serve
+	a.mu.Unlock()
+	if sv == nil {
+		return ""
+	}
+	u, err := url.Parse(sv.URL)
+	if err != nil {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 // ping asks the page for the waiting files; a page without the viewer (the start page) does nothing, and the page asks
-// itself once its viewer is ready.
+// itself once its viewer is ready. Before the serve is known there is no page of its own to ask.
 func (a *app) ping() {
-	if a.wv != nil && len(a.waiting) > 0 {
-		a.wv.Eval(pageAsk)
+	if o := a.origin(); a.wv != nil && len(a.waiting) > 0 && o != "" {
+		a.wv.Eval(PageGuard(o) + pageAsk)
 	}
 }
 
@@ -144,7 +213,7 @@ func (a *app) bindFiles() {
 	if err := a.wv.Bind("pgvigilAppFiles", func() { _, _, _ = pPostMessageW.Call(a.tray, wmFilesAsk, 0, 0) }); err != nil {
 		log.Printf("files: bind: %v", err)
 	}
-	if err := a.wv.Bind("pgvigilAppOpened", func(name, title string) { log.Printf("files: the page opened %q as %q", name, title) }); err != nil {
+	if err := a.wv.Bind("pgvigilAppOpened", func(name, title string) { log.Printf("files: the page opened %q as %q", clip(name), clip(title)) }); err != nil {
 		log.Printf("files: bind: %v", err)
 	}
 }
@@ -159,11 +228,12 @@ func (a *app) deliverNext() {
 	a.inFlight = true
 	a.nextFile++
 	id := a.nextFile
+	origin := a.origin()
 	go func() {
 		if f.Why == "" {
 			f = ReadOpen(f.Path)
 		}
-		r := &readyFile{name: f.Name, size: len(f.Data), why: f.Why, scripts: PageScripts(id, f, PartBytes)}
+		r := &readyFile{name: f.Name, size: len(f.Data), why: f.Why, scripts: GuardScripts(origin, PageScripts(id, f, PartBytes))}
 		a.mu.Lock()
 		a.ready = r
 		a.mu.Unlock()
@@ -171,7 +241,8 @@ func (a *app) deliverNext() {
 	}()
 }
 
-// postRead posts a read file's parts to the page, then asks for the next.
+// postRead posts a read file's parts to the page; the page asks for the next once it has opened this one (or failed
+// to): one file in the page at a time, never a queue of them.
 func (a *app) postRead() {
 	a.mu.Lock()
 	r := a.ready
@@ -191,5 +262,12 @@ func (a *app) postRead() {
 	} else {
 		log.Printf("files: %s posted to the page in %d parts (%d bytes)", r.name, len(r.scripts), r.size)
 	}
-	a.ping()
+}
+
+// clip bounds a page-given string in the log (200 characters).
+func clip(s string) string {
+	if r := []rune(s); len(r) > 200 {
+		return string(r[:200]) + "..."
+	}
+	return s
 }

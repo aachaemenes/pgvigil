@@ -427,7 +427,8 @@ function appFile(p: AppPart) {
   const all = new Uint8Array(parts.reduce((n, x) => n + x.length, 0));
   let at = 0;
   for (const x of parts) { all.set(x, at); at += x.length; }
-  appChain = appChain.then(() => openFile(new File([all], p.name))).then(told, () => undefined);
+  // a file that failed to open asks for the next too: the app sends a file only when the page asks (one at a time)
+  appChain = appChain.then(() => openFile(new File([all], p.name))).then(told, () => { void appWin().pgvigilAppFiles?.(); });
 }
 
 // pick: the browser's file chooser for one kind
@@ -468,7 +469,7 @@ let installed = false;
 export function installFileDrop() {
   if (installed || typeof document === 'undefined') return;
   installed = true;
-  document.head.append(el('style', { id: 'fd-style' }, 'body.fd-over{outline:3px dashed var(--accent);outline-offset:-6px}.fd-viewer .fd-body{max-height:calc(92vh - 9rem);overflow:auto}'
+  document.head.append(el('style', { id: 'fd-style' }, 'body.fd-over{outline:3px dashed var(--accent);outline-offset:-6px}.fd-viewer .fd-body{max-height:calc(92vh - 9rem);overflow:auto}.fd-viewer:has(.fd-tabs:not([hidden])) .fd-body{max-height:calc(92vh - 11.5rem)}'
     + '.fd-tabs:not([hidden]){display:flex;flex-wrap:wrap;gap:.2rem;border-bottom:1px solid var(--line);margin:.2rem 0 .5rem}'
     + '.fd-tab{border:1px solid var(--line);border-bottom:none;background:none;color:var(--muted);padding:.25rem .6rem;border-radius:4px 4px 0 0}'
     + '.fd-tab[aria-selected=true]{color:var(--fg);font-weight:var(--fw-strong);box-shadow:inset 0 -2px 0 var(--accent)}'));

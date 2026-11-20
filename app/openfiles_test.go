@@ -86,7 +86,8 @@ func TestReadOpenL232(t *testing.T) {
 }
 
 func TestCopyDataL232(t *testing.T) {
-	in := []string{"/plans/a.sqlplan", "/plans/\u00dcn\u00efcode plan.sqlplan", "/d/b.xdl"}
+	dir := t.TempDir() // absolute on every system the test runs on
+	in := []string{filepath.Join(dir, "a.sqlplan"), filepath.Join(dir, "\u00dcn\u00efcode plan.sqlplan"), filepath.Join(dir, "d", "b.xdl")}
 	b, err := EncodeCopyData(in)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
@@ -127,9 +128,9 @@ func TestCopyDataL232(t *testing.T) {
 }
 
 func TestPageScriptsL232(t *testing.T) {
-	data := bytes.Repeat([]byte("0123456789"), 900_000) // 9 MB: three parts of at most 4 MB
+	data := bytes.Repeat([]byte("0123456789"), 900_000) // 9 MB: three parts of at most PartBytes (3 MiB)
 	name := `q"</script>` + "\u2028" + `.sqlplan`
-	scripts := PageScripts(7, OpenFile{Name: name, Data: data}, 4<<20)
+	scripts := PageScripts(7, OpenFile{Name: name, Data: data}, PartBytes)
 	if len(scripts) != 3 {
 		t.Fatalf("three parts, got %d", len(scripts))
 	}
@@ -149,7 +150,7 @@ func TestPageScriptsL232(t *testing.T) {
 			t.Errorf("part %d: %+v", i, p)
 		}
 		raw, err := base64.StdEncoding.DecodeString(p.Data)
-		if err != nil || len(raw) > 4<<20 {
+		if err != nil || len(raw) > PartBytes {
 			t.Errorf("part %d: %d bytes, %v", i, len(raw), err)
 		}
 		joined = append(joined, raw...)

@@ -74,6 +74,16 @@ func readOpen(path string, limit int64) OpenFile {
 		f.Why = f.Name + ": the app opens a query plan (.sqlplan) or a deadlock graph (.xdl); other files open from the page's Tools menu"
 		return f
 	}
+	// a device path (a pipe, a port: \\.\pipe\x.sqlplan) or anything but a regular file is refused before it is opened:
+	// a read from one that never writes would hold every later file behind it until the app restarts
+	if DevicePath(path) {
+		f.Why = f.Name + `: a device path (\\.\ or \\?\) is not a file the viewers open`
+		return f
+	}
+	if st, err := os.Stat(path); err == nil && !st.IsDir() && !st.Mode().IsRegular() {
+		f.Why = f.Name + " is not a regular file"
+		return f
+	}
 	h, err := os.Open(path)
 	if err != nil {
 		f.Why = f.Name + ": " + err.Error()
@@ -87,6 +97,9 @@ func readOpen(path string, limit int64) OpenFile {
 		return f
 	case st.IsDir():
 		f.Why = f.Name + " is a folder"
+		return f
+	case !st.Mode().IsRegular():
+		f.Why = f.Name + " is not a regular file"
 		return f
 	case st.Size() > limit:
 		f.Why = fmt.Sprintf("%s is %d bytes: the viewers open files up to %s", f.Name, st.Size(), sizeWords(limit))
@@ -102,6 +115,29 @@ func readOpen(path string, limit int64) OpenFile {
 		f.Data = b
 	}
 	return f
+}
+
+// DevicePath says whether path names Windows' device namespace (\\.\ or \\?\, either slash): a pipe, a port, a
+// volume - never a plan file the viewers open.
+func DevicePath(path string) bool {
+	p := strings.ReplaceAll(path, "/", `\`)
+	return strings.HasPrefix(p, `\\.\`) || strings.HasPrefix(p, `\\?\`)
+}
+
+// PageGuard is a page script's head: the script runs only on the serve's own origin (a foreign page the window may
+// show never receives a file or a ping).
+func PageGuard(origin string) string {
+	b, _ := json.Marshal(origin) // a string: Marshal cannot fail
+	return "location.origin===" + string(b) + "&&"
+}
+
+// GuardScripts heads each script with PageGuard(origin).
+func GuardScripts(origin string, scripts []string) []string {
+	out := make([]string, len(scripts))
+	for i, s := range scripts {
+		out[i] = PageGuard(origin) + s
+	}
+	return out
 }
 
 func sizeWords(n int64) string {

@@ -1263,10 +1263,15 @@ await guard('X drop and paste', async () => {
 
 await guard('AF app files', async () => {
   // the Windows app (app/win_files.go) posts each file it was given as base64 parts through window.pgvigilAppFile, and the
-  // page calls the app's bound pgvigilAppFiles / pgvigilAppOpened, whose promises never resolve: stand-ins here count them
+  // page calls the app's bound pgvigilAppFiles / pgvigilAppOpened, whose promises never resolve: stand-ins here count
+  // them, put in as a new document's first script and the page reloaded, so the page's load-time ask - the only way a
+  // first start's files reach it - is counted before any post
+  const stand = await send('Page.addScriptToEvaluateOnNewDocument', { source: `window.__af = { asks: 0, opened: [] }; window.pgvigilAppFiles = () => { window.__af.asks++; return new Promise(() => {}); };
+    window.pgvigilAppOpened = (n, t) => { window.__af.opened.push(n + '|' + t); return new Promise(() => {}); };` });
+  await send('Page.reload'); await sleep(1500);
   await go('#/summary');
-  await ev(`window.__af = { asks: 0, opened: [] }; window.pgvigilAppFiles = () => { window.__af.asks++; return new Promise(() => {}); };
-    window.pgvigilAppOpened = (n, t) => { window.__af.opened.push(n + '|' + t); return new Promise(() => {}); }`);
+  const loadAsks = await ev(`window.__af ? window.__af.asks : -1`);
+  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: stand.result?.identifier ?? '' });
   const receiver = await ev(`typeof window.pgvigilAppFile`);
   const b64 = (t) => Buffer.from(t, 'utf8').toString('base64');
   const post = (o) => ev(`window.pgvigilAppFile && window.pgvigilAppFile(${JSON.stringify(o)})`);
@@ -1279,7 +1284,8 @@ await guard('AF app files', async () => {
   const state = () => ev(`(() => { const ds = [...document.querySelectorAll('dialog.fd-viewer[open]')]; const d = ds[0]; if (!d) return { dialogs: 0 };
     const tabs = [...d.querySelectorAll('[role=tab]')]; const sel = tabs.find(t => t.getAttribute('aria-selected') === 'true');
     const panel = sel ? d.querySelector('#' + CSS.escape(sel.getAttribute('aria-controls'))) : null;
-    return { dialogs: ds.length, label: d.getAttribute('aria-label'), tabs: tabs.map(t => t.textContent).join(','), selected: sel ? sel.textContent : '',
+    const f = document.activeElement;
+    return { dialogs: ds.length, label: d.getAttribute('aria-label'), tabs: tabs.map(t => t.textContent).join(','), selected: sel ? sel.textContent : '', focus: f ? f.textContent : '',
       shown: [...d.querySelectorAll('[role=tabpanel]')].filter(x => !x.hidden).length, rows: panel?.querySelector('table.grid')?.querySelectorAll('tbody tr').length ?? 0,
       svg: !!panel?.querySelector('svg'), error: panel?.querySelector('.error')?.textContent ?? '' }; })()`);
   const tabClick = (name) => ev(`[...document.querySelectorAll('dialog.fd-viewer[open] [role=tab]')].find(t => t.textContent === ${JSON.stringify(name)})?.click()`);
@@ -1287,20 +1293,35 @@ await guard('AF app files', async () => {
   await shot('app-files-light');
   await tabClick('a.sqlplan'); const s2 = await state();
   await tabClick('b.xdl'); const s3 = await state();
-  await ev(`document.querySelector('dialog.fd-viewer[open] [role=tab][aria-selected=true]').dispatchEvent(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, bubbles: true, cancelable: true }))`);
+  // the tab list's keys, on the selected tab: Home the first, End the last, ArrowRight past the last wraps to the first,
+  // ArrowLeft past the first to the last - each moves the selection and the focus
+  const key = (k) => ev(`(() => { const sel = () => document.querySelector('dialog.fd-viewer[open] [role=tab][aria-selected=true]'); const t = sel(); if (!t) return 'no tab';
+    t.focus(); t.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(k)}, bubbles: true, cancelable: true }));
+    return (sel()?.textContent ?? '') + '/' + (document.activeElement?.textContent ?? ''); })()`);
+  const kHome = await key('Home'), kEnd = await key('End'), kRight = await key('ArrowRight'), kLeft = await key('ArrowLeft');
+  await tabClick('b.xdl');
+  // Ctrl+W on the selected tab (null-safe: a missing tab is the check's own words, not a TypeError)
+  await ev(`document.querySelector('dialog.fd-viewer[open] [role=tab][aria-selected=true]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, bubbles: true, cancelable: true }))`);
   await sleep(200);
   const s4 = await state();
   await ev(`(() => { const dt = new DataTransfer(); dt.items.add(new File([${JSON.stringify(sqlplan)}], 'p.sqlplan')); document.body.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt })); })()`);
   await sleep(800);
   const s5 = await state();
+  // Close tab: the open tab goes and the focus moves to the next tab; the last but one leaves one file and the focus on Close
+  const closeTab = () => ev(`[...document.querySelectorAll('dialog.fd-viewer[open] button')].find(b => b.textContent === 'Close tab' && !b.hidden)?.click()`);
+  await closeTab(); await sleep(200); const s6 = await state();
+  await closeTab(); await sleep(200); const s7 = await state();
   await ev(`window.pgvigilAppPing && window.pgvigilAppPing()`);
   const af = JSON.parse(await ev(`JSON.stringify(window.__af)`));
   await closeDialogs();
   check('AF app files', receiver === 'function' && s1.dialogs === 1 && s1.tabs === 'a.sqlplan,b.xdl,c.sqlplan' && s1.selected === 'c.sqlplan' && s1.shown === 1 && /64 MB/.test(s1.error)
     && s2.label === 'Query plan: a.sqlplan' && s2.rows === 3 && s3.label === 'Deadlock graph: b.xdl' && s3.svg
     && s4.dialogs === 1 && s4.tabs === 'a.sqlplan,c.sqlplan' && s5.dialogs === 1 && s5.tabs === 'a.sqlplan,c.sqlplan,p.sqlplan' && s5.selected === 'p.sqlplan' && s5.label === 'Query plan: p.sqlplan'
-    && af.opened.join(';') === 'a.sqlplan|Query plan: a.sqlplan;b.xdl|Deadlock graph: b.xdl;c.sqlplan|c.sqlplan' && af.asks >= 4,
-    `receiver ${receiver}; posted ${JSON.stringify(s1)}; a ${JSON.stringify(s2)}; b ${JSON.stringify(s3)}; Ctrl+W ${JSON.stringify(s4)}; a drop ${JSON.stringify(s5)}; the app's calls ${JSON.stringify(af)}`);
+    && af.opened.join(';') === 'a.sqlplan|Query plan: a.sqlplan;b.xdl|Deadlock graph: b.xdl;c.sqlplan|c.sqlplan' && af.asks >= 4 && loadAsks >= 1
+    && kHome === 'a.sqlplan/a.sqlplan' && kEnd === 'c.sqlplan/c.sqlplan' && kRight === 'a.sqlplan/a.sqlplan' && kLeft === 'c.sqlplan/c.sqlplan'
+    && s4.selected === 'c.sqlplan' && s4.focus === 'c.sqlplan' && s6.tabs === 'a.sqlplan,c.sqlplan' && s6.selected === 'c.sqlplan' && s6.focus === 'c.sqlplan'
+    && s7.dialogs === 1 && s7.label === 'Query plan: a.sqlplan' && s7.focus === 'Close',
+    `receiver ${receiver}; the load-time asks ${loadAsks}; posted ${JSON.stringify(s1)}; a ${JSON.stringify(s2)}; b ${JSON.stringify(s3)}; keys Home ${kHome} End ${kEnd} Right ${kRight} Left ${kLeft}; Ctrl+W ${JSON.stringify(s4)}; a drop ${JSON.stringify(s5)}; Close tab ${JSON.stringify(s6)}, again ${JSON.stringify(s7)}; the app's calls ${JSON.stringify(af)}`);
 });
 
 // ---- RT: the Data Retention page against a hand read ----

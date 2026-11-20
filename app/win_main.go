@@ -228,9 +228,12 @@ type app struct {
 	hwnd     uintptr // the WebView2 window (0 until first opened)
 	oldProc  uintptr
 	noWV     bool // WebView2 could not start: the browser shows the UI
-	taskbar  uint32
-	exe      string
-	quitting bool
+	// noWVNames / noWVBox: the files the browser's page cannot be handed, told one box at a time (noWVFiles)
+	noWVNames []string
+	noWVBox   bool
+	taskbar   uint32
+	exe       string
+	quitting  bool
 	// creating: WebView2 is being made; its creation runs a message loop of its own, which can call
 	// show and quit again (a tray double-click, -quit): show waits it out, a quit is kept for after
 	creating    bool
@@ -252,6 +255,16 @@ var the *app
 
 func runApp(cfgFlag string, startInTray bool, files []string) int {
 	m, err := windows.CreateMutex(nil, false, u16(mutexName))
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		// the mutex is held by an app started elevated in this session: a start that is not elevated can neither open
+		// it nor hand its files to that app (Windows keeps a lower start's messages from it) - said, not a second app
+		what := "pgvigil already runs in this session as administrator, and a start that is not elevated cannot reach it"
+		if len(files) > 0 {
+			what += ": open the file(s) from that pgvigil window (Tools), or quit it from its tray icon and open them again"
+		}
+		messageBox(what+".", mbOK|mbIconWarning)
+		return 1
+	}
 	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		if len(files) > 0 { // the running app takes them; this start ends
 			return handOver(files)
@@ -285,12 +298,13 @@ func runApp(cfgFlag string, startInTray bool, files []string) int {
 	if a.set.UpdateCheck {
 		go a.updateLoop(ctx)
 	}
-	if !startInTray {
-		a.show()
-	}
+	// this start's own files are queued before the window is made: files a second start hands over while WebView2 is
+	// being made (its creation pumps messages) come after them, so the first file Explorer started is the first tab
 	if len(files) > 0 {
 		paths, refused := OpenPaths(files, filepath.Abs)
-		a.addFiles(paths, refused, "from the command line")
+		a.addFiles(paths, refused, "from the command line") // it opens the window
+	} else if !startInTray {
+		a.show()
 	}
 	a.loop()
 	a.shutdown()
@@ -545,6 +559,7 @@ func (a *app) onServe() {
 	}
 	if err != nil {
 		a.balloon("pgvigil serve did not start", "Open the window for the reason.")
+		a.dropWaiting("the serve did not start")
 	}
 }
 
@@ -556,6 +571,22 @@ func (a *app) onServeGone() {
 		a.wv.SetHtml(errorPage("pgvigil serve stopped", sv.Tail(), a.set.ConfigPath))
 	}
 	a.balloon("pgvigil serve stopped", "Quit pgvigil and start it again; the window shows the serve's last lines.")
+	a.dropWaiting("the serve stopped")
+}
+
+// dropWaiting names the files that will never reach a page (no serve to show them) in the log and one box, instead of
+// leaving them waiting without a word.
+func (a *app) dropWaiting(why string) {
+	if len(a.waiting) == 0 {
+		return
+	}
+	var names []string
+	for _, f := range a.waiting {
+		names = append(names, f.Name)
+	}
+	a.waiting = nil
+	log.Printf("files: not opened (%s): %s", why, strings.Join(names, ", "))
+	messageBox("pgvigil could not open "+strings.Join(names, ", ")+": "+why+". Quit pgvigil, start it again and open them again.", mbOK|mbIconWarning)
 }
 
 func page(title, body string) string {

@@ -42,6 +42,7 @@ var (
 	pMessageBoxW                   = user32.NewProc("MessageBoxW")
 	pFindWindowW                   = user32.NewProc("FindWindowW")
 	pGetWindowThreadProcessID      = user32.NewProc("GetWindowThreadProcessId")
+	pAllowSetForegroundWindow      = user32.NewProc("AllowSetForegroundWindow")
 	pRegisterWindowMessageW        = user32.NewProc("RegisterWindowMessageW")
 	pSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
 	pCreateIconIndirect            = user32.NewProc("CreateIconIndirect")
