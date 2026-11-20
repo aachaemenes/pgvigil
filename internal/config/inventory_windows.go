@@ -150,3 +150,8 @@ func sealAccess(path, _ string, account string) error {
 	}
 	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
 }
+
+// writeSecretOwned (Windows): writeSecret - the file takes its folder's protected list, the account in it.
+func writeSecretOwned(dir, name, value, _ string) (string, error) {
+	return writeSecret(dir, name, value)
+}

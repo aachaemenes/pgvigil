@@ -60,3 +60,6 @@ func installedAccount() (string, bool) { return "", false }
 
 // unitAccount: no wired service manager here, so no service account.
 func unitAccount() string { return "" }
+
+// installedConfigPath: no service of pgvigil's on this system.
+func installedConfigPath() (string, bool) { return "", false }

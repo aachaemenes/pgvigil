@@ -843,3 +843,12 @@ func unitAccount() string {
 	}
 	return o.User
 }
+
+// installedConfigPath is the configuration the installed unit runs with (found false: no unit).
+func installedConfigPath() (string, bool) {
+	o, found, err := installedUnit()
+	if err != nil || !found || o.Config == "" {
+		return "", false
+	}
+	return o.Config, true
+}

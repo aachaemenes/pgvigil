@@ -18,6 +18,12 @@ func prepareDir(dir string) error { return os.Chmod(dir, 0o700) }
 // writeSecret (Linux and the rest): a file of mode 0600 (from its creation) in a folder of mode 0700, owned by the
 // account serve runs as.
 func writeSecret(dir, name, value string) (string, error) {
+	return writeSecretOwned(dir, name, value, "")
+}
+
+// writeSecretOwned is writeSecret with the file given to account ("" = this process's) through its open descriptor
+// before it is renamed into place - never by its path after, where a link swapped in could take the owner.
+func writeSecretOwned(dir, name, value, account string) (string, error) {
 	p := filepath.Join(dir, name+".dsn")
 	tmp, err := os.CreateTemp(dir, "."+name+".*")
 	if err != nil {
@@ -27,6 +33,16 @@ func writeSecret(dir, name, value string) (string, error) {
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return "", err
+	}
+	if account != "" {
+		uid, gid, err := accountIDs(account)
+		if err == nil {
+			err = tmp.Chown(uid, gid)
+		}
+		if err != nil {
+			_ = tmp.Close()
+			return "", fmt.Errorf("the credential file's owner %s: %w", account, err)
+		}
 	}
 	if _, err := tmp.WriteString(value); err != nil {
 		_ = tmp.Close()

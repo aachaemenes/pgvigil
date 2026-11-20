@@ -33,7 +33,7 @@
 #  S1 the service started collects win-pg within 180 s (a collection_dates row with status ok), so its account opened
 #     the credential through that list; with -GrantServiceLogin win-sql too
 #  L1 'instance list' under the agent login exit 0: win-pg page enabled, 'last collection <age> ago'; win-sql page
-#     enabled, an age with -GrantServiceLogin, else 'never' (no successful collection: the service's account has no
+#     enabled, an age with -GrantServiceLogin, else 'no successful run now' (no successful collection: the service's account has no
 #     login there; its collection rows' statuses printed)
 #  D1 'instance disable' of both exit 0; the store reads both disabled (admin_inventory(), as the superuser); the
 #     list shows both disabled
@@ -329,7 +329,7 @@ try {
     $list = Get-ListLines
     $pgLine = "$($list.Lines['win-pg'])"; $sqlLine = "$($list.Lines['win-sql'])"
     $pgOk = $pgLine -match '^win-pg\s+page\s+postgres\s+enabled\s+last collection \S+ ago$'
-    $sqlOk = $sqlLine -match '^win-sql\s+page\s+sqlserver\s+enabled\s+last collection never$'
+    $sqlOk = $sqlLine -match '^win-sql\s+page\s+sqlserver\s+enabled\s+last collection no successful run now$'
     if ($GrantServiceLogin) { $sqlOk = $sqlLine -match '^win-sql\s+page\s+sqlserver\s+enabled\s+last collection \S+ ago$' }
     Row 'L1' ($list.Code -eq 0 -and $pgOk -and $sqlOk) "instance list (the agent login) exit $($list.Code): '$pgLine' / '$sqlLine'; win-sql's collection rows: $(Get-CollectionStatuses 'win-sql')$(if ($list.Code -ne 0) { '; said: ' + $list.Out })"
 

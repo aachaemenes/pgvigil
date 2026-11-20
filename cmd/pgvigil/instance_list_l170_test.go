@@ -69,7 +69,7 @@ func TestInstanceListAsCollectorL170(t *testing.T) {
 	if _, err := agent.Exec(ctx, `SELECT pgvigil.log_collection($1, 'activity', now() - interval '30 seconds', 12, 'ok', NULL)`, id); err != nil {
 		t.Fatalf("log_collection as the collector's login: %v", err)
 	}
-	// a second page instance whose only collection failed: its age is 'never', as the page's last_collected counts
+	// a second page instance whose only collection failed: its age is 'no successful run now', as the page's last_collected counts
 	// status 'ok' only (q_instances_admin.go)
 	failed := fmt.Sprintf("l170-fail-%d", sfx)
 	if err := instanceWrite(ctx, agent, addPayload(failed, "auto", nil, c, "file:/nonexistent/l170f.dsn", "tester", nil)); err != nil {
@@ -104,9 +104,26 @@ func TestInstanceListAsCollectorL170(t *testing.T) {
 		t.Fatalf("list as the collector's login: want %s page enabled '<age> ago', got %+v", name, r)
 	}
 	for i := range rows {
-		if rows[i].Name == failed && rows[i].LastAge != "never" {
-			t.Errorf("an instance whose only collection failed: want 'never' (the page's last_collected counts ok rows only), got %+v", rows[i])
+		if rows[i].Name == failed && rows[i].LastAge != "no successful run now" {
+			t.Errorf("an instance whose only collection failed: want 'no successful run now' (the page's last_collected counts ok rows only), got %+v", rows[i])
 		}
+	}
+	// a page row whose name pgvigil.yaml took later: left out (the collector reads the file's), no age of the file's
+	both, err := instanceRows(ctx, agent, &config.Config{Instances: []config.Instance{{Name: failed, Engine: config.EnginePostgres}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fileRow, pageRow *instanceRow
+	for i := range both {
+		if both[i].Name == failed && both[i].Source == "file" {
+			fileRow = &both[i]
+		}
+		if both[i].Name == failed && both[i].Source == "page" {
+			pageRow = &both[i]
+		}
+	}
+	if fileRow == nil || pageRow == nil || pageRow.State != "left out (pgvigil.yaml holds "+failed+")" || pageRow.LastAge != "-" {
+		t.Errorf("a page row the file also names: file %+v, page %+v - want the page row left out, no age", fileRow, pageRow)
 	}
 	if err := instanceWrite(ctx, agent, map[string]any{"op": "disable", "ui_user": "cli:tester", "client": "cli", "name": name, "file_names": []string{}}); err != nil {
 		t.Fatalf("disable as the collector's login: %v", err)

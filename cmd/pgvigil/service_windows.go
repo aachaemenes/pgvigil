@@ -1052,3 +1052,12 @@ func installedAccount() (string, bool) {
 
 // unitAccount: Windows names its service's account through installedAccount.
 func unitAccount() string { return "" }
+
+// installedConfigPath is the configuration the installed service runs with (found false: no service).
+func installedConfigPath() (string, bool) {
+	inst, found, err := installedServiceConfig()
+	if err != nil || !found || inst.Config == "" {
+		return "", false
+	}
+	return inst.Config, true
+}

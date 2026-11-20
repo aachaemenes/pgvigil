@@ -303,6 +303,25 @@ type DBADashRepo struct {
 	Import bool `yaml:"import"`
 }
 
+// PlatformRefusal is why a platform word is not one of the engine's ("" = it is): the words Validate takes for an
+// instance of pgvigil.yaml, for the page's and the command line's adds too.
+func PlatformRefusal(engine, platform string) string {
+	switch engine {
+	case EngineSQLServer:
+		switch platform {
+		case "auto", "onprem", "rds", "azuresqldb", "azuresqlmi", "cloudsql":
+			return ""
+		}
+		return fmt.Sprintf("unknown platform %q for engine sqlserver (auto, onprem, rds, azuresqldb, azuresqlmi, cloudsql)", platform)
+	default:
+		switch platform {
+		case "auto", "onprem", "rds", "aurora", "azure", "cloudsql", "alloydb":
+			return ""
+		}
+		return fmt.Sprintf("unknown platform %q for engine postgres (auto, onprem, rds, aurora, azure, cloudsql, alloydb)", platform)
+	}
+}
+
 // gmsaName is DOMAIN\name$: a NetBIOS domain of 1 to 15 characters and an account of 1 to 15 before its one '$' (the
 // sAMAccountName rule), neither holding a character Windows refuses in a name (; , = and + among them).
 var gmsaName = regexp.MustCompile(`^[^\\/:*?"<>|\s.@\[\];,=+]{1,15}\\[^\\/:*?"<>|\s@\[\]$;,=+]{1,15}\$$`)

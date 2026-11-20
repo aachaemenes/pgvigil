@@ -55,12 +55,30 @@ func serviceAccountForSecrets() string {
 	return unitAccount()
 }
 
-// osAccount names the account running the command, for the audit.
+// osAccount names the account running the command, for the audit: on Linux the uid's name read from the system's user
+// list (never $USER, which a command line sets) and, when it differs, the login's own account (/proc/self/loginuid:
+// sudo keeps it and the process cannot change it) - 'root (login alice)'; elsewhere the account the OS names.
 func osAccount() string {
-	if u, err := user.Current(); err == nil && u.Username != "" {
-		return u.Username
+	if runtime.GOOS != "linux" {
+		if u, err := user.Current(); err == nil && u.Username != "" {
+			return u.Username
+		}
+		return "unknown"
 	}
-	return "unknown"
+	name := func(uid string) string {
+		if u, err := user.LookupId(uid); err == nil && u.Username != "" {
+			return u.Username
+		}
+		return "uid " + uid
+	}
+	uid := strconv.Itoa(os.Getuid())
+	who := name(uid)
+	if b, err := os.ReadFile("/proc/self/loginuid"); err == nil {
+		if l := strings.TrimSpace(string(b)); l != "" && l != "4294967295" && l != uid {
+			who += " (login " + name(l) + ")"
+		}
+	}
+	return who
 }
 
 // dsnHolds says whether a connection string names a key, in its keyword or its URL form.
@@ -71,7 +89,27 @@ func dsnHolds(dsn, key string) bool {
 			return u.Hostname() != ""
 		case "user":
 			return u.User != nil && u.User.Username() != ""
+		case "password":
+			if u.User != nil {
+				if _, ok := u.User.Password(); ok {
+					return true
+				}
+			}
+		case "port":
+			if u.Port() != "" {
+				return true
+			}
+		case "dbname":
+			if strings.Trim(u.Path, "/") != "" {
+				return true
+			}
 		}
+		for k := range u.Query() {
+			if strings.EqualFold(k, key) {
+				return true
+			}
+		}
+		return false
 	}
 	for _, f := range strings.Fields(dsn) {
 		if k, _, ok := strings.Cut(f, "="); ok && strings.EqualFold(strings.TrimSpace(k), key) {
@@ -88,13 +126,31 @@ func connFromDSN(engine, dsn string) (config.Conn, error) {
 		if !dsnHolds(dsn, "host") || !dsnHolds(dsn, "user") {
 			return config.Conn{}, errors.New("the dsn names no host or no user: give both (a page instance never takes the defaults of the shell running this)")
 		}
+		// a service file names what the dsn does not: the administrator's own, never the service's
+		if dsnHolds(dsn, "service") || os.Getenv("PGSERVICE") != "" {
+			return config.Conn{}, errors.New("the dsn names a service (service= or PGSERVICE): a page instance's connection string names its host, port, database and user itself")
+		}
+		if keys := pgKeysNotCarried(dsn); len(keys) > 0 {
+			return config.Conn{}, fmt.Errorf("the dsn's %s %s not carried by a page instance (it keeps host, port, dbname, user, password and sslmode): name the instance in pgvigil.yaml instead", strings.Join(keys, ", "), map[bool]string{true: "is", false: "are"}[len(keys) == 1])
+		}
 		pc, err := pgconn.ParseConfig(dsn)
 		if err != nil {
 			return config.Conn{}, errors.New("the dsn does not read as a PostgreSQL connection string")
 		}
-		c := config.Conn{Engine: engine, Auth: "pgpass", Host: pc.Host, Port: int(pc.Port), DBName: pc.Database, Login: pc.User, Password: pc.Password}
-		if c.Password != "" {
-			c.Auth = "password"
+		if len(pc.Fallbacks) > 0 {
+			return config.Conn{}, errors.New("the dsn names more than one host: a page instance has one (name a list in pgvigil.yaml)")
+		}
+		// pgconn fills what the dsn leaves out from this shell (PGPASSWORD, PGPORT, PGDATABASE, the running account's
+		// passfile): only what the dsn names is taken, the rest the page's own defaults - never the administrator's
+		c := config.Conn{Engine: engine, Auth: "pgpass", Host: pc.Host, Port: 5432, Login: pc.User}
+		if dsnHolds(dsn, "port") {
+			c.Port = int(pc.Port)
+		}
+		if dsnHolds(dsn, "dbname") {
+			c.DBName = pc.Database
+		}
+		if dsnHolds(dsn, "password") {
+			c.Password, c.Auth = pc.Password, "password"
 		}
 		if m := sslmodeOf(dsn); m != "" {
 			c.Extra = "sslmode=" + m
@@ -139,14 +195,43 @@ func connFromDSN(engine, dsn string) (config.Conn, error) {
 	return config.Conn{}, fmt.Errorf("engine %q: postgres or sqlserver", engine)
 }
 
-// dsnParamGiven says whether a SQL Server URL names a query parameter itself (msdsn adds its defaults).
+// pgCarried are the PostgreSQL keys a page instance keeps (config.BuildDSN writes them).
+var pgCarried = map[string]bool{"host": true, "hostaddr": true, "port": true, "dbname": true, "user": true, "password": true, "sslmode": true}
+
+// pgKeysNotCarried are the keys a PostgreSQL connection string names beyond the ones a page instance keeps.
+func pgKeysNotCarried(dsn string) []string {
+	var out []string
+	if u, err := url.Parse(dsn); err == nil && u.Scheme != "" {
+		for k := range u.Query() {
+			if !pgCarried[strings.ToLower(k)] {
+				out = append(out, k)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	for _, f := range strings.Fields(dsn) {
+		if k, _, ok := strings.Cut(f, "="); ok && !pgCarried[strings.ToLower(strings.TrimSpace(k))] {
+			out = append(out, strings.TrimSpace(k))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// dsnParamGiven says whether a SQL Server connection string names a parameter itself (msdsn adds its defaults): a
+// URL's query, or an ADO / ODBC string's ';' parts.
 func dsnParamGiven(dsn, key string) bool {
-	u, err := url.Parse(dsn)
-	if err != nil {
+	if u, err := url.Parse(dsn); err == nil && u.Scheme == "sqlserver" {
+		for k := range u.Query() {
+			if strings.EqualFold(k, key) {
+				return true
+			}
+		}
 		return false
 	}
-	for k := range u.Query() {
-		if strings.EqualFold(k, key) {
+	for _, part := range strings.Split(strings.TrimPrefix(dsn, "odbc:"), ";") {
+		if k, _, ok := strings.Cut(part, "="); ok && strings.EqualFold(strings.TrimSpace(k), key) {
 			return true
 		}
 	}
@@ -258,9 +343,25 @@ func runInstanceAdd(ctx context.Context, args []string, stdin io.Reader) error {
 	if account == "" {
 		return errors.New("no installed pgvigil service on this host: the page's credentials belong to the service's account, so add runs on serve's host after 'pgvigil install'")
 	}
+	// everything a refusal can settle, before the connection string is read
+	if why := config.PlatformRefusal(*engine, *platform); why != "" {
+		return &usageError{errors.New("-platform: " + why)}
+	}
+	if svcCfg, ok := installedConfigPath(); ok && !samePath(svcCfg, *path) {
+		return fmt.Errorf("-config %s is not the installed service's configuration (%s): a page credential goes beside the configuration the service reads - name that one", *path, svcCfg)
+	}
 	cfg, err := loadConfigAt(*path, false)
 	if err != nil {
 		return err
+	}
+	repoDSN, err := repoDSNOf(*path, cfg)
+	if err != nil {
+		return err
+	}
+	for _, f := range fileNamesOf(cfg) {
+		if strings.EqualFold(f, *name) {
+			return fmt.Errorf("instance %s is named in pgvigil.yaml: a page instance takes another name (nothing read, nothing written)", *name)
+		}
 	}
 	dsn, err := readDSN(stdin)
 	if err != nil {
@@ -278,7 +379,11 @@ func runInstanceAdd(ctx context.Context, args []string, stdin io.Reader) error {
 		in := config.Instance{Name: *name, Engine: *engine, DSNRaw: built, Platform: *platform}
 		t := web.CheckConnection(ctx, *engine, built, nil, in, cfg)
 		if !t.OK {
-			return fmt.Errorf("the connection test (the page's own): %s - nothing written (-no-test to write anyway)", t.Detail)
+			return fmt.Errorf("the connection test (the page's own, as %s): %s - nothing written (-no-test to write anyway)", osAccount(), t.Detail)
+		}
+		// a sign-in of the running account (Windows, Kerberos, a passfile) is this account's, not the service's
+		if c.Auth == "windows" || c.Auth == "pgpass" {
+			fmt.Printf("the connection test signed in as %s (auth %s): the service signs in as %s, whose sign-in this test did not try\n", osAccount(), c.Auth, account)
 		}
 	}
 	dir := config.SecretDir(*path)
@@ -286,13 +391,13 @@ func runInstanceAdd(ctx context.Context, args []string, stdin io.Reader) error {
 	if err != nil {
 		return err
 	}
-	pool, err := pgxpool.New(ctx, cfg.Repository.DSN())
+	pool, err := pgxpool.New(ctx, repoDSN)
 	if err != nil {
 		_ = config.RemoveSecret(dir, ref)
 		return fmt.Errorf("the repository: %w", err)
 	}
 	defer pool.Close()
-	if err := instanceWrite(ctx, pool, addPayload(*name, *platform, tags, c, ref, osAccount(), fileNamesOf(cfg))); err != nil {
+	if err := instanceWrite(ctx, pool, addPayload(*name, *platform, splitTags(tags), c, ref, osAccount(), fileNamesOf(cfg))); err != nil {
 		_ = config.RemoveSecret(dir, ref)
 		return fmt.Errorf("not added: %w", err)
 	}
@@ -332,9 +437,13 @@ func instanceRows(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) (
 	age := func(n string) string {
 		at, ok := last[n]
 		if !ok {
-			return "never"
+			return "no successful run now" // no collection whose last run succeeded (each keeps its last run only)
 		}
 		return time.Since(at).Round(time.Second).String() + " ago"
+	}
+	inFile := map[string]bool{}
+	for _, in := range cfg.Instances {
+		inFile[strings.ToLower(in.Name)] = true
 	}
 	var out []instanceRow
 	for _, in := range cfg.Instances {
@@ -356,6 +465,10 @@ func instanceRows(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) (
 		if off {
 			st = "disabled"
 		}
+		if inFile[strings.ToLower(n)] { // the collector reads the file's instance of that name, never this row
+			out = append(out, instanceRow{n, "page", e, "left out (pgvigil.yaml holds " + n + ")", "-"})
+			continue
+		}
 		out = append(out, instanceRow{n, "page", e, st, age(n)})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -375,7 +488,11 @@ func runInstanceList(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	pool, err := pgxpool.New(ctx, cfg.Repository.DSN())
+	repoDSN, err := repoDSNOf(*path, cfg)
+	if err != nil {
+		return err
+	}
+	pool, err := pgxpool.New(ctx, repoDSN)
 	if err != nil {
 		return fmt.Errorf("the repository: %w", err)
 	}
@@ -407,7 +524,11 @@ func runInstanceDisable(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	pool, err := pgxpool.New(ctx, cfg.Repository.DSN())
+	repoDSN, err := repoDSNOf(*path, cfg)
+	if err != nil {
+		return err
+	}
+	pool, err := pgxpool.New(ctx, repoDSN)
 	if err != nil {
 		return fmt.Errorf("the repository: %w", err)
 	}
@@ -417,4 +538,13 @@ func runInstanceDisable(ctx context.Context, args []string) error {
 	}
 	fmt.Printf("instance %s disabled; the collector stops reading it at its next inventory read\n", *name)
 	return nil
+}
+
+// splitTags splits each -tag on white space, as the page reads its tag field (-tag "env prod" is two tags).
+func splitTags(tags []string) []string {
+	var out []string
+	for _, t := range tags {
+		out = append(out, strings.Fields(t)...)
+	}
+	return out
 }

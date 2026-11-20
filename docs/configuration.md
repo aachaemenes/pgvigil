@@ -345,17 +345,29 @@ least); it opens server names, engines, platforms, versions and every figure to 
 On serve's host, after `pgvigil install`, the page's add, list and disable run headless:
 
 ```
-pgvigil instance add -config <pgvigil.yaml> -name pg7 -engine postgres -dsn-stdin [-platform auto] [-tag prod]... [-no-test] < the connection string
+pgvigil instance add -config <pgvigil.yaml> -name pg7 -engine postgres -dsn-stdin [-platform auto] [-tag prod]... [-no-test]
 pgvigil instance list -config <pgvigil.yaml>
 pgvigil instance disable -config <pgvigil.yaml> -name pg7
 ```
 
-`add` takes the page's own path: the connection string on stdin (never a flag; at a terminal it is not shown) read
-into the page's fields - the sign-ins the page takes, an az or Kerberos one stays in `pgvigil.yaml` - the page's
-connection test first (a refusal writes nothing; `-no-test` skips it), the credential sealed in `instances/` for the
-installed service's account (never for the administrator running the command: serve must keep reading it), and the
-page's repository function with the configuration's repository login, audited as `cli:<the account>`. `list` shows
-the file's and the page's instances with each one's last collection (`never` before the first). Where no pgvigil
+`add` takes the page's own path: the connection string on stdin - typed at the prompt (not shown) or piped
+(`echo <string> | ...` in a shell, `'<string>' | pgvigil ...` in PowerShell 7: Windows PowerShell 5.1 pipes ASCII, so a
+password character outside it arrives as `?`) - never a flag. It is read into the page's fields: the sign-ins the page
+takes (an az one stays in `pgvigil.yaml`; on Linux `windows` is Kerberos and is taken), only what the string itself
+names (a password, port or database the shell's `PGPASSWORD`, `PGPORT`, `PGDATABASE` or passfile would add is never
+taken; a `service=` or `PGSERVICE` is refused, and so is a key a page instance does not keep - each named - or a second
+host), every SQL Server option the string names. Before the string is read: the platform word checked against the
+engine's (the file's own words), `-config` against the installed service's configuration (another one is refused),
+the repository dsn resolved (a reference that resolves to nothing is refused with its reason), a name `pgvigil.yaml`
+holds refused. Then the page's connection test (a refusal writes nothing; `-no-test` skips it) - run as the account
+running the command: for a Windows, Kerberos or passfile sign-in the command says that the service's own sign-in was
+not tried - the credential written in `instances/` for the installed service's account (a 0600 file it owns on Linux,
+given to it through the open file; a DPAPI blob in its protected folder on Windows; never the administrator's: serve
+must keep reading it), and the page's repository function with the configuration's repository login, audited as
+`cli:<the account>` (on Linux the account by its uid and, under sudo, the login's own: `cli:root (login alice)`).
+`-tag` splits on white space as the page's field does. `list` shows the file's and the page's instances with each
+one's newest successful collection (`no successful run now` when no collection's last run succeeded: each keeps its
+last run only); a page instance that `pgvigil.yaml` also names is shown as left out, with no age. Where no pgvigil
 service is installed `add` is refused: the service's account owns the page's credentials.
 
 ## SQL Server schema history (mssql_schema)

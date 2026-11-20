@@ -384,16 +384,8 @@ func WriteSecretAs(dir, name, value, account string) (string, error) {
 	if _, err := rand.Read(rnd[:]); err != nil {
 		return "", err
 	}
-	ref, err := writeSecret(dir, name+"-"+hex.EncodeToString(rnd[:]), value)
-	if err != nil {
-		return "", err
-	}
-	path := strings.TrimPrefix(strings.TrimPrefix(ref, "file:"), "dpapi:")
-	if err := ownFileAs(path, account); err != nil {
-		_ = os.Remove(path)
-		return "", fmt.Errorf("the credential file's owner %s: %w", account, err)
-	}
-	return ref, nil
+	// the owner given through the open file before its rename (Windows: the folder's list, inherited)
+	return writeSecretOwned(dir, name+"-"+hex.EncodeToString(rnd[:]), value, account)
 }
 
 // FileSecretDir is the folder 'pgvigil secret seal' writes a file instance's sealed connection string into: secrets/
