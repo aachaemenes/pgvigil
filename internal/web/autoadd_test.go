@@ -234,7 +234,6 @@ type l237Rig struct {
 	closed   int
 	sfx      int64
 	sr       *sourceRow
-	inserted []int64
 }
 
 func newL237Rig(t *testing.T, withLogin bool) *l237Rig {
