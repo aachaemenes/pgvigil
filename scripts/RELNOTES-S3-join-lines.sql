@@ -9,6 +9,11 @@
     -- RELNOTES-S3 L9 (0455): an inline PostgreSQL password in pgvigil.yaml, as the collector's start lists it
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.inline_password_findings
 
+-- 1b. WIRING (rn-l9 S2): the arm is 'pgvigil collector''s own finding, so the Collector page's findings read it too -
+--     sqlCollectorFindings (internal/web/q_collector.go) gains, beside its other own arms, the same SELECT ... FROM
+--     pgvigil.inline_password_findings; TestCollectorFindingsReadsItsArms goes red on line 1 alone (KITWATCH's 0253
+--     line 22-23 did the same).
+
 -- 2. pgvigil.collector_shared_cause (0300): NOT joined - 'inline password' is a configuration fact, never a symptom a
 --    host or network cut explains, so it is sent as any finding while a parent stands (named here so the join leaves it out
 --    on purpose).

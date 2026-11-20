@@ -65,7 +65,7 @@ func inlineFindings(ctx context.Context, t *testing.T, tx pgx.Tx, ids ...int) []
 }
 
 // TestInlinePasswordFinding0455OnAStore (L9, migration 0455): a collector's start names the file instances whose dsn
-// carries an inline PostgreSQL password (import_collector_inline_passwords, its host's whole list each time); the
+// carries an inline PostgreSQL password (import_collector_inline_passwords, the run's whole list each time); the
 // view pgvigil.inline_password_findings (its arm into the findings union is a join line) holds one 'inline password'
 // warning per active instance so named on a host whose newest run is neither retired nor silent for a day, its detail
 // naming the host and 'pgvigil secret seal'. A later start without the instance clears it; an inactive instance, a name
@@ -93,8 +93,9 @@ func TestInlinePasswordFinding0455OnAStore(t *testing.T) {
 	}
 	for _, r := range got {
 		if r.severity != "warning" || r.setting != "inline password" || r.source != "pgvigil collector" ||
-			!strings.Contains(r.detail, col) || !strings.Contains(r.detail, "pgvigil secret seal") {
-			t.Errorf("a finding's shape: %+v (want warning / 'inline password' / 'pgvigil collector', the host and 'pgvigil secret seal' in the detail)", r)
+			!strings.Contains(r.detail, col) || !strings.Contains(r.detail, "pgvigil secret seal -name \""+r.value+"\"") ||
+			!strings.Contains(r.detail, "the whole connection string") || !strings.Contains(r.detail, "the password alone") {
+			t.Errorf("a finding's shape: %+v (want warning / 'inline password' / 'pgvigil collector', the host, the quoted seal command and rn-l9 B2's words - the whole connection string to env:/file:, the password alone to a passfile or password_secret - in the detail)", r)
 		}
 		if strings.Contains(r.detail, "password=") {
 			t.Errorf("the detail quotes a connection string: %q", r.detail)
@@ -154,5 +155,79 @@ func TestInlinePasswordImportIsTheCollectorsDoor0455OnAStore(t *testing.T) {
 	}
 	if write {
 		t.Error("pgvigil_collector may INSERT into collector_inline_password directly; the import is its only door")
+	}
+}
+
+// TestInlinePasswordRunsOfOneHost0455OnAStore (rn-l9 S1 / S8): each run of a host keeps its own list - a console run
+// started beside the service (0121's named case) neither replaces nor hides the service's list, a run that stopped
+// cleanly lists nothing, and the day's window is each run's own newest beat, never the host's newest start.
+func TestInlinePasswordRunsOfOneHost0455OnAStore(t *testing.T) {
+	ctx, tx, svc, sfx := inlineStore(t)
+	con := fmt.Sprintf("l9c-%d", sfx)
+	if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_heartbeat (collector_id, host, os, runs_as, version, pid, started_at, beat_at)
+		VALUES ($1, $2, 'linux', 'console', 'x', 2, now() - interval '10 minutes', now())`, con, svc); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]int{}
+	name := func(n string) string { return fmt.Sprintf("l9r-%s-%d", n, sfx) }
+	for _, n := range []string{"a", "b"} {
+		var id int
+		if err := tx.QueryRow(ctx, `INSERT INTO pgvigil.instances (name, platform) VALUES ($1, 'self-managed') RETURNING instance_id`, name(n)).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids[n] = id
+	}
+	imp := func(run string, names ...string) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, `SELECT pgvigil.import_collector_inline_passwords($1, $2)`, run, append([]string{}, names...)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	values := func() string {
+		var vs []string
+		for _, r := range inlineFindings(ctx, t, tx, ids["a"], ids["b"]) {
+			vs = append(vs, strings.TrimSuffix(strings.TrimPrefix(r.value, "l9r-"), fmt.Sprintf("-%d", sfx)))
+		}
+		return strings.Join(vs, ",")
+	}
+	imp(svc, name("a")) // the service lists a
+	imp(con, name("b")) // a console run on the same host lists b
+	if got := values(); got != "a,b" {
+		t.Fatalf("two live runs of one host listing a and b: findings %q, want a,b (one run's list never replaces another's)", got)
+	}
+	imp(con) // the console run's next list is empty: the service's a stands
+	if got := values(); got != "a" {
+		t.Fatalf("the console run listing none beside the service listing a: %q, want a", got)
+	}
+	imp(con, name("b"))
+	if _, err := tx.Exec(ctx, `UPDATE pgvigil.collector_heartbeat SET stopped_at = now() WHERE collector_id = $1`, con); err != nil {
+		t.Fatal(err)
+	}
+	if got := values(); got != "a" {
+		t.Fatalf("the console run stopped (the host's newest start, but over): %q, want the service's a alone", got)
+	}
+	imp(svc, name("a")) // the service's next write drops the stopped run's rows
+	var left int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM pgvigil.collector_inline_password WHERE collector_id = $1`, con).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Errorf("a stopped run's %d row(s) stayed after another run of its host wrote", left)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE pgvigil.collector_heartbeat SET beat_at = now() - interval '2 days' WHERE collector_id = $1`, svc); err != nil {
+		t.Fatal(err)
+	}
+	if got := values(); got != "" {
+		t.Fatalf("the service silent for two days: %q, want none (its list is not current)", got)
+	}
+	// N9: a run's rows go with its heartbeat row
+	if _, err := tx.Exec(ctx, `DELETE FROM pgvigil.collector_heartbeat WHERE collector_id = $1`, svc); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM pgvigil.collector_inline_password WHERE collector_id = $1`, svc).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Errorf("a deleted run's %d row(s) stayed", left)
 	}
 }

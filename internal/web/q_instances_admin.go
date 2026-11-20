@@ -42,6 +42,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/discover"
 	"github.com/aachaemenes/pgvigil/internal/engines"
@@ -925,7 +926,9 @@ func testConnectionList(ctx context.Context, engine, dsn string, sec *secrets.Re
 	case config.EnginePostgres:
 		pcfg, err := pgx.ParseConfig(dsn)
 		if err != nil {
-			return testResult{detail: err.Error()}
+			// rn-l9 B2: never pgconn's ParseConfigError - it carries the whole string and masks a password only in
+			// its usual spellings ('pgvigil check' prints this detail; a bare password behind env: or file: is a string)
+			return testResult{detail: collect.ErrUnparsedDSN.Error()}
 		}
 		if err := secrets.FillPG(cctx, pcfg, dsn, sec); err != nil {
 			return testResult{detail: err.Error()}

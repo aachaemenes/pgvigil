@@ -33,7 +33,9 @@ import (
 
 // inlinePasswordWords: the fix for an inline PostgreSQL password, in the words the load's WARN and 'pgvigil check'
 // share (L9; config.go's sqlserver refusal names the same two reference forms).
-const inlinePasswordWords = "its dsn carries an inline password: move it to a passfile, env:NAME, file:/path or password_secret - 'pgvigil secret seal' writes the file form (the inline form is discouraged)"
+// rn-l9 B2: env: and file: hold the WHOLE connection string, never the password alone; N3: the seal writes a dpapi:
+// reference on Windows, a file elsewhere.
+const inlinePasswordWords = "its dsn carries an inline password: move the whole connection string to env:NAME or file:/path - 'pgvigil secret seal -name <instance>' seals it (a dpapi: reference on Windows, a file elsewhere) - or the password alone to a passfile or password_secret (the inline form is discouraged)"
 
 // warnInlinePasswords (L9): the collector's load warns once for each PostgreSQL instance whose dsn in pgvigil.yaml
 // carries an inline password - the configuration keeps loading; the password itself is never logged.

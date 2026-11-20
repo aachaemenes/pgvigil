@@ -46,7 +46,8 @@ func ResolveDPAPI(string) (string, error) {
 	return "", errors.New("a dpapi: reference is read on Windows only")
 }
 
-// ownedLikeParent gives path the access its parent folder grants (SealFileSecret): the parent's owner and group, and
+// ownedLikeParent gives path the access its parent folder grants (OwnLikeFolder: config import's files; a seal takes
+// the configuration file's own access since rn-l9 S6, sealAccess): the parent's owner and group, and
 // its mode without the bits for others - a folder takes the parent's mode (0750 under the installer's root:<service
 // group> 0750 configuration folder, so the service's group enters it), a file 0640 when the parent's group may read,
 // else 0600 (the installer's own files are 0640 there). A run that is neither root nor the parent's owner cannot
@@ -128,4 +129,73 @@ func ownFileAs(path, account string) error {
 		return err
 	}
 	return os.Lchown(path, uid, gid)
+}
+
+// sealAccess (Linux and the rest; rn-l9 B1 / S6): path takes the configuration FILE's owner and group - the file the
+// service is known to read, never the folder it happens to sit in - a folder 0750 and a file 0640 when that file's
+// group may read, else 0700 and 0600; then the installed service's account (account; "" = none installed) must reach
+// it as its owner or through its group, or the seal is refused in words (a configuration the service reads through
+// its bits for others would leave the sealed file unreadable to it).
+func sealAccess(path, configPath, account string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	cst, err := os.Stat(configPath)
+	if err != nil {
+		return err
+	}
+	groupReads := cst.Mode().Perm()&0o040 != 0
+	mode := os.FileMode(0o600)
+	switch {
+	case st.IsDir() && groupReads:
+		mode = 0o750
+	case st.IsDir():
+		mode = 0o700
+	case groupReads:
+		mode = 0o640
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return err
+	}
+	own, ok1 := st.Sys().(*syscall.Stat_t)
+	cfg, ok2 := cst.Sys().(*syscall.Stat_t)
+	if !ok1 || !ok2 {
+		return nil
+	}
+	if own.Uid != cfg.Uid || own.Gid != cfg.Gid {
+		if err := os.Chown(path, int(cfg.Uid), int(cfg.Gid)); err != nil {
+			return fmt.Errorf("%s could not be given the owner of %s (run this as root or as that account): %w", path, configPath, err)
+		}
+	}
+	if account == "" {
+		return nil
+	}
+	u, err := user.Lookup(account)
+	if err != nil {
+		return fmt.Errorf("the service's account %s: %w", account, err)
+	}
+	gids, _ := u.GroupIds()
+	if !accountReaches(u.Uid, gids, cfg.Uid, cfg.Gid, groupReads) {
+		return fmt.Errorf("the service's account %s would not read %s (owner %d, group %d, mode %v, as %s's): give the configuration file a group the service is in, as the installer does (root:<the service's group>, 0640)",
+			account, path, cfg.Uid, cfg.Gid, mode, configPath)
+	}
+	return nil
+}
+
+// accountReaches: an account (its uid and group ids) reaches a sealed path owned uid:gid as its owner, or through the
+// group when the group may read.
+func accountReaches(uid string, gids []string, fileUID, fileGID uint32, groupReads bool) bool {
+	if uid == strconv.FormatUint(uint64(fileUID), 10) {
+		return true
+	}
+	if !groupReads {
+		return false
+	}
+	for _, g := range gids {
+		if g == strconv.FormatUint(uint64(fileGID), 10) {
+			return true
+		}
+	}
+	return false
 }

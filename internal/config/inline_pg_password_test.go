@@ -28,6 +28,10 @@ func TestHasInlinePGPassword(t *testing.T) {
 		{"host=db user=u password=pw application_name=svc://collector", true},
 		{"password=a://b host=db", true},
 		{"host=db application_name=svc://collector user=u", false},
+		// rn-l9 N1: an empty password is none, in the URL's userinfo or its query
+		{"postgres://u:@h/db", false},
+		{"postgresql://h/db?password=", false},
+		{"host=db password=s3cret application_name=http://x", true},
 	} {
 		if got := HasInlinePGPassword(c.dsn); got != c.want {
 			t.Errorf("HasInlinePGPassword(%q) = %v, want %v", c.dsn, got, c.want)

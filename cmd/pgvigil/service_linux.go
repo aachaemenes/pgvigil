@@ -309,7 +309,7 @@ func uninstallService(log *slog.Logger, o installOptions) error {
 		}
 		log.Info("removed", "binary", o.Bin)
 	} else {
-		fmt.Printf("the service is gone; %s and %s are kept (-purge removes the installer's files; the page's instances/ and sources/ go with uninstall -all).\n", filepath.Dir(o.Config), o.Bin)
+		fmt.Printf("the service is gone; %s and %s are kept (-purge removes the installer's files; the credential folders instances/, sources/ and secrets/ go with uninstall -all).\n", filepath.Dir(o.Config), o.Bin)
 	}
 	fmt.Printf("the account %s is kept; remove it with: userdel %s\n", o.User, o.User)
 	return nil

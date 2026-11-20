@@ -52,22 +52,47 @@ A word after the flags (`pgvigil check /etc/pgvigil/pgvigil.yaml`) is a usage er
 
 ## Keeping a password out of pgvigil.yaml
 
+This section is about an instance's `dsn`. The repository's `dsn`, `reports_dsn`, `alerts_dsn` and an instance's
+`pgbouncer:` are PostgreSQL connection strings in the same file and take the same forms below, but an inline password
+there is not warned on.
+
 A PostgreSQL instance's `dsn` may hold its password inline, and such a configuration keeps loading - but the
-collector warns at every start, `pgvigil check` lists the instance, and the form is discouraged: the file is read by
-whoever reads the configuration, and backups carry it. The other forms: a libpq passfile (`passfile=` in the dsn),
-`env:NAME`, `file:/path`, `password_secret` (AWS Secrets Manager), or a sealed file:
+collector warns at every start, `pgvigil check` lists the instance, and `pgvigil run`'s start makes it a finding on
+the instance (*inline password*, on the instance's page and the Findings page, with the host and the fix; it clears
+at the next start after the fix; a scheduled `pgvigil collect` warns but makes no finding). The form is discouraged:
+pgvigil.yaml is pasted, diffed and kept in configuration repositories, and the password goes with it. The other
+forms:
+
+- the **whole connection string** in `env:NAME` or `file:/path` - pgvigil reads the variable or the file as the
+  complete dsn (`host=... user=... password=...`), never a password alone: a bare password there is read as a
+  connection string that does not parse;
+- the **password alone** in a libpq passfile (`passfile=` in the dsn) or `password_secret` (AWS Secrets Manager);
+- the whole connection string **sealed**:
 
 ```
 pgvigil secret seal -name pg1 [-config pgvigil.yaml] < the connection string     (typed at a terminal, it is not shown)
-dsn: file:/etc/pgvigil/secrets/pg1-3f9c2a1b77e0.dsn
+dsn: file:/etc/pgvigil/secrets/pg1-3f9c2a1b77e0.dsn                               (Linux)
+dsn: dpapi:C:\ProgramData\pgvigil\secrets\pg1-3f9c2a1b77e0.dpapi                    (Windows)
 ```
 
-The command takes the connection string on stdin - never as an argument - writes it to `secrets/` beside the
-configuration and prints the line to put under the instance in place of its `dsn`. On Linux that is a file with the
-configuration folder's owner and group - mode 0640 under the installer's 0750 folder, so the service reads it as its
-group, 0600 elsewhere (run it as root or as the folder's owner); on Windows a DPAPI blob at
-machine scope and a `dpapi:` reference, readable through the configuration folder's own access list. Each seal
-writes a new file; `pgvigil uninstall -all` removes the folder.
+The command takes the connection string on stdin - never as an argument - and judges first that the configuration
+loads and that `-name` is one of its PostgreSQL instances: give `-config` the service's own file (an elevated prompt
+starts in `C:\Windows\system32`, where the default `pgvigil.yaml` is not). It writes `secrets/` beside the
+configuration and prints the line to put under the instance in place of its `dsn`.
+
+- **On Linux** the sealed file is plain text with pgvigil.yaml's own owner and group - 0640 in a 0750 folder when
+  pgvigil.yaml's group may read (the installer's root:<the service's group> form), 0600 in a 0700 folder when it may
+  not - so it is exactly as readable as pgvigil.yaml itself: what it gains is that pgvigil.yaml no longer holds the
+  password. The installed service's account must be able to read it as its owner or through its group, or the seal
+  is refused and says why (a pgvigil.yaml the service reads through its bits for others is such a case). Run it as
+  root or as pgvigil.yaml's owner.
+- **On Windows** it is a DPAPI blob at machine scope and a `dpapi:` reference; `secrets/` gets its own protected
+  access list - SYSTEM, the Administrators and the installed service's account - whatever the folder above it allows.
+  In Windows PowerShell 5.1 type the string at the prompt rather than piping it: 5.1 pipes text to a program in
+  ASCII by default, which turns any other character of a password into `?`.
+
+Each seal writes a new file and leaves the previous one, with the password it held: the command names those files,
+to delete once pgvigil.yaml points at the new line. `pgvigil uninstall -all` removes the folder.
 
 A `dpapi:` blob opens only on the host that sealed it (machine scope): a configuration folder copied to a new server,
 or a host rebuilt, keeps the reference and loses the secret. pgvigil has no key to offer for it and keeps no

@@ -119,3 +119,34 @@ func prepareDirAs(dir, account string) error {
 
 // ownFileAs (Windows): nothing - the file inherits the folder's list.
 func ownFileAs(string, string) error { return nil }
+
+// sealAccess (Windows; rn-l9 B1): a sealed secret's folder gets a protected list - SYSTEM and the Administrators full,
+// the installed service's account read (account; "" = none installed: the first two alone) - never the list of
+// wherever the folder sits (an elevated prompt starts in System32, whose list lets every local account read); a file
+// under it takes that list by inheritance.
+func sealAccess(path, _ string, account string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return nil
+	}
+	sddl := "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	if account != "" {
+		sid, _, _, err := windows.LookupSID("", account)
+		if err != nil {
+			return fmt.Errorf("the service's account %s: %w", account, err)
+		}
+		sddl += "(A;OICI;FR;;;" + sid.String() + ")"
+	}
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+}

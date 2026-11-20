@@ -169,6 +169,10 @@ SET statement_timeout = '30s';
 SET lock_timeout = '2s';
 SET application_name = 'pgvigil';`
 
+// ErrUnparsedDSN is the failed connect of a dsn that does not parse, in fixed words (rn-l9 B2): its own text is never
+// shown, as it may hold a password.
+var ErrUnparsedDSN = errors.New("the dsn does not parse as a PostgreSQL connection string (its text is not shown: it may hold a password; env: and file: hold the whole connection string)")
+
 // Connect opens one connection to an instance with the safety settings applied.
 func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	dsn := in.DSN()
@@ -178,6 +182,11 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	// task 201 DONE-2 (N10): pgx.Connect's own two steps, with DefaultConnectTimeout where the DSN sets no
 	// connect_timeout; a DSN that does not parse is a failed connect, as before
 	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		// rn-l9 B2: never pgconn's ParseConfigError - it carries the whole string and masks a password only in its
+		// usual spellings; a bare password behind env: or file: would reach the streak, the findings and the logs
+		err = ErrUnparsedDSN
+	}
 	var conn *pgx.Conn
 	var took time.Duration
 	if err == nil {

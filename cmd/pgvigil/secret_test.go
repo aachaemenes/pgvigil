@@ -25,7 +25,8 @@ func TestSecretSealWritesAFileRefL9(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := filepath.Join(dir, "pgvigil.yaml")
-	if err := os.WriteFile(cfg, []byte("repository:\n  dsn: env:X\n"), 0o600); err != nil {
+	noServiceAccount(t)
+	if err := os.WriteFile(cfg, []byte(sealCfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	value := "host=db1 user=pgvigil password=s3cret-zz dbname=postgres"
@@ -83,7 +84,8 @@ func TestSecretSealFollowsTheInstallersAccessL9(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := filepath.Join(dir, "pgvigil.yaml")
-	if err := os.WriteFile(cfg, []byte("repository:\n  dsn: env:X\n"), 0o640); err != nil {
+	noServiceAccount(t)
+	if err := os.WriteFile(cfg, []byte(sealCfg), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
@@ -96,5 +98,89 @@ func TestSecretSealFollowsTheInstallersAccessL9(t *testing.T) {
 	}
 	if st, err := os.Stat(p); err != nil || st.Mode().Perm() != 0o640 {
 		t.Errorf("the sealed file under a 0750 configuration folder: %v %v, want 0640 (the service's group reads it)", st.Mode().Perm(), err)
+	}
+}
+
+// sealCfg: a configuration with the PostgreSQL instance pg1 the seals are for (rn-l9 B1: -name must be one), a SQL
+// Server instance ms1 beside it.
+const sealCfg = "repository:\n  dsn: env:X\ninstances:\n  - name: pg1\n    dsn: \"host=h user=u dbname=d\"\n" +
+	"  - name: 'db1:5432 prod'\n    dsn: \"host=h2 user=u dbname=d\"\n" +
+	"  - name: ms1\n    engine: sqlserver\n    dsn: env:Y\n"
+
+// noServiceAccount seals for no installed service, whatever the test host has installed.
+func noServiceAccount(t *testing.T) {
+	t.Helper()
+	old := sealServiceAccount
+	sealServiceAccount = func() string { return "" }
+	t.Cleanup(func() { sealServiceAccount = old })
+}
+
+// TestSecretSealJudgesTheTargetFirstL9 (rn-l9 B1, S4, N4): a configuration that does not exist (the relative default
+// from an elevated prompt in System32) is refused and nothing is written anywhere; a -name that is no PostgreSQL
+// instance of the file - unknown, a SQL Server one, a connection string typed as the name - is refused without
+// echoing it; a positional argument is refused by its count alone.
+func TestSecretSealJudgesTheTargetFirstL9(t *testing.T) {
+	noServiceAccount(t)
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "pgvigil.yaml")
+	if err := secretSeal(missing, "pg1", strings.NewReader("host=h password=zz"), &bytes.Buffer{}); err == nil {
+		t.Error("a seal beside a configuration that does not exist was accepted")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "secrets")); err == nil {
+		t.Error("a refused seal made secrets/ beside a missing configuration")
+	}
+	cfg := filepath.Join(dir, "real.yaml")
+	if err := os.WriteFile(cfg, []byte(sealCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"pg9", "ms1", "host=db password=s3cret-zz"} {
+		err := secretSeal(cfg, name, strings.NewReader("host=h password=zz"), &bytes.Buffer{})
+		if err == nil {
+			t.Errorf("-name %q was accepted: it is no PostgreSQL instance of the file", name)
+			continue
+		}
+		if strings.Contains(err.Error(), "s3cret-zz") {
+			t.Errorf("the refusal echoes what -name held: %v", err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "secrets")); err == nil {
+		t.Error("a refused -name made secrets/")
+	}
+	err := runSecret([]string{"seal", "-config", cfg, "-name", "pg1", "host=db password=s3cret-zz"})
+	if err == nil || strings.Contains(err.Error(), "s3cret-zz") || !strings.Contains(err.Error(), "1 argument") {
+		t.Errorf("a positional argument: %v, want a refusal naming its count and never its text", err)
+	}
+	if err := runSecret([]string{"seal", "-h"}); err != nil {
+		t.Errorf("secret seal -h: %v, want no failure", err)
+	}
+}
+
+// TestSecretSealTakesAnyInstanceNameL9 (rn-l9 N2, N4): an instance name pgvigil.yaml takes ('db1:5432 prod') is sealed
+// under a safe file stem; a byte-order mark from a PowerShell pipe is dropped; an input over 64 KiB is refused, never
+// cut short.
+func TestSecretSealTakesAnyInstanceNameL9(t *testing.T) {
+	noServiceAccount(t)
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(dir, "pgvigil.yaml")
+	if err := os.WriteFile(cfg, []byte(sealCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := secretSeal(cfg, "db1:5432 prod", strings.NewReader("\ufeffhost=h2 password=zz\n"), &out); err != nil {
+		t.Fatalf("an instance name with ':' and a space: %v", err)
+	}
+	ref := strings.TrimPrefix(strings.TrimSpace(out.String()), "dsn: ")
+	if !strings.Contains(ref, string(filepath.Separator)+"db1_5432_prod-") {
+		t.Errorf("the file's stem: %q, want db1_5432_prod-<random>", ref)
+	}
+	if got := config.Resolve(ref); got != "host=h2 password=zz" {
+		t.Errorf("the sealed value %q: the byte-order mark is no part of it", got)
+	}
+	big := strings.Repeat("x", 64<<10+1)
+	if err := secretSeal(cfg, "pg1", strings.NewReader(big), &bytes.Buffer{}); err == nil {
+		t.Error("an input over 64 KiB was sealed")
 	}
 }
