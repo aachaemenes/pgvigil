@@ -28,6 +28,18 @@ func runConfig(args []string) error {
 	return &usageError{fmt.Errorf("config %s: export or import", args[0])}
 }
 
+// exportPasswordMin: the shortest password an export is sealed under - the file holds the repository's login and
+// every monitored server's credential, and a guess costs one scrypt derivation (about a tenth of a second a core)
+const exportPasswordMin = 12
+
+// checkExportPassword refuses an export password under exportPasswordMin characters, saying why.
+func checkExportPassword(pw string) error {
+	if n := len([]rune(pw)); n < exportPasswordMin {
+		return fmt.Errorf("the export's password is %d characters: it seals every credential of this host, so it takes at least %d (a passphrase of a few words does); nothing written", n, exportPasswordMin)
+	}
+	return nil
+}
+
 // readExportPassword reads the export's password: at a terminal not shown (and asked twice for an export), from a
 // pipe its one line.
 func readExportPassword(twice bool) (string, error) {
@@ -41,6 +53,9 @@ func readExportPassword(twice bool) (string, error) {
 		fmt.Fprintln(os.Stderr)
 		if err != nil {
 			return "", fmt.Errorf("-password-stdin: %w", err)
+		}
+		if strings.TrimSpace(string(b)) == "" {
+			return "", errors.New("no password was typed: nothing written")
 		}
 		return readServicePassword(strings.NewReader(string(b)))
 	}
@@ -96,6 +111,9 @@ func runConfigExport(args []string) error {
 		if err != nil {
 			return err
 		}
+		if err := checkExportPassword(pw); err != nil {
+			return err
+		}
 		dir, err := filepath.Abs(filepath.Dir(*path))
 		if err != nil {
 			return err
@@ -104,6 +122,11 @@ func runConfigExport(args []string) error {
 		if err != nil {
 			return err
 		}
+		left, err := exportLeftBehind(*path)
+		if err != nil {
+			return err
+		}
+		said = append(said, left...)
 		plain, err := json.Marshal(pl)
 		if err != nil {
 			return err
@@ -131,7 +154,7 @@ func runConfigExport(args []string) error {
 
 func runConfigImport(args []string) error {
 	fs := flag.NewFlagSet("pgvigil config import", flag.ContinueOnError)
-	path := fs.String("config", "pgvigil.yaml", "the configuration file to write; its folder made by 'pgvigil install'")
+	path := fs.String("config", "", "the configuration file to write, named whole (required; its folder made by 'pgvigil install': /etc/pgvigil/pgvigil.yaml, %ProgramData%\\pgvigil\\pgvigil.yaml)")
 	pwStdin := fs.Bool("password-stdin", false, "the export's password, read from stdin (required)")
 	force := fs.Bool("force", false, "import over the configuration there; each file written over is kept as <file>.previous")
 	if err := fs.Parse(args); err != nil {
@@ -140,8 +163,8 @@ func runConfigImport(args []string) error {
 		}
 		return &usageError{err}
 	}
-	if !*pwStdin || fs.NArg() != 1 {
-		return &usageError{errors.New("config import takes -password-stdin and the export's file: pgvigil config import [-config f] -password-stdin [-force] <file>")}
+	if !*pwStdin || fs.NArg() != 1 || strings.TrimSpace(*path) == "" {
+		return &usageError{errors.New("config import takes -config (the installed configuration, named whole: never the current folder), -password-stdin and the export's file: pgvigil config import -config <file> -password-stdin [-force] <file>")}
 	}
 	data, err := os.ReadFile(fs.Arg(0))
 	if err != nil {
@@ -159,7 +182,8 @@ func runConfigImport(args []string) error {
 	if err := json.Unmarshal(plain, &pl); err != nil {
 		return fmt.Errorf("the export opened but its content is not read by this build: %v", err)
 	}
-	notes, err := importExport(pl, *path, *force, importWrite, runtime.GOOS == "windows")
+	// the page's credential folders go to the installed service's account, as 'instance add' writes them
+	notes, err := importExport(pl, *path, *force, importWriteAs(serviceAccountForSecrets()), runtime.GOOS == "windows")
 	if err != nil {
 		return err
 	}

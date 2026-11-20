@@ -347,6 +347,19 @@ func WriteSecret(dir, name, value string) (string, error) {
 	return writeSecret(dir, name+"-"+hex.EncodeToString(rnd[:]), value)
 }
 
+// PrepareDirAs gives dir the protected access of the page's credential folders, held by account (the installed
+// service's): 0700 as it elsewhere, SYSTEM, the Administrators and the account on Windows (config import's
+// instances/ and sources/).
+func PrepareDirAs(dir, account string) error {
+	if err := knownAccount(account); err != nil {
+		return err
+	}
+	return prepareDirAs(dir, account)
+}
+
+// OwnFileAs gives a credential file to account: 0600 as it elsewhere; on Windows the file takes its folder's list.
+func OwnFileAs(path, account string) error { return ownFileAs(path, account) }
+
 // WriteSecretAs is WriteSecret for an account that is not this process's (RELNOTES L170: 'pgvigil instance add', run
 // by an administrator, writes the page's credential for the service's account): the folder's access and the file's
 // owner are that account's, so serve keeps reading every page credential. An account that does not exist is refused

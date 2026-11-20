@@ -68,12 +68,12 @@ func TestConfigImportL155(t *testing.T) {
 		t.Errorf("a refused import wrote %d entries", len(left))
 	}
 	var sealedPaths []string
-	fake := func(dir string, f exportFile) error {
+	fake := func(dir string, f exportFile, target string) error {
 		if f.DPAPI {
 			sealedPaths = append(sealedPaths, f.Path)
-			return nil
+			return os.WriteFile(target, []byte("sealed here"), 0o600)
 		}
-		return importWrite(dir, f)
+		return importWrite(dir, f, target)
 	}
 	if _, err := importExport(sealed, filepath.Join(empty, "pgvigil.yaml"), false, fake, true); err != nil || strings.Join(sealedPaths, " ") != "instances/9.dpapi" {
 		t.Errorf("a DPAPI entry where DPAPI seals: %v, sealed %q", err, sealedPaths)

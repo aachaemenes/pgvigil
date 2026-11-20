@@ -8,7 +8,11 @@
 #      string nor its password in clear; neither does the command's output
 #   N1 an import with a wrong password is refused and writes nothing
 #   I1 the folder emptied (a new host's state), 'config import -password-stdin' exits 0 and the blob is back at the
-#      same path - sealed anew (other bytes) and opened by ProtectedData at LocalMachine scope to the same string
+#      same path - sealed anew (other bytes), its blob's flags holding CRYPTPROTECT_LOCAL_MACHINE (0x4; the flags word
+#      read at offset 40, after the blob's version, provider GUID, master key version and master key GUID - the
+#      layout [inferred] from the documented blob format: a FAIL here prints the word read), and opened to the same
+#      string (Unprotect does not check the scope it is given, so the flag is the scope's proof); neither the export's
+#      nor the import's output holds the export's password
 #   X1 'config export -no-secrets' marks the dpapi: reference not portable
 #   Z  the proof's folder removed, read back
 # Not proven here: a move between two machines (one VM: the import seals for the same machine key).
@@ -25,6 +29,11 @@ function Invoke-Native([scriptblock]$cmd) {
 $failed = 0
 function Row([string]$name, [bool]$ok, [string]$what) {
     if ($ok) { Write-Host "OK   $name $what" } else { Write-Host "FAIL $name $what"; $script:failed++ }
+}
+# the DPAPI blob's flags word: dwVersion, guidProvider, dwMasterKeyVersion, guidMasterKey, then dwFlags (offset 40)
+function Get-BlobFlags([byte[]]$bytes) {
+    if ($bytes.Length -lt 44) { return -1 }
+    return [BitConverter]::ToUInt32($bytes, 40)
 }
 function Open-Blob([string]$path) {
     $bytes = [IO.File]::ReadAllBytes($path)
@@ -55,7 +64,7 @@ try {
     # E1
     $res = Invoke-Native { $exportPw | & $Exe config export -config $cfg -password-stdin -out $move }
     $text = if (Test-Path -LiteralPath $move) { [IO.File]::ReadAllText($move, [Text.Encoding]::GetEncoding(28591)) } else { '' }
-    Row 'E1' ($res.Code -eq 0 -and $text.StartsWith('PGVIGIL CONFIGURATION EXPORT') -and -not $text.Contains($pwSecret) -and -not $text.Contains('pg1.example') -and -not $res.Out.Contains($pwSecret)) "export (exit $($res.Code)): the header, no secret in the file or the output"
+    Row 'E1' ($res.Code -eq 0 -and $text.StartsWith('PGVIGIL CONFIGURATION EXPORT') -and -not $text.Contains($pwSecret) -and -not $text.Contains('pg1.example') -and -not $res.Out.Contains($pwSecret) -and -not $res.Out.Contains($exportPw) -and -not $text.Contains($exportPw)) "export (exit $($res.Code)): the header, no secret in the file or the output"
 
     # N1
     Remove-Item -LiteralPath $dir -Recurse -Force
@@ -70,7 +79,9 @@ try {
     $reopened = if ($back -and (Test-Path -LiteralPath $back)) { Open-Blob $back } else { '' }
     $after = if ($reopened) { [IO.File]::ReadAllBytes($back) } else { @() }
     $differs = ($after.Length -gt 0) -and (($after.Length -ne $before.Length) -or (@(Compare-Object $after $before -SyncWindow 0).Count -gt 0))
-    Row 'I1' ($res.Code -eq 0 -and $reopened -eq $dsn -and $differs -and (Test-Path -LiteralPath $cfg)) "import (exit $($res.Code)): the blob back at its path, sealed anew $differs, opens to the string $($reopened -eq $dsn)"
+    $flags = if ($after.Length) { Get-BlobFlags $after } else { -1 }
+    $machine = ($flags -ge 0) -and (($flags -band 4) -ne 0)
+    Row 'I1' ($res.Code -eq 0 -and $reopened -eq $dsn -and $differs -and $machine -and -not $res.Out.Contains($exportPw) -and (Test-Path -LiteralPath $cfg)) "import (exit $($res.Code)): the blob's flags 0x$('{0:X}' -f $flags) (machine scope $machine), back at its path, sealed anew $differs, opens to the string $($reopened -eq $dsn)"
 
     # X1
     $masked = Join-Path $root 'masked.yaml'

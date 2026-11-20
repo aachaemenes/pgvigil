@@ -26,12 +26,13 @@ instances:
     engine: sqlserver
     dsn: Server=h2;User Id=u2;Password=semisecret;Database=d
 alerts:
-  channels:
-    - name: ops
-      kind: slack
+  - name: ops
+    kind: webhook
+    webhook:
       url: https://hooks.slack.com/services/T000/B000/slacksecret
-    - name: pd
-      kind: pagerduty
+  - name: pd
+    kind: pagerduty
+    pagerduty:
       routing_key: pdsecret
 query_text: full
 `
