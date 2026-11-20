@@ -9,7 +9,8 @@
 #   V1 the default install runs the service as NT SERVICE\pgvigil and the service manager logs it on (no 1069)
 #   N0 -user .\<test account> without -password-stdin is refused naming -password-stdin, and no service is made
 #   N1 the password piped to -password-stdin: the service runs as the account, the install's line says the right is held
-#   N2 secedit's export lists the account's SID under SeServiceLogonRight; the service manager logs it on (no 1069)
+#   N2 secedit's export lists the account under SeServiceLogonRight - by name or '*SID', either read as its SID (the
+#      export writes an account that resolves by its name); the service manager logs it on (no 1069)
 #   N3 the password is in no output of the install and in no file under %ProgramData%\pgvigil
 #   R1 'pgvigil install' run again without -user keeps the account (and its stored password: logged on again)
 #   U1 'pgvigil uninstall -all -dry-run' lists the right as kept; 'pgvigil uninstall' removes the service, the right stays
@@ -17,6 +18,8 @@
 #      non-ASCII character: the service is made, and the service manager's logon FAILS (the password arrived with a
 #      '?' in place of that character); NOT RUN under PowerShell 7, whose pipe is UTF-8 already
 #   P1 install.ps1's password pipe as it is, the same password: the service manager logs the account on
+#   P1d install.ps1's pipe, the same scope shape, hands a native reader the password's UTF-8 ('P1D True <bytes>'; the
+#      reader compares a SHA-256, never prints the bytes) - read where P1 asks why a logon failed
 #   G1 -print-gmsa prints the script and changes nothing; install.ps1 parses and its -Help returns
 #   Z  the undo: the right removed (LsaRemoveAccountRights) and read back gone from a secedit export that succeeded, the
 #      account's profile removed (Win32_UserProfile) and its folder gone, the account deleted, the service and its files
@@ -76,9 +79,16 @@ function Get-LogonRightSids {
     try {
         if ($res.Code -ne 0 -or -not (Test-Path -LiteralPath $inf)) { return @{ Ok = $false; Sids = @() } }
         $line = Get-Content -LiteralPath $inf | Where-Object { $_ -match '^SeServiceLogonRight\s*=' } | Select-Object -First 1
-        $list = @()
-        if ($line) { $list = @(($line -split '=', 2)[1].Split(',') | ForEach-Object { $_.Trim().TrimStart('*') }) }
-        return @{ Ok = $true; Sids = $list }
+        $raw = @()
+        if ($line) { $raw = @(($line -split '=', 2)[1].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+        # secedit writes '*' before a SID and an account that resolves by its name: either form read as its SID
+        $list = @($raw | ForEach-Object {
+                $e = $_.TrimStart('*')
+                if ($e -match '^S-1-') { $e } else {
+                    try { (New-Object Security.Principal.NTAccount($e)).Translate([Security.Principal.SecurityIdentifier]).Value } catch { $e }
+                }
+            })
+        return @{ Ok = $true; Sids = $list; Raw = ($raw -join ', ') }
     } finally { Remove-Item -LiteralPath $inf -Force -ErrorAction SilentlyContinue }
 }
 # one start of the service, read: sc.exe's exit (1069 = a logon failure) and the System log's logon-failure events for
@@ -89,14 +99,41 @@ function Get-StartResult {
     Start-Sleep -Seconds 3
     $logonFailed = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 7000, 7038, 7041; StartTime = $t0 } -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'pgvigil' }).Count
     $startName = (Get-CimInstance Win32_Service -Filter "Name='pgvigil'").StartName
+    # the newest logon failure's own words (the account and the reason, never a password)
+    $said = ''
+    if ($logonFailed) {
+        $m = "$(@(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 7000, 7038, 7041; StartTime = $t0 } -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'pgvigil' })[0].Message)" -replace '\s+', ' '
+        $said = $m.Substring(0, [Math]::Min(220, $m.Length))
+    }
     $null = Invoke-Native { & sc.exe stop pgvigil }
     Start-Sleep -Seconds 2
-    return @{ LoggedOn = (($res.Code -ne 1069) -and ($logonFailed -eq 0)); StartName = $startName; What = "sc start $($res.Code), logon-failure events $logonFailed" }
+    return @{ LoggedOn = (($res.Code -ne 1069) -and ($logonFailed -eq 0)); StartName = $startName; What = "sc start $($res.Code), logon-failure events $logonFailed$(if ($said) { ': ' + $said })" }
 }
 function Start-AndRead([string]$row) {
     $st = Get-StartResult
     Row $row $st.LoggedOn "the service manager logged pgvigil on as $($st.StartName) ($($st.What))"
     return $st.StartName
+}
+# P1d's reader: install.ps1's Invoke-Native and Invoke-PgvigilInstall as the file defines them, the same scope shape,
+# its native command swapped for a reader that prints only whether the bytes it got are the password's UTF-8 (the
+# SHA-256 compared in the reader; never the bytes) and how many there were
+function Invoke-ScriptPipeReader([string]$secret) {
+    $tokens = $null; $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Script, [ref]$tokens, [ref]$parseErrors)
+    $defs = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ($node.Name -eq 'Invoke-Native' -or $node.Name -eq 'Invoke-PgvigilInstall') }, $true)
+    $text = ($defs | ForEach-Object { $_.Extent.Text }) -join "`n"
+    $target = '& $exePath install -user $account -password-stdin'
+    if (-not $text.Contains($target)) { return @{ Code = -1; Out = "P1D the pipe line '$target' is not in install.ps1" } }
+    $text = $text.Replace($target, '& powershell.exe -NoProfile -NonInteractive -EncodedCommand $readerCmd')
+    $reader = '$in = [Console]::OpenStandardInput(); $ms = New-Object IO.MemoryStream; $in.CopyTo($ms); $b = $ms.ToArray(); $n = $b.Length; while ($n -gt 0 -and ($b[$n - 1] -eq 10 -or $b[$n - 1] -eq 13)) { $n-- }; $h = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($b, 0, $n)).Replace(''-'', '''').ToLower(); ''P1D '' + ($h -eq $env:PGV_P1D_WANT) + '' '' + $n'
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($reader))
+    $env:PGV_P1D_WANT = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($secret))).Replace('-', '').ToLower()
+    try {
+        $body = 'param($exePath, $acctName, $secretText, $readerCmd)' + "`n" + $text + "`n" +
+            'function Read-Host { param([switch]$AsSecureString, [Parameter(Position = 0)][string]$Prompt) ConvertTo-SecureString $secretText -AsPlainText -Force }' + "`n" +
+            'Invoke-PgvigilInstall $exePath $acctName'
+        return & ([scriptblock]::Create($body)) 'reader.exe' '.\pgvp-reader' $secret $encoded
+    } finally { Remove-Item Env:\PGV_P1D_WANT -ErrorAction SilentlyContinue }
 }
 # install.ps1's own password pipe, run in a scope of its own: its Invoke-Native and Invoke-PgvigilInstall as the file
 # defines them (parsed out of it), Read-Host answering the given password; -WithoutUtf8 drops the $OutputEncoding line
@@ -135,7 +172,7 @@ try {
     $res = Invoke-Native { $pw | & $Exe install -user $acct -password-stdin }
     Row 'N1' ($res.Code -eq 0 -and $res.Out -match 'Log on as a service' -and $res.Out -match 'read back held') "the install with -password-stdin: exit $($res.Code), the right's line printed"
     $rights = Get-LogonRightSids
-    Row 'N2' ($rights.Ok -and $rights.Sids -contains $sid.Value) "secedit (export ok $($rights.Ok)) lists $($sid.Value) under SeServiceLogonRight"
+    Row 'N2' ($rights.Ok -and $rights.Sids -contains $sid.Value) "secedit (export ok $($rights.Ok)) lists $($sid.Value) under SeServiceLogonRight, by name or SID (its entries: $("$($rights.Raw)".Substring(0, [Math]::Min(200, "$($rights.Raw)".Length))))"
     $sn = Start-AndRead 'N2'
     Row 'N2' ($sn -match [regex]::Escape($name)) "the service's account '$sn'"
     $inFiles = @(Get-ChildItem -LiteralPath (Join-Path $env:ProgramData 'pgvigil') -Recurse -File -ErrorAction SilentlyContinue | Select-String -SimpleMatch -Pattern $pw -List).Count
@@ -167,6 +204,10 @@ try {
     $res = Invoke-ScriptPipe $acct $pwU
     $st = Get-StartResult
     Row 'P1' ($res.Code -eq 0 -and $st.LoggedOn) "install.ps1's pipe as it is under $($PSVersionTable.PSVersion): install exit $($res.Code), logged on as $($st.StartName) ($($st.What))"
+    # P1d: the bytes that pipe hands a native command, read where P1's question is (never the bytes themselves)
+    $rd = Invoke-ScriptPipeReader $pwU
+    $rdLine = ("$($rd.Out)" -split "`n" | Where-Object { $_ -match '^P1D ' } | Select-Object -First 1)
+    Row 'P1d' ($rdLine -match '^P1D True ') "install.ps1's pipe hands a native reader the password's UTF-8 under $($PSVersionTable.PSVersion): $(if ($rdLine) { $rdLine } else { 'no answer: ' + $rd.Out })"
     $null = Invoke-Native { & $Exe uninstall }
     $pwU = $null
 
@@ -187,9 +228,13 @@ try {
         $left = Get-LogonRightSids
         Row 'Z' ($rc -eq 0 -and $left.Ok -and -not ($left.Sids -contains $sid.Value)) "the right removed from $($sid.Value) (code $rc) and read back gone (export ok $($left.Ok))"
         # the profile the service's logon made (C:\Users\<name> and its registry key): Remove-LocalUser leaves both
+        # its hive stays loaded a while after the service's process ends: the delete waits for it (up to 90 s, read)
         $profiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { $_.SID -eq $sid.Value })
         $profilePath = if ($profiles.Count) { $profiles[0].LocalPath } else { '' }
-        $profiles | Remove-CimInstance -ErrorAction SilentlyContinue
+        $waited = 0
+        while ($waited -lt 90 -and @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { $_.SID -eq $sid.Value -and $_.Loaded }).Count) { Start-Sleep -Seconds 3; $waited += 3 }
+        if ($profiles.Count) { Write-Host "     the profile's hive unloaded after $waited s of waiting (90 at most)" }
+        @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { $_.SID -eq $sid.Value }) | Remove-CimInstance -ErrorAction SilentlyContinue
         $leftProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { $_.SID -eq $sid.Value }).Count
         Row 'Z' ($leftProfiles -eq 0 -and (-not $profilePath -or -not (Test-Path -LiteralPath $profilePath))) "the account's profile removed ($($profiles.Count) found$(if ($profilePath) { ', ' + $profilePath }); left $leftProfiles)"
     }

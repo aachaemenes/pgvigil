@@ -16,7 +16,8 @@
 #   (-p:RestoreConfigFile), so no NuGet.Config is made in the running account's profile
 #   a run cut before its end (a time limit, a dropped session): the same command with -Undo runs the undo alone
 # Expected (written before its first run, 2026-11-20):
-#  B  'dotnet build packaging\msi\pgvigil.wixproj' exit 0 for 0.0.1 and for 0.0.2, each .msi made
+#  B  'dotnet build packaging\msi\pgvigil.wixproj' exit 0 for 0.0.1 and for 0.0.2, each .msi made (a failed build prints every
+#     line of its output that names an error)
 #  M1 the 0.0.2 package's Binary table is absent or empty (no custom-action DLL ships) - read in a child powershell.exe,
 #     so no COM object of the read holds the package open when the undo removes it
 #  I1 'msiexec /i' of 0.0.1 exit 0: %ProgramFiles%\pgvigil\pgvigil.exe there, the service pgvigil made, the exe
@@ -145,6 +146,10 @@ try {
         $msi[$ver] = $made
         $lastLines = (("$($build.Out)" -split "`n" | Where-Object { $_ } | Select-Object -Last 3) -join ' | ')
         Row 'B' ($build.Code -eq 0 -and (Test-Path -LiteralPath $made)) "dotnet build of $ver exit $($build.Code), $made $(if (Test-Path -LiteralPath $made) { (Get-Item -LiteralPath $made).Length } else { 'MISSING' }) bytes; last: $lastLines"
+        # a failed build's own words: every line that names an error (the last three lines say only how many)
+        if ($build.Code -ne 0) {
+            @("$($build.Out)" -split "`n" | Where-Object { $_ -match '(?i)\berror\b' -and $_ -notmatch '^\s*\d+ Error\(s\)' } | Select-Object -First 20) | ForEach-Object { Write-Host "     build $ver error: $($_.Trim())" }
+        }
     }
     if (-not ((Test-Path -LiteralPath $msi['0.0.1']) -and (Test-Path -LiteralPath $msi['0.0.2']))) { throw 'no package to install: the rows after B need both' }
 
