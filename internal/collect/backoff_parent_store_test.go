@@ -28,11 +28,18 @@ func TestParentHoldsThroughTheBackoffOnAStore(t *testing.T) {
 		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
 	}
 	for _, after := range []int{20, 30} {
-		t.Run(fmt.Sprintf("t+%d", after), func(t *testing.T) { parentAfterOutage(t, dsn, after) })
+		t.Run(fmt.Sprintf("t+%d", after), func(t *testing.T) { parentAfterOutage(t, dsn, after, false) })
+	}
+	// the lead's 21:55: a mixed host - pg4 read every 2 minutes beside 1-minute instances - fails with them; its wait is
+	// capped by the HOST's span, so it stays a member every minute: with its own interval's cap (2 + 2) its probes fall
+	// 6 minutes apart (t+16, t+22, t+28 at its phase), behind the host's span + 3 minutes at t+22 and t+28, and the
+	// parent holds 4 instances there, not 5 - so every minute from t+20 to t+30 is read, not the two ends alone
+	for after := 20; after <= 30; after++ {
+		t.Run(fmt.Sprintf("mixed t+%d", after), func(t *testing.T) { parentAfterOutage(t, dsn, after, true) })
 	}
 }
 
-func parentAfterOutage(t *testing.T, dsn string, after int) {
+func parentAfterOutage(t *testing.T, dsn string, after int, mixed bool) {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
@@ -58,12 +65,17 @@ func parentAfterOutage(t *testing.T, dsn string, after int) {
 	defer restore()
 	const failing = 5 // pg0..pg4 fail from t; pg5 answers throughout
 	names := make([]string, 6)
+	every := make([]time.Duration, 6)
 	for i := range names {
 		names[i] = fmt.Sprintf("%s-pg%d", col, i)
 		if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.instances (name, platform) VALUES ($1, 'self-managed')`, names[i]); err != nil {
 			t.Fatal(err)
 		}
-		BackoffStart(names[i], time.Minute) // sched's startInstance: the instance's shortest interval
+		every[i] = time.Minute
+		if mixed && i == 4 {
+			every[i] = 2 * time.Minute
+		}
+		BackoffStart(names[i], every[i]) // sched's startInstance: the instance's shortest interval
 	}
 	// each instance's minute loop ticks at its own phase (sched's random first start); 5 minutes of health first
 	type tick struct {
@@ -73,13 +85,13 @@ func parentAfterOutage(t *testing.T, dsn string, after int) {
 	var ticks []tick
 	for i := range names {
 		phase := time.Duration(3+7*i) * time.Second
-		for at := start.Add(-5*time.Minute + phase); at.Before(start.Add(time.Duration(after) * time.Minute)); at = at.Add(time.Minute) {
+		for at := start.Add(-6*time.Minute + phase); at.Before(start.Add(time.Duration(after) * time.Minute)); at = at.Add(every[i]) {
 			ticks = append(ticks, tick{at, i})
 		}
 	}
 	sort.Slice(ticks, func(a, b int) bool { return ticks[a].at.Before(ticks[b].at) })
 	lost := errors.New("dial tcp 10.9.9.9:5432: connect: connection timed out")
-	beatAt := start.Add(-5*time.Minute + time.Minute + 2*time.Second) // the beat of minute t-5
+	beatAt := start.Add(-6*time.Minute + time.Minute + 2*time.Second) // the beat of minute t-6
 	beat := func(minute time.Time) {
 		body, err := json.Marshal(h.take())
 		if err != nil {
@@ -99,17 +111,17 @@ func parentAfterOutage(t *testing.T, dsn string, after int) {
 		name := names[k.inst]
 		skip, note, release := ConnectBackoff(name, k.at)
 		if skip {
-			h.record(name, "postgres", "activity", Result{Note: note, Held: true}, k.at, time.Minute)
+			h.record(name, "postgres", "activity", Result{Note: note, Held: true}, k.at, every[k.inst])
 			continue
 		}
 		done := k.at.Add(2 * time.Second) // the connect's answer (or its failure) two seconds in
 		if k.inst < failing && !k.at.Before(start) {
 			err := h.instanceConnectTimed(name, lost, done, 0)
-			h.record(name, "postgres", "activity", Result{Err: err, Duration: 2 * time.Second}, done, time.Minute)
+			h.record(name, "postgres", "activity", Result{Err: err, Duration: 2 * time.Second}, done, every[k.inst])
 			probes[k.inst] = append(probes[k.inst], int(k.at.Sub(start)/time.Minute))
 		} else {
 			_ = h.instanceConnectTimed(name, nil, done, 40*time.Millisecond)
-			h.record(name, "postgres", "activity", Result{Rows: 12, Duration: 2 * time.Second}, done, time.Minute)
+			h.record(name, "postgres", "activity", Result{Rows: 12, Duration: 2 * time.Second}, done, every[k.inst])
 		}
 		if release != nil {
 			release()
@@ -119,7 +131,7 @@ func parentAfterOutage(t *testing.T, dsn string, after int) {
 		beat(beatAt.Add(-time.Minute - 2*time.Second))
 		beatAt = beatAt.Add(time.Minute)
 	}
-	t.Logf("failing connects at the minutes (from t): %v", probes[0])
+	t.Logf("failing connects at the minutes (from t): pg0 %v, pg4 (every %v) %v", probes[0], every[4], probes[4])
 	var why string
 	var held int
 	err = tx.QueryRow(ctx, `SELECT why, cardinality(instances) FROM pgvigil.collector_parent WHERE host = $1`, col).Scan(&why, &held)

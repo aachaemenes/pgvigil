@@ -200,11 +200,9 @@ SELECT i.instance_id, i.name AS instance, i.engine,
 // streak that speaks (collector_streaks_now: the lowest of the hosts still reading it, as the findings)
 const sqlCollectorStreaks = `
 SELECT s.instance_id, i.name AS instance, s.collection, s.fail_streak, s.failing_since, s.last_run_at, s.last_error,
-       -- the instance's shortest interval the hour's load rows carry: the back-off's cap (rn-l214 B-1), for the
-       -- connect streak's backing-off line alone (collector_load_instance: one instance's hour)
-       CASE WHEN s.collection = '(connect)'
-            THEN (SELECT min(l.interval_s) FROM pgvigil.collector_load l
-                   WHERE l.instance_id = s.instance_id AND l.minute > now() - interval '1 hour' AND l.interval_s > 0) END AS every_s
+       -- the host's span (0121's collector_span: its least collection interval, 1 to 5 minutes), the back-off's cap
+       -- (rn-l214 B-1 as ruled 21:55), for the connect streak's backing-off line alone
+       CASE WHEN s.collection = '(connect)' THEN extract(epoch FROM pgvigil.collector_span(s.host))::int END AS every_s
   FROM pgvigil.collector_streaks_now s
   JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
  WHERE s.fail_streak > 0 AND ($1::int = 0 OR s.instance_id = $1)
@@ -291,7 +289,7 @@ func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
 
 // backingOff (L214, B2): the streaks table gains two columns - for an instance's own (connect) streak of 3 or more,
 // backing_off 'backing off: <n> connects failed in a row' and backoff_next, the next try from the same rule the loop's
-// gate uses (collect.BackoffWindow over the stored streak and the instance's shortest interval, every_s); nil on
+// gate uses (collect.BackoffWindow over the stored streak and the host's span, every_s); nil on
 // every other row. No time is formatted here: the page formats failing_since and backoff_next as its other times
 // and says 'due now' once the next try is past (rn-l214 N-2: a stopped collector's row). A table without one of the
 // columns it reads gains neither column and the reason is logged (S-5: never a silent page).

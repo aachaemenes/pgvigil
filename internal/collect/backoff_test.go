@@ -299,20 +299,33 @@ func TestBackoffStartProbesAtOnce(t *testing.T) {
 	}
 }
 
-// TestBackoffStartCapsTheWindow (rn-l214 B-1, the gate's half; the repository's half is
-// TestParentHoldsThroughTheBackoffOnAStore): the instance's shortest interval from its start caps the gate's wait at
-// that interval + 2 units - a minute instance 9 failures in a row probes 3 minutes after its last attempt, not 15.
+// TestBackoffStartCapsTheWindow (rn-l214 B-1 as the lead ruled 21:55; the repository's half is
+// TestParentHoldsThroughTheBackoffOnAStore): the host's span - the least shortest interval of the instances started,
+// clamped to 1 to 5 units, 0121's span - caps EVERY instance's wait at span + 2 units: a 2-minute instance beside a
+// 1-minute one probes 3 minutes after its last attempt, not after its own 4; a host of 15-minute instances waits at
+// most 7 (the span's 5 + 2); with no interval known the 15 stand.
 func TestBackoffStartCapsTheWindow(t *testing.T) {
 	h, restore := testHeartbeat()
 	defer restore()
 	now := time.Now()
-	BackoffStart("pg1", time.Minute)
-	h.streaks[[2]string{"pg1", connectStreak}] = &streak{fails: 9, at: now.Add(-3*time.Minute - time.Second)}
-	h.streaks[[2]string{"pg5", connectStreak}] = &streak{fails: 9, at: now.Add(-3*time.Minute - time.Second)} // never started: no interval known
-	if skip, _, release := ConnectBackoff("pg1", now); skip || release == nil {
-		t.Errorf("a minute instance waits at most 3 minutes: skip=%v probe=%v", skip, release != nil)
+	h.streaks[[2]string{"pg2", connectStreak}] = &streak{fails: 9, at: now.Add(-3*time.Minute - time.Second)}
+	if skip, _, _ := ConnectBackoff("pg2", now); !skip {
+		t.Error("with no interval of the host known the 15 minutes stand")
 	}
-	if skip, _, _ := ConnectBackoff("pg5", now); !skip {
-		t.Error("an instance with no interval known keeps the 15 minutes")
+	BackoffStart("pg1", time.Minute)
+	BackoffStart("pg2", 2*time.Minute)
+	if skip, _, release := ConnectBackoff("pg2", now); skip || release == nil {
+		t.Errorf("a 2-minute instance beside a 1-minute one waits at most 3 minutes (the host's span + 2), not its own 4: skip=%v probe=%v", skip, release != nil)
+	}
+	h2, restore2 := testHeartbeat()
+	defer restore2()
+	BackoffStart("pg9", 15*time.Minute)
+	h2.streaks[[2]string{"pg9", connectStreak}] = &streak{fails: 9, at: now.Add(-7*time.Minute - time.Second)}
+	h2.streaks[[2]string{"pg8", connectStreak}] = &streak{fails: 9, at: now.Add(-6 * time.Minute)}
+	if skip, _, release := ConnectBackoff("pg9", now); skip || release == nil {
+		t.Errorf("a host of 15-minute instances waits at most 7 minutes (the span's 5 + 2): skip=%v probe=%v", skip, release != nil)
+	}
+	if skip, _, _ := ConnectBackoff("pg8", now); !skip {
+		t.Error("6 minutes into a 7-minute wait the run is held")
 	}
 }

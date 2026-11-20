@@ -28,9 +28,11 @@ acknowledgement below if that is later).
 
 The collector backs off a down server: after 3 failed connects of an instance in a row, no collection of it connects
 again for a minute from the last attempt, doubling each further failure up to 15 minutes but never longer than the
-instance's shortest collection interval + 2 minutes (a minute instance waits at most 3; so its rows keep the
-'collector or network' parent standing through an outage, and only an instance read every 13 minutes or slower waits
-the 15), then one probe at a time. A connect already under way that fails while the instance waits is counted on the
+host's span + 2 minutes - the span is the least collection interval of the collector's instances, 1 to 5 minutes, the
+one the 'collector or network' parent's freshness uses - so the failing instances' rows keep that parent standing
+through an outage, an instance slower than its host's fastest one too (a host with a minute collection waits at most 3
+minutes, whatever the failing instance's own interval; a host whose fastest is 5 minutes or slower, at most 7), then
+one probe at a time. A connect already under way that fails while the instance waits is counted on the
 minute's load but neither doubles the wait nor moves it. The held runs are skips, not failures, and end no
 collection's failures in a row; a refused login never counts (the server answered); a changed instance (its
 connection edited on Admin > Instances) tries again at once and keeps its count. The Collector page's Failing now

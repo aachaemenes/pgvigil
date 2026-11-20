@@ -96,7 +96,7 @@ type Heartbeat struct {
 	load     map[string]*loadAgg      // instance name
 	streaks  map[[2]string]*streak    // instance name, collection
 	probing  map[string]bool          // instance name: a backed-off instance whose probe a loop holds until its run ends (L214, backoff.go)
-	every    map[string]time.Duration // instance name: its shortest collection interval, the back-off's cap (BackoffStart; rn-l214 B-1)
+	every    map[string]time.Duration // instance name: its shortest collection interval; their least is the host's span, the back-off's cap (BackoffStart, hostSpan; rn-l214 B-1)
 	hourly   map[healthKey]*healthAgg // B6.1: instance, collection, UTC hour (health.go)
 	hourNew  time.Time                // the newest hour counted
 	seen     map[string]time.Time     // instance name: when this run last named it in the repository (seenDue)
@@ -323,7 +323,7 @@ func (h *Heartbeat) instanceConnectTimed(instance string, err error, now time.Ti
 	}
 	was := s.fails
 	failed := err != nil && !AuthFailure(err)
-	if next, on := BackoffWindow(s.fails, s.at, h.every[instance]); failed && on && !s.retry && now.Before(next) && !h.probing[instance] {
+	if next, on := BackoffWindow(s.fails, s.at, h.hostSpan()); failed && on && !s.retry && now.Before(next) && !h.probing[instance] {
 		// a connect already in flight when the window opened, failing inside it (rn-l214 S-3): counted above on the
 		// minute's load row, but the streak's count and its last attempt stay - each straggler would double the
 		// wait and move it, and a server back after 2 minutes would wait 4 to 8 for its first probe
