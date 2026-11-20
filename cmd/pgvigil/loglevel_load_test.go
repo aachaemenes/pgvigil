@@ -132,7 +132,7 @@ func TestLoadFileSaysTheOverride(t *testing.T) {
 		if len(said) != c.lines {
 			t.Errorf("PGVIGIL_LOG_LEVEL=%q over log_level: warn: %d override line(s) %q, want %d", c.env, len(said), said, c.lines)
 		}
-		if c.lines == 1 && !(strings.Contains(said[0], "level=WARN") && strings.Contains(said[0], "PGVIGIL_LOG_LEVEL=debug") && strings.Contains(said[0], "log_level=warn")) {
+		if c.lines == 1 && len(said) == 1 && !(strings.Contains(said[0], "level=WARN") && strings.Contains(said[0], "PGVIGIL_LOG_LEVEL=debug") && strings.Contains(said[0], "log_level=warn")) {
 			t.Errorf("the override line %q: want a WARN naming PGVIGIL_LOG_LEVEL=debug and log_level=warn", said[0])
 		}
 		if got := logLevel.Level(); got != c.level {
