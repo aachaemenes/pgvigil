@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -198,7 +199,12 @@ SELECT i.instance_id, i.name AS instance, i.engine,
 // sqlCollectorStreaks: the collections failing now ($1 the instance, 0 = all) - per instance and collection the
 // streak that speaks (collector_streaks_now: the lowest of the hosts still reading it, as the findings)
 const sqlCollectorStreaks = `
-SELECT s.instance_id, i.name AS instance, s.collection, s.fail_streak, s.failing_since, s.last_run_at, s.last_error
+SELECT s.instance_id, i.name AS instance, s.collection, s.fail_streak, s.failing_since, s.last_run_at, s.last_error,
+       -- the instance's shortest interval the hour's load rows carry: the back-off's cap (rn-l214 B-1), for the
+       -- connect streak's backing-off line alone (collector_load_instance: one instance's hour)
+       CASE WHEN s.collection = '(connect)'
+            THEN (SELECT min(l.interval_s) FROM pgvigil.collector_load l
+                   WHERE l.instance_id = s.instance_id AND l.minute > now() - interval '1 hour' AND l.interval_s > 0) END AS every_s
   FROM pgvigil.collector_streaks_now s
   JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
  WHERE s.fail_streak > 0 AND ($1::int = 0 OR s.instance_id = $1)
@@ -280,43 +286,49 @@ func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
 			part{"connections", sqlCollectorConns, nil},
 			part{"purges", sqlCollectorPurges, nil})
 	}
-	ps, err := onlyPart(r, parts)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	s.multiPost(w, r, ps, map[string]func(*table){"streaks": backingOff})
+	s.multiPartPost(w, r, parts, map[string]func(*table){"streaks": func(t *table) { backingOff(t, s.log) }})
 }
 
-// backingOff (L214, B2): the streaks table gains a backing_off column - for an instance's own (connect) streak of 3
-// or more, 'backing off: <n> connects failed in a row since <t>; next try about <t>' from the same rule the loop's
-// gate uses (collect.BackoffWindow over the stored streak), nil on every other row.
-func backingOff(t *table) {
+// backingOff (L214, B2): the streaks table gains two columns - for an instance's own (connect) streak of 3 or more,
+// backing_off 'backing off: <n> connects failed in a row' and backoff_next, the next try from the same rule the loop's
+// gate uses (collect.BackoffWindow over the stored streak and the instance's shortest interval, every_s); nil on
+// every other row. No time is formatted here: the page formats failing_since and backoff_next as its other times
+// and says 'due now' once the next try is past (rn-l214 N-2: a stopped collector's row). A table without one of the
+// columns it reads gains neither column and the reason is logged (S-5: never a silent page).
+func backingOff(t *table, log *slog.Logger) {
 	col := map[string]int{}
 	for i, c := range t.Columns {
 		col[c] = i
 	}
-	ci, fi, si, li := col["collection"], col["fail_streak"], col["failing_since"], col["last_run_at"]
-	t.Columns = append(t.Columns, "backing_off")
+	idx := [4]int{}
+	for k, name := range []string{"collection", "fail_streak", "last_run_at", "every_s"} {
+		i, ok := col[name]
+		if !ok {
+			if log != nil {
+				log.Warn("the Collector page's streaks have no column "+name+": no backing-off line", "columns", t.Columns)
+			}
+			return
+		}
+		idx[k] = i
+	}
+	ci, fi, li, ei := idx[0], idx[1], idx[2], idx[3]
+	t.Columns = append(t.Columns, "backing_off", "backoff_next")
 	for i, row := range t.Rows {
-		var words any
-		fails := asInt(row[fi])
+		var words, next any
 		last, okLast := row[li].(time.Time)
 		if row[ci] == "(connect)" && okLast {
-			if next, on := collect.BackoffWindow(fails, last); on {
-				since := ""
-				if s, ok := row[si].(time.Time); ok {
-					since = s.Format(time.RFC3339)
-				}
-				words = fmt.Sprintf("backing off: %d connects failed in a row since %s; next try about %s",
-					fails, since, next.Format(time.RFC3339))
+			fails := asInt(row[fi])
+			if at, on := collect.BackoffWindow(fails, last, time.Duration(asInt(row[ei]))*time.Second); on {
+				words, next = fmt.Sprintf("backing off: %d connects failed in a row", fails), at
 			}
 		}
-		t.Rows[i] = append(row, words)
+		row = append(row, words, next)
+		t.Rows[i] = row
 	}
 }
 
-// asInt: a query's integer however the driver typed it.
+// asInt: a query's integer however the driver typed it; 0 for NULL (every_s on a row without an interval known;
+// fail_streak is NOT NULL, 0121).
 func asInt(v any) int {
 	switch n := v.(type) {
 	case int64:

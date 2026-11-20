@@ -7,22 +7,32 @@ import (
 
 // The connect back-off (L214): after backoffAfter failed connects of an instance in a row, no loop of the instance
 // connects again before a wait of BackoffUnit from the last attempt, doubling each further failure up to backoffCap
-// units; then ONE loop probes while the rest keep skipping (the probe is its loop's until that run ends). A refused login never counts (the server answered,
-// heartbeat.AuthFailure), a skip counts no failure, and a per-database connect never feeds the streak - only the
-// instance's own connect (InstanceConnect) does. pg_exporter 1.6.1 names the idea (its 'failure cooldown'); the rule
-// here is pgvigil's own and docs/collection-health.md states it.
+// units and never past the instance's shortest collection interval + backoffSlack units (rn-l214 B-1); then ONE loop
+// probes while the rest keep skipping (the probe is its loop's until that run ends). A connect already in flight
+// that fails inside an open window is counted on the minute's load row but neither doubles the wait nor moves it
+// (rn-l214 S-3: the first wait stays a unit). A refused login never counts (the server answered,
+// heartbeat.AuthFailure), a held run counts no failure and ends no streak (Result.Held), and a per-database connect
+// never feeds the streak - only the instance's own connect (InstanceConnect) does. pg_exporter 1.6.1 names the idea
+// (its 'failure cooldown'); the rule here is pgvigil's own and docs/collection-health.md states it.
 
 // BackoffUnit is the back-off's unit wait (a minute). A variable so a test can scale the rule's clock.
 var BackoffUnit = time.Minute
 
 const (
 	backoffAfter = 3  // failed connects in a row before the instance backs off
-	backoffCap   = 15 // the longest wait, in units
+	backoffCap   = 15 // the longest wait, in units: an instance read no faster than every 13 units (Q1's 15 minutes)
+	// backoffSlack: the wait is never longer than the instance's shortest collection interval + this many units
+	// (rn-l214 B-1, the lead's (a) of 21:19): its probes then land at most an interval + 2 units + one tick apart, so
+	// a backed-off instance's 'dead' spell stays read inside the 'collector or network' parent's freshness (0121's
+	// span + 3 minutes) and its cover's 20 minutes - the parent holds through the outage by construction
+	backoffSlack = 2
 )
 
 // BackoffWindow is the rule, shared by the loop's gate and the Collector page: from fails failed connects in a row,
 // whether the instance is backing off, and until when (the wait from the last attempt). Under backoffAfter it is off.
-func BackoffWindow(fails int, last time.Time) (next time.Time, on bool) {
+// every is the instance's shortest collection interval: the wait never outgrows it + backoffSlack units (B-1); 0 =
+// not known, the cap alone.
+func BackoffWindow(fails int, last time.Time, every time.Duration) (next time.Time, on bool) {
 	if fails < backoffAfter {
 		return time.Time{}, false
 	}
@@ -31,54 +41,75 @@ func BackoffWindow(fails int, last time.Time) (next time.Time, on bool) {
 		n = 10 // 2^10 units is far past the cap already; a long streak never overflows the shift
 	}
 	wait := BackoffUnit << n
-	if longest := backoffCap * BackoffUnit; wait > longest {
+	longest := backoffCap * BackoffUnit
+	if every > 0 {
+		longest = min(longest, every+backoffSlack*BackoffUnit)
+	}
+	if wait > longest {
 		wait = longest
 	}
 	return last.Add(wait), true
 }
 
-// ConnectBackoff is the loop's gate, asked before each run: whether the instance's run is skipped now (backing off),
-// with the skip's note. When the window has ended, the first caller is granted the probe (skip false, probe true) and
-// the others keep skipping until that caller calls ProbeDone. The probe is OWNED BY ITS LOOP: the loop releases it
-// when its run ends, whatever the run did - connected, failed, was cut by a stop, or skipped before any connect (a
-// collection gated off by the configuration never connects: released any other way, its loop would hold the
-// instance forever - rn-1's difference 1). Without a heartbeat there is no streak and nothing backs off.
-func ConnectBackoff(instance string, now time.Time) (skip bool, note string, probe bool) {
+// BackoffStart is sched's, at each start of an instance's loops (the process's start, a changed instance's restart):
+// the instance's shortest collection interval, which caps its window (BackoffWindow's every; B-1), and a changed
+// instance's next try now (rn-l214 S-4: a DSN fixed on Admin > Instances probes at once, not at the old window's end;
+// the count is kept, so a still-wrong DSN backs off again at its next failure). Nothing without a heartbeat.
+func BackoffStart(instance string, every time.Duration) {
 	h := current.Load()
 	if h == nil {
-		return false, "", false
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.every == nil {
+		h.every = map[string]time.Duration{}
+	}
+	h.every[instance] = every
+	if s := h.streaks[[2]string{instance, connectStreak}]; s != nil {
+		s.retry = true
+	}
+}
+
+// ConnectBackoff is the loop's gate, asked before each run: whether the instance's run is held now (backing off),
+// with the hold's note. When the window has ended, the first caller is granted the probe (skip false, release
+// non-nil) and the others keep skipping until that caller calls release. The probe is OWNED BY ITS LOOP: the loop
+// releases it when its run ends, whatever the run did - connected, failed, was cut by a stop or its deadline, or
+// ended before any instance connect (rn-l214 N-6: SQL Server's Wants and cached-detect skips, a password secret that
+// could not be read, a stop in the middle of the connect - released any other way, such a loop would hold the
+// instance forever: rn-1's difference 1). release is bound to the heartbeat that granted the probe (N-5). Without a
+// heartbeat there is no streak and nothing backs off.
+func ConnectBackoff(instance string, now time.Time) (skip bool, note string, release func()) {
+	h := current.Load()
+	if h == nil {
+		return false, "", nil
 	}
 	return h.connectBackoff(instance, now)
 }
 
-// ProbeDone releases the instance's probe: the loop that ConnectBackoff granted it calls this when its run ends.
-func ProbeDone(instance string) {
-	if h := current.Load(); h != nil {
-		h.mu.Lock()
-		delete(h.probing, instance)
-		h.mu.Unlock()
-	}
-}
-
-func (h *Heartbeat) connectBackoff(instance string, now time.Time) (bool, string, bool) {
+func (h *Heartbeat) connectBackoff(instance string, now time.Time) (bool, string, func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	s := h.streaks[[2]string{instance, connectStreak}]
 	if s == nil || s.fails < backoffAfter {
-		return false, "", false
+		return false, "", nil
 	}
-	next, _ := BackoffWindow(s.fails, s.at)
-	note := fmt.Sprintf(" (skipped: backing off - %d connects failed in a row since %s; next try about %s)",
-		s.fails, s.since.Format(time.RFC3339), next.Format(time.RFC3339))
-	if now.Before(next) {
-		return true, note, false
+	// the note says why the run did not try; it feeds the hour's skipped count alone (Result.Held) - no row, no
+	// line. No times in it: a streak loaded at the start has no since (N-1)
+	note := fmt.Sprintf(" (skipped: backing off - %d connects failed in a row)", s.fails)
+	if next, _ := BackoffWindow(s.fails, s.at, h.every[instance]); !s.retry && now.Before(next) {
+		return true, note, nil
 	}
 	if h.probing[instance] {
-		return true, note, false // another loop holds the probe
+		return true, note, nil // another loop holds the probe
 	}
 	if h.probing == nil {
 		h.probing = map[string]bool{}
 	}
 	h.probing[instance] = true
-	return false, "", true
+	return false, "", func() {
+		h.mu.Lock()
+		delete(h.probing, instance)
+		h.mu.Unlock()
+	}
 }

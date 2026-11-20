@@ -87,6 +87,17 @@ func runTimeout(c Collector) time.Duration {
 	return RunTimeout
 }
 
+// RunLimit is the SQL Server side's own deadline for one run of the named collection (runTimeout) plus one write of
+// its result into the repository (repoTimeout); 0 for a name not registered. sched's loop never cuts a run before it
+// (rn-l214 S-2: mssql_custom's 30 s a check would be cut at the loop's 2 minutes, and the error would name two limits).
+func RunLimit(name string) time.Duration {
+	c, ok := Get(name)
+	if !ok {
+		return 0
+	}
+	return runTimeout(c) + repoTimeout
+}
+
 var registry = map[string]Collector{}
 
 // Register adds a collector; called from each collector's init.
@@ -594,7 +605,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		// pgvigil's own shutdown (the parent ctx cancelled) is not recorded - the run's own timeout (sctx) still is
 		cerr := timeoutNote(sctx, limit, err)
 		var se *secrets.ReadError
-		if errors.As(err, &se) && ctx.Err() == nil {
+		if errors.As(err, &se) && !errors.Is(ctx.Err(), context.Canceled) {
 			// the password could not be read from AWS Secrets Manager (B24e): the collection's error, not the server's
 			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			if lerr := r.LogSecretFailure(rctx, in.Name, config.EngineSQLServer, in.Platform, in.Tags, name, start, time.Since(start), err); lerr != nil {
@@ -603,7 +614,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			rcancel()
 			return collect.Result{Err: err, Duration: time.Since(start)}
 		}
-		if ctx.Err() == nil {
+		if !errors.Is(ctx.Err(), context.Canceled) { // the loop's deadline is no stop: recorded (rn-l214 S-1)
 			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			if lerr := r.LogConnectFailure(rctx, in.Name, config.EngineSQLServer, in.Platform, in.Tags, name, start, time.Since(start), cerr); lerr != nil {
 				log.Warn("the failed connect was not recorded", "instance", in.Name, "collection", name, "err", lerr)
@@ -628,7 +639,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		// connected, then failed: recorded as the collection's failed run ('detect: '); the run's own
 		// timeout (sctx) is recorded, a read cut by pgvigil's own shutdown (the parent ctx) is not
 		derr := timeoutNote(sctx, limit, err)
-		if ctx.Err() == nil {
+		if !errors.Is(ctx.Err(), context.Canceled) {
 			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			if lerr := r.LogRunFailure(rctx, in.Name, config.EngineSQLServer, name, start, time.Since(start), derr); lerr != nil {
 				log.Warn("the failed run was not recorded", "instance", in.Name, "collection", name, "err", lerr)

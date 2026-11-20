@@ -294,7 +294,12 @@ func startInstance(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *con
 	for _, t := range applicationTags(in) {
 		log.Warn("tag not taken: an application is set on Admin > Applications", "instance", in.Name, "tag", t)
 	}
-	started := 0
+	type run struct {
+		name string
+		iv   time.Duration
+	}
+	var runs []run
+	var shortest time.Duration // the instance's shortest collection interval: its back-off's cap (rn-l214 B-1)
 	for _, c := range engines.Specs(in.Engine) {
 		iv := cfg.Interval(in, c.Name, c.Default)
 		if iv <= 0 {
@@ -304,14 +309,22 @@ func startInstance(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *con
 			log.Debug("collection off by config", "instance", in.Name, "collection", c.Name, "why", why)
 			continue
 		}
-		started++
+		if shortest == 0 || iv < shortest {
+			shortest = iv
+		}
+		runs = append(runs, run{c.Name, iv})
+	}
+	// before any loop starts, so no first run asks the gate without them: the cap, and a changed instance's next try
+	// now (S-4)
+	collect.BackoffStart(in.Name, shortest)
+	for _, c := range runs {
 		wg.Add(1)
 		go func(in config.Instance, name string, iv time.Duration) {
 			defer wg.Done()
 			loop(ctx, log, r, in, name, iv)
-		}(in, c.Name, iv)
+		}(in, c.name, c.iv)
 	}
-	return started
+	return len(runs)
 }
 
 // firstStartSpread: the window a collection's first run after a start falls in - each loop waits a random offset in
@@ -360,22 +373,26 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 		return
 	case <-time.After(jitter):
 	}
-	run := func(first bool) {
-		// the back-off (L214): an instance whose own connect failed 3 times in a row is skipped by every one of its
-		// loops inside its window, one probe at a time after it; a skip counts no failure (collect.skipped)
-		skip, note, probe := collect.ConnectBackoff(in.Name, time.Now())
+	// run answers whether the run passed the back-off's gate (a held run did not: N-4 keeps the first-run allowance
+	// for the loop's first run that tries)
+	run := func(first bool) bool {
+		// the back-off (L214): an instance whose own connect failed 3 times in a row is held by every one of its
+		// loops inside its window, one probe at a time after it; a held run counts no failure and ends no failing
+		// streak (collect.Result.Held: rn-l214 B-2)
+		skip, note, release := collect.ConnectBackoff(in.Name, time.Now())
 		if skip {
-			collect.RecordRunEvery(in.Name, in.Engine, name, collect.Result{Note: note}, iv)
-			return
+			collect.RecordRunEvery(in.Name, in.Engine, name, collect.Result{Note: note, Held: true}, iv)
+			return false
 		}
-		if probe {
-			// the probe is this run's: free again when the run ends, whatever it did (a gated collection skips
-			// before any connect, a stop cuts a run short - neither may hold the instance)
-			defer collect.ProbeDone(in.Name)
+		if release != nil {
+			// the probe is this run's: free again when the run ends, whatever it did (a run that ends before any
+			// instance connect, a stop or the deadline cutting it short - none may hold the instance)
+			defer release()
 		}
 		// the run deadline (L250): a hung run is cancelled, its loop ticks on; the cancel reaches the driver (pgx
-		// sends a cancel request, go-mssqldb an attention) and a repository write in flight rolls back
-		limit := runDeadline(iv, first)
+		// sends a cancel request, go-mssqldb an attention) and a repository write in flight rolls back. Never under
+		// the engine's own limit for the collection (rn-l214 S-2: SQL Server's own timeout, then its write)
+		limit := max(runDeadline(iv, first), engines.RunLimit(name))
 		rctx, rcancel := context.WithTimeout(ctx, limit)
 		defer rcancel()
 		// the run's imports taken again after a deadlock (repo.Import counts them) go to its heartbeat row (N4)
@@ -392,8 +409,9 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 		if res.Err != nil && ctx.Err() == nil {
 			log.Warn("collection failed", "instance", in.Name, "collection", name, "err", res.Err)
 		}
+		return true
 	}
-	run(true)
+	first := !run(true)
 	t := time.NewTicker(iv)
 	defer t.Stop()
 	for {
@@ -401,7 +419,9 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			run(false)
+			if run(first) {
+				first = false
+			}
 		}
 	}
 }

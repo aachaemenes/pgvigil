@@ -64,13 +64,13 @@ func TestConnectBackoffHoldsTheLoops(t *testing.T) {
 	if len(specs) < 5 {
 		t.Fatalf("fewer than 5 postgres collections: %d", len(specs))
 	}
-	lctx, lcancel := context.WithCancel(ctx)
+	lctx, loops := startTestLoops(ctx)
+	defer loops.stop()
 	for _, s := range specs[:5] {
-		go loop(lctx, log, r, in, s.Name, time.Second)
+		loops.run(func() { loop(lctx, log, r, in, s.Name, time.Second) })
 	}
 	time.Sleep(20 * time.Second)
-	lcancel()
-	time.Sleep(500 * time.Millisecond)
+	loops.stop() // every run has returned before the count is read (S-6)
 	if got := attempts.Load(); got > 12 {
 		t.Errorf("a down instance's five 1-second loops made %d connect attempts over 20 s; want at most 12 (the first streak of 3 and single probes - the back-off after 3 failed connects in a row)", got)
 	}

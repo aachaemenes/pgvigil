@@ -82,6 +82,7 @@ type streak struct {
 	since   time.Time // the first failure of the streak (zero: none, or carried from the repository at the start)
 	dirty   bool
 	fresh   bool // loaded from the repository at the start: the first result after it is sent, whatever it is
+	retry   bool // the instance's '(connect)' streak only: its loops restarted (BackoffStart) - the window is over, the count kept (rn-l214 S-4)
 }
 
 // Heartbeat is one running collector's record keeper.
@@ -95,6 +96,7 @@ type Heartbeat struct {
 	load     map[string]*loadAgg      // instance name
 	streaks  map[[2]string]*streak    // instance name, collection
 	probing  map[string]bool          // instance name: a backed-off instance whose probe a loop holds until its run ends (L214, backoff.go)
+	every    map[string]time.Duration // instance name: its shortest collection interval, the back-off's cap (BackoffStart; rn-l214 B-1)
 	hourly   map[healthKey]*healthAgg // B6.1: instance, collection, UTC hour (health.go)
 	hourNew  time.Time                // the newest hour counted
 	seen     map[string]time.Time     // instance name: when this run last named it in the repository (seenDue)
@@ -126,8 +128,11 @@ func RecordRunEvery(instance, engine, collection string, res Result, every time.
 // instance, and nothing is counted for it.
 func cutShort(res Result) bool { return res.Err != nil && errors.Is(res.Err, context.Canceled) }
 
-// skipped: a run that did not try (a skip note) - no run and no failure; it ends a failing streak it finds.
-func skipped(res Result) bool { return res.Err == nil && strings.Contains(res.Note, "skipped") }
+// skipped: a run that did not try (a skip note, or held by the connect back-off) - no run and no failure; a skip
+// note ends a failing streak it finds, a hold never does (record).
+func skipped(res Result) bool {
+	return res.Err == nil && (res.Held || strings.Contains(res.Note, "skipped"))
+}
 
 // CountConnect counts one connection attempt to an instance: opened when err is nil, a login refused when the server
 // said so (AuthFailure). A collection's per-database connects call it (connectCounted); the instance's own connect
@@ -318,6 +323,13 @@ func (h *Heartbeat) instanceConnectTimed(instance string, err error, now time.Ti
 	}
 	was := s.fails
 	failed := err != nil && !AuthFailure(err)
+	if next, on := BackoffWindow(s.fails, s.at, h.every[instance]); failed && on && !s.retry && now.Before(next) && !h.probing[instance] {
+		// a connect already in flight when the window opened, failing inside it (rn-l214 S-3): counted above on the
+		// minute's load row, but the streak's count and its last attempt stay - each straggler would double the
+		// wait and move it, and a server back after 2 minutes would wait 4 to 8 for its first probe
+		return &connectError{err}
+	}
+	s.retry = false
 	if failed {
 		if s.fails == 0 {
 			s.since = now
@@ -414,6 +426,12 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	// the connect (28P01, 18456: else a rotated password is probed every minute)
 	if res.Err != nil && h.probe != nil && NoAnswer(res.Err) {
 		h.probe.noteFailed(instance)
+	}
+	if res.Held {
+		// held by the connect back-off (L214): counted in the hour's skipped column above, and nothing else - the
+		// collection's failing streak stands through the outage (0121's 'collection failing'; rn-l214 B-2), never
+		// reset by a run that did not try
+		return
 	}
 	if skipped(res) {
 		// a collection that skips (no system_stats, no pg_cron, no log door) after it failed - its login refused, or

@@ -54,10 +54,10 @@ func TestProbeNotHeldByAGatedCollection(t *testing.T) {
 	if skip, _ := engines.Gated(in, "amcheck"); !skip {
 		t.Fatal("the test's premise: amcheck is gated off on an instance without its block")
 	}
-	lctx, lcancel := context.WithCancel(ctx)
-	defer lcancel()
-	go loop(lctx, log, r, in, "activity", 1500*time.Millisecond)
-	go loop(lctx, log, r, in, "amcheck", 250*time.Millisecond)
+	lctx, loops := startTestLoops(ctx)
+	defer loops.stop() // before the unit's restore and the beat's stop: no run reads either after (S-6)
+	loops.run(func() { loop(lctx, log, r, in, "activity", 1500*time.Millisecond) })
+	loops.run(func() { loop(lctx, log, r, in, "amcheck", 250*time.Millisecond) })
 	time.Sleep(8 * time.Second) // activity's 3 failed connects by about 4.5 s; the gated loop asks first after each window
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {

@@ -88,10 +88,10 @@ func TestBackoffEndsAtTheProbe(t *testing.T) {
 	in := config.Instance{Name: fmt.Sprintf("backoff-r2-%d", time.Now().UnixNano()%1000000000),
 		DSNRaw: fmt.Sprintf("host=127.0.0.1 port=%d user=pgv dbname=postgres sslmode=disable connect_timeout=1", port)}
 	specs := engines.Specs(config.EnginePostgres)
-	lctx, lcancel := context.WithCancel(ctx)
-	defer lcancel()
+	lctx, loops := startTestLoops(ctx)
+	defer loops.stop() // before the unit's restore and the beat's stop: no run reads either after (S-6)
 	for _, s := range specs[:3] {
-		go loop(lctx, log, r, in, s.Name, time.Second)
+		loops.run(func() { loop(lctx, log, r, in, s.Name, time.Second) })
 	}
 	time.Sleep(5 * time.Second) // the streak reaches 3 and the back-off engages (the window 1 s doubling)
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))

@@ -1130,10 +1130,10 @@ func (s *Server) multiPost(w http.ResponseWriter, r *http.Request, parts []part,
 			s.reply(w, r, nil, fmt.Errorf("%s: %w", p.name, err))
 			return
 		}
-		// a part that read a window cut to its reach carries what it read beside its columns and rows (query's markRead)
 		if f := posts[p.name]; f != nil {
 			f(t)
 		}
+		// a part that read a window cut to its reach carries what it read beside its columns and rows (query's markRead)
 		out[p.name] = t
 	}
 	s.reply(w, r, out, nil)
@@ -1164,12 +1164,18 @@ func onlyPart(r *http.Request, parts []part) ([]part, error) {
 
 // multiPart is multi over the part ?part= names (onlyPart), 400 for an unknown one.
 func (s *Server) multiPart(w http.ResponseWriter, r *http.Request, parts []part) {
+	s.multiPartPost(w, r, parts, nil)
+}
+
+// multiPartPost is multiPart with multiPost's reworks (the Collector page's streaks: rn-l214 N-7, one copy of the
+// ?part= handling).
+func (s *Server) multiPartPost(w http.ResponseWriter, r *http.Request, parts []part, posts map[string]func(*table)) {
 	ps, err := onlyPart(r, parts)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	s.multi(w, r, ps)
+	s.multiPost(w, r, ps, posts)
 }
 
 // replication: the newest snapshot's objects, the instance's replication checks, and the lag of
