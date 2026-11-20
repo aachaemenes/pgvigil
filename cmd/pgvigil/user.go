@@ -35,6 +35,11 @@ func runUser(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	// a repository dsn that resolves to nothing is refused before the password is asked
+	repoDSN, err := repoDSNOf(path, cfg)
+	if err != nil {
+		return err
+	}
 	// the password is read before the repository is touched: a typo costs no connection
 	hash := ""
 	if verb == "add" || verb == "passwd" {
@@ -46,7 +51,7 @@ func runUser(ctx context.Context, log *slog.Logger, args []string) error {
 			return err
 		}
 	}
-	r, err := repo.Open(ctx, cfg.Repository.DSN())
+	r, err := repo.Open(ctx, repoDSN)
 	if err != nil {
 		return err
 	}

@@ -266,7 +266,11 @@ func runMigrate(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	r, err := repo.Open(ctx, cfg.Repository.DSN())
+	repoDSN, err := repoDSNOf(*path, cfg)
+	if err != nil {
+		return err
+	}
+	r, err := repo.Open(ctx, repoDSN)
 	if err != nil {
 		return err
 	}
@@ -309,7 +313,11 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
 	if len(targets) == 0 {
 		return fmt.Errorf("no configured instance named %q", cfg.Flags.Instance)
 	}
-	r, err := repo.Open(ctx, cfg.Repository.DSN())
+	repoDSN, err := repoDSNOf("", cfg)
+	if err != nil {
+		return err
+	}
+	r, err := repo.Open(ctx, repoDSN)
 	if err != nil {
 		return err
 	}
@@ -383,8 +391,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	// an empty repository dsn (a fresh install's env file not filled yet) is a config error: exit 3, which the unit's
 	// RestartPreventExitStatus=3 and the Windows service's recovery leave stopped - never a restart loop
 	if strings.TrimSpace(cfg.Repository.DSN()) == "" {
-		return &configError{fmt.Errorf("config %s: the repository dsn (%s) resolves to nothing%s: fill in the env file or the file it names",
-			fs.Lookup("config").Value.String(), cfg.Repository.DSNRaw, emptyWhy(cfg.Repository.DSNRaw))}
+		return emptyRepoDSN(fs.Lookup("config").Value.String(), cfg.Repository.DSNRaw)
 	}
 	// the alerts: list (task 60): the sender runs beside the scheduler as alerts_dsn (a login IN ROLE pgvigil_alerter), else the repository's dsn
 	ast, err := alerts.LoadFile(fs.Lookup("config").Value.String())
@@ -483,12 +490,36 @@ func queryTextByName(cfg *config.Config) map[string]string {
 }
 
 // emptyWhy is " - <why>" for a dsn reference that resolves to nothing (RELNOTES L145: the variable, the file, a dpapi:
-// blob sealed on another host), "" when there is no reason to add.
+// blob sealed on another host, a value of white space), "" when there is no reason to add. The reference is judged as
+// written, as it was resolved.
 func emptyWhy(raw string) string {
-	if w := config.WhyEmpty(strings.TrimSpace(raw)); w != "" {
+	if w := config.WhyEmpty(raw); w != "" {
 		return " - " + w
 	}
 	return ""
+}
+
+// emptyRepoDSN is the refusal of a repository dsn that resolves to nothing: its reason when there is one, else the
+// fresh install's fix (the env file or the file it names); path "" leaves the configuration's name out.
+func emptyRepoDSN(path, raw string) error {
+	head := "the repository dsn"
+	if path != "" {
+		head = "config " + path + ": the repository dsn"
+	}
+	if why := emptyWhy(raw); why != "" {
+		return &configError{fmt.Errorf("%s (%s) resolves to nothing%s", head, raw, why)}
+	}
+	return &configError{fmt.Errorf("%s (%s) resolves to nothing: fill in the env file or the file it names", head, raw)}
+}
+
+// repoDSNOf is the configuration's repository dsn, or emptyRepoDSN's refusal: every command that opens the repository
+// refuses one that resolves to nothing in run's words (exit 3), never repo.Open's.
+func repoDSNOf(path string, cfg *config.Config) (string, error) {
+	d := cfg.Repository.DSN()
+	if strings.TrimSpace(d) == "" {
+		return "", emptyRepoDSN(path, cfg.Repository.DSNRaw)
+	}
+	return d, nil
 }
 
 // logLevel is the level every logger of this process reads (RELNOTES L172): info until the environment's

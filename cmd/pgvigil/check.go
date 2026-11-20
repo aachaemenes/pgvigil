@@ -167,7 +167,7 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 	rctx, rcancel := context.WithTimeout(ctx, 15*time.Second)
 	repoDSN := cfg.Repository.DSN()
 	var rc *pgx.Conn
-	if repoDSN == "" {
+	if strings.TrimSpace(repoDSN) == "" {
 		// never connected: an empty dsn is libpq's defaults (PGHOST / PGPORT, else localhost, as this OS account)
 		err = fmt.Errorf("dsn %q resolved to an empty string (%s): nothing was connected", cfg.Repository.DSNRaw, collect.EmptyDSNWhy(cfg.Repository.DSNRaw))
 	} else {
@@ -267,7 +267,7 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			r := res{in: in}
-			if dsn := in.DSN(); dsn == "" {
+			if dsn := in.DSN(); strings.TrimSpace(dsn) == "" {
 				r.why = fmt.Sprintf("dsn %q resolved to an empty string (%s)", in.DSNRaw, collect.EmptyDSNWhy(in.DSNRaw))
 			} else {
 				r.t = web.CheckConnection(ctx, engineName(in), dsn, in.SecretRef(), in, cfg)

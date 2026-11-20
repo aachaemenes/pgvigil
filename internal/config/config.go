@@ -8,9 +8,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
+	"os/user"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -984,32 +987,47 @@ func ResolveWhy(v string) (string, error) {
 		name := strings.TrimPrefix(v, "env:")
 		s, ok := os.LookupEnv(name)
 		if !ok {
-			return "", fmt.Errorf("the variable %s is not set for this process", name)
+			return "", fmt.Errorf("the variable %q is not set for this process", name)
 		}
 		if s == "" {
-			return "", fmt.Errorf("the variable %s is empty", name)
+			return "", fmt.Errorf("the variable %q is empty", name)
 		}
 		return s, nil
 	case strings.HasPrefix(v, "dpapi:"):
 		// a credential sealed on Windows by Admin > Instances or 'pgvigil secret seal' (inventory_windows.go)
 		path := strings.TrimPrefix(v, "dpapi:")
-		s, err := ResolveDPAPI(path)
-		if err != nil {
-			return "", fmt.Errorf("the dpapi: secret %s did not open on this host (%v): a machine-scope seal opens only on the host that sealed it - seal it again here with 'pgvigil secret seal', or enter it again in Admin > Instances", path, err)
-		}
-		if s == "" {
-			return "", fmt.Errorf("the dpapi: secret %s is empty", path)
+		s, err := dpapiOpen(path)
+		var pathErr *fs.PathError
+		switch {
+		case err == nil && s == "", errors.Is(err, os.ErrInvalid):
+			return "", fmt.Errorf("the dpapi: secret %q is empty", path)
+		case errors.Is(err, ErrDPAPIOffWindows):
+			return "", fmt.Errorf("the dpapi: secret %q opens on Windows only (this host is not): %w", path, err)
+		case errors.As(err, &pathErr):
+			return "", fmt.Errorf("the dpapi: secret %q cannot be read%s: %w", path, readAs(), err)
+		case err != nil:
+			// Windows' own refusal to decrypt: a machine-scope seal opens only on the host that sealed it; the fix
+			// follows where the blob lives - a page instance's (instances/) is entered again on the page, any other
+			// sealed again with 'pgvigil secret seal'
+			fix := "seal it again here with 'pgvigil secret seal'"
+			if filepath.Base(filepath.Dir(path)) == "instances" {
+				fix = "enter the instance's credential again in Admin > Instances"
+			}
+			return "", fmt.Errorf("the dpapi: secret %q did not open on this host (%w): a machine-scope seal opens only on the host that sealed it - %s", path, err, fix)
 		}
 		return s, nil
 	case strings.HasPrefix(v, "file:"):
 		path := strings.TrimPrefix(v, "file:")
+		if st, err := os.Stat(path); err == nil && st.IsDir() {
+			return "", fmt.Errorf("the file: secret %q is a folder", path)
+		}
 		b, err := os.ReadFile(path)
 		if err != nil {
-			return "", fmt.Errorf("the file: secret cannot be read: %v", err)
+			return "", fmt.Errorf("the file: secret cannot be read%s: %w", readAs(), err)
 		}
 		s := strings.TrimRight(string(b), "\r\n")
 		if s == "" {
-			return "", fmt.Errorf("the file: secret %s is empty", path)
+			return "", fmt.Errorf("the file: secret %q is empty", path)
 		}
 		return s, nil
 	default:
@@ -1017,10 +1035,30 @@ func ResolveWhy(v string) (string, error) {
 	}
 }
 
+// ErrDPAPIOffWindows is ResolveDPAPI's answer off Windows, where no dpapi: blob opens.
+var ErrDPAPIOffWindows = errors.New("a dpapi: reference is read on Windows only")
+
+// dpapiOpen opens a dpapi: blob: ResolveDPAPI, replaced by a test for Windows' own answers.
+var dpapiOpen = ResolveDPAPI
+
+// readAs names the account a read failed as (" as the account <name>"; "" when it is not read): a service reads with
+// its own account, and a unit may hide folders from it (ProtectHome, PrivateTmp) that a shell sees.
+func readAs() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return " as the account " + u.Username
+	}
+	return ""
+}
+
 // WhyEmpty is why a reference resolves to nothing ("" when it resolves, or is no reference): the words a refusal adds.
+// A reference whose value is only white space resolves (Resolve's answer is unchanged) but connects nowhere: it is said.
 func WhyEmpty(raw string) string {
-	if _, err := ResolveWhy(raw); err != nil {
+	s, err := ResolveWhy(raw)
+	if err != nil {
 		return err.Error()
+	}
+	if raw != "" && s != raw && strings.TrimSpace(s) == "" {
+		return fmt.Sprintf("%q holds only white space", raw)
 	}
 	return ""
 }

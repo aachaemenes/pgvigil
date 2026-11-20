@@ -176,7 +176,7 @@ var ErrUnparsedDSN = errors.New("the dsn does not parse as a PostgreSQL connecti
 // Connect opens one connection to an instance with the safety settings applied.
 func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	dsn := in.DSN()
-	if dsn == "" {
+	if strings.TrimSpace(dsn) == "" { // white space connects nowhere: refused as an empty one, with its reason
 		return nil, InstanceConnect(in.Name, fmt.Errorf("connect %s: dsn %q resolved to an empty string (%s)", in.Name, in.DSNRaw, EmptyDSNWhy(in.DSNRaw)))
 	}
 	// task 201 DONE-2 (N10): pgx.Connect's own two steps, with DefaultConnectTimeout where the DSN sets no

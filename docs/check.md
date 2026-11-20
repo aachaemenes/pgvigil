@@ -99,9 +99,15 @@ to delete once pgvigil.yaml points at the new line. `pgvigil uninstall -all` rem
 
 A `dpapi:` blob opens only on the host that sealed it (machine scope): a configuration folder copied to a new server,
 or a host rebuilt, keeps the reference and loses the secret. pgvigil has no key to offer for it and keeps no
-encrypted configuration (a named difference from DBA Dash's temporary key: here every secret is a reference read at
-each connect). The connect, `pgvigil check` and, for the repository's own dsn, the service's start (exit 3) then say
-which reference resolved to nothing and why - the blob that did not open and the fix (seal it again on this host),
-the file and the system's error, the variable not set - never what was read. To move a host with its sealed
+encrypted configuration (a named difference from DBA Dash's temporary key: here a secret's reference is read at each
+connect - `password_secret`'s value is kept for its refresh, and an inline password stays where it is written). The
+connect, `pgvigil check` and, for the repository's own dsn, the service's start (exit 3 under systemd or a console; the
+Windows service stops without a retry and writes the reason to `logs\pgvigil.log` beside its configuration) and every
+command that opens the repository then say which reference resolved to nothing and why - a blob Windows would not
+decrypt and its fix (a page instance's credential entered again in Admin > Instances, any other sealed again with
+`pgvigil secret seal` on this host), a blob that cannot be read or is empty, a `dpapi:` reference on a host that is not
+Windows, the file and the system's error with the account that read it, a file: that is a folder, the variable not set
+or empty, a value that is only white space - never what was read. Not proven on Windows yet: the words Windows gives a
+moved blob, a blob the service's account may not read and a zero-byte blob (the unit rows give each its own answer). To move a host with its sealed
 secrets, `pgvigil config export -password-stdin` opens them on the old host and `pgvigil config import` seals them
 again on the new one ([moving pgvigil to a new server](upgrade.md#moving-pgvigil-to-a-new-server)).

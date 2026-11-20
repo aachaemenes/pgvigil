@@ -43,7 +43,7 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	dsn := strings.TrimSpace(config.Resolve(*dsnFlag))
 	if dsn == "" {
-		return &configError{fmt.Errorf("-dsn %s resolves to nothing: set it to the reader login's connection string", *dsnFlag)}
+		return &configError{fmt.Errorf("-dsn %s resolves to nothing%s: set it to the reader login's connection string", *dsnFlag, emptyWhy(*dsnFlag))}
 	}
 	var secret string
 	if pc, err := pgx.ParseConfig(dsn); err == nil {

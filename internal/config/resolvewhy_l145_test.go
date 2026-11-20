@@ -33,11 +33,11 @@ func TestResolveWhyL145(t *testing.T) {
 		{"host=h user=u", "host=h user=u", nil},
 		{"file:" + full, "host=h user=u", nil},
 		{"env:PGV_L145_SET", "host=h", nil},
-		{"file:" + missing, "", []string{missing, "no such file"}},
+		{"file:" + missing, "", []string{missing}}, // its kind (not-exist) is TestFileSecretReasons' row
 		{"file:" + empty, "", []string{empty, "is empty"}},
 		{"env:PGV_L145_UNSET", "", []string{"PGV_L145_UNSET", "not set"}},
 		{"env:PGV_L145_EMPTY", "", []string{"PGV_L145_EMPTY", "is empty"}},
-		{"dpapi:" + missing, "", []string{missing, "did not open on this host", "pgvigil secret seal"}},
+		{"dpapi:" + missing, "", []string{missing}}, // each kind's words: TestDPAPIReasonsSorted
 	} {
 		got, err := ResolveWhy(c.ref)
 		if got != c.want || got != Resolve(c.ref) {

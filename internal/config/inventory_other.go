@@ -43,7 +43,7 @@ func writeSecret(dir, name, value string) (string, error) {
 
 // ResolveDPAPI reads a dpapi: reference; outside Windows there is none.
 func ResolveDPAPI(string) (string, error) {
-	return "", errors.New("a dpapi: reference is read on Windows only")
+	return "", ErrDPAPIOffWindows
 }
 
 // ownedLikeParent gives path the access its parent folder grants (OwnLikeFolder: config import's files; a seal takes

@@ -50,7 +50,11 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return &configError{err}
 	}
-	r, err := repo.Open(ctx, cfg.Repository.DSN())
+	repoDSN, err := repoDSNOf(*path, cfg)
+	if err != nil {
+		return err
+	}
+	r, err := repo.Open(ctx, repoDSN)
 	if err != nil {
 		return err
 	}

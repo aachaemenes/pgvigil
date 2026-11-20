@@ -83,7 +83,11 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 		if err != nil {
 			return err
 		}
-		repoDSN = cfg.Repository.DSN()
+		d, derr := repoDSNOf(*path, cfg)
+		if derr != nil {
+			return derr
+		}
+		repoDSN = d
 	default:
 		return errors.New("demo: name the repository with -config (or -dsn), or run one with -pgbin")
 	}
