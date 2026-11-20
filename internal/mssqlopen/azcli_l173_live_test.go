@@ -29,7 +29,11 @@ func TestAzCliLive(t *testing.T) {
 		t.Fatalf("the az sign-in: %v", err)
 	}
 	same := want == "" || strings.EqualFold(who, want)
-	t.Logf("signed in through the az CLI's account to %s; the login is that account: %v", dbName, same)
+	if want == "" {
+		t.Logf("signed in through the az CLI's account to %s; the login not compared (PGVIGIL_AZCLI_UPN not set)", dbName)
+	} else {
+		t.Logf("signed in through the az CLI's account to %s; the login is that account: %v", dbName, same)
+	}
 	if !same {
 		t.Errorf("the server reports another login than the az CLI's account")
 	}

@@ -391,8 +391,8 @@ func (h *Heartbeat) loadOf(instance string) *loadAgg {
 	return l
 }
 
-// AuthFailure says whether the server refused the login - PostgreSQL 28P01 (bad password) or 28000 (no such role / not allowed),
-// SQL Server 18456 (login failed).
+// AuthFailure says whether the login was refused - PostgreSQL 28P01 (bad password) or 28000 (no such role / not
+// allowed), SQL Server 18456 (login failed) - or the sign-in gave no token to log in with (an ended az sign-in).
 func AuthFailure(err error) bool {
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) {
@@ -402,7 +402,9 @@ func AuthFailure(err error) bool {
 	if errors.As(err, &ms) {
 		return ms.SQLErrorNumber() == 18456
 	}
-	return false
+	// a sign-in that gave no token before the server was asked (mssqlopen.SignInError: the az sign-in ended)
+	var si interface{ SignInFailure() bool }
+	return errors.As(err, &si) && si.SignInFailure()
 }
 
 func bucket(d time.Duration) int {

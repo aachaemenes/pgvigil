@@ -248,6 +248,8 @@ func TestDocumentedStrings(t *testing.T) {
 	}{
 		{"`sqlserver://<server>.database.windows.net?database=<db>&fedauth=ActiveDirectoryManagedIdentity`",
 			"sqlserver://srv1.database.windows.net?database=db1&fedauth=ActiveDirectoryManagedIdentity", "", "", true},
+		{"`sqlserver://<server>.database.windows.net?database=<db>&fedauth=ActiveDirectoryAzCli`",
+			"sqlserver://srv1.database.windows.net?database=db1&fedauth=ActiveDirectoryAzCli", "", "", true},
 		{"`server=<host>;user id=<principal>;authenticator=krb5;krb5-keytabfile=/etc/pgvigil/pgvigil.keytab;krb5-configfile=/etc/krb5.conf;encrypt=true`",
 			"server=sql01;user id=pgvigil-gmsa$@CORP.EXAMPLE.COM;authenticator=krb5;krb5-keytabfile=/etc/pgvigil/pgvigil.keytab;krb5-configfile=/etc/krb5.conf;encrypt=true",
 			"pgvigil-gmsa$@CORP.EXAMPLE.COM", "krb5", false},

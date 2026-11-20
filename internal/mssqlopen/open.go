@@ -6,7 +6,8 @@
 // entra-identity) or ActiveDirectoryAzCli (the az CLI's sign-in, RELNOTES L173) opens through go-mssqldb's federated-authentication connector with a token provider of this
 // package: ONE azidentity credential per identity for the life of the process, so the token cache answers every
 // later connect until the token nears its expiry (a service principal's cache is its credential's own; a managed
-// identity's is MSAL's, one for the process). Without this package the plain driver
+// identity's is MSAL's, one for the process; the az sign-in's is this package's own, azcache.go: azidentity caches
+// none for it). Without this package the plain driver
 // ignores fedauth and sends the application id and its secret as a SQL login (only go-mssqldb's azuread connector
 // reads fedauth, and it builds a new credential, so a new token request, for every connect: go-mssqldb v1.11.2
 // azuread/configuration.go).
@@ -40,8 +41,8 @@ import (
 const (
 	ServicePrincipal = "ActiveDirectoryServicePrincipal" // auth entra: the application id and its secret
 	ManagedIdentity  = "ActiveDirectoryManagedIdentity"  // auth entra-identity: the host's own Azure identity, no secret
-	// AzCli is the az CLI's sign-in of the account the process runs as (RELNOTES L173, the 'entra-cli' form of
-	// pgvigil.yaml): no login and no secret in the string; a person's serve, the Windows app, a one-off collect
+	// AzCli is the az CLI's sign-in of the account the process runs as (RELNOTES L173, the connection string's fedauth
+	// as pgvigil.yaml writes it): no login and no secret in the string; a person's serve, the Windows app, a one-off collect
 	AzCli = "ActiveDirectoryAzCli"
 )
 
@@ -363,7 +364,11 @@ func makeCredential(key identity, secret string) (azcore.TokenCredential, error)
 	case ServicePrincipal:
 		return azidentity.NewClientSecretCredential(key.tenant, key.clientID, secret, nil)
 	case AzCli:
-		return azidentity.NewAzureCLICredential(nil)
+		c, err := azidentity.NewAzureCLICredential(nil)
+		if err != nil {
+			return nil, err
+		}
+		return newCachedCredential(c), nil
 	}
 	var o *azidentity.ManagedIdentityCredentialOptions
 	switch {
