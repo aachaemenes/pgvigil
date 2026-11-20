@@ -26,7 +26,16 @@ type KerberosIdentity struct {
 func (c *Config) validateKerberos() error {
 	k := &c.Kerberos
 	k.Keytab, k.CCache, k.Principal, k.Krb5Conf = strings.TrimSpace(k.Keytab), strings.TrimSpace(k.CCache), strings.TrimSpace(k.Principal), strings.TrimSpace(k.Krb5Conf)
+	// pgauth3 N2: a FILE: cache is its path; a cache of another type is no file pgvigil can read
+	if p, ok := strings.CutPrefix(k.CCache, "FILE:"); ok {
+		k.CCache = p
+	}
+	if t := cacheType(k.CCache); t != "" {
+		return errors.New("kerberos: the credential cache " + k.CCache + " is a " + t + " cache, which pgvigil cannot read: give a file - kinit -k -t <keytab> -c FILE:<path> <principal> writes one (docs/postgres-signin.md)")
+	}
 	switch {
+	case k.Keytab != "" && k.CCache != "":
+		return errors.New("kerberos: one identity - a keytab with its principal, or a credential cache, never both")
 	case k.Keytab != "" && k.Principal == "":
 		return errors.New("kerberos: a keytab needs its principal (principal: user@REALM)")
 	case k.Principal != "" && !validPrincipal(k.Principal):
@@ -35,6 +44,16 @@ func (c *Config) validateKerberos() error {
 		return errors.New("kerberos: the principal " + k.Principal + " needs a keytab or a credential cache (keytab: or ccache:)")
 	}
 	return nil
+}
+
+// cacheType is a credential cache name's type when it is not a file (KCM:, KEYRING:, DIR:, API:, MEMORY:, MSLSA:), or ""
+func cacheType(cc string) string {
+	for _, t := range []string{"KCM", "KEYRING", "DIR", "API", "MEMORY", "MSLSA"} {
+		if strings.HasPrefix(strings.ToUpper(cc), t+":") {
+			return t
+		}
+	}
+	return ""
 }
 
 // validPrincipal: a name and a realm, user@REALM

@@ -8,9 +8,11 @@
 #   PGBIN, KRB_BIN, KRB_SBIN  the native tools' folders, all three given: Homebrew is not used (a Linux rig run of this
 #                             same script, as the pane's box did before its first macOS run)
 #   Needs: python3 and openssl; Homebrew and go unless the above are given.
-# Leaves nothing of its own: the realm, the cluster, the keytabs and the caches live in the proof's own 0700 temp
-# folder; the KDC and the server are stopped on every exit (read back, row Z); postgresql@18 and krb5 are uninstalled
-# when this run installed them. The KDC's master password is made per run (openssl rand) and never printed.
+# Leaves nothing of its own but Homebrew's: the realm, the cluster, the keytabs and the caches live in the proof's own
+# 0700 temp folder; the KDC and the server are stopped on every exit (read back, row Z); postgresql@18 and krb5 are
+# uninstalled when this run installed them - the libraries brew installs with them (icu4c, openssl@3, lz4, zstd,
+# readline, gettext) stay (pgauth3 N9). The KDC's master password is made per run (openssl rand) for this throwaway
+# realm and is on kdb5_util's command line while it runs (N8).
 #
 # The realm PGV.TEST: principals postgres/localhost and pgsvc/localhost (the server's keytab), pgvkrb (the collector's
 # keytab). The KDC listens on a free 127.0.0.1 port (TCP, udp_preference_limit = 1), the server on localhost at a free
@@ -161,21 +163,42 @@ K8T0=$(date -u +%s)
 "$BIN" run -config "$WORK/k8.yaml" > "$WORK/k8.run" 2>&1 & RUNP=$!
 sleep 200; kill "$RUNP" 2>/dev/null || true; wait "$RUNP" 2>/dev/null || true; RUNP=
 kill "$KL" 2>/dev/null || true; wait "$KL" 2>/dev/null || true; KL=
-K8=$(psql "$PGVIGIL_REPO_DSN" -XAt -F '|' -c "select count(*) filter (where d.status = 'ok' and d.snapshot_at > to_timestamp($K8T0 + 120)), count(*) filter (where d.status = 'error') from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'k8' and d.collection in ('activity', 'dbstats', 'connections', 'waits')")
+K8=$(psql "$PGVIGIL_REPO_DSN" -XAt -F '|' -c "select count(*) filter (where d.status = 'ok' and d.snapshot_at > to_timestamp($K8T0 + 120)), (select count(*) from pgvigil.collection_log l join pgvigil.instances li using (instance_id) where li.name = 'k8' and l.status = 'error' and l.snapshot_at >= to_timestamp($K8T0)) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'k8' and d.collection in ('activity', 'dbstats', 'connections', 'waits')")
 KF=0; [ -f "$WORK/k8.loop" ] && KF=$(grep -c . "$WORK/k8.loop")
 echo "   K8: minute collections ok after 120 s | in error: $K8; $KF failed kinit(s)"
 IFS='|' read -r K8OK K8ERR <<<"$K8"
 if [ "${K8OK:-0}" -ge 2 ] && [ "${K8ERR:-1}" = 0 ]; then ok "K8: the minute collections ok past the first ticket's minute, none in error"
 else bad "K8: want 2 or more minute collections ok after 120 s and none in error"; grep -iE 'kerberos|gss' "$WORK/k8.run" | tail -5 | sed 's/^/     /'; fi
 
+echo "== K8b: the same, kinit writing the cache path itself (no new file renamed over it: a real host's kinit -k -c FILE:<path>; pgauth3 S1)"
+kc() { kinit_ -l 1m -k -t "$WORK/client.keytab" -c "FILE:$WORK/k8b.ccache" pgvkrb@PGV.TEST; }
+kc >/dev/null 2>&1 || bad "K8b: the first kinit"
+( for _ in 1 2 3 4 5 6 7; do sleep 30; kc >/dev/null 2>&1 || echo "K8b: a kinit failed" >> "$WORK/k8b.loop"; done ) & KLB=$!
+yml k8b pgvkrb "kerberos:
+  ccache: $WORK/k8b.ccache
+  krb5_conf: $WORK/krb5.conf"
+K8BT0=$(date -u +%s)
+"$BIN" run -config "$WORK/k8b.yaml" > "$WORK/k8b.run" 2>&1 & RUNP=$!
+sleep 200; kill "$RUNP" 2>/dev/null || true; wait "$RUNP" 2>/dev/null || true; RUNP=
+kill "$KLB" 2>/dev/null || true; wait "$KLB" 2>/dev/null || true; KLB=
+K8B=$(psql "$PGVIGIL_REPO_DSN" -XAt -F '|' -c "select count(*) filter (where d.status = 'ok' and d.snapshot_at > to_timestamp($K8BT0 + 120)), (select count(*) from pgvigil.collection_log l join pgvigil.instances li using (instance_id) where li.name = 'k8b' and l.status = 'error' and l.snapshot_at >= to_timestamp($K8BT0)) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'k8b' and d.collection in ('activity', 'dbstats', 'connections', 'waits')")
+KF=0; [ -f "$WORK/k8b.loop" ] && KF=$(grep -c . "$WORK/k8b.loop")
+echo "   K8b: minute collections ok after 120 s | in error: $K8B; $KF failed kinit(s)"
+IFS='|' read -r K8BOK K8BERR <<<"$K8B"
+if [ "${K8BOK:-0}" -ge 2 ] && [ "${K8BERR:-1}" = 0 ]; then ok "K8b: the minute collections ok past the first ticket's minute, none in error"
+else bad "K8b: want 2 or more minute collections ok after 120 s and none in error"; grep -iE 'kerberos|gss' "$WORK/k8b.run" | tail -5 | sed 's/^/     /'; fi
+
 echo "== C: every PostgreSQL collection once, by the keytab"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -F '|' -c "$1"; }
 COLLS=$("$BIN" collect -config "$WORK/k1.yaml" -once no_such_collection 2>&1 | grep -o 'known: \[[^]]*\]' | tr -d '[]' | tr ' ' '\n' | grep -v '^mssql_\|^known:' | grep . || true)
 if [ "$(printf '%s\n' "$COLLS" | grep -c .)" -ge 20 ]; then
-  for c in $COLLS; do "$BIN" collect -config "$WORK/k1.yaml" -once "$c" -instance k1 >> "$WORK/c.out" 2>&1 || true; done
+  # pgauth3 N7: a collection that failed before it logged is counted against the list, never hidden by '|| true'
+  for c in $COLLS; do "$BIN" collect -config "$WORK/k1.yaml" -once "$c" -instance k1 >> "$WORK/c.out" 2>&1 || echo "$c" >> "$WORK/c.exit"; done
+  LISTED=$(printf '%s\n' "$COLLS" | grep -c .)
   BADC=$(q "select d.collection || ' ' || d.status || ' ' || left(coalesce(d.note, ''), 120) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'k1' and d.status not in ('ok', 'skipped') order by 1")
   NC=$(q "select count(*) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'k1'")
-  if [ -z "$BADC" ]; then ok "C: $NC collections by the keytab, each ok or skipped"; else bad "C: not ok or skipped:"; printf '%s\n' "$BADC" | sed 's/^/     /'; fi
+  if [ -z "$BADC" ] && [ "${NC:-0}" -ge "$LISTED" ]; then ok "C: $NC of $LISTED collections by the keytab, each ok or skipped"
+  else bad "C: $NC of $LISTED collections logged; not ok or skipped: ${BADC:-none}; exited non-zero: $(tr '\n' ' ' < "$WORK/c.exit" 2>/dev/null)"; fi
 else bad "C: the PostgreSQL collections were not listed"; fi
 
 echo "== K3: the principal's key rotated at the KDC"

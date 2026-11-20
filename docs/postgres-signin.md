@@ -26,8 +26,12 @@ hostssl all pgvigil 10.0.0.0/8 ldap ldapurl="ldaps://dc1.example.com/dc=example,
 hostssl all pgvigil 10.0.0.0/8 radius radiusservers=r1 radiussecrets=...                          # RADIUS
 hostssl all pgvigil 10.0.0.0/8 pam                                                                # PAM
 hostssl all pgvigil 10.0.0.0/8 cert                                                               # a client certificate
-host    all pgvigil 10.0.0.0/8 gss include_realm=0 krb_realm=EXAMPLE.COM                          # Kerberos (Active Directory)
+hostssl all pgvigil 10.0.0.0/8 gss include_realm=0 krb_realm=EXAMPLE.COM                          # Kerberos (Active Directory)
 ```
+
+The gss line is `hostssl`, with the instance's dsn at `sslmode=verify-full` (pgauth3 S3): pgvigil's PostgreSQL driver
+has no GSS encryption (no `gssencmode`, so a `hostgssenc` line never matches it), and a gss sign-in proves the
+collector to the server but not the server to the collector - TLS checked at verify-full is what proves the server.
 
 ## The instance's sign-in: LDAP, RADIUS, PAM and BSD
 
@@ -89,6 +93,15 @@ kerberos:
 # or, for a cache kept by 'kinit -k' outside pgvigil:  kerberos: { ccache: /var/lib/pgvigil/krb5cc }
 ```
 
+The krb5.conf pgvigil reads (pgauth3 S4) needs the realm's `kdc =` lines or `dns_lookup_kdc = true`: pgvigil reads no
+`include` or `includedir` line and no sssd locator, so a host joined to Active Directory whose own krb5.conf lists no
+KDC (kinit works there through sssd) needs one of its own (`krb5_conf:`). A cache must be a FILE: pgvigil cannot read
+a `KCM:`, `KEYRING:`, `DIR:` or `API:` cache (the default of such hosts, and of macOS) - the host keeps one with
+`kinit -k -t <keytab> -c FILE:<path> <principal>` (a `FILE:` prefix in `ccache:` is accepted). One identity: a keytab
+with its principal, or a cache, never both. The block is for the monitored servers' gss sign-ins; the commands that
+open only the repository (report, tag, purge, export, user, demo, mcp, install, import) do not read it, so a
+repository behind gss is not supported (pgauth3 N1).
+
 Without the block, a credential cache named by `KRB5CCNAME` in the service's environment is the identity. Each
 instance's dsn then names only the role the principal maps to (with `include_realm=0`, the principal's name before
 the `@`) and, where the server's service principal is not `postgres/<host>`, `krbsrvname` or `krbspn`:
@@ -97,16 +110,20 @@ the `@`) and, where the server's service principal is not `postgres/<host>`, `kr
 instances:
   - name: ad1
     engine: postgres
-    dsn: "host=ad1.example.com dbname=postgres user=pgvigil"
+    dsn: "host=ad1.example.com dbname=postgres user=pgvigil sslmode=verify-full sslrootcert=/etc/pgvigil/ca.pem"
 ```
 
-**One identity, by pgx's rule:** pgvigil's PostgreSQL driver takes ONE Kerberos provider for the whole process, with
-no way to give one connection another principal than the next. A site that needs a second principal runs a second
+**One identity, by pgx's rule:** pgvigil's PostgreSQL driver takes ONE Kerberos provider for the whole process; it
+gives that provider the server's host and service (or the SPN whole) at each sign-in, but never the instance or the
+login (pgauth3 N4), so one connection cannot carry another principal than the next. A site that needs a second principal runs a second
 collector (the same binary, as a remote collector) with its own `kerberos:` block. This is DBA Dash's shape too: its
 service signs in as one account (a gMSA).
 
 The host's Kerberos name of the server must be the one its service principal is for (`postgres/ad1.example.com`): give
-the host name, not its address. On Admin > Instances the kind is `kerberos` (the login is the role, no password); it
+the host name, not its address, and the REGISTERED name, never a DNS alias (pgauth3 S2: pgvigil lower-cases the host
+as libpq does, but does not follow an alias the way MIT's library does - a dsn that works in psql is no proof). A dsn
+of several hosts (`host=pg1,pg2`) signs in to each with the FIRST host's ticket: give one instance per host, or a
+`krbspn` every host's keytab holds. On Admin > Instances the kind is `kerberos` (the login is the role, no password); it
 is this server's own identity, so Community tools and custom reports run on such an instance only from `pgvigil.yaml`.
 A gss server with no identity set fails in words naming the `kerberos:` block.
 
@@ -156,10 +173,13 @@ its warning finding at `sslmode=require`, none at `verify-full`.
 
 Kerberos, against an MIT KDC in a container and PostgreSQL 18's GSSAPI (`scripts/proof-pg-kerberos.sh`): a keytab, a
 credential cache and `krbsrvname` sign in; a collector running past its tickets' life keeps signing in from a cache
-that `kinit -k` writes anew; no identity, a principal mapped to another role and a key rotated at the KDC fail in
-words; every PostgreSQL collection runs by the keytab.
+that `kinit -k` writes anew as a new file renamed over it (K8) - kinit writing the cache path itself is K8b, not run
+yet (pgauth3 S1); no identity, a principal mapped to another role and a key rotated at the KDC (before a fresh
+collector start) fail in words; every PostgreSQL collection runs by the keytab.
 
-Not proven: Active Directory itself, for LDAP (a domain controller as the directory) and Active Directory as the KDC;
+Not proven (pgauth3 N7 among them): a key rotated at the KDC under a collector that keeps running; `krbspn`; one bad
+host beside a good one on one identity (the good one kept, no KDC sign-in a minute: pgauth3 B2's unit rows only);
+Active Directory itself, for LDAP (a domain controller as the directory) and Active Directory as the KDC;
 a page instance's private-CA verify-full (a private CA's file is `pgvigil.yaml`'s); a public-CA client certificate
 (the proof's comes from its own CA); a real host name for the SPN (the proof's is `localhost`); a Windows keytab (a
 keytab on a Windows collector; SSPI is not in this release); the guard under PostgreSQL 16 (the method cannot be read

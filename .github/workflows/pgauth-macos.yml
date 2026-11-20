@@ -14,6 +14,9 @@ on:
       - scripts/proof-pg-kerberos-native.sh
       - internal/pgkrb/**
       - internal/config/kerberos.go
+      - cmd/pgvigil/**
+      - go.mod
+      - go.sum
 
 permissions:
   contents: read
@@ -38,7 +41,10 @@ jobs:
       - name: proof-pg-kerberos-native (${{ matrix.os }})
         run: |
           set -o pipefail
-          scripts/proof-pg-kerberos-native.sh 2>&1 | tee proof-pg-kerberos.log
+          # pgauth3 N10: the script's exit 2 (NOT PROVEN: a tool this runner lacks) is a notice, never the job's red
+          rc=0; scripts/proof-pg-kerberos-native.sh 2>&1 | tee proof-pg-kerberos.log || rc=$?
+          if [ "$rc" = 2 ]; then echo "::notice::proof-pg-kerberos-native: NOT PROVEN on ${{ matrix.os }} (see the summary)"; exit 0; fi
+          exit "$rc"
       - name: summary
         if: always()
         run: |

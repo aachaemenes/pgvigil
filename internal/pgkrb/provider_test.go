@@ -1,6 +1,7 @@
 package pgkrb
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -84,8 +85,8 @@ func TestContinuePGAUTH(t *testing.T) {
 // TestProviderReloadPGAUTH (PGAUTH M3; found writing the review brief): a long-running collector outlives a ticket. A
 // credential cache cannot be renewed by the client (gokrb5's NewFromCCache has no renewal and no way to log in again),
 // so the client read from it is reused only while the file is the version it was read from - the host's kinit -k
-// writes a new one - and a client whose sign-in failed is dropped, so the next sign-in rebuilds it from the files
-// (a keytab replaced after its key was rotated at the KDC).
+// writes a new one - and a client whose sign-in failed and no longer holds is replaced, so the next sign-in rebuilds
+// it from the files (a keytab replaced after its key was rotated at the KDC; pgauth3 B2's failed).
 func TestProviderReloadPGAUTH(t *testing.T) {
 	t1 := time.Date(2026, 11, 19, 7, 0, 0, 0, time.UTC)
 	v1 := ccVersion{mod: t1, size: 1024, file: 7}
@@ -96,9 +97,83 @@ func TestProviderReloadPGAUTH(t *testing.T) {
 	if p.cachedFor(ccVersion{mod: t1.Add(time.Second), size: 1024, file: 7}) {
 		t.Error("a newer cache file: the old client is reused")
 	}
-	p.drop()
+	p.affirm = func(*client.Client) error { return errors.New("the TGT has ended") }
+	p.destroy = func(*client.Client) {}
+	p.failed(p.cl)
 	if p.cl != nil || p.cachedFor(v1) {
-		t.Error("drop kept the client")
+		t.Error("a failed client whose sign-in no longer holds was kept")
+	}
+}
+
+// TestFailedKeepsAGoodClientPGAUTH3 (pgauth3 B2): one server's failed sign-in (no principal for its name, a KDC down
+// for an uncached name) keeps the client while its own sign-in holds - its TGT and its tickets for every other server
+// stay; a client that no longer holds is destroyed (its renewal stopped: no leak) and forgotten; a failure of a client
+// that is no longer the kept one touches nothing.
+func TestFailedKeepsAGoodClientPGAUTH3(t *testing.T) {
+	a, b := new(client.Client), new(client.Client)
+	var destroyed []*client.Client
+	good := true
+	p := &provider{cl: a,
+		affirm: func(*client.Client) error {
+			if good {
+				return nil
+			}
+			return errors.New("the TGT has ended and the KDC does not answer")
+		},
+		destroy: func(cl *client.Client) { destroyed = append(destroyed, cl) }}
+	p.failed(a)
+	if p.cl != a || len(destroyed) != 0 {
+		t.Errorf("a client whose sign-in holds: kept %v, destroyed %d; want kept, none destroyed", p.cl == a, len(destroyed))
+	}
+	p.cl = b
+	good = false
+	p.failed(a)
+	if p.cl != b || len(destroyed) != 0 {
+		t.Errorf("a failure of a client no longer kept: the kept one replaced %v, destroyed %d; want untouched", p.cl != b, len(destroyed))
+	}
+	p.failed(b)
+	if p.cl != nil || len(destroyed) != 1 || destroyed[0] != b {
+		t.Errorf("a kept client that no longer holds: kept %v, destroyed %v; want forgotten and destroyed", p.cl != nil, destroyed)
+	}
+}
+
+// TestRebuildPausePGAUTH3 (pgauth3 B2 c): a rebuild that fails is answered for rebuildPause - never a fresh sign-in at
+// the KDC per collection (a keytab whose key was rotated at the KDC and not yet here) - and tried again after it.
+func TestRebuildPausePGAUTH3(t *testing.T) {
+	now := time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC)
+	calls := 0
+	p := &provider{id: config.KerberosIdentity{Keytab: "/etc/pgvigil/pgvigil.keytab", Principal: "pgvigil@PGV.TEST"},
+		now:  func() time.Time { return now },
+		sign: func() (*client.Client, error) { calls++; return nil, errors.New("KDC_ERR_PREAUTH_FAILED") }}
+	if _, err := p.client(); err == nil || calls != 1 {
+		t.Fatalf("the first rebuild: %v, %d call(s)", err, calls)
+	}
+	now = now.Add(rebuildPause / 2)
+	if _, err := p.client(); err == nil || calls != 1 {
+		t.Errorf("inside the pause: %v, %d call(s); want the last error and no new sign-in", err, calls)
+	}
+	now = now.Add(rebuildPause)
+	if _, err := p.client(); err == nil || calls != 2 {
+		t.Errorf("after the pause: %v, %d call(s); want a new sign-in", err, calls)
+	}
+}
+
+// TestCacheReadDuringRewriteKeepsTheClientPGAUTH3 (pgauth3 S6): a credential cache gone for the moment of the host's
+// rewrite keeps the client its last read made while that one's ticket is valid.
+func TestCacheReadDuringRewriteKeepsTheClientPGAUTH3(t *testing.T) {
+	a := new(client.Client)
+	p := &provider{id: config.KerberosIdentity{CCache: filepath.Join(t.TempDir(), "gone")}, cl: a,
+		affirm: func(*client.Client) error { return nil }}
+	if cl, err := p.client(); err != nil || cl != a {
+		t.Errorf("the cache file missing for a moment, the kept ticket valid: %v %v; want the kept client", cl == a, err)
+	}
+}
+
+// TestSPNLowercasesTheHostPGAUTH3 (pgauth3 S2): the service principal's host is lower-cased as libpq through MIT asks
+// for it.
+func TestSPNLowercasesTheHostPGAUTH3(t *testing.T) {
+	if got := spnFor("DB1.Example.com", "postgres"); got != "postgres/db1.example.com" {
+		t.Errorf("spnFor = %q", got)
 	}
 }
 
@@ -142,17 +217,30 @@ func TestCacheVersionPGAUTH(t *testing.T) {
 	if p.cachedFor(versionOf(st2)) {
 		t.Error("a new cache file renamed over the old one, of the same time and size (a kinit inside one second): the old client is reused")
 	}
+}
+
+// TestCacheRewrittenInPlacePGAUTH (pgauth3 N6: out of the Windows skip - it needs no inode): the same file rewritten in
+// place to another size, its time unchanged, is a new version.
+func TestCacheRewrittenInPlacePGAUTH(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "krb5cc")
+	if err := os.WriteFile(f, []byte("ticket-2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st2, err := os.Stat(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &provider{id: config.KerberosIdentity{CCache: f}, cl: new(client.Client), cc: versionOf(st2)}
 	if err := os.WriteFile(f, []byte("ticket-3-longer"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chtimes(f, st1.ModTime(), st1.ModTime()); err != nil {
+	if err := os.Chtimes(f, st2.ModTime(), st2.ModTime()); err != nil {
 		t.Fatal(err)
 	}
 	st3, err := os.Stat(f)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.cc = versionOf(st2)
 	if p.cachedFor(versionOf(st3)) {
 		t.Error("the same file rewritten in place to another size, its time unchanged: the old client is reused")
 	}

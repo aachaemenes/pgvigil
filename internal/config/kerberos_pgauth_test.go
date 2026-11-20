@@ -36,12 +36,16 @@ func TestKerberosBlockPGAUTH(t *testing.T) {
 		{"kerberos:\n  keytab: /etc/pgvigil/pgvigil.keytab\n", "a keytab needs its principal"},
 		{"kerberos:\n  keytab: /etc/pgvigil/pgvigil.keytab\n  principal: pgvigil\n", "needs its realm"},
 		{"kerberos:\n  principal: pgvigil@PGV.TEST\n", "a keytab or a credential cache"},
+		// pgauth3 N2: a cache of another type is no file; a keytab and a cache are two identities
+		{"kerberos:\n  ccache: KCM:1000\n", "is a KCM cache"},
+		{"kerberos:\n  ccache: KEYRING:persistent:1000\n", "is a KEYRING cache"},
+		{"kerberos:\n  keytab: /etc/pgvigil/pgvigil.keytab\n  principal: pgvigil@PGV.TEST\n  ccache: /var/lib/pgvigil/krb5cc\n", "never both"},
 	} {
 		if _, err := load(c.block); err == nil || !strings.Contains(err.Error(), c.words) {
 			t.Errorf("%q: %v, want an error saying %q", c.block, err, c.words)
 		}
 	}
-	c, err = load("kerberos:\n  ccache: /var/lib/pgvigil/krb5cc\n  krb5_conf: /etc/pgvigil/krb5.conf\n")
+	c, err = load("kerberos:\n  ccache: FILE:/var/lib/pgvigil/krb5cc\n  krb5_conf: /etc/pgvigil/krb5.conf\n") // N2: FILE: dropped
 	if err != nil {
 		t.Fatal(err)
 	}
