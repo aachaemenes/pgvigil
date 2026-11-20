@@ -35,11 +35,13 @@
     <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer pgvigil is installed. This installer does not go back: docs/upgrade.md holds the way back." />
     <!-- rn-l189 S7: a service pgvigil this package did not make (install.ps1 or 'pgvigil install' made it) refuses a
-         fresh install - the MSI's 'pgvigil install' would re-point it to its own configuration and leave it stopped -->
+         fresh install - the MSI's 'pgvigil install' would re-point it to its own configuration and leave it stopped. An
+         upgrade and a downgrade find this package's own service, so neither is judged here (a downgrade is refused by
+         MajorUpgrade's own words, never by these) -->
     <Property Id="PGVSERVICEIMAGE">
       <RegistrySearch Id="PgvServiceImage" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\pgvigil" Name="ImagePath" Type="raw" Bitness="always64" />
     </Property>
-    <Launch Condition="Installed OR WIX_UPGRADE_DETECTED OR NOT PGVSERVICEIMAGE"
+    <Launch Condition="Installed OR WIX_UPGRADE_DETECTED OR WIX_DOWNGRADE_DETECTED OR NOT PGVSERVICEIMAGE"
             Message="A pgvigil service is already installed on this machine by install.ps1 or 'pgvigil install': remove it with 'pgvigil uninstall' first, then install the MSI (docs/msi.md). One installer owns a machine." />
     <MediaTemplate EmbedCab="yes" />
 

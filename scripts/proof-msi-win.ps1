@@ -9,21 +9,28 @@
 # made, each step read back.
 #   powershell.exe -NoProfile -File scripts\proof-msi-win.ps1 -Bin1 C:\kit\bin-0.0.1\pgvigil.exe
 #       -Bin2 C:\kit\bin-0.0.2\pgvigil.exe -MsiDir C:\kit\packaging\msi -Dotnet C:\kit\dotnet\dotnet.exe
-#       -InstallScript C:\kit\docs\install.ps1 [-ConfigTest C:\kit\config.test.exe]
+#       -InstallScript C:\kit\docs\install.ps1 [-ConfigTest C:\kit\config.test.exe] [-LogDir C:\kit-run]
+#       [-NugetConfig C:\kit\nuget.config]
+#   -LogDir: msiexec's logs (and the undo's) are copied there as msi-<name>.log before the work folder goes, so a FAIL
+#   comes back with its 'Return value 3' lines; -NugetConfig: the build's restore reads that file alone
+#   (-p:RestoreConfigFile), so no NuGet.Config is made in the running account's profile
 #   a run cut before its end (a time limit, a dropped session): the same command with -Undo runs the undo alone
 # Expected (written before its first run, 2026-11-20):
 #  B  'dotnet build packaging\msi\pgvigil.wixproj' exit 0 for 0.0.1 and for 0.0.2, each .msi made
-#  M1 the 0.0.2 package's Binary table is absent or empty (no custom-action DLL ships)
+#  M1 the 0.0.2 package's Binary table is absent or empty (no custom-action DLL ships) - read in a child powershell.exe,
+#     so no COM object of the read holds the package open when the undo removes it
 #  I1 'msiexec /i' of 0.0.1 exit 0: %ProgramFiles%\pgvigil\pgvigil.exe there, the service pgvigil made, the exe
 #     says 0.0.1
 #  U1 repo.dsn names a host that never answers (the new service stops at once); 'msiexec /i' of 0.0.2 exit 0: one
 #     installed product pgvigil, version 0.0.2, the exe says 0.0.2, the service there and running the MSI's exe
-#  D1 'msiexec /i' of 0.0.1 over it refused (exit not 0, its log says 'A newer pgvigil is installed'); 0.0.2 alone
+#  D1 'msiexec /i' of 0.0.1 over it refused (exit not 0, its log says 'A newer pgvigil is installed' and not the
+#     service launch condition's 'A pgvigil service is already installed'); 0.0.2 alone
 #  S1 install.ps1 run over it refuses, naming msiexec
 #  X1 'msiexec /x' exit 0: no service, no pgvigil.exe; pgvigil.yaml and repo.dsn kept under %ProgramData%\pgvigil
 #  L9 (with -ConfigTest) 'config.test.exe -test.run TestSealAccessIsProtectedL9' prints its PASS line
-#  Z  the undo, each step on its own and read back: any installed product pgvigil removed, the service gone,
-#     %ProgramFiles%\pgvigil gone, %ProgramData%\pgvigil (this run's) removed, the work folder removed
+#  Z  the undo, each step on its own and read back: any installed product pgvigil removed (by its product code), the
+#     service gone, %ProgramFiles%\pgvigil gone, %ProgramData%\pgvigil (this run's) removed, the work folder removed -
+#     KEPT when an earlier undo step failed, so the printed -Undo line still finds this run's marker
 # Exit 0 = every row as stated; 1 = a row differs; 2 = refused to start.
 param(
     [Parameter(Mandatory = $true)][string]$Bin1,
@@ -32,6 +39,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Dotnet,
     [Parameter(Mandatory = $true)][string]$InstallScript,
     [string]$ConfigTest = '',
+    [string]$LogDir = '',
+    [string]$NugetConfig = '',
     [switch]$Undo,
     [string]$Work = 'C:\pgvigil-msi-proof'
 )
@@ -51,7 +60,8 @@ $failed = 0
 function Row([string]$name, [bool]$ok, [string]$what) {
     if ($ok) { Write-Host "OK   $name $what" } else { Write-Host "FAIL $name $what"; $script:failed++ }
 }
-function Get-Installed { return @(Get-ItemProperty $Uninstall -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'pgvigil' }) }
+# an installed MSI product pgvigil: its key is the product code (the app's own Uninstall\pgvigil entry is not one)
+function Get-Installed { return @(Get-ItemProperty $Uninstall -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'pgvigil' -and $_.PSChildName -match '^\{[0-9A-Fa-f-]{36}\}$' }) }
 # msiexec waited for, its log in the work folder; each path quoted
 function Invoke-Msi([string]$verb, [string]$package, [string]$logName) {
     $log = Join-Path $Work $logName
@@ -62,13 +72,14 @@ function Get-LogTail([string]$log) { if (Test-Path -LiteralPath $log) { return (
 
 # Z: the undo, every step on its own (one that throws never skips the next) and read back
 function Invoke-Undo {
+    $failedBefore = $script:failed
     try {
+        $n = 0
         foreach ($product in Get-Installed) {
             $code = $product.PSChildName
-            if ($code -match '^\{[0-9A-Fa-f-]{36}\}$') {
-                $proc = Start-Process msiexec.exe -ArgumentList '/x', $code, '/qn', '/norestart' -Wait -PassThru
-                Write-Host "     msiexec /x $code exit $($proc.ExitCode)"
-            }
+            $n++
+            $res = Invoke-Msi '/x' $code "undo-x-$n.log"
+            Write-Host "     msiexec /x $code exit $($res.Code)"
         }
         Row 'Z' ((Get-Installed).Count -eq 0) 'no installed product pgvigil left'
     } catch { Row 'Z' $false "the product's removal: $($_.Exception.Message)" }
@@ -87,6 +98,16 @@ function Invoke-Undo {
         if (Test-Path -LiteralPath $DataDir) { Remove-Item -LiteralPath $DataDir -Recurse -Force }
         Row 'Z' (-not (Test-Path -LiteralPath $DataDir)) "$DataDir (this run's configuration and repo.dsn) removed"
     } catch { Row 'Z' $false "$DataDir not removed: $($_.Exception.Message)" }
+    if ($LogDir -and (Test-Path -LiteralPath $Work)) {
+        foreach ($log in @(Get-ChildItem -LiteralPath $Work -Filter '*.log' -File -ErrorAction SilentlyContinue)) {
+            Copy-Item -LiteralPath $log.FullName -Destination (Join-Path $LogDir ('msi-' + $log.Name)) -Force -ErrorAction SilentlyContinue
+        }
+        Write-Host "     the msiexec logs copied to $LogDir as msi-*.log"
+    }
+    if ($script:failed -gt $failedBefore) {
+        Write-Host "KEPT $Work: an undo step above failed - the -Undo line runs the undo again"
+        return
+    }
     try {
         if (Test-Path -LiteralPath $Work) { Remove-Item -LiteralPath $Work -Recurse -Force }
         Row 'Z' (-not (Test-Path -LiteralPath $Work)) "$Work removed"
@@ -106,7 +127,9 @@ if ((Get-Installed).Count) { Write-Host 'REFUSED: a product named pgvigil is ins
 if (Test-Path -LiteralPath $Work) { Write-Host "REFUSED: $Work exists (a cut run's: this command with -Undo first)"; exit 2 }
 foreach ($need in $Bin1, $Bin2, (Join-Path $MsiDir 'pgvigil.wixproj'), $Dotnet, $InstallScript) { if (-not (Test-Path -LiteralPath $need)) { Write-Host "REFUSED: no $need"; exit 2 } }
 if ($ConfigTest -and -not (Test-Path -LiteralPath $ConfigTest)) { Write-Host "REFUSED: no $ConfigTest"; exit 2 }
-$undoLine = "powershell.exe -NoProfile -File $($MyInvocation.MyCommand.Path) -Bin1 $Bin1 -Bin2 $Bin2 -MsiDir $MsiDir -Dotnet $Dotnet -InstallScript $InstallScript -Work $Work -Undo"
+if ($NugetConfig -and -not (Test-Path -LiteralPath $NugetConfig)) { Write-Host "REFUSED: no $NugetConfig"; exit 2 }
+if ($LogDir -and -not (Test-Path -LiteralPath $LogDir)) { Write-Host "REFUSED: no $LogDir"; exit 2 }
+$undoLine = "powershell.exe -NoProfile -File $($MyInvocation.MyCommand.Path) -Bin1 $Bin1 -Bin2 $Bin2 -MsiDir $MsiDir -Dotnet $Dotnet -InstallScript $InstallScript -Work $Work$(if ($LogDir) { ' -LogDir ' + $LogDir }) -Undo"
 Write-Host "a run cut before its end is undone by: $undoLine"
 
 New-Item -ItemType Directory -Path $Work | Out-Null
@@ -115,7 +138,9 @@ try {
     $msi = @{}
     foreach ($pair in @(@('0.0.1', $Bin1), @('0.0.2', $Bin2))) {
         $ver = $pair[0]; $outDir = Join-Path $Work "msi-$ver"
-        $build = Invoke-Native { & $Dotnet build (Join-Path $MsiDir 'pgvigil.wixproj') -c Release "-p:PgvVersion=$ver" "-p:PgvBinary=$($pair[1])" -o $outDir }
+        $restore = @()
+        if ($NugetConfig) { $restore = @("-p:RestoreConfigFile=$NugetConfig") }
+        $build = Invoke-Native { & $Dotnet build (Join-Path $MsiDir 'pgvigil.wixproj') -c Release "-p:PgvVersion=$ver" "-p:PgvBinary=$($pair[1])" @restore -o $outDir }
         $made = Join-Path $outDir "pgvigil-$ver-x64.msi"
         $msi[$ver] = $made
         $lastLines = (("$($build.Out)" -split "`n" | Where-Object { $_ } | Select-Object -Last 3) -join ' | ')
@@ -123,26 +148,36 @@ try {
     }
     if (-not ((Test-Path -LiteralPath $msi['0.0.1']) -and (Test-Path -LiteralPath $msi['0.0.2']))) { throw 'no package to install: the rows after B need both' }
 
-    # M1
-    $installer = New-Object -ComObject WindowsInstaller.Installer
-    $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($msi['0.0.2'], 0))
-    function Read-Column([string]$sql) {
-        $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql))
-        $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
-        $vals = @()
-        while ($true) {
-            $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
-            if (-not $rec) { break }
-            $vals += $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, 1)
-        }
-        $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
-        return , $vals
+    # M1: in a child powershell.exe - its COM objects (the installer, the database, the views, the records) end with it,
+    # so none holds the package open for the undo; it prints one line: 'BINARY absent', 'BINARY empty' or 'BINARY holds <names>'
+    $m1Script = @'
+$ErrorActionPreference = 'Stop'
+$installer = New-Object -ComObject WindowsInstaller.Installer
+$db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @('PGV_MSI_PATH', 0))
+function Read-Column([string]$sql) {
+    $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql))
+    $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+    $vals = @()
+    while ($true) {
+        $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+        if (-not $rec) { break }
+        $vals += $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, 1)
+        $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($rec)
     }
-    $tables = Read-Column "SELECT ``Name`` FROM ``_Tables`` WHERE ``Name`` = 'Binary'"
-    $names = @()
-    if ($tables.Count) { $names = Read-Column 'SELECT `Name` FROM `Binary`' }
-    $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($db); $db = $null
-    Row 'M1' ($names.Count -eq 0) "the Binary table: $(if (-not $tables.Count) { 'absent' } elseif ($names.Count) { 'holds ' + ($names -join ', ') } else { 'empty' })"
+    $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
+    $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($view)
+    return , $vals
+}
+$tables = Read-Column "SELECT ``Name`` FROM ``_Tables`` WHERE ``Name`` = 'Binary'"
+$names = @()
+if ($tables.Count) { $names = Read-Column 'SELECT `Name` FROM `Binary`' }
+if (-not $tables.Count) { 'BINARY absent' } elseif ($names.Count) { 'BINARY holds ' + ($names -join ', ') } else { 'BINARY empty' }
+'@
+    $m1Script = $m1Script.Replace('PGV_MSI_PATH', $msi['0.0.2'].Replace("'", "''"))
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($m1Script))
+    $m1 = Invoke-Native { & powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded }
+    $m1Line = (("$($m1.Out)" -split "`n") | Where-Object { $_ -match '^BINARY ' } | Select-Object -First 1)
+    Row 'M1' ($m1.Code -eq 0 -and ($m1Line -eq 'BINARY absent' -or $m1Line -eq 'BINARY empty')) "the Binary table (a child powershell.exe, exit $($m1.Code)): $(if ($m1Line) { $m1Line } else { 'no answer: ' + $m1.Out })"
 
     # I1
     $res = Invoke-Msi '/i' $msi['0.0.1'] 'install-1.log'
@@ -161,8 +196,10 @@ try {
     # D1
     $res = Invoke-Msi '/i' $msi['0.0.1'] 'downgrade.log'
     $refusal = (Test-Path -LiteralPath $res.Log) -and (Select-String -LiteralPath $res.Log -SimpleMatch 'A newer pgvigil is installed' -Quiet)
+    $wrongWords = (Test-Path -LiteralPath $res.Log) -and (Select-String -LiteralPath $res.Log -SimpleMatch 'A pgvigil service is already installed' -Quiet)
     $inst = Get-Installed
-    Row 'D1' ($res.Code -ne 0 -and $refusal -and $inst.Count -eq 1 -and $inst[0].DisplayVersion -eq '0.0.2') "the downgrade exit $($res.Code), the refusal in its log $refusal; installed $(($inst | ForEach-Object { $_.DisplayVersion }) -join ', ')"
+    $d1ok = $res.Code -ne 0 -and $refusal -and -not $wrongWords -and $inst.Count -eq 1 -and $inst[0].DisplayVersion -eq '0.0.2'
+    Row 'D1' $d1ok "the downgrade exit $($res.Code), the refusal in its log $refusal, the service condition's words $wrongWords; installed $(($inst | ForEach-Object { $_.DisplayVersion }) -join ', ')$(if (-not $d1ok) { '; log: ' + (Get-LogTail $res.Log) })"
 
     # S1: install.ps1 over an MSI machine, in a process of its own
     $ps = Invoke-Native { & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "`$env:PGVIGIL_NO_SERVICE = ''; try { & '$InstallScript'; 'NOT REFUSED' } catch { 'REFUSED: ' + `$_ }" }
@@ -171,7 +208,8 @@ try {
     # X1
     $res = Invoke-Msi '/x' $msi['0.0.2'] 'uninstall.log'
     $kept = @('pgvigil.yaml', 'repo.dsn' | Where-Object { Test-Path -LiteralPath (Join-Path $DataDir $_) })
-    Row 'X1' ($res.Code -eq 0 -and -not (Get-Service -Name pgvigil -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $Exe) -and $kept.Count -eq 2) "uninstall exit $($res.Code); service gone $(-not (Get-Service -Name pgvigil -ErrorAction SilentlyContinue)); exe gone $(-not (Test-Path -LiteralPath $Exe)); kept: $($kept -join ', ')"
+    $x1ok = $res.Code -eq 0 -and -not (Get-Service -Name pgvigil -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $Exe) -and $kept.Count -eq 2
+    Row 'X1' $x1ok "uninstall exit $($res.Code); service gone $(-not (Get-Service -Name pgvigil -ErrorAction SilentlyContinue)); exe gone $(-not (Test-Path -LiteralPath $Exe)); kept: $($kept -join ', ')$(if (-not $x1ok) { '; log: ' + (Get-LogTail $res.Log) })"
 
     # L9
     if ($ConfigTest) {

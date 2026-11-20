@@ -200,7 +200,7 @@ func TestMSIActionsL189(t *testing.T) {
 		`Schedule="afterInstallInitialize"`,
 		`AllowSameVersionUpgrades="yes"`,
 		`<Environment Id="PgvigilPath" Name="PATH" Value="[INSTALLFOLDER]"`,
-		`<Launch Condition="Installed OR WIX_UPGRADE_DETECTED OR NOT PGVSERVICEIMAGE"`,
+		`<Launch Condition="Installed OR WIX_UPGRADE_DETECTED OR WIX_DOWNGRADE_DETECTED OR NOT PGVSERVICEIMAGE"`,
 		`Key="SYSTEM\CurrentControlSet\Services\pgvigil" Name="ImagePath"`,
 	} {
 		if !strings.Contains(wxs, w) {
