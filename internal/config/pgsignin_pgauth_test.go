@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// PGAUTH M1 (Allen's Q249 = the recommendation; decision 2 = WARN): the password-shaped sign-in methods - pg_hba's
+// PGAUTH M1 (a warning, never a refusal): the password-shaped sign-in methods - pg_hba's
 // ldap, radius, pam, bsd and password - make the server ask the client for the password in clear (inside TLS when
 // there is TLS). pgvigil's guard reads the method from PostgreSQL 16's SYSTEM_USER ('auth_method:identity', NULL
 // under trust; the method word is pg_hba's: hba.c UserAuthName) and the dsn's sslmode, and warns - never refuses -

@@ -1,5 +1,5 @@
 // Package pgkrb is pgvigil's GSS provider for PostgreSQL's gss sign-in (pg_hba 'gss': Kerberos, Active Directory),
-// PGAUTH M3 (the lead's 23:35 form (a)): ONE Kerberos identity for the whole process - pgx takes one provider
+// PGAUTH M3: ONE Kerberos identity for the whole process - pgx takes one provider
 // (pgconn.RegisterGSSProvider, a function with no per-connection argument) and asks it for each sign-in by the server's
 // host and the service name, or by the SPN whole (krbspn). The identity is pgvigil.yaml's 'kerberos:' block or the
 // service's environment (config.PGKerberos): a keytab with its principal, or a credential cache the host keeps fresh.

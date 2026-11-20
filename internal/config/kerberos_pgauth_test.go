@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestKerberosBlockPGAUTH (PGAUTH M3, the lead's 23:35 form (a)): ONE Kerberos identity per collector process -
+// TestKerberosBlockPGAUTH (PGAUTH M3): ONE Kerberos identity per collector process -
 // pgvigil.yaml's 'kerberos:' block (a keytab with its principal, or a credential cache; krb5_conf) or, without the
 // block, the service's environment (KRB5CCNAME: the cache names its principal). pgx takes one GSS provider for the
 // whole process, so an instance's dsn names only its role and krbsrvname / krbspn. A keytab needs its principal and a

@@ -27,7 +27,7 @@ func CheckConnection(ctx context.Context, engine, dsn string, sec *secrets.Ref, 
 	return CheckResult{OK: t.ok, Detail: t.detail, NotRun: t.notRun, Collections: t.collections, ListNote: t.listNote, Unknown: t.unknown, Warn: t.warn}
 }
 
-// signInNote (PGAUTH M1; Allen's Q249, decision 2 = a WARN, never a refusal): on PostgreSQL 16+ the guard's words
+// signInNote (PGAUTH M1; a warning, never a refusal): on PostgreSQL 16+ the guard's words
 // when the server signed the login in by a password-shaped method (SYSTEM_USER's word: ldap, radius, pam, bsd,
 // password) and the dsn opens with less than sslmode=verify-full; "" otherwise. ssl is the session's pg_stat_ssl.ssl:
 // without TLS the password crossed the network in clear, said first.

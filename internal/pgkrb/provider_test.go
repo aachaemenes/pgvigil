@@ -82,7 +82,7 @@ func TestContinuePGAUTH(t *testing.T) {
 	}
 }
 
-// TestProviderReloadPGAUTH (PGAUTH M3; found writing the review brief): a long-running collector outlives a ticket. A
+// TestProviderReloadPGAUTH (PGAUTH M3): a long-running collector outlives a ticket. A
 // credential cache cannot be renewed by the client (gokrb5's NewFromCCache has no renewal and no way to log in again),
 // so the client read from it is reused only while the file is the version it was read from - the host's kinit -k
 // writes a new one - and a client whose sign-in failed and no longer holds is replaced, so the next sign-in rebuilds
@@ -177,7 +177,7 @@ func TestSPNLowercasesTheHostPGAUTH3(t *testing.T) {
 	}
 }
 
-// TestCacheVersionPGAUTH (the lead's 00:35): a credential cache's version is its modification time, its size and its
+// TestCacheVersionPGAUTH: a credential cache's version is its modification time, its size and its
 // file. kinit -k writes a new file and renames it over the cache, so a rewrite inside the file system's time
 // resolution with the same size is still a new version: the client read from the old file is not reused.
 func TestCacheVersionPGAUTH(t *testing.T) {

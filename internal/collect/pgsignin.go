@@ -11,7 +11,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/platform"
 )
 
-// pgSigninCollector is pg_signin (PGAUTH M1; Allen's Q249, decision 2 = a WARN): how the server signed the read
+// pgSigninCollector is pg_signin (PGAUTH M1; a warning, never a refusal): how the server signed the read
 // login in, hourly - PostgreSQL 16's SYSTEM_USER ('auth_method:identity', NULL under trust; the method word is
 // pg_hba's) and the session's own pg_stat_ssl row - with the sslmode of the instance's dsn, which only the collector
 // knows. The store judges it: a password-shaped method (ldap, radius, pam, bsd, password: the password crosses in

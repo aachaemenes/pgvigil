@@ -1,11 +1,11 @@
--- 0467_pg_signin: PGAUTH M1 (Allen's Q249; decision 2 = a WARN, never a refusal; migration number the lead's 23:49) -
+-- 0467_pg_signin: PGAUTH M1 (a warning, never a refusal) -
 -- how the server signed pgvigil's read login in, from the pg_signin collection (hourly, PostgreSQL 16+): SYSTEM_USER's
 -- method word (never the identity: under ldap it is the bind DN), whether that method has the client send the
 -- password in clear (ldap, radius, pam, bsd, password), the session's TLS, and the dsn's sslmode (the collector's own
 -- configuration). A password-shaped method short of sslmode=verify-full is a warning on the instance.
 --
--- Above 0300, so this file makes only its own objects (the join-file rule): the arm that puts pg_signin_findings into
--- pgvigil.findings is line 1 of scripts/PGAUTH-join-lines.sql.
+-- Above 0300, so this file makes only its own objects: the arm that puts pg_signin_findings into pgvigil.findings
+-- is added where the findings view is next re-created whole.
 CREATE TABLE IF NOT EXISTS pgvigil.pg_signin (
   instance_id     int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   method          text NOT NULL,      -- SYSTEM_USER's method word; '' = NULL (trust)
@@ -54,4 +54,4 @@ SELECT s.instance_id, 'warning'::text AS severity, 'a password sent in clear, th
                     WHERE ci.instance = i.name AND ci.seen_at > now() - interval '1 day'
                       AND h.retired_at IS NULL AND h.stopped_at IS NULL AND h.beat_at > now() - interval '1 day'));
 COMMENT ON TABLE pgvigil.pg_signin IS 'PGAUTH M1: how the server signed the read login in (pg_signin): the method word, never the identity; the session''s TLS and the dsn''s sslmode.';
-COMMENT ON VIEW pgvigil.pg_signin_findings IS 'PGAUTH M1: a password-shaped sign-in short of sslmode=verify-full, a warning on the instance; joined into pgvigil.findings by PGAUTH-join-lines.sql line 1.';
+COMMENT ON VIEW pgvigil.pg_signin_findings IS 'PGAUTH M1: a password-shaped sign-in short of sslmode=verify-full, a warning on the instance; joined into pgvigil.findings where that view is next re-created whole.';

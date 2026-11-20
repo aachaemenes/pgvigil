@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Kerberos is pgvigil.yaml's 'kerberos:' block (PGAUTH M3; the lead's 23:35 form (a)): the ONE Kerberos identity the
+// Kerberos is pgvigil.yaml's 'kerberos:' block (PGAUTH M3): the ONE Kerberos identity the
 // process signs in to PostgreSQL servers with (pg_hba's gss method). pgx takes one GSS provider for the whole process
 // (pgconn.RegisterGSSProvider: no per-connection argument), so an instance's dsn names only its role and krbsrvname /
 // krbspn; a site that needs a second principal runs a second collector (the same binary).

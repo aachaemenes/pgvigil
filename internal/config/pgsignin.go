@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// PGAUTH M1: the guard for a password-shaped sign-in (Allen's Q249, decision 2: a WARN, never a refusal). pg_hba's
+// PGAUTH M1: the guard for a password-shaped sign-in (a warning, never a refusal). pg_hba's
 // ldap, radius, pam, bsd and password methods make the server ask the client for the password in clear - inside the
 // session's TLS when there is TLS - so only sslmode=verify-full (the server's certificate and its name checked) keeps
 // it from a server that is not the one named. scram-sha-256 and md5 never send it; cert, gss, sspi, peer and ident
