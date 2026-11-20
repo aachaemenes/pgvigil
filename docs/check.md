@@ -34,10 +34,17 @@ A word after the flags (`pgvigil check /etc/pgvigil/pgvigil.yaml`) is a usage er
   list (its unit row runs in the Windows turn).
 - **The references**: every `env:`, `file:` and `dpapi:` value of the file, whichever block holds it (`reports_dsn`,
   `alerts_dsn`, an instance's `actions_dsn`, `explain_dsn`, `stats_dsn` or `pgbouncer`, `export:`, the alert
-  channels), is resolved as its reader resolves it: each that resolves to nothing is a FAIL naming where it sits
-  (`reference instances[pg1].actions_dsn`) and why - the variable not set or empty, the file and the system's error,
-  the `dpapi:` blob that did not open on this host - never what was read; when all resolve, one OK line counts them.
-  The repository's dsn and each instance's dsn are judged in their own lines below with the same words.
+  channels), is resolved as the process running check resolves it (its own environment and its own account's
+  reads): each that resolves to nothing is a FAIL naming where it sits (`reference instances[pg1].actions_dsn`) and
+  why - the variable not set or empty, the file and the system's error, the `dpapi:` blob that did not open on this
+  host, a value of white space - never what was read; when all resolve, one OK line counts them. Whether a block takes
+  that form at all is the configuration's line: the alert channels, `alerts_base_url` and `metrics.token` take `env:`
+  and `file:` alone, and their loaders' refusal is a FAIL there, as `pgvigil run` and `serve` would stop on it. The
+  repository's dsn and each tested instance's dsn are judged in their own lines below with the same words (under
+  `-instance`, the other instances' dsns are judged here). On the Linux install the service's variables live in
+  `/etc/pgvigil/pgvigil.env`, which only its unit loads: run check with them, as the service's account -
+  `sudo -u pgvigil sh -c 'set -a; . /etc/pgvigil/pgvigil.env; exec pgvigil check -config /etc/pgvigil/pgvigil.yaml'` -
+  or every `env:` reference reads as not set.
 - **The repository**: a dsn that resolves to nothing is a FAIL with why and nothing is connected (an empty dsn
   would be libpq's defaults: localhost, as the account running the check); otherwise the connect (the dsn read as the
   service's pool reads it: `pool_max_conns` and the other `pool_*` keys stay on this side), its schema level against

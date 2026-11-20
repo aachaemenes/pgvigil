@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -136,7 +137,7 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 		add(r.Level, r.What, r.Words)
 	}
 	// L241: every env: / file: / dpapi: reference of the file
-	referenceRows(path, add)
+	referenceRows(path, add, ownRowNames(cfg, only))
 	// rn-l181 S1 (a), after the references (rnfold-1's difference: before them it ended the check ahead of L241's
 	// rows): the alerts: block as 'run' loads it (its channels, the slack door, alerts_dsn, base_url). Its failure is
 	// the configuration's exit 1, the checks after it still run, and a reference it refuses that a reference row has
@@ -144,6 +145,15 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 	_, alertsErr := alerts.LoadFile(path)
 	if alertsErr != nil && !failedAsReference(rows, alertsErr) {
 		add("FAIL", "configuration", alertsErr.Error())
+	}
+	// the metrics door's token as serve checks it at its start (a value that is no file: / env: reference, a token too
+	// short): serve would stop on it
+	if cfg.Doors.PrometheusMetrics {
+		m := cfg.Metrics
+		mc := &web.MetricsConfig{Token: m.Token, CacheSeconds: m.CacheSeconds, Databases: m.Databases, MaxDatabases: m.MaxDatabases, IncludeDatabases: m.IncludeDatabases, Tags: m.Tags}
+		if _, err := web.CheckMetricsToken(mc, true); err != nil {
+			add("FAIL", "configuration", "doors.prometheus_metrics: "+err.Error()+" (serve stops on it at its start)")
+		}
 	}
 	for _, in := range cfg.Instances {
 		eng := engineName(in)
@@ -346,16 +356,33 @@ func instanceCheckRows(name string, t web.CheckResult, why string) []checkRow {
 		words += fmt.Sprintf("; %d of %d collections will not run there: %s", n, t.Collections, strings.Join(parts, ", "))
 	}
 	rows := []checkRow{{"OK", what, words}}
-	if t.Unknown != "" {
+	switch {
+	case t.Unknown != "":
 		rows = append(rows, checkRow{"WARN", what, t.Unknown})
+	case t.ListNote != "":
+		// the connection answered but what the list adds failed (a detect refused - an Azure Synapse pool - or cut
+		// short): the collections there fail at the same step
+		rows = append(rows, checkRow{"WARN", what, t.ListNote})
 	}
 	return rows
+}
+
+// ownRowNames are the file's instances whose dsn has an instance row of its own (every one, or under -instance the
+// ones named): referenceRows judges every other instance's dsn as a reference.
+func ownRowNames(cfg *config.Config, only []string) map[string]bool {
+	own := map[string]bool{}
+	for _, in := range cfg.Instances {
+		if len(only) == 0 || slices.Contains(only, in.Name) {
+			own[in.Name] = true
+		}
+	}
+	return own
 }
 
 // referenceRows (RELNOTES L241): one FAIL for each env: / file: / dpapi: reference of the file that resolves to
 // nothing, with config.WhyEmpty's words (the reference, never what it read); one OK row when every one resolves. The
 // repository's dsn and each instance's dsn are left to their own rows, which FAIL them with the same words.
-func referenceRows(path string, add func(level, what, words string)) {
+func referenceRows(path string, add func(level, what, words string), own map[string]bool) {
 	refs, err := config.FileReferences(path)
 	if err != nil {
 		add("WARN", "references", "the file was not read for its references: "+err.Error())
@@ -363,8 +390,11 @@ func referenceRows(path string, add func(level, what, words string)) {
 	}
 	n, bad := 0, 0
 	for _, r := range refs {
-		if r.Where == "repository.dsn" || (strings.HasPrefix(r.Where, "instances[") && strings.HasSuffix(r.Where, "].dsn")) {
+		if r.Where == "repository.dsn" {
 			continue
+		}
+		if name, ok := strings.CutPrefix(r.Where, "instances["); ok && strings.HasSuffix(name, "].dsn") && own[strings.TrimSuffix(name, "].dsn")] {
+			continue // judged in the instance's own row
 		}
 		n++
 		if why := config.WhyEmpty(r.Raw); why != "" {
@@ -373,7 +403,7 @@ func referenceRows(path string, add func(level, what, words string)) {
 		}
 	}
 	if n > 0 && bad == 0 {
-		add("OK", "references", fmt.Sprintf("every env: / file: / dpapi: reference of the file resolves (%d; the repository's and each instance's dsn have their own rows)", n))
+		add("OK", "references", fmt.Sprintf("every env: / file: / dpapi: reference of the file resolves (%d; the repository's and each tested instance's dsn have their own rows; whether a reader takes that form - alerts and the metrics token take env: and file: alone - is the configuration's row)", n))
 	}
 }
 

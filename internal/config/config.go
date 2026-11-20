@@ -101,11 +101,11 @@ type Repository struct {
 	DSNRaw string `yaml:"dsn"`
 }
 
-// DSN resolves the repository connection string.
-func (r Repository) DSN() string { return Resolve(r.DSNRaw) }
+// DSN resolves the repository connection string (the value trimmed, as 'pgvigil check' reads its references).
+func (r Repository) DSN() string { return Resolve(strings.TrimSpace(r.DSNRaw)) }
 
 // ReportsDSN resolves reports_dsn ("" when the key is not set or resolves to nothing).
-func (c Config) ReportsDSN() string { return Resolve(c.ReportsDSNRaw) }
+func (c Config) ReportsDSN() string { return Resolve(strings.TrimSpace(c.ReportsDSNRaw)) }
 
 // The engines an instance can be.
 const (
@@ -714,7 +714,7 @@ func (a AWS) PostgresLogGroup() string {
 }
 
 // DSN resolves the instance connection string.
-func (i Instance) DSN() string { return Resolve(i.DSNRaw) }
+func (i Instance) DSN() string { return Resolve(strings.TrimSpace(i.DSNRaw)) }
 
 // Flags are command-line values.
 type Flags struct {

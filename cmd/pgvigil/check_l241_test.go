@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -52,7 +53,7 @@ func TestCheckEmptyRepositoryDSNL241(t *testing.T) {
 	if exit != 2 {
 		t.Errorf("exit %d, want 2; rows:\n%s", exit, rowsText(rows))
 	}
-	if !rowWith(rows, "FAIL", "repository", "L241_REPO_UNSET is not set") || rowWith(rows, "FAIL", "repository", "unreachable") {
+	if !rowWith(rows, "FAIL", "repository", `"L241_REPO_UNSET" is not set`) || rowWith(rows, "FAIL", "repository", "unreachable") {
 		t.Errorf("want a FAIL repository row with the reference's reason, not a connect's:\n%s", rowsText(rows))
 	}
 	if n := hits.Load(); n != 0 {
@@ -92,10 +93,10 @@ instances:
 `, port, missing, sealed))
 	rows, _ := checkRun(context.Background(), testLog(), p, nil)
 	for _, c := range []struct{ what, words string }{
-		{"reference reports_dsn", "L241_REPORTS_UNSET is not set"},
-		{"reference alerts_dsn", "L241_ALERTS_UNSET is not set"},
+		{"reference reports_dsn", `"L241_REPORTS_UNSET" is not set`},
+		{"reference alerts_dsn", `"L241_ALERTS_UNSET" is not set`},
 		{"reference instances[pg-refs].actions_dsn", "cannot be read"},
-		{"reference instances[pg-refs].pgbouncer", "did not open on this host"},
+		{"reference instances[pg-refs].pgbouncer", dpapiWords},
 	} {
 		if !rowWith(rows, "FAIL", c.what, c.words) {
 			t.Errorf("no FAIL %q with %q:\n%s", c.what, c.words, rowsText(rows))
@@ -127,3 +128,6 @@ instances:
 		t.Errorf("every reference resolves: one OK references row:\n%s", rowsText(rows2))
 	}
 }
+
+// dpapiWords: a dpapi: blob that does not open, as this system says it (off Windows none opens at all).
+var dpapiWords = map[bool]string{true: "did not open on this host", false: "opens on Windows only"}[runtime.GOOS == "windows"]

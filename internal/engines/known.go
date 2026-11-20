@@ -2,6 +2,7 @@ package engines
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/platform"
@@ -32,7 +33,11 @@ func UnknownServer(pg *platform.Info, ms *mssql.Info) string {
 		case major > PGNewestMajor:
 			return fmt.Sprintf("PostgreSQL %d is newer than this build knows (%d to %d): %s; a pgvigil release that names %d is the fix", major, PGOldestMajor, PGNewestMajor, runs, major)
 		case major < PGOldestMajor:
-			return fmt.Sprintf("PostgreSQL %d is older than this build knows (%d to %d): %s", major, PGOldestMajor, PGNewestMajor, runs)
+			named := strconv.Itoa(major)
+			if pg.ServerVersionNum < 100000 { // before 10 a major was two numbers (9.6)
+				named = fmt.Sprintf("%d.%d", major, pg.ServerVersionNum/100%100)
+			}
+			return fmt.Sprintf("PostgreSQL %s is older than this build knows (%d to %d): %s", named, PGOldestMajor, PGNewestMajor, runs)
 		}
 	}
 	if ms == nil {

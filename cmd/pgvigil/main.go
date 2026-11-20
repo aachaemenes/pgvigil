@@ -491,9 +491,9 @@ func queryTextByName(cfg *config.Config) map[string]string {
 
 // emptyWhy is " - <why>" for a dsn reference that resolves to nothing (RELNOTES L145: the variable, the file, a dpapi:
 // blob sealed on another host, a value of white space), "" when there is no reason to add. The reference is judged as
-// written, as it was resolved.
+// it was resolved: trimmed (config's DSN methods trim it too).
 func emptyWhy(raw string) string {
-	if w := config.WhyEmpty(raw); w != "" {
+	if w := config.WhyEmpty(strings.TrimSpace(raw)); w != "" {
 		return " - " + w
 	}
 	return ""
