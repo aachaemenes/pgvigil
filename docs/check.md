@@ -23,7 +23,8 @@ A word after the flags (`pgvigil check /etc/pgvigil/pgvigil.yaml`) is a usage er
   written in the file - and the configuration's folder when it is pgvigil's own (a folder it shares with other files
   is said, and neither judged nor given a fix). On Linux any bit for others is a FAIL, a group bit beyond read a WARN
   (a folder's group may pass through it), a group read for a group that is not the service's a FAIL (its `chgrp`
-  line), and a POSIX access list a WARN (its `getfacl` line: the mode then shows the list's mask, not who reads). On
+  line; the service's group is the installed unit's `User=` account's group, else the configuration folder's own -
+  the installer's - so a unit made by hand with another group reads FAIL), and a POSIX access list a WARN (its `getfacl` line: the mode then shows the list's mask, not who reads). On
   Windows a group or a SID that names many accounts (Users, Everyone, Authenticated Users) is a FAIL - an inherited one
   is fixed by `pgvigil install` run again, never file by file; an account that may change a file (its data, its list,
   its owner) outside `instances/` and `sources/` is a FAIL; any other single account is a WARN with no remove line
