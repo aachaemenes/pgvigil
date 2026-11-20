@@ -40,7 +40,7 @@
 <main id="main">
 <div class="wrap hero">
   <h1>Monitoring for PostgreSQL and SQL Server</h1>
-  <p>Free and open source. pgvigil reads every server on a schedule, keeps the history in a PostgreSQL database, and shows the fleet the way a DBA reads it: what is wrong, what is running, and what changed.</p>
+  <p>Free and open source. pgvigil reads your PostgreSQL and SQL Server servers on a schedule and keeps their history in a PostgreSQL database. The Summary below shows which servers need you first.</p>
   <div class="actions">
     <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
     <a class="btn" href="install.html">Try the demo</a>
@@ -53,40 +53,40 @@
 </div>
 
 <section class="plain"><div class="wrap">
-  <h2>Ships in v0.4.0: servers pgvigil cannot reach</h2>
-  <p>Some networks will not let any outside server connect to their databases. For them pgvigil v0.4.0 will add a remote collector: the same signed program in a collector-only mode, run on one Linux or Windows box inside that network. It will read PostgreSQL and SQL Server with the same read-only logins as any pgvigil, and every few minutes write what it read as a bundle of files. Your pgvigil will take each bundle in once, check it, and show those servers beside the rest of the fleet.</p>
+  <h2>Coming in v0.4.0: servers pgvigil cannot reach</h2>
+  <p>Some networks let no outside server connect to their databases. For them, pgvigil v0.4.0 will add a remote collector. It will be the same signed program in a collector-only mode, run on one Linux or Windows machine inside that network. It will read PostgreSQL and SQL Server with the same read-only logins as any pgvigil and write what it read as a bundle of files every few minutes. Your pgvigil will check each bundle and take it in once. Those servers will then show with the rest of the fleet.</p>
   <ul class="list">
-    <li>Bundles of plain files: one gzip-compressed NDJSON file per view, a manifest (the instance, versions, the time window, the row count of every file, how each read ended) and SHA256 sums. A security team can open any bundle with gunzip and jq before it leaves.</li>
-    <li>Any way out the site allows: the collector writing straight into an Azure Blob container that pgvigil polls (an Event Grid queue as a later option), or an S3 or GCS bucket, a file share, SFTP, or a one-way copy or USB for a closed network. Filebeat can carry the same files where a log pipeline is the only way out.</li>
+    <li>Bundles of plain files: one gzip-compressed NDJSON file per view, a manifest and SHA256 sums. The manifest names the instance, the versions, the time window, each file's row count and how each read ended. A security team can open any bundle with gunzip and jq before it leaves.</li>
+    <li>Any way out the site allows. The collector will write straight into an Azure Blob container that pgvigil polls, with an Event Grid queue as a later option. An S3 or GCS bucket, a file share, SFTP, or a one-way copy or USB for a closed network will work too. Filebeat can carry the same files where a log pipeline is the only way out.</li>
     <li>Every 5 minutes by default, set shorter or longer per site. Statement text will be hashed or left out, by a setting on the site's side.</li>
     <li>The collector package on GitHub releases, signed, next to the offline bundle, with its setup guide.</li>
   </ul>
-  <p>Those servers will show "as of the last bundle": history, analysis and alerts as fresh as the interval, a site that goes quiet raised as an alert, and actions that need a live connection (ending a session, starting a job, EXPLAIN) off with the reason shown. The remote collector ships in v0.4.0.</p>
+  <p>Those servers will show "as of the last bundle": their data is as fresh as the interval. A site that goes quiet will raise an alert. Actions that need a live connection (ending a session, starting a job, EXPLAIN) will be off for those servers, with the reason shown.</p>
 </div></section>
 
 <div class="wrap">
   <div class="row">
     <div class="row-text"><h2>The whole fleet on one page</h2>
-      <p>One row per server with CPU, waits and IO side by side, sortable by any column, coloured only past a threshold. The Summary above counts every check across the fleet.</p></div>
+      <p>One row per server, with CPU, waits and IO side by side. Sort by any column. A cell is coloured only past a threshold. The Summary above counts every check across the fleet.</p></div>
     <figure class="shot"><a href="img/performance-summary.png"><img src="img/performance-summary.png" width="1600" height="900" loading="lazy" alt="Performance summary: one sortable row per server with CPU, waits by class and IO"></a></figure>
   </div>
   <div class="row flip">
     <div class="row-text"><h2>What is running, and who is blocking whom</h2>
-      <p>The sessions at work (running, in a transaction or blocking another) sampled each minute, the blocking chain walked to its head, and the statement the head ran last. Step back through earlier minutes to see what held the locks an hour ago.</p></div>
+      <p>pgvigil samples the sessions at work each minute: running, in a transaction or blocking another. It walks each blocking chain to its head and shows the statement the head ran last. Step back through earlier minutes to see what held the locks an hour ago.</p></div>
     <figure class="shot"><a href="img/running-queries.png"><img src="img/running-queries.png" width="1600" height="900" loading="lazy" alt="Running queries: a blocking chain to its head and every session on one line"></a></figure>
   </div>
   <div class="row">
     <div class="row-text"><h2>Performance over time</h2>
-      <p>CPU, sessions, waits, transactions and IO on one time axis. Choose any range or a calendar period such as yesterday or the previous week; every chart opens its detail.</p></div>
+      <p>CPU, sessions, waits, transactions and IO on one time axis. Choose any range or a calendar period such as yesterday or the previous week. Every chart opens its detail.</p></div>
     <figure class="shot"><a href="img/performance.png"><img src="img/performance.png" width="1600" height="900" loading="lazy" alt="An instance's Performance page: CPU, sessions, waits and transactions on one time axis"></a></figure>
   </div>
   <div class="row flip">
     <div class="row-text"><h2>Jobs, backups and storage</h2>
-      <p>SQL Server Agent, pg_cron and pgAgent jobs with the failed step's own error message, backups and how old they are, and every volume with its growth and the days until it is full.</p></div>
+      <p>SQL Server Agent, pg_cron and pgAgent jobs, with the failed step's own error message. Backups and how old they are. Every volume with its growth and the days until it is full.</p></div>
     <figure class="shot"><a href="img/jobs.png"><img src="img/jobs.png" width="1600" height="900" loading="lazy" alt="Agent jobs over a day: each job's last run and outcome, and the failed run with its step's error message"></a></figure>
   </div>
   <div class="row">
-    <div class="row-text"><h2>Alerts on what matters</h2>
+    <div class="row-text"><h2>Alerts</h2>
       <p>A threshold on any metric, for one server, a tag or the whole fleet, sent by email, Teams, Slack or a webhook. Nothing is sent until you set up a channel.</p></div>
     <figure class="shot"><a href="img/alert-rules.png"><img src="img/alert-rules.png" width="1600" height="900" loading="lazy" alt="Alert rules: each rule with its metric, thresholds, scope and state"></a></figure>
   </div>
@@ -96,15 +96,15 @@
   <div class="grid2">
     <div>
       <h2>Where it runs</h2>
-      <p><strong>PostgreSQL 13 to 18</strong>, tested on self-hosted 13, 16 and 18 and on Amazon Aurora PostgreSQL 17. Amazon RDS, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB are recognised; they are not tested yet.</p>
-      <p><strong>SQL Server</strong> tested on SQL Server 2017, 2019, 2022 and 2025 on Linux, on SQL Server 2016 on a Windows server, and on Amazon RDS for SQL Server (Express and Standard), Azure SQL Database (serverless, and a Basic elastic pool), Azure SQL Managed Instance (General Purpose) and Google Cloud SQL for SQL Server (Express). Windows sign-in against a real domain, a vCore elastic pool and Managed Instance Business Critical are not tested yet.</p>
+      <p><strong>PostgreSQL 13 to 18.</strong> Tested on self-hosted 13, 16 and 18 and on Amazon Aurora PostgreSQL 17. Amazon RDS, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB are recognised but not tested yet.</p>
+      <p><strong>SQL Server.</strong> Tested on SQL Server 2017, 2019, 2022 and 2025 on Linux and on SQL Server 2016 on a Windows server. Also tested on Amazon RDS for SQL Server (Express and Standard), Azure SQL Database (serverless, and a Basic elastic pool), Azure SQL Managed Instance (General Purpose) and Google Cloud SQL for SQL Server (Express). Not tested yet: Windows sign-in against a real domain, a vCore elastic pool and Managed Instance Business Critical.</p>
       <p>The program is one file for Linux, Windows or macOS. The history lives in a PostgreSQL database you choose.</p>
     </div>
     <div>
       <h2>What it does not do</h2>
       <ul class="list">
         <li>Its collector never writes to a server it watches. Ending a session or starting a job is off until you turn it on, through a login kept for that alone, and every use is logged.</li>
-        <li>No agent runs on your database servers, and there is no telemetry: it talks to your servers, its own database, the cloud APIs you configure and your alert channels, nothing else (the Windows app also checks GitHub for a new release once a day, unless an administrator turns that off).</li>
+        <li>No agent runs on your database servers, and there is no telemetry. pgvigil talks to your servers, its own database, the cloud APIs you configure and your alert channels, and nothing else. The Windows app also checks GitHub for a new release once a day; an administrator can turn that off.</li>
         <li>It is not a hosted service: you run it, and the data stays in your own database.</li>
         <li>It watches databases, not Kubernetes or your applications.</li>
       </ul>
@@ -117,7 +117,7 @@
 
 <footer><div class="wrap">
   <p><a href="https://github.com/aachaemenes/pgvigil">GitHub</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/releases">Releases</a> &middot; <a href="mailto:support@pgvigil.com">support@pgvigil.com</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/support.md">Support</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/blob/main/LICENSE">MIT licence</a></p>
-  <p>pgvigil is an independent open-source project by Allen Achaemenes, not affiliated with the PostgreSQL Global Development Group or with any project it learned from. With thanks to DBA Dash (MIT), Erik Darling's DarlingData and the SQL Server First Responder Kit (MIT), and the other projects its <a href="https://github.com/aachaemenes/pgvigil/blob/main/THIRD-PARTY-NOTICES.md">notices</a> list.</p>
+  <p>pgvigil is an independent open-source project by Allen Achaemenes, not affiliated with the PostgreSQL Global Development Group or with any project it learned from. With thanks to DBA Dash (MIT), DarlingData and the SQL Server First Responder Kit (MIT), and the other projects its <a href="https://github.com/aachaemenes/pgvigil/blob/main/THIRD-PARTY-NOTICES.md">notices</a> list.</p>
 </div></footer>
 </body>
 </html>

@@ -34,7 +34,7 @@
 <main id="main">
 <div class="wrap page-head">
   <h1>Features</h1>
-  <p>Every page works the same way on both engines, PostgreSQL and SQL Server: a short row of tabs, a grid you can sort, filter and export, and status colours (in the quiet colour style, only where something needs you).</p>
+  <p>Every page works the same way on PostgreSQL and SQL Server. It has a short row of tabs and a grid you can sort, filter and export. Status colours show only where something needs you.</p>
 </div>
 
 <section class="plain"><div class="wrap"><div class="grid2">
@@ -44,15 +44,15 @@
   </div>
   <div>
     <h2 class="h3">Running queries and blocking</h2>
-    <p>The sessions at work (running, in a transaction or blocking another) each minute, the blocking chain to its head, the head's last statement, and the waits of each victim. Earlier minutes stay one click away. Cancel or end a session from the page when you turn that on.</p>
+    <p>The sessions at work each minute: running, in a transaction or blocking another. Each blocking chain is walked to its head, with the head's last statement and the waits of each victim. Earlier minutes stay one click away. Cancel or end a session from the page when you turn that on.</p>
   </div>
   <div>
     <h2 class="h3">Statements and slow queries</h2>
-    <p>The statements that cost the most over any window, as real per-interval numbers from pg_stat_statements, with each statement's trend. Slow statements, deadlocks and failed logins from the PostgreSQL server log; on SQL Server, deadlocks, blocking and slow statements from small Extended Events sessions you create from pgvigil's script, and the plan cache's statements for a database without Query Store (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">plan cache and indexes</a>).</p>
+    <p>The statements that cost the most over any window, as real per-interval numbers from pg_stat_statements, each with its trend. From the PostgreSQL server log: slow statements, deadlocks and failed logins. On SQL Server: deadlocks, blocking and slow statements from small Extended Events sessions you create from pgvigil's script. For a database without Query Store, the plan cache's statements (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">plan cache and indexes</a>).</p>
   </div>
   <div>
     <h2 class="h3">Performance and metrics</h2>
-    <p>CPU, sessions, waits, transactions and IO on one time axis, a Metrics grid with the current, minimum, maximum and average of every counter, host CPU and memory, and IO by type.</p>
+    <p>CPU, sessions, waits, transactions and IO on one time axis. A Metrics grid with the current, minimum, maximum and average of every counter. Host CPU and memory, and IO by type.</p>
   </div>
   <div>
     <h2 class="h3">Jobs and backups</h2>
@@ -60,11 +60,11 @@
   </div>
   <div>
     <h2 class="h3">Storage and growth</h2>
-    <p>Every volume with its growth per day and the days until it is full, the largest tables across the fleet, database sizes over time, and on SQL Server the data and log files, TempDB and the version store.</p>
+    <p>Every volume with its growth per day and the days until it is full. The largest tables across the fleet and database sizes over time. On SQL Server, the data and log files, TempDB and the version store.</p>
   </div>
   <div>
     <h2 class="h3">Replication and availability</h2>
-    <p>Streaming and logical replication, slots and the WAL they hold, Aurora replicas (not tested yet); on SQL Server, Always On; mirroring, log shipping and replication are tested on stand-in rows only, not on a real mirror, log shipping pair or distributor.</p>
+    <p>Streaming and logical replication, slots and the WAL they hold, and Aurora replicas (not tested yet). On SQL Server, Always On. Mirroring, log shipping and replication are tested on stand-in rows only, not on a real mirror, log shipping pair or distributor.</p>
   </div>
   <div>
     <h2 class="h3">Configuration and changes</h2>
@@ -72,7 +72,7 @@
   </div>
   <div>
     <h2 class="h3">Health checks</h2>
-    <p>Vacuum and wraparound, unused and duplicate indexes, versions against the release calendar, extensions out of date, corruption signs, and your own SQL as a check with its own thresholds. On SQL Server the day-one checks of configuration, database options, CHECKDB and Agent alerts (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-checks.md">checks</a>), the error log, the default trace and system health (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-readers.md">readers</a>), and unused, duplicate and missing indexes with the statistics' health (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">indexes</a>).</p>
+    <p>Vacuum and wraparound, unused and duplicate indexes, versions against the release calendar, extensions out of date and corruption signs. Your own SQL as a check, with its own thresholds. On SQL Server, the day-one checks of configuration, database options, CHECKDB and Agent alerts (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-checks.md">checks</a>). The error log, the default trace and system health (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-readers.md">readers</a>). Unused, duplicate and missing indexes with the statistics' health (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">indexes</a>).</p>
   </div>
   <div>
     <h2 class="h3">Alerts and exports</h2>
@@ -80,15 +80,15 @@
   </div>
   <div>
     <h2 class="h3">Cloud</h2>
-    <p>On Aurora (RDS through the same AWS calls, not tested live) the server log from CloudWatch, storage IO, Performance Insights kept past its seven days (not yet tested on a live cluster), and AWS DMS tasks with their lag and how long they need to catch up.</p>
+    <p>On Aurora: the server log from CloudWatch, storage IO, Performance Insights kept past its seven days (not yet tested on a live cluster), and AWS DMS tasks with their lag and how long they need to catch up. RDS goes through the same AWS calls and is not tested live.</p>
   </div>
   <div>
     <h2 class="h3">If you already run other tools</h2>
     <p>A site that runs DBA Dash can import its SQL Server instances and their statuses into the same tree. Grafana can read the same database through ready-made dashboards. An AI assistant on the same machine can read it through a read-only MCP server.</p>
   </div>
   <div>
-    <h2 class="h3">Ships in v0.4.0: a remote collector</h2>
-    <p>For networks no outside server may connect into: a collector-only pgvigil inside the network will read PostgreSQL and SQL Server and write a bundle every 5 minutes by default (NDJSON per view, a manifest, SHA256 sums). It will push to Azure Blob for pgvigil to poll, or go through an S3 or GCS bucket, a share, SFTP or USB, and your pgvigil will take each bundle in once.</p>
+    <h2 class="h3">Coming in v0.4.0: a remote collector</h2>
+    <p>For networks no outside server may connect into. A collector-only pgvigil inside the network will read PostgreSQL and SQL Server and write a bundle every 5 minutes by default: NDJSON per view, a manifest and SHA256 sums. It will push to Azure Blob for pgvigil to poll, or go through an S3 or GCS bucket, a share, SFTP or USB. Your pgvigil will take in each bundle once.</p>
   </div>
 </div></div></section>
 
