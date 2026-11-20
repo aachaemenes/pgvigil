@@ -1,5 +1,4 @@
--- 0476_discovery_auto_add: RELNOTES L237 - a cloud discovery source that adds the servers it finds by itself (the
--- lead's 05:32: every rec of the design 3c2bb2562; the migration number the lead's).
+-- 0476_discovery_auto_add: a cloud discovery source that adds the servers it finds by itself.
 --
 -- Two keys, both off: pgvigil.yaml's doors.discovery_auto_add (serve passes it as auto_add_door - a migration cannot
 -- read the file) and each cloud source's own auto_add, ticked by an admin in the source's form and audited as the

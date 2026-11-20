@@ -1,5 +1,4 @@
--- 0455_inline_password_findings: L9 - an inline PostgreSQL password in pgvigil.yaml as a finding on the instance (the
--- lead's 17:32 (1) a; migration number the lead's 15:25).
+-- 0455_inline_password_findings: an inline PostgreSQL password in pgvigil.yaml as a finding on the instance.
 --
 -- A PostgreSQL instance whose dsn in pgvigil.yaml holds its password inline keeps loading: the collector warns at its
 -- start, 'pgvigil check' lists it, and this file makes it a finding on the instance, so the instance's page, the
