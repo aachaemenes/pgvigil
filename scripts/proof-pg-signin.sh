@@ -47,14 +47,17 @@
 #     skipped - a 'partial' or an 'error' is a finding, listed; pg_signin among them ok, its stored row the method word
 #     and sslmode verify-full.
 #  F  (the store, 0467) 'collect -once pg_signin' on L2's instance (ldap at sslmode=require): one warning in
-#     pgvigil.pg_signin_findings, 'a directory password without a certificate check', its detail naming ldap and
+#     pgvigil.pg_signin_findings, 'a password sent in clear, the server not fully checked', its detail naming ldap and
 #     sslmode=require; on L1's (verify-full) none; the stored row holds the method word, never the bind DN.
 #  Z  the containers and the network removed, read back 0.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PG=${PG:-18}
-LDAP_IMG=${LDAP_IMG:-osixia/openldap:1.5.0}
-RADIUS_IMG=${RADIUS_IMG:-freeradius/freeradius-server:3.2.7}
+# pgauth12 S5 (design M1 item 4): the images pinned by digest - the ones pga-7 / pga-8 proved; each overridable
+PG_IMG=${PG_IMG:-postgres:$PG@sha256:e754b839f447639b7004895f4d8a4bfcb4e9dbe3a1bc035f27f646562a16fd61}
+[ "$PG" = 18 ] || PG_IMG=${PG_IMG_OTHER:-postgres:$PG}   # another major has no proven digest: its tag, said by row D
+LDAP_IMG=${LDAP_IMG:-osixia/openldap:1.5.0@sha256:18742e9c449c9c1afe129d3f2f3ee15fb34cc43e5f940a20f3399728f41d7c28}
+RADIUS_IMG=${RADIUS_IMG:-freeradius/freeradius-server:3.2.7@sha256:42b05de4405b1e745686b9ed0f70307fd43e998b850b3e6bd936733a8c260595}
 fail() { echo "FAIL: $*" >&2; exit 1; }
 for t in docker psql openssl; do command -v "$t" >/dev/null || fail "$t is not on this machine"; done
 umask 077
@@ -75,7 +78,7 @@ secret() { openssl rand -hex 12; }
 LDAP_ADMIN_PW=$(secret); LDAP_PW=$(secret); RAD_SECRET=$(secret); RAD_PW=$(secret); PAM_PW=$(secret); SCRAM_PW=$(secret)
 
 echo "== D: the images"
-for img in "postgres:$PG" "$LDAP_IMG" "$RADIUS_IMG"; do docker pull -q "$img" >/dev/null || fail "docker pull $img"; echo "   $img $(docker image inspect --format '{{index .RepoDigests 0}}' "$img")"; done
+for img in "$PG_IMG" "$LDAP_IMG" "$RADIUS_IMG"; do docker pull -q "$img" >/dev/null || fail "docker pull $img"; echo "   $img $(docker image inspect --format '{{index .RepoDigests 0}}' "$img")"; done
 docker network create "$NET" >/dev/null
 
 echo "== the CA, the server certificate (localhost, 127.0.0.1) and another CA"
@@ -91,12 +94,18 @@ echo "== the CA, the server certificate (localhost, 127.0.0.1) and another CA"
     openssl x509 -req -in "$cn.csr" -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile client.ext -out "$cn.pem" 2>/dev/null || exit 1; done ) || fail "the certificates were not made"
 
 echo "== the directory (uid=pgvigil,ou=people,dc=pgv,dc=test)"
+# pgauth12 S4: no secret on a command line (any account reads /proc/*/cmdline) - the admin password by the variable's
+# NAME (docker reads it from this environment), the tools' passwords from files copied into the container
+export LDAP_ADMIN_PASSWORD="$LDAP_ADMIN_PW"
 docker run -d --name "$N-ldap" --network "$NET" --network-alias ldap -e LDAP_ORGANISATION=pgv -e LDAP_DOMAIN=pgv.test \
-  -e LDAP_ADMIN_PASSWORD="$LDAP_ADMIN_PW" -e LDAP_TLS=false "$LDAP_IMG" >/dev/null
-for _ in $(seq 1 60); do docker exec "$N-ldap" ldapsearch -x -H ldap://localhost -b dc=pgv,dc=test -D cn=admin,dc=pgv,dc=test -w "$LDAP_ADMIN_PW" -s base >/dev/null 2>&1 && break; sleep 2; done
+  -e LDAP_ADMIN_PASSWORD -e LDAP_TLS=false "$LDAP_IMG" >/dev/null
+unset LDAP_ADMIN_PASSWORD
+mkdir -p "$WORK/ldappw"; printf '%s' "$LDAP_ADMIN_PW" > "$WORK/ldappw/admin.pw"; printf '%s' "$LDAP_PW" > "$WORK/ldappw/user.pw"
+docker cp "$WORK/ldappw/." "$N-ldap:/tmp/pgvsi-pw/" >/dev/null || fail "the directory's password files were not copied"
+for _ in $(seq 1 60); do docker exec "$N-ldap" ldapsearch -x -H ldap://localhost -b dc=pgv,dc=test -D cn=admin,dc=pgv,dc=test -y /tmp/pgvsi-pw/admin.pw -s base >/dev/null 2>&1 && break; sleep 2; done
 printf 'dn: ou=people,dc=pgv,dc=test\nobjectClass: organizationalUnit\nou: people\n\ndn: uid=pgvigil,ou=people,dc=pgv,dc=test\nobjectClass: inetOrgPerson\nuid: pgvigil\ncn: pgvigil\nsn: pgvigil\n' \
-  | docker exec -i "$N-ldap" ldapadd -x -H ldap://localhost -D cn=admin,dc=pgv,dc=test -w "$LDAP_ADMIN_PW" >/dev/null || fail "the directory's entries were not added"
-docker exec "$N-ldap" ldappasswd -x -H ldap://localhost -D cn=admin,dc=pgv,dc=test -w "$LDAP_ADMIN_PW" -s "$LDAP_PW" uid=pgvigil,ou=people,dc=pgv,dc=test >/dev/null || fail "the directory account's password was not set"
+  | docker exec -i "$N-ldap" ldapadd -x -H ldap://localhost -D cn=admin,dc=pgv,dc=test -y /tmp/pgvsi-pw/admin.pw >/dev/null || fail "the directory's entries were not added"
+docker exec "$N-ldap" ldappasswd -x -H ldap://localhost -D cn=admin,dc=pgv,dc=test -y /tmp/pgvsi-pw/admin.pw -T /tmp/pgvsi-pw/user.pw uid=pgvigil,ou=people,dc=pgv,dc=test >/dev/null || fail "the directory account's password was not set"
 
 echo "== the RADIUS server (the user pgvrad)"
 mkdir -p "$WORK/raddb"
@@ -113,6 +122,7 @@ docker run -d --name "$N-radius" --network "$NET" --network-alias radius \
 echo "== the monitored server (postgres:$PG, TLS, the pg_hba lines above)"
 mkdir -p "$WORK/pgconf"
 cp "$WORK/certs/server.pem" "$WORK/certs/server.key" "$WORK/certs/ca.pem" "$WORK/pgconf/"
+printf '%s' "$PAM_PW" > "$WORK/pgconf/pam.pw"   # pgauth12 S4: the PAM user's password from a file, never the environment or argv
 cat > "$WORK/pgconf/pg_hba.conf" <<EOF
 local all all trust
 host all pgvigil 0.0.0.0/0 ldap ldapserver=ldap ldapprefix="uid=" ldapsuffix=",ou=people,dc=pgv,dc=test"
@@ -124,13 +134,13 @@ hostssl all pgvcert 0.0.0.0/0 cert
 EOF
 chmod 755 "$WORK/pgconf"; chmod 644 "$WORK/pgconf/"*
 # as root before the image's entrypoint: the server's files the postgres account's own (a key file of another owner is
-# refused), the PAM user (its password from the environment, never on a command line) and the postgres account in the
+# refused), the PAM user (its password from /pgconf/pam.pw, never the environment or a command line) and the postgres account in the
 # shadow group (pam_unix reads /etc/shadow; the lab's own container only) - then the entrypoint, which starts the
 # server as postgres with the TLS files and the hba file named
-docker run -d --name "$N-pg" --network "$NET" -p 127.0.0.1::5432 -e POSTGRES_HOST_AUTH_METHOD=trust -e PGVSI_PAM_PW="$PAM_PW" \
-  -v "$WORK/pgconf:/pgconf:ro" --entrypoint sh "postgres:$PG" -c 'set -e; mkdir -p /etc/pgvsi; cp /pgconf/server.pem /pgconf/server.key /pgconf/ca.pem /pgconf/pg_hba.conf /etc/pgvsi/
+docker run -d --name "$N-pg" --network "$NET" -p 127.0.0.1::5432 -e POSTGRES_HOST_AUTH_METHOD=trust \
+  -v "$WORK/pgconf:/pgconf:ro" --entrypoint sh "$PG_IMG" -c 'set -e; mkdir -p /etc/pgvsi; cp /pgconf/server.pem /pgconf/server.key /pgconf/ca.pem /pgconf/pg_hba.conf /etc/pgvsi/
 chown postgres:postgres /etc/pgvsi/*; chmod 600 /etc/pgvsi/server.key
-useradd -M pgvpam; echo "pgvpam:$PGVSI_PAM_PW" | chpasswd; unset PGVSI_PAM_PW; usermod -a -G shadow postgres
+useradd -M pgvpam; printf "pgvpam:%s\n" "$(cat /pgconf/pam.pw)" | chpasswd; usermod -a -G shadow postgres
 printf "auth required pam_unix.so\naccount required pam_unix.so\n" > /etc/pam.d/pgvigil-proof
 exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/etc/pgvsi/server.pem -c ssl_key_file=/etc/pgvsi/server.key -c ssl_ca_file=/etc/pgvsi/ca.pem -c hba_file=/etc/pgvsi/pg_hba.conf' >/dev/null
 up=0; for _ in $(seq 1 90); do docker exec "$N-pg" pg_isready -q -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && docker exec "$N-pg" psql -U postgres -XAtqc 'select 1' >/dev/null 2>&1 && { up=1; break; }; sleep 1; done
@@ -144,7 +154,7 @@ PORT=$(docker port "$N-pg" 5432/tcp | sed -n '1s/.*://p')
 [ "$(docker exec "$N-pg" psql -U postgres -XAtc 'show ssl')" = on ] || fail "TLS is not on in the server"
 
 echo "== the store"
-docker run -d --name "$N-store" -p 127.0.0.1::5432 -e POSTGRES_HOST_AUTH_METHOD=trust "postgres:$PG" >/dev/null
+docker run -d --name "$N-store" -p 127.0.0.1::5432 -e POSTGRES_HOST_AUTH_METHOD=trust "$PG_IMG" >/dev/null
 SPORT=$(docker port "$N-store" 5432/tcp | sed -n '1s/.*://p')
 for _ in $(seq 1 60); do psql "host=127.0.0.1 port=$SPORT user=postgres dbname=postgres" -XAtqc 'select 1' >/dev/null 2>&1 && break; sleep 1; done
 export PGVIGIL_REPO_DSN="host=127.0.0.1 port=$SPORT user=postgres dbname=postgres"
@@ -175,7 +185,7 @@ row() { # row <label> <name> <dsn> <system_user|ssl wanted or -> <OK|WARN|FAIL> 
         if [ -n "$warn" ]; then bad "$label: a WARN where none is wanted"; sed 's/^/     /' "$WORK/$name.check"; return; fi
         ok "$label: SYSTEM_USER|ssl '$got', check OK, no WARN" ;;
     WARN) if [ -n "$warn" ] && has "$name" "$words" && has "$name" "exit 3"; then ok "$label: the WARN '$words', exit 3"; else bad "$label: want a WARN with '$words' and exit 3"; sed 's/^/     /' "$WORK/$name.check"; fi ;;
-    FAIL) if has "$name" "FAIL" && has "$name" "$words" && [ -z "$warn" ]; then ok "$label: FAIL with '$words'"; else bad "$label: want a FAIL with '$words' and no WARN"; sed 's/^/     /' "$WORK/$name.check"; fi ;;
+    FAIL) if has "$name" "FAIL instance $name" && has "$name" "$words" && [ -z "$warn" ]; then ok "$label: FAIL with '$words'"; else bad "$label: want a FAIL with '$words' and no WARN"; sed 's/^/     /' "$WORK/$name.check"; fi ;;
   esac
 }
 CA=$WORK/certs/ca.pem
@@ -185,7 +195,7 @@ row L2 l2 "$(pf l2 pgvigil "$LDAP_PW" require)" - WARN "by ldap"
 has l2 "sslmode=require checks no server certificate" || bad "L2: the WARN does not name sslmode=require"
 row L3 l3 "$(pf l3 pgvigil "$LDAP_PW" disable)" - WARN "this session runs without TLS:"
 row L4 l4 "$(pf l4 pgvigil wrong-password verify-full "$CA")" - FAIL 'LDAP authentication failed for user "pgvigil"'
-row L5 l5 "$(pf l5 pgvigil "$LDAP_PW" verify-full "$WORK/certs/other.pem")" - FAIL "certificate"
+row L5 l5 "$(pf l5 pgvigil "$LDAP_PW" verify-full "$WORK/certs/other.pem")" - FAIL "unknown authority"
 echo "== R: radius"
 row R1 r1 "$(pf r1 pgvrad "$RAD_PW" verify-full "$CA")" "radius:pgvrad|true" OK ""
 row R2 r2 "$(pf r2 pgvrad "$RAD_PW" require)" - WARN "by radius"
@@ -202,7 +212,7 @@ echo "== X: client certificates (M2)"
 cd0="host=localhost port=$PORT dbname=postgres user=pgvcert sslmode=verify-full sslrootcert=$CA connect_timeout=10"
 row X1 x1 "$cd0 sslcert=$WORK/certs/pgvcert.pem sslkey=$WORK/certs/pgvcert.key" "cert:CN=pgvcert|true" OK ""
 row X2 x2 "$cd0 sslcert=$WORK/certs/pgvother.pem sslkey=$WORK/certs/pgvother.key" - FAIL 'certificate authentication failed for user "pgvcert"'
-row X3 x3 "$cd0 sslcert=$WORK/certs/pgvcert.pem sslkey=$WORK/certs/no-such.key" - FAIL "no-such.key"
+row X3 x3 "$cd0 sslcert=$WORK/certs/pgvcert.pem sslkey=$WORK/certs/no-such.key" - FAIL "unable to read sslkey"
 
 echo "== C: every PostgreSQL collection once, per method at verify-full"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -F '|' -c "$1"; }
@@ -220,11 +230,16 @@ done
 
 echo "== F: the finding (0467)"
 "$BIN" collect -config "$WORK/l2.yaml" -once pg_signin -instance l2 > "$WORK/f.out" 2>&1 || true
-FD=$(q "select count(*) || '|' || coalesce(min(f.detail), '') from pgvigil.pg_signin_findings f join pgvigil.instances i using (instance_id) where i.name = 'l2' and f.severity = 'warning' and f.setting = 'a directory password without a certificate check'")
+FD=$(q "select count(*) || '|' || coalesce(min(f.detail), '') from pgvigil.pg_signin_findings f join pgvigil.instances i using (instance_id) where i.name = 'l2' and f.severity = 'warning' and f.setting = 'a password sent in clear, the server not fully checked'")
 [[ "$FD" == 1\|*"by ldap"*"sslmode=require"* ]] && ok "F: one warning on l2 naming ldap and sslmode=require" || { bad "F: l2's finding '$FD'"; tail -3 "$WORK/f.out" | sed 's/^/     /'; }
 F1=$(q "select count(*) from pgvigil.pg_signin_findings f join pgvigil.instances i using (instance_id) where i.name = 'l1'")
 [ "$F1" = 0 ] && ok "F: none on l1 (verify-full)" || bad "F: l1 has $F1 finding(s)"
 DN=$(q "select count(*) from pgvigil.pg_signin s where s.method like '%=%' or s.method like '%,%'")
 [ "$DN" = 0 ] && ok "F: no stored method holds an identity" || bad "F: $DN stored row(s) hold more than the method word"
+# pgauth12 N6: row Z graded before the verdict - this run's own containers (the exact names, never a substring of
+# another run's) and its network
+left=0; for c in "$N-pg" "$N-ldap" "$N-radius" "$N-store"; do docker rm -f -v "$c" >/dev/null 2>&1 || true; [ -n "$(docker ps -aq --filter "name=^/$c\$")" ] && left=$((left + 1)); done
+docker network rm "$NET" >/dev/null 2>&1 || true
+[ "$left" = 0 ] && [ -z "$(docker network ls -q --filter "name=^$NET\$")" ] && ok "Z: this run's containers and network removed" || bad "Z: $left container(s) or the network left"
 echo "proof-pg-signin: $VERDICT"
 [ "$VERDICT" = PASS ]

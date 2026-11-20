@@ -810,7 +810,7 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 	// never sent to the page; nothing is kept on a row (it has none)
 	if have == nil && rawStr(in, "password") == "" && str(in, "host") == "" && name != "" {
 		if t, ok := s.testConfigured(ctx, name); ok {
-			out := map[string]any{"ok": t.ok, "detail": t.detail}
+			out := map[string]any{"ok": t.ok, "detail": testDetail(t)} // pgauth12 S2: the sign-in guard's WARN kept
 			if t.ok {
 				out["not_running"], out["collections"], out["list_note"] = t.notRun, t.collections, t.listNote
 			}
@@ -845,10 +845,7 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 		}
 	}
 	t := testConnectionList(ctx, engine, dsn, nil, tin, s.schedConfig())
-	okc, detail := t.ok, t.detail
-	if t.warn != "" {
-		detail += " - WARN: " + t.warn
-	}
+	okc, detail := t.ok, testDetail(t)
 	out := map[string]any{"ok": okc, "detail": detail}
 	if okc {
 		out["not_running"], out["collections"], out["list_note"] = t.notRun, t.collections, t.listNote
@@ -862,10 +859,20 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 	s.reply(w, r, out, nil)
 }
 
-// testConnection opens one connection (10 s) and reads who answered.
+// testConnection opens one connection (10 s) and reads who answered; the sign-in guard's WARN rides its detail
+// (pgauth12 S2: a pgvigil.yaml instance's Test and Check all, and a proposal's test, kept none).
 func testConnection(ctx context.Context, engine, dsn string) (bool, string) {
 	t := testConnectionList(ctx, engine, dsn, nil, config.Instance{Engine: engine}, nil)
-	return t.ok, t.detail
+	return t.ok, testDetail(t)
+}
+
+// testDetail is a connection test's words as every path shows them: its detail, then the sign-in guard's WARN when it
+// has one (PGAUTH M1) - one composition, so the page and 'pgvigil check' never disagree.
+func testDetail(t testResult) string {
+	if t.warn != "" {
+		return t.detail + " - WARN: " + t.warn
+	}
+	return t.detail
 }
 
 // schedConfig is serve's loaded configuration (WatchDoors keeps it); nil = the defaults (demo, mcp, a test)

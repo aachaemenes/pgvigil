@@ -116,12 +116,21 @@ On PostgreSQL 16 and later the server says how it signed the session in (`SYSTEM
 the identity (if any) that the user presented during the authentication cycle", PostgreSQL's documentation). pgvigil
 reads the method word, never the identity (under LDAP it is the bind DN):
 
-- **The connection test** (the page's Test, and `pgvigil check` per instance) adds a WARN when the method is `ldap`,
-  `radius`, `pam`, `bsd` or `password` and the dsn's sslmode is not `verify-full`: the password then reaches a server
-  whose certificate nobody checked. `pgvigil check` exits 3 on it, as on any WARN. Without TLS at all the warning says
+- **The connection test** (the page's Test and Check all, a proposal's test, and `pgvigil check` per instance) adds a
+  WARN when the method is `ldap`, `radius`, `pam`, `bsd` or `password` and the dsn does not open at `verify-full`: the
+  password then reaches a server whose certificate (or, at `verify-ca`, whose name) nobody checked. The sslmode is
+  read as the connect itself reads it - the keyword, the URL's `ssl=true`, a service file, `PGSSLMODE`, and
+  `sslrootcert=system`, which pgx always opens at `verify-full`. `pgvigil check` exits 3 on it, as on any WARN. Without TLS at all the warning says
   so first. Nothing is refused: a configuration that signs in today keeps signing in.
 - **The `pg_signin` collection** (hourly, PostgreSQL 16 and later) reads the same: the method, whether the session runs
-  inside TLS, and the dsn's sslmode, which only the collector knows.
+  inside TLS, and the dsn's sslmode, which only the collector knows. It is a warning on the instance, *a password sent
+  in clear, the server not fully checked* (`pgvigil.pg_signin_findings`, one row an instance in `pgvigil.pg_signin`;
+  the Findings page and the alert channels carry it once the release's join places it): shown while a collector that
+  beats reads the instance, whatever the collection's schedule, or for three hours after a read with no such collector;
+  the next read after the dsn is fixed clears it.
+- **Behind a pooler** (PgBouncer with `auth_type` pam or ldap, say) the guard reads the SERVER's side of the sign-in:
+  the pooler's own sign-in to the server (scram, say) - so pgvigil's password crossing to the pooler in clear gives no
+  WARN. Give such a pooler's dsn `sslmode=verify-full` by hand.
 
 Under PostgreSQL 16 the method is not readable from the client: `pg_signin` is skipped with that reason and the
 connection test says nothing about the method.
@@ -131,6 +140,9 @@ connection test says nothing about the method.
 - Not in this release: Windows SSPI (the service's own domain account; a keytab on a Windows collector, as on
   Linux, is not proven there), the cloud tokens (Amazon RDS IAM, Microsoft
   Entra on Azure Database for PostgreSQL, Cloud SQL IAM), and an LDAP sign-in for pgvigil's own web pages.
+
+Not built from the design (named): a locked account's row, and a key file the service cannot read (the proof's X3
+reads a key file that does not exist).
 
 ## What is proven
 

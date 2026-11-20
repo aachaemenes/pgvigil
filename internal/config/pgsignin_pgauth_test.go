@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -11,8 +12,9 @@ import (
 // under trust; the method word is pg_hba's: hba.c UserAuthName) and the dsn's sslmode, and warns - never refuses -
 // when such a method signs in without sslmode=verify-full.
 
-// TestSSLModeOfPGAUTH: the sslmode a dsn opens with, as pgx reads it - the keyword or URL query, else PGSSLMODE,
-// else pgx's default 'prefer'; a string that does not parse is the empty string (unread).
+// TestSSLModeOfPGAUTH: the sslmode a dsn opens with, as pgx's own parse gives it (pgauth12 S1) - the keyword or URL
+// query, else PGSSLMODE, else pgx's default 'prefer'; a repeated key is pgx's last; a string that does not parse is the
+// empty string (unread).
 func TestSSLModeOfPGAUTH(t *testing.T) {
 	t.Setenv("PGSSLMODE", "")
 	for _, c := range []struct{ dsn, want string }{
@@ -20,7 +22,12 @@ func TestSSLModeOfPGAUTH(t *testing.T) {
 		{"host=db1 user=pgvigil", "prefer"},
 		{"postgres://pgvigil@db1:5432/postgres?sslmode=require", "require"},
 		{"host=db1 sslmode='verify-ca'", "verify-ca"},
-		{"host=db1 sslmode=disable sslmode=require", ""},
+		{"host=db1 sslmode=disable sslmode=require", "require"}, // pgx keeps the last
+		// pgauth12 S1: sslrootcert=system forces verify-full in pgx (pgconn config.go L936-946), with or without sslmode
+		{"host=dir1.example.com user=pgvigil sslrootcert=system", "verify-full"},
+		{"host=dir1.example.com user=pgvigil sslmode=require sslrootcert=system", "verify-full"},
+		{"host=/var/run/postgresql user=pgvigil", "disable"}, // a Unix socket: no TLS
+		{"host=db1 port=notaport", ""},                       // pgx refuses it: unread
 	} {
 		if got := SSLModeOf(c.dsn); got != c.want {
 			t.Errorf("SSLModeOf(%q) = %q, want %q", c.dsn, got, c.want)
@@ -32,6 +39,22 @@ func TestSSLModeOfPGAUTH(t *testing.T) {
 	}
 	if got := SSLModeOf("host=db1 sslmode=require"); got != "require" {
 		t.Errorf("the keyword before PGSSLMODE: %q, want require", got)
+	}
+	// pgauth12 S1: the URL's ssl=true alias is require in pgx, over PGSSLMODE; an empty sslmode is pgx's prefer
+	if got := SSLModeOf("postgres://pgvigil@dir1/postgres?ssl=true"); got != "require" {
+		t.Errorf("?ssl=true with PGSSLMODE=verify-full: %q, want require", got)
+	}
+	if got := SSLModeOf("host=db1 sslmode="); got != "prefer" {
+		t.Errorf("an empty sslmode with PGSSLMODE=verify-full: %q, want prefer", got)
+	}
+	// the service file outranks the environment (pgconn config.go L457-462)
+	svc := t.TempDir() + "/pg_service.conf"
+	if err := os.WriteFile(svc, []byte("[dir1]\nhost=db1\nsslmode=require\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PGSERVICEFILE", svc)
+	if got := SSLModeOf("service=dir1 user=pgvigil"); got != "require" {
+		t.Errorf("a service whose entry says require, with PGSSLMODE=verify-full: %q, want require", got)
 	}
 }
 
@@ -70,8 +93,15 @@ func TestSignInWarnPGAUTH(t *testing.T) {
 			t.Errorf("SignInWarn(ldap, prefer) = %q: no %q", w, want)
 		}
 	}
-	if w := SignInWarn("radius", ""); !strings.Contains(w, "not read") {
-		t.Errorf("SignInWarn(radius, unread) = %q: it should say the sslmode was not read", w)
+	if w := SignInWarn("radius", ""); !strings.Contains(w, "could not be read") || strings.Contains(w, "checks no server certificate") {
+		t.Errorf("SignInWarn(radius, unread) = %q: it should say the sslmode could not be read, never state an unknown as fact", w)
+	}
+	// pgauth12 N3: verify-ca checks the chain, not the name; disable has no TLS
+	if w := SignInWarn("ldap", "verify-ca"); !strings.Contains(w, "does not check the server's name") || strings.Contains(w, "checks no server certificate") {
+		t.Errorf("SignInWarn(ldap, verify-ca) = %q", w)
+	}
+	if w := SignInWarn("pam", "disable"); !strings.Contains(w, "no TLS") {
+		t.Errorf("SignInWarn(pam, disable) = %q", w)
 	}
 	for _, c := range [][2]string{{"ldap", "verify-full"}, {"scram-sha-256", "disable"}, {"cert", "require"}, {"", "prefer"}} {
 		if w := SignInWarn(c[0], c[1]); w != "" {
