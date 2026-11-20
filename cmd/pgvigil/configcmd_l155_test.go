@@ -52,7 +52,7 @@ func TestConfigCommandsL155(t *testing.T) {
 		t.Fatalf("export -no-secrets: exit %d, %v, out %q", code, err, out)
 	}
 	sealed := filepath.Join(dir, "move.pgvigil")
-	code, out = runWith(t, "Pv9-export\n", "config", "export", "-config", cfg, "-password-stdin", "-out", sealed)
+	code, out = runWith(t, "Pv9-export-passphrase\n", "config", "export", "-config", cfg, "-password-stdin", "-out", sealed)
 	quiet("export -password-stdin", out)
 	b, err := os.ReadFile(sealed)
 	if code != 0 || err != nil || !strings.HasPrefix(string(b), exportMagic) {
@@ -67,7 +67,7 @@ func TestConfigCommandsL155(t *testing.T) {
 	if left, _ := os.ReadDir(dst); code == 0 || len(left) != 0 || !strings.Contains(out, "does not open") {
 		t.Errorf("import with a wrong password: exit %d, %d entries written, out %q", code, len(left), out)
 	}
-	code, out = runWith(t, "Pv9-export\n", "config", "import", "-config", filepath.Join(dst, "pgvigil.yaml"), "-password-stdin", sealed)
+	code, out = runWith(t, "Pv9-export-passphrase\n", "config", "import", "-config", filepath.Join(dst, "pgvigil.yaml"), "-password-stdin", sealed)
 	quiet("import", out)
 	for _, rel := range []string{"pgvigil.yaml", "repo.dsn", "secrets/pg1-ab12.dsn", "instances/7.dsn", "sources/aws.json"} {
 		want, _ := os.ReadFile(filepath.Join(src, filepath.FromSlash(rel)))
@@ -83,7 +83,7 @@ func TestConfigCommandsL155(t *testing.T) {
 		{"config", "import", "-config", filepath.Join(dst, "pgvigil.yaml"), sealed},
 		{"config"},
 	} {
-		if code, _ := runWith(t, "Pv9-export\n", c...); code == 0 {
+		if code, _ := runWith(t, "Pv9-export-passphrase\n", c...); code == 0 {
 			t.Errorf("%v: exit 0, want a refusal", c)
 		}
 	}
