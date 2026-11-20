@@ -74,15 +74,17 @@ func TestEveryConfigLoadAppliesTheLevel(t *testing.T) {
 	}
 }
 
-// TestServeAppliesTheFileLevel: 'pgvigil serve' with log_level: debug in its file runs at debug. The file's empty
-// repository dsn stops serve right after the load (a configuration error), so the level is read there.
+// TestServeAppliesTheFileLevel: 'pgvigil serve' with log_level: debug in its file runs at debug. The file's repository
+// dsn names a variable that is empty (config.Load refuses an empty dsn: itself), which stops serve right after the load
+// (a configuration error), so the level is read there.
 func TestServeAppliesTheFileLevel(t *testing.T) {
 	old := logLevel.Level()
 	defer logLevel.Set(old)
 	logLevel.Set(slog.LevelInfo)
 	t.Setenv("PGVIGIL_LOG_LEVEL", "")
+	t.Setenv("PGVIGIL_LEVEL_TEST_DSN", "")
 	p := filepath.Join(t.TempDir(), "pgvigil.yaml")
-	if err := os.WriteFile(p, []byte("log_level: debug\nrepository:\n  dsn: \"\"\ninstances: []\n"), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte("log_level: debug\nrepository:\n  dsn: env:PGVIGIL_LEVEL_TEST_DSN\ninstances: []\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
@@ -103,8 +105,9 @@ func TestLoadFileSaysTheOverride(t *testing.T) {
 	defer logLevel.Set(old)
 	defLog := slog.Default()
 	defer slog.SetDefault(defLog)
+	t.Setenv("PGVIGIL_LEVEL_TEST_DSN", "")
 	p := filepath.Join(t.TempDir(), "pgvigil.yaml")
-	if err := os.WriteFile(p, []byte("log_level: warn\nrepository:\n  dsn: \"\"\ninstances: []\n"), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte("log_level: warn\nrepository:\n  dsn: env:PGVIGIL_LEVEL_TEST_DSN\ninstances: []\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
@@ -133,7 +136,7 @@ func TestLoadFileSaysTheOverride(t *testing.T) {
 		if len(said) != c.lines {
 			t.Errorf("PGVIGIL_LOG_LEVEL=%q over log_level: warn: %d override line(s) %q, want %d", c.env, len(said), said, c.lines)
 		}
-		if c.lines == 1 && len(said) == 1 && !(strings.Contains(said[0], "level=WARN") && strings.Contains(said[0], "PGVIGIL_LOG_LEVEL=debug") && strings.Contains(said[0], "log_level=warn")) {
+		if c.lines == 1 && len(said) == 1 && (!strings.Contains(said[0], "level=WARN") || !strings.Contains(said[0], "PGVIGIL_LOG_LEVEL=debug") || !strings.Contains(said[0], "log_level=warn")) {
 			t.Errorf("the override line %q: want a WARN naming PGVIGIL_LOG_LEVEL=debug and log_level=warn", said[0])
 		}
 		if got := logLevel.Level(); got != c.level {

@@ -84,13 +84,6 @@ func sealTarget(configPath, name string) error {
 	return fmt.Errorf("secret seal: -name names no PostgreSQL instance of %s (its PostgreSQL instances: %s)", configPath, strings.Join(pg, ", "))
 }
 
-// secretSeal reads the value from in, seals it for the named instance beside the configuration and writes the
-// reference line to out; the value itself is never written to out.
-func secretSeal(configPath, name string, in io.Reader, out io.Writer) error {
-	_, err := sealOnce(configPath, name, in, out)
-	return err
-}
-
 // sealServiceAccount is the installed service's account the seal is made readable for ("" = none installed); a
 // variable so a test seals for no service whatever the test host has installed.
 var sealServiceAccount = serviceAccountForSecrets
@@ -98,7 +91,8 @@ var sealServiceAccount = serviceAccountForSecrets
 // sealLimit: the longest input taken (64 KiB; a connection string is never that long)
 const sealLimit = 64 << 10
 
-// sealOnce is secretSeal, answering the reference.
+// sealOnce reads the value from in, seals it for the named instance beside the configuration, writes the reference
+// line to out (the value itself is never written to out) and answers the reference.
 func sealOnce(configPath, name string, in io.Reader, out io.Writer) (string, error) {
 	if err := sealTarget(configPath, name); err != nil {
 		return "", err

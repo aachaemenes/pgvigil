@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,4 +184,10 @@ func TestSecretSealTakesAnyInstanceNameL9(t *testing.T) {
 	if err := secretSeal(cfg, "pg1", strings.NewReader(big), &bytes.Buffer{}); err == nil {
 		t.Error("an input over 64 KiB was sealed")
 	}
+}
+
+// secretSeal is sealOnce without the reference (the rows read the reference line from out).
+func secretSeal(configPath, name string, in io.Reader, out io.Writer) error {
+	_, err := sealOnce(configPath, name, in, out)
+	return err
 }
