@@ -62,7 +62,7 @@ func runExport(ctx context.Context, _ *slog.Logger, args []string) error {
 	case !*gap && fs.NArg() > 0:
 		return &usageError{fmt.Errorf("export: unexpected argument %q", fs.Arg(0))}
 	}
-	cfg, err := config.Load(*path)
+	cfg, err := loadFile(*path)
 	if err != nil {
 		return &configError{err}
 	}

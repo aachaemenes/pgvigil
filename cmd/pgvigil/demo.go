@@ -79,7 +79,7 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	case *dsn != "":
 		repoDSN = config.Resolve(*dsn)
 	case *path != "":
-		cfg, err := config.Load(*path)
+		cfg, err := loadFile(*path)
 		if err != nil {
 			return err
 		}
@@ -139,7 +139,9 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	hs := &http.Server{Handler: web.UnderBase(base, srv.Handler(), log), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second}
+	hs := &http.Server{Handler: web.UnderBase(base, srv.Handler(), log), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second,
+		// net/http's own lines (a TLS handshake error) at Warn on this logger, so log_level governs them
+		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
 	log.Info("pgvigil demo serving", "url", underBase(fmt.Sprintf("http://%s/", ln.Addr()), base), "login", false)

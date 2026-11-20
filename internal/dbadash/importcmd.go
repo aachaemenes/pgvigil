@@ -19,6 +19,10 @@ import (
 // ImportUsage is the command's usage line.
 const ImportUsage = `pgvigil import dbadash -config <file> -repo <name> [-instance <id>,...] [-from <time>] [-to <time>] [-name <id>=<pgvigil name>,...] [-dry-run]`
 
+// LoadConfig reads the configuration file for 'pgvigil import': config.Load here, the command's loader set by main
+// (which applies the file's log_level, as every command's load does).
+var LoadConfig = config.Load
+
 // ImportCommand is `pgvigil import dbadash ...` (args are the words after "import"): it reads the DBA Dash
 // repository the configuration's dbadash: list names with -repo, through its dsn (the door's read login), and loads
 // its history into the configuration's pgvigil repository through the import's functions (0134), so the repository's
@@ -51,7 +55,7 @@ func ImportCommand(ctx context.Context, log *slog.Logger, out io.Writer, args []
 	if strings.TrimSpace(*repo) == "" {
 		return fmt.Errorf("-repo is required\nusage: %s", ImportUsage)
 	}
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := LoadConfig(*cfgPath)
 	if err != nil {
 		return err
 	}

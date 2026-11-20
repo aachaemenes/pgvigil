@@ -151,7 +151,7 @@ func unresolvedNote(n int) string {
 // checkConfig is what the commands check before they use the file: its shape, the collection names, the custom: list
 // and the alerts: block. The first error is the answer.
 func checkConfig(path string, raw []byte) error {
-	cfg, err := config.Load(path)
+	cfg, err := loadFile(path)
 	if err != nil {
 		return err
 	}

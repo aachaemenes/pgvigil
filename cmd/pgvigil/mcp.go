@@ -55,7 +55,7 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 	exp := expectedIntervals(cfg) // every collection's default interval
 	if *path != "" {
 		var err error
-		if cfg, err = config.Load(*path); err != nil {
+		if cfg, err = loadFile(*path); err != nil {
 			return &configError{err}
 		}
 		// the custom: list (task 61): the stale check counts the custom collection where a check applies

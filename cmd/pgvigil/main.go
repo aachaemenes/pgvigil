@@ -69,9 +69,10 @@ func run(args []string) int {
 	}
 	bad := applyLogLevel("")
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
-	if bad != "" {
-		log.Warn("PGVIGIL_LOG_LEVEL is not a log level (debug, info, warn or error): ignored", "value", bad)
-	}
+	// the process's default logger too: a package that logs through slog's default (the repository before SetLog, a
+	// library) and loadFile's override line follow the level
+	slog.SetDefault(log)
+	warnBadLevel(log, bad)
 	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged (B24e review 10)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -125,6 +126,7 @@ func run(args []string) int {
 	case "mssql-agent-alerts":
 		err = runMSSQLAgentAlerts(args[1:])
 	case "import":
+		dbadash.LoadConfig = loadFile // the file's log_level applied as every command's load does
 		err = dbadash.ImportCommand(ctx, log, os.Stdout, args[1:])
 	default:
 		usage()
@@ -219,12 +221,11 @@ func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet
 
 // loadConfigAt reads and checks the configuration file at path (loadConfig's checks, for a command with its own flags).
 func loadConfigAt(path string, needInstance bool) (*config.Config, error) {
-	cfg, err := config.Load(path)
+	cfg, err := loadFile(path)
 	if err != nil {
 		return nil, &configError{err}
 	}
 	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
-	applyLogLevel(cfg.LogLevel)     // log_level (RELNOTES L172); PGVIGIL_LOG_LEVEL wins
 	if needInstance && len(cfg.Instances) == 0 {
 		return nil, &configError{fmt.Errorf("config %s: at least one instance is required", path)}
 	}
@@ -399,6 +400,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer r.Close()
+	r.SetLog(log) // the repository's own lines (an import ended by a deadlock) on the process's logger and level
 	ok, latest, err := r.SchemaCurrent(ctx)
 	if err != nil {
 		return err
@@ -418,20 +420,20 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	go func() {
 		if err := dbadash.Run(ctx, log, cfg.Repository.DSN(), cfg.DBADash); err != nil {
-			log.Warn("dbadash door stopped", "err", err)
+			log.Error("dbadash door stopped", "err", err)
 		}
 	}()
 	// TEXT-NOW: the alert sends follow each instance's query_text policy as the file states it now
 	alerts.SetTextPolicy(alerts.PolicyOfConfig(cfg.QueryText, queryTextByName(cfg)))
 	go func() {
 		if err := alerts.Run(ctx, log, alertsDSN, ast.Channels); err != nil {
-			log.Warn("alert loop stopped", "err", err)
+			log.Error("alert loop stopped", "err", err)
 		}
 	}()
 	// task 171: the report mails queued by serve, mailed through the smtp channels on the sender's login
 	go func() {
 		if err := reportmail.Run(ctx, log, alertsDSN, ast.Channels); err != nil {
-			log.Warn("report mail loop stopped", "err", err)
+			log.Error("report mail loop stopped", "err", err)
 		}
 	}()
 	// task CQ: the request worker (cq.enabled; off = it returns at once): the actions and community runs serve wrote into
@@ -440,7 +442,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	go func() {
 		defer close(cqDone)
 		if err := cq.Run(ctx, log, cfg, r); err != nil {
-			log.Warn("request queue stopped", "err", err)
+			log.Error("request queue stopped", "err", err)
 		}
 	}()
 	defer func() {
@@ -492,6 +494,34 @@ func emptyWhy(raw string) string {
 // logLevel is the level every logger of this process reads (RELNOTES L172): info until the environment's
 // PGVIGIL_LOG_LEVEL or the configuration's log_level says otherwise.
 var logLevel = new(slog.LevelVar)
+
+// loadFile reads the configuration file at path and applies its log_level (PGVIGIL_LOG_LEVEL wins): every command
+// that reads pgvigil.yaml reads it here, so the level holds for serve, mcp, purge and the rest as for run
+// (TestEveryConfigLoadAppliesTheLevel keeps it so). When the variable is set and differs from the file's
+// log_level, one Warn line names both: on a service the variable outlives restarts and upgrades.
+func loadFile(path string) (*config.Config, error) {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	applyLogLevel(cfg.LogLevel)
+	if env := strings.TrimSpace(os.Getenv("PGVIGIL_LOG_LEVEL")); env != "" && cfg.LogLevel != "" {
+		ev, envErr := config.ParseLogLevel(env)
+		fv, fileErr := config.ParseLogLevel(cfg.LogLevel)
+		if envErr == nil && fileErr == nil && ev != fv {
+			slog.Warn("PGVIGIL_LOG_LEVEL overrides the configuration's log_level", "PGVIGIL_LOG_LEVEL", env, "log_level", cfg.LogLevel, "config", path)
+		}
+	}
+	return cfg, nil
+}
+
+// warnBadLevel writes the one line for a PGVIGIL_LOG_LEVEL that is no level word (applyLogLevel's bad): the console
+// and the Windows service write the same line.
+func warnBadLevel(log *slog.Logger, bad string) {
+	if bad != "" {
+		log.Warn("PGVIGIL_LOG_LEVEL is not a log level (debug, info, warn or error): ignored", "value", bad)
+	}
+}
 
 // applyLogLevel sets logLevel from PGVIGIL_LOG_LEVEL, which wins, else from file (the configuration's log_level, ""
 // at start); it returns the variable's value when that is no level word (it is then ignored).

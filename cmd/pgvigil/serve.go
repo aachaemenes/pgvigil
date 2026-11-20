@@ -54,7 +54,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := config.Load(*path)
+	cfg, err := loadFile(*path)
 	if err != nil {
 		return err
 	}
@@ -317,7 +317,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	go srv.RunReportMail(ctx)
 
 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
-	hs := &http.Server{Handler: web.UnderBase(base, srv.Handler(), log), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg}
+	hs := &http.Server{Handler: web.UnderBase(base, srv.Handler(), log), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg,
+		// net/http's own lines (a TLS handshake error) at Warn on this logger, so log_level governs them
+		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
 	errc := make(chan error, 1)
 	scheme := "http"
 	if useTLS {

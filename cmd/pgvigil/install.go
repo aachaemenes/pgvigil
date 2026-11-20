@@ -443,7 +443,7 @@ var (
 // value. Only a platform with no service environment (neither) reads this process's environment, as the binary run by
 // hand would.
 func serviceRepoDSN(path, envFile string) (dsn, raw string, err error) {
-	cfg, err := config.Load(path)
+	cfg, err := loadFile(path)
 	if err != nil {
 		return "", "", err
 	}
@@ -523,6 +523,10 @@ schedules:
 
 # What statement text the repository may hold: full | normalized | none (an instance can override it).
 query_text: full
+
+# The log's level: debug | info | warn | error, info when unset (a restart applies a change). PGVIGIL_LOG_LEVEL in the
+# service's environment wins over it. At error the log still says when alerts are not going out.
+# log_level: info
 
 # The instances to collect: listed here, or added in the page (Admin > Instances). Each dsn is env:NAME or
 # file:/path; the login is a pg_monitor member ('pgvigil roles' prints its CREATE ROLE).

@@ -41,7 +41,7 @@ func runTag(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Load(*path)
+	cfg, err := loadFile(*path)
 	if err != nil {
 		return err
 	}

@@ -492,8 +492,20 @@ log_level: info        # debug | info (the default) | warn | error
 ```
 
 The level of every line the collector (`pgvigil run`), `pgvigil serve` and the other commands write to their log -
-stderr, the journal under systemd, `%ProgramData%\pgvigil\logs\pgvigil.log` for the Windows service. `warn` keeps
-the warnings and failures only; `debug` adds the few lines written for a problem's read. The environment's
-`PGVIGIL_LOG_LEVEL` wins over the file for a one-off (a command run by hand, or the service's own environment), and
-an unknown word there is ignored with one warning; an unknown word in the file is refused at load. The level is read
-at each start: a change needs the service restarted.
+stderr, the journal under systemd, and for the Windows service `logs\pgvigil.log` beside its configuration
+(`%ProgramData%\pgvigil\logs\pgvigil.log` by default). `warn` keeps the warnings and failures only; `debug` adds
+the few lines written for a problem's read. `error` keeps the failures alone, and those include every line that says
+alerts or report mails are not going out: a failed alert pass, alert rules not judged, a channel that failed, the
+repository out of reach for the sender, a loop of `pgvigil run` that stopped.
+
+The environment's `PGVIGIL_LOG_LEVEL` wins over the file: for a command run by hand, and for the service through its
+own environment - on Windows the service's registry `Environment` value
+(`HKLM\SYSTEM\CurrentControlSet\Services\pgvigil`), on Linux `/etc/pgvigil/pgvigil.env` (not a `systemctl edit`
+drop-in: an `Environment=` there makes `pgvigil uninstall -all`'s host check refuse). On a service the variable
+outlives restarts and `install -upgrade`, so when it is set and differs from the file's `log_level`, each start
+writes one warning naming both (a warning: not shown when the variable says `error`). An unknown word in the variable
+is ignored with one warning, on the console and in the Windows service's log alike; an unknown word in the file -
+`warning` too, PostgreSQL's spelling - is refused at load (the collector stops with exit 3, and `pgvigil check`
+names the four words before a restart). The level is read at each start: a change needs the service restarted. The
+Windows service's `service starting` line is written before its configuration is read: only `PGVIGIL_LOG_LEVEL`
+governs that one line.

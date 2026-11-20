@@ -252,7 +252,7 @@ func Run(ctx context.Context, log *slog.Logger, dsn string, chs []alerts.Channel
 		if p != nil {
 			p.Close()
 		}
-		log.Warn("report mail: repository not reachable, retrying in 1m", "err", err)
+		log.Error("report mail: repository not reachable, retrying in 1m", "err", err)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -265,7 +265,7 @@ func Run(ctx context.Context, log *slog.Logger, dsn string, chs []alerts.Channel
 	defer t.Stop()
 	for {
 		if res, err := Once(ctx, pool, chs, time.Now()); err != nil {
-			log.Warn("report mail pass failed", "err", err)
+			log.Error("report mail pass failed", "err", err)
 		} else if res.Sent+res.Failed > 0 {
 			log.Info("report mail pass", "result", res.String())
 		}
