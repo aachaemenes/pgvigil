@@ -18,9 +18,12 @@
 # Exit 0 = every row as stated; 1 = a row differs; 2 = refused to start.
 param(
     [Parameter(Mandatory = $true)][string]$Exe,
-    [string]$Script = (Join-Path (Split-Path -Parent $PSScriptRoot) 'docs\install.ps1')
+    [string]$Script = ''
 )
 $ErrorActionPreference = 'Stop'
+# the default beside this script's folder, computed here: $PSScriptRoot reads empty inside param() under Windows
+# PowerShell 5.1 when the script is started by -File from a WMI-started process (the WIN turn 11-19, its exit 1 at :21)
+if (-not $Script) { $Script = Join-Path (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)) 'docs\install.ps1' }
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Write-Host 'REFUSED: run elevated'; exit 2 }
 if (Get-Service -Name pgvigil -ErrorAction SilentlyContinue) { Write-Host 'REFUSED: the service pgvigil exists here - this proof runs on a machine without pgvigil'; exit 2 }
