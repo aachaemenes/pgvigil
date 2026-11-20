@@ -50,6 +50,9 @@ try {
     Write-Host "FAIL NEW-FAIL: Invoke-Native threw: $_"; $failed++
 }
 
+# rn-l189 N13: this check catches a $script:-scoped leak alone - Invoke-Native's assignment makes a variable local to
+# the function, so it passes whatever the function's finally does; kept as a guard against a rewrite that sets the
+# script's own preference
 if ($ErrorActionPreference -ne 'Stop') { Write-Host "FAIL: Invoke-Native left ErrorActionPreference at $ErrorActionPreference"; $failed++ }
 if ($failed -eq 0) { Write-Host 'PASS: 3 of 3 rows'; exit 0 }
 Write-Host "FAIL: $failed row(s)"; exit 1

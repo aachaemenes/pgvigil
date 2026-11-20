@@ -69,7 +69,7 @@ function Add-MachinePath([string]$dir) {
 # A machine whose pgvigil came from the MSI (docs/msi.md) is upgraded and removed with msiexec only: two installers
 # over one service would each undo the other's files. The MSI's UpgradeCode is fixed for every version; Windows
 # Installer keeps it under Installer\UpgradeCodes in its packed form (each of the first three groups reversed, then
-# every pair of the rest swapped).
+# every pair of the rest swapped): 7E00BA2E57D038F4EB490E5FDE9EB6C6 (msi_words_test.go computes it from the wxs).
 function Test-MsiInstall {
     $upgradeCode = 'E2AB00E7-0D75-4F83-BE94-E0F5EDE96B6C'
     $hex = $upgradeCode.Replace('-', '')
@@ -81,7 +81,9 @@ function Test-MsiInstall {
     }
     return $false
 }
-if (Test-MsiInstall) {
+# rn-l189 N9: only when a service install would follow - $env:PGVIGIL_NO_SERVICE = '1' (download and verify only) is
+# the way to fetch the new binary and migrate before an MSI upgrade (docs/msi.md)
+if ((Test-MsiInstall) -and $env:PGVIGIL_NO_SERVICE -ne '1') {
     throw 'pgvigil install: this machine''s pgvigil came from the MSI (its UpgradeCode is installed). Upgrade it with msiexec /i pgvigil-<version>-x64.msi and remove it with msiexec /x - never with this script (docs/msi.md)'
 }
 
@@ -90,22 +92,27 @@ if (-not $From -and ($Fips -or $Plain -or $TrustRoot -or $App -or $UpdateCheck -
 }
 # a native command's stderr under 'Stop' in Windows PowerShell 5.1 throws when it is redirected - in ISE, in a remoting
 # session, under '2>&1 | Tee-Object' - even on success (pgvigil logs its INFO lines to stderr): run every native command
-# through this, with 'Continue', and judge it by its exit code
-function Invoke-Native([scriptblock]$cmd) {
+# through this, with 'Continue', and judge it by its exit code. -Stream (rn-l189 S3) shows each line as it comes - the
+# install and the upgrade (a dump and a migrate with the service stopped): an interrupt keeps what was said, the
+# upgrade's own way-back line among it; the lines are still returned in Out
+function Invoke-Native([scriptblock]$cmd, [switch]$Stream) {
     $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { $out = & $cmd 2>&1 | ForEach-Object { "$_" }; return @{ Code = $LASTEXITCODE; Out = ($out -join "`n") } } finally { $ErrorActionPreference = $eap }
+    try {
+        $out = & $cmd 2>&1 | ForEach-Object { $line = "$_"; if ($Stream) { Write-Host $line }; $line }
+        return @{ Code = $LASTEXITCODE; Out = ($out -join "`n") }
+    } finally { $ErrorActionPreference = $eap }
 }
 # 'pgvigil install' as the service's account (RELNOTES L131): none named = the virtual account; a gMSA (DOMAIN\name$)
 # or NT SERVICE\<name> without a password; any other account's password read here, not shown, and piped to
 # -password-stdin - never a parameter, never written; the plain copy cleared after the call
 function Invoke-PgvigilInstall([string]$exePath, [string]$account) {
-    if (-not $account) { return Invoke-Native { & $exePath install } }
-    if ($account -match '\$$' -or $account -like 'NT SERVICE\*') { return Invoke-Native { & $exePath install -user $account } }
+    if (-not $account) { return Invoke-Native { & $exePath install } -Stream }
+    if ($account -match '\$$' -or $account -like 'NT SERVICE\*') { return Invoke-Native { & $exePath install -user $account } -Stream }
     $sec = Read-Host -AsSecureString "the password of $account (not shown)"
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
     try {
         $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-        return Invoke-Native { $plain | & $exePath install -user $account -password-stdin }
+        return Invoke-Native { $plain | & $exePath install -user $account -password-stdin } -Stream
     } finally {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
         $plain = $null
@@ -158,10 +165,10 @@ if ($From) {
             Copy-Item -LiteralPath $bundle -Destination (Join-Path $work 'SHA256SUMS.bundle')
             $env:SIGSTORE_ROOT_FILE = Join-Path $TrustRoot 'fulcio.pem'; $env:SIGSTORE_REKOR_PUBLIC_KEY = Join-Path $TrustRoot 'rekor.pub'; $env:SIGSTORE_CT_LOG_PUBLIC_KEY_FILE = Join-Path $TrustRoot 'ctfe.pub'
             $cs = $cosign.Source; $bf = Join-Path $work 'SHA256SUMS.bundle'; $sf = Join-Path $work 'SHA256SUMS'
-            $r = Invoke-Native { & $cs verify-blob --offline --bundle $bf `
+            $verify = Invoke-Native { & $cs verify-blob --offline --bundle $bf `
                 --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/$version" `
                 --certificate-oidc-issuer https://token.actions.githubusercontent.com $sf }
-            if ($r.Code -ne 0) { throw "pgvigil install: the signature of SHA256SUMS does not verify against the trust root in $TrustRoot for ${version}: nothing was installed ($($r.Out))" }
+            if ($verify.Code -ne 0) { throw "pgvigil install: the signature of SHA256SUMS does not verify against the trust root in $TrustRoot for ${version}: nothing was installed ($($verify.Out))" }
             Write-Host "signature of SHA256SUMS verified (the release workflow of $version, with the trust root in $TrustRoot)"
         } else {
             Write-Host "signature not verified here: the checksums prove the files are the ones SHA256SUMS names, not where they came from; verify the signature on the connected side, or pass -TrustRoot <the site's own trust root> (docs/airgap.md)"
@@ -192,14 +199,12 @@ if ($From) {
             if ($Dump) { $up += @('-dump', $Dump) }
             if ($NoDump) { $up += '-no-dump' }
             if ($PgDump) { $up += @('-pg-dump', $PgDump) }
-            $r = Invoke-Native { & $exe @up }
-            if ($r.Out) { Write-Host $r.Out }
-            if ($r.Code -ne 0) { throw "pgvigil install -upgrade exited with $($r.Code)" }
+            $upRes = Invoke-Native { & $exe @up } -Stream
+            if ($upRes.Code -ne 0) { throw "pgvigil install -upgrade exited with $($upRes.Code)" }
         } else {
             if ($OwnerDsnFile -or $Dump -or $NoDump -or $PgDump) { throw 'pgvigil install: -OwnerDsnFile, -Dump, -NoDump and -PgDump go with an upgrade; the service pgvigil is not installed' }
-            $r = Invoke-PgvigilInstall $exe $account
-            if ($r.Out) { Write-Host $r.Out }
-            if ($r.Code -ne 0) { throw "pgvigil install exited with $($r.Code)" }
+            $inst = Invoke-PgvigilInstall $exe $account
+            if ($inst.Code -ne 0) { throw "pgvigil install exited with $($inst.Code)" }
             Add-MachinePath (Join-Path $env:ProgramFiles 'pgvigil')
         }
         if ($App) {
@@ -260,9 +265,8 @@ try {
         Write-Host ".\pgvigil.exe $version is ready (no service installed)"
         return
     }
-    $r = Invoke-PgvigilInstall (Join-Path $work $asset) $account
-    if ($r.Out) { Write-Host $r.Out }
-    if ($r.Code -ne 0) { throw "pgvigil install exited with $($r.Code)" }
+    $inst = Invoke-PgvigilInstall (Join-Path $work $asset) $account
+    if ($inst.Code -ne 0) { throw "pgvigil install exited with $($inst.Code)" }
     $binDir = Join-Path $env:ProgramFiles 'pgvigil'
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     if (($machinePath -split ';') -notcontains $binDir) {

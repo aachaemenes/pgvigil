@@ -14,7 +14,8 @@
     <DefineConstants>PgvVersion=$(PgvVersion);PgvBinary=$(PgvBinary)</DefineConstants>
     <SuppressValidation>false</SuppressValidation>
   </PropertyGroup>
-  <Target Name="PgvBinaryGiven" BeforeTargets="Build">
+  <!-- BeforeBuild (rn-l189 N4): ahead of WiX's own 'empty Source' error, so this message is the one shown -->
+  <Target Name="PgvBinaryGiven" BeforeTargets="BeforeBuild">
     <Error Condition="'$(PgvBinary)' == '' Or !Exists('$(PgvBinary)')" Text="-p:PgvBinary=&lt;path to pgvigil.exe&gt; names no file: the MSI is built from the release's own windows/amd64 binary" />
   </Target>
 </Project>

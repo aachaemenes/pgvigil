@@ -335,6 +335,15 @@ The same order with `install.ps1` (`$env:PGVIGIL_NO_SERVICE = '1'`), `Stop-Servi
 upgrade proof, which runs on Linux; `scripts/proof-install-windows.sh` covers the installer on Windows, not an
 upgrade over stored history.
 
+## A machine installed from the MSI
+
+The MSI's order (docs/msi.md): fetch the new binary without a service (`$env:PGVIGIL_NO_SERVICE = '1'` with
+`install.ps1`, which downloads and verifies only), take the dump and run its `pgvigil.exe migrate` as the owner, then
+`msiexec /i pgvigil-<new>-x64.msi /norestart` and `Start-Service pgvigil`. The way back on such a machine is the MSI's
+own, never `install.ps1` (it refuses an MSI machine) and never the older MSI over the newer (refused): `msiexec /x`
+the new version (the configuration under `%ProgramData%\pgvigil` stays), `msiexec /i` the previous version's MSI, then
+the owner's `pg_restore` of the dump into a new, empty database made the repository, as above.
+
 ## What the proof showed
 
 `scripts/proof-upgrade.sh` starts from the released v0.3.0 itself and ends on the build of this tree, on throwaway
