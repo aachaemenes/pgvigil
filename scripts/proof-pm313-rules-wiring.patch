@@ -1,0 +1,637 @@
+diff --git c/internal/mssql/checks.go i/internal/mssql/checks.go
+index 48e10f96..19f0f6de 100644
+--- c/internal/mssql/checks.go
++++ i/internal/mssql/checks.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"database/sql"
+ 	"fmt"
++	"math"
+ 	"regexp"
+ 	"sort"
+ 	"strconv"
+@@ -231,13 +232,13 @@ var serverOptionRules = map[string]func(v int64, m machineFacts) optionVerdict{
+ 			return optionVerdict{Status: "none", Explain: "Azure SQL Managed Instance sets its own memory limit"}
+ 		case v == unlimitedMemoryMB:
+ 			return broken(sevWarning, "a limit under the machine's memory", "dbachecks MaxMemory",
+-				"max server memory is at its default (2147483647 MB): SQL Server sets itself no limit and can take the memory the operating system needs")
++				"max server memory is at its default (2147483647 MB): SQL Server sets itself no limit and can take the memory the operating system needs"+pmMemorySuggestion(m.PhysMB))
+ 		case m.PhysMB > 0 && v > m.PhysMB:
+ 			return broken(sevWarning, "a limit under the machine's memory", "sp_Blitz 50",
+ 				fmt.Sprintf("max server memory is %d MB, more than the machine's %d MB: the setting limits nothing", v, m.PhysMB))
+ 		case m.PhysMB > 0 && v*100 >= m.PhysMB*95:
+ 			return broken(sevWarning, "under 95 % of the machine's memory", "sp_PerfCheck 1002",
+-				fmt.Sprintf("max server memory is %d MB, %s %% of the machine's %d MB: 95 %% or more leaves the operating system too little", v, pctText(v, m.PhysMB), m.PhysMB))
++				fmt.Sprintf("max server memory is %d MB, %s %% of the machine's %d MB: 95 %% or more leaves the operating system too little", v, pctText(v, m.PhysMB), m.PhysMB)+pmMemorySuggestion(m.PhysMB))
+ 		case m.PhysMB == 0:
+ 			return met("a limit is set; not weighed against the machine's memory, which was not read")
+ 		}
+@@ -373,6 +374,18 @@ func advisedMaxDOP(m machineFacts) int64 {
+ 	return min64(max64(m.CPUs/m.NUMANodes, 1), 16)
+ }
+ 
++// pmMemorySuggestion: PerformanceMonitor 3.13.0's max server memory number (ConfigAuditGuidance.cs: the machine's
++// memory less the larger of 4,096 MB and 10 %, never more than half), the same number as 0156's
++// mssql_memory_suggestion (which no page reads yet); "" when the machine's memory was not read. The 95 % rule above
++// is sp_PerfCheck 1002's (95 % or more); PerformanceMonitor's own review starts over 95 %.
++func pmMemorySuggestion(physMB int64) string {
++	if physMB <= 0 {
++		return ""
++	}
++	reserve := math.Min(math.Max(4096, float64(physMB)*0.10), float64(physMB)/2)
++	return fmt.Sprintf("; PerformanceMonitor's suggestion: about %d MB (leaving %.0f MB for the operating system)", int64(float64(physMB)-reserve), reserve)
++}
++
+ func min64(a, b int64) int64 {
+ 	if a < b {
+ 		return a
+diff --git c/internal/mssql/memory.go i/internal/mssql/memory.go
+index d80b6037..76819d78 100644
+--- c/internal/mssql/memory.go
++++ i/internal/mssql/memory.go
+@@ -113,7 +113,9 @@ const memoryNumaSQL = `SELECT 'numa' AS kind,
+   (SELECT CAST(COUNT(*) AS int) FROM sys.dm_os_nodes WHERE node_id > 0 AND node_state_desc NOT LIKE N'%DAC') AS other_nodes`
+ 
+ // memoryRmonSQL: PerformanceMonitor 3.12.0 MemoryPressureEventsCollector's read (the time in UTC from ms_ticks, to
+-// the millisecond) with the record's id and sp_PressureDetector's available physical and virtual memory.
++// the millisecond) with the record's id, its memory node (3.13.0's NodeId: each node writes its own record of one
++// event; 0156 stores one copy), the ring time (sys.dm_os_ring_buffers.timestamp: a record's identity across reads and
++// nodes, as PerformanceMonitor keys it) and sp_PressureDetector's available physical and virtual memory.
+ const memoryRmonSQL = `DECLARE @ms_ticks bigint, @now datetime2(7) = SYSUTCDATETIME(), @start datetime;
+ SELECT @ms_ticks = ms_ticks, @start = sqlserver_start_time FROM sys.dm_os_sys_info;
+ SELECT 'rmon' AS kind, CAST(t.record.value('(/Record/@id)[1]', 'bigint') AS bigint) AS record_id,
+@@ -122,6 +124,8 @@ SELECT 'rmon' AS kind, CAST(t.record.value('(/Record/@id)[1]', 'bigint') AS bigi
+   CAST(t.record.value('(/Record/ResourceMonitor/Notification)[1]', 'nvarchar(100)') AS nvarchar(100)) AS notification,
+   t.record.value('(/Record/ResourceMonitor/IndicatorsProcess)[1]', 'int') AS ind_process,
+   t.record.value('(/Record/ResourceMonitor/IndicatorsSystem)[1]', 'int') AS ind_system,
++  t.record.value('(/Record/ResourceMonitor/NodeId)[1]', 'int') AS memory_node_id,
++  t.timestamp AS ring_ms,
+   t.record.value('(/Record/MemoryRecord/AvailablePhysicalMemory)[1]', 'bigint') AS avail_phys_kb,
+   t.record.value('(/Record/MemoryRecord/AvailableVirtualAddressSpace)[1]', 'bigint') AS avail_vas_kb
+ FROM (SELECT dorb.timestamp, CONVERT(xml, dorb.record) AS record FROM sys.dm_os_ring_buffers AS dorb
+diff --git c/internal/repo/mi_backups_test.go i/internal/repo/mi_backups_test.go
+index 693bf786..bc8d23d2 100644
+--- c/internal/repo/mi_backups_test.go
++++ i/internal/repo/mi_backups_test.go
+@@ -55,6 +55,50 @@ func TestBackupJudged0129Is0066PlusManagedInstance(t *testing.T) {
+ 	}
+ }
+ 
++// 0156 (task 405, Changed 46) re-creates mssql_backup_judged judged by mssql_protection_limits (Admin's tag and
++// database ages): with the resolver taken back out (the two ages from the limits view again, its LATERAL join and the
++// two appended columns gone) 0156's view is 0129's, character for character.
++func TestBackupJudged0156Is0129PlusResolver(t *testing.T) {
++	view := func(file string) string {
++		t.Helper()
++		b, err := migrations.ReadFile("sql/" + file)
++		if err != nil {
++			t.Fatal(err)
++		}
++		s := string(b)
++		i := strings.Index(s, "CREATE OR REPLACE VIEW pgvigil.mssql_backup_judged AS")
++		if i < 0 {
++			t.Fatalf("%s: no mssql_backup_judged", file)
++		}
++		j := strings.Index(s[i:], "  FROM j;")
++		if j < 0 {
++			t.Fatalf("%s: mssql_backup_judged has no end", file)
++		}
++		return s[i : i+j]
++	}
++	got := view("0156_pm313_rules.sql")
++	for _, r := range [][2]string{
++		{"pl.full_backup_hours, l.diff_backup_hours, pl.log_backup_minutes,", "l.full_backup_hours, l.diff_backup_hours, l.log_backup_minutes,"},
++		{"AS excluded_by,\n         pl.full_from AS full_hours_from, pl.log_from AS log_minutes_from\n", "AS excluded_by\n"},
++		{"    CROSS JOIN LATERAL pgvigil.mssql_protection_limits(s.instance_id, s.database_name) pl\n", ""},
++		{",\n       -- where each age the database is judged by comes from (0156: an override, pgvigil.yaml or the default)\n       j.full_hours_from, j.log_minutes_from", ""},
++	} {
++		if strings.Count(got, r[0]) != 1 {
++			t.Fatalf("0156's mssql_backup_judged holds %q %d times, want once", r[0], strings.Count(got, r[0]))
++		}
++		got = strings.Replace(got, r[0], r[1], 1)
++	}
++	if want := view("0129_mssql_mi_backups.sql"); got != want {
++		gl, wl := strings.Split(got, "\n"), strings.Split(want, "\n")
++		for k := 0; k < len(gl) && k < len(wl); k++ {
++			if gl[k] != wl[k] {
++				t.Fatalf("0156's mssql_backup_judged differs from 0129's beyond the resolver at its line %d:\n0156: %s\n0129: %s", k+1, gl[k], wl[k])
++			}
++		}
++		t.Fatalf("0156's mssql_backup_judged has %d lines, 0129's %d", len(gl), len(wl))
++	}
++}
++
+ // On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it): a Managed Instance's master, model and msdb are
+ // not judged, with Microsoft's reason, and its user database is judged as anywhere; on a server someone runs, model
+ // with no backup is still 'never'.
+diff --git c/internal/web/q_mssql_perf.go i/internal/web/q_mssql_perf.go
+index 679f3e13..5ead64cb 100644
+--- c/internal/web/q_mssql_perf.go
++++ i/internal/web/q_mssql_perf.go
+@@ -353,7 +353,7 @@ const (
+ 	sqlMSSQLPoolSeries       = `SELECT at AS snapshot_at, pool_id, coalesce(pool_name, 'pool ' || pool_id) AS pool, waiters,
+        round(granted_kb / 1024.0, 1) AS granted_mb, round(available_kb / 1024.0, 1) AS available_mb, timeouts, forced_grants
+   FROM pgvigil.mssql_grant_series_between($1, $2, $3, $4)`
+-	sqlMSSQLRmon = `SELECT snapshot_at AS sample_at, notification, ind_process, ind_system, avail_phys_kb, avail_vas_kb, record_id
++	sqlMSSQLRmon = `SELECT snapshot_at AS sample_at, notification, memory_node_id, ind_process, ind_system, avail_phys_kb, avail_vas_kb, record_id
+   FROM pgvigil.mssql_memory_rmon WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
+  ORDER BY snapshot_at DESC, record_id DESC LIMIT 1000`
+ 	sqlMSSQLRmonHourly = `SELECT * FROM pgvigil.mssql_memory_rmon_hourly($1, $2, $3)`
+@@ -418,6 +418,9 @@ func (s *Server) MSSQLMemory(w http.ResponseWriter, r *http.Request) {
+ 		{"plancache_trend", sqlMSSQLPlanCacheTrend, base},
+ 		{"grants_now", sqlMSSQLGrantsNow, []any{id, from, to}},
+ 		{"rg", sqlMSSQLResourceGovernor, []any{id}},
++		// task 405 (Fixed 8, S4): PerformanceMonitor's max server memory number, 0156's, the one the
++		// Server options check states in its words (checks.go pmMemorySuggestion)
++		{"suggestion", `SELECT * FROM pgvigil.mssql_memory_suggestion($1)`, []any{id}},
+ 		{"skipped", sqlMSSQLMemorySkipped, []any{id}},
+ 	})
+ }
+diff --git c/internal/web/q_mssql_protection.go i/internal/web/q_mssql_protection.go
+new file mode 100644
+index 00000000..5c1e24d6
+--- /dev/null
++++ i/internal/web/q_mssql_protection.go
+@@ -0,0 +1,208 @@
++package web
++
++// The backup ages per tag or database (task 405, PerformanceMonitor 3.13.0's Changed 46). GET /api/mssql/protection
++// [?instance=N] reads 0156's store:
++//
++//	overrides  Admin's live rows (tag or database) with who made them and when
++//	log        the last 200 attempts, done or refused
++//	limits     (instance) each database's full backup hours and log backup minutes as the backup judging uses them,
++//	           with where each comes from (a database row, pgvigil.yaml, a tag, the default)
++//
++// POST /api/mssql/protection {op add | end, scope tag | database, tag, instance_id, database_name,
++// full_backup_hours, log_backup_minutes, note, override_id} writes one row the way the counter list is written
++// (q_mssql_counter_admin.go): the UI login, the X-Pgvigil header and the actions door's audit pool;
++// pgvigil.import_mssql_protection_override writes the row and its log line, a refused attempt included. An
++// instance's own ages stay in pgvigil.yaml's mssql_thresholds.
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"math"
++	"net/http"
++	"strconv"
++	"strings"
++	"time"
++
++	"github.com/jackc/pgx/v5"
++)
++
++const sqlProtectionOverrides = `SELECT o.override_id, o.scope, o.tag, o.instance_name, o.database_name, o.full_backup_hours,
++       o.log_backup_minutes, o.note, o.replaces, o.created_by, o.created_at
++  FROM pgvigil.mssql_protection_overrides o WHERE o.ended_at IS NULL
++ ORDER BY o.scope DESC, o.tag, o.instance_name, o.database_name`
++
++const sqlProtectionLog = `SELECT l.at, l.ui_user, l.op, l.override_id, l.outcome, l.detail, l.payload->>'scope' AS scope,
++       l.payload->>'tag' AS tag, l.payload->>'instance_name' AS instance_name, l.payload->>'database_name' AS database_name
++  FROM pgvigil.mssql_protection_override_log l ORDER BY l.at DESC LIMIT 200`
++
++const sqlProtectionLimits = `SELECT b.database_name, b.full_backup_hours, b.full_hours_from, b.log_backup_minutes, b.log_minutes_from,
++       b.full_status, b.log_status, b.not_judged
++  FROM pgvigil.mssql_backup_judged b WHERE b.instance_id = $1 ORDER BY b.database_name`
++
++// MSSQLProtection is GET /api/mssql/protection.
++func (s *Server) MSSQLProtection(w http.ResponseWriter, r *http.Request) {
++	out := map[string]any{}
++	why := s.protectionOff()
++	out["writable"] = why == ""
++	if why != "" {
++		out["reason"] = why
++	}
++	type part struct {
++		name string
++		sql  string
++		args []any
++	}
++	ps := []part{{"overrides", sqlProtectionOverrides, nil}, {"log", sqlProtectionLog, nil}}
++	if v := r.URL.Query().Get("instance"); v != "" {
++		id, err := strconv.Atoi(v)
++		if err != nil || id <= 0 {
++			writeErr(w, http.StatusBadRequest, errors.New("instance must be a positive number"))
++			return
++		}
++		ps = append(ps, part{"limits", sqlProtectionLimits, []any{id}})
++	}
++	for _, p := range ps {
++		t, err := s.query(r.Context(), p.sql, p.args...)
++		if err != nil {
++			s.reply(w, r, nil, fmt.Errorf("%s: %w", p.name, err))
++			return
++		}
++		out[p.name] = t
++	}
++	s.reply(w, r, out, nil)
++}
++
++// protectionOff says why the backup ages cannot be edited here, "" when they can (the counter list's doors).
++func (s *Server) protectionOff() string {
++	switch {
++	case s.demo != nil:
++		return "the backup ages are edited on a pgvigil serve with a signed-in user, not on pgvigil demo -serve"
++	case s.auth == nil:
++		return "the backup ages are edited behind the UI login: this server runs with -no-login"
++	case s.actions == nil:
++		return "backup age edits are off on this server (no actions door)"
++	case s.actions.audit == nil:
++		if s.actions.off != "" {
++			return "the backup ages are written through the actions door's audit login, and it is off: " + s.actions.off
++		}
++		return "the backup ages are written through the actions door's audit login, and it is not connected"
++	}
++	return ""
++}
++
++// protectionEdit is the body of POST /api/mssql/protection; an age is a JSON number or null (not set).
++type protectionEdit struct {
++	Op               string   `json:"op"`
++	Scope            string   `json:"scope"`
++	Tag              string   `json:"tag"`
++	InstanceID       int64    `json:"instance_id"`
++	DatabaseName     string   `json:"database_name"`
++	FullBackupHours  *float64 `json:"full_backup_hours"`
++	LogBackupMinutes *float64 `json:"log_backup_minutes"`
++	Note             string   `json:"note"`
++	OverrideID       int64    `json:"override_id"`
++}
++
++// MSSQLProtectionWrite is POST /api/mssql/protection: one row added (a live row for the same target is ended and
++// replaced) or ended.
++func (s *Server) MSSQLProtectionWrite(w http.ResponseWriter, r *http.Request) {
++	if r.Header.Get(loginHeader) == "" {
++		writeErr(w, http.StatusForbidden, errors.New("the X-Pgvigil header is required"))
++		return
++	}
++	if why := s.protectionOff(); why != "" {
++		writeErr(w, http.StatusForbidden, errors.New(why))
++		return
++	}
++	user := s.sessionUser(r)
++	if user == "" {
++		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
++		return
++	}
++	raw, err := io.ReadAll(io.LimitReader(r.Body, 4097))
++	if err != nil || len(raw) > 4096 {
++		writeErr(w, http.StatusBadRequest, errors.New("body: unreadable or over 4 KB"))
++		return
++	}
++	if strings.Contains(string(raw), `\u0000`) || strings.ContainsRune(string(raw), 0) {
++		writeErr(w, http.StatusBadRequest, errors.New("the request holds a NUL character: nothing was written"))
++		return
++	}
++	var in protectionEdit
++	dec := json.NewDecoder(strings.NewReader(string(raw)))
++	dec.DisallowUnknownFields()
++	if err := dec.Decode(&in); err != nil {
++		writeErr(w, http.StatusBadRequest, fmt.Errorf("body: %w", err))
++		return
++	}
++	pay := map[string]any{"op": in.Op, "ui_user": user, "client": clientIP(r)}
++	switch in.Op {
++	case "end":
++		if in.OverrideID <= 0 {
++			writeErr(w, http.StatusBadRequest, errors.New("override_id is required to end a row"))
++			return
++		}
++		pay["override_id"] = strconv.FormatInt(in.OverrideID, 10)
++	case "add":
++		pay["scope"], pay["tag"], pay["database_name"], pay["note"] = in.Scope, in.Tag, in.DatabaseName, in.Note
++		// the store reads an age as text (0 or more, up to 3 decimals): a number goes over as its shortest form
++		for k, v := range map[string]*float64{"full_backup_hours": in.FullBackupHours, "log_backup_minutes": in.LogBackupMinutes} {
++			if v != nil {
++				pay[k] = strconv.FormatFloat(*v, 'f', -1, 64)
++			}
++		}
++		if in.Scope == "database" {
++			if in.InstanceID <= 0 || in.InstanceID > math.MaxInt32 {
++				writeErr(w, http.StatusBadRequest, errors.New("a database row names its instance_id"))
++				return
++			}
++			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
++			defer cancel()
++			var name string
++			err := s.pool.QueryRow(ctx, `SELECT name FROM pgvigil.instances WHERE instance_id = $1 AND is_active AND engine = 'sqlserver'`, in.InstanceID).Scan(&name)
++			if errors.Is(err, pgx.ErrNoRows) {
++				writeErr(w, http.StatusBadRequest, fmt.Errorf("no active SQL Server instance %d", in.InstanceID))
++				return
++			}
++			if err != nil {
++				writeErr(w, http.StatusInternalServerError, fmt.Errorf("the instance could not be read: %v", err))
++				return
++			}
++			pay["instance_name"] = name
++		}
++	default:
++		writeErr(w, http.StatusBadRequest, errors.New("op must be add or end"))
++		return
++	}
++	b, _ := json.Marshal(pay)
++	var res struct {
++		Outcome    string `json:"outcome"`
++		Detail     string `json:"detail"`
++		OverrideID *int64 `json:"override_id"`
++	}
++	var out []byte
++	// the write outlives a client that hangs up (its log row is kept), never the 15 s
++	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
++	defer wcancel()
++	if err := s.actions.audit.QueryRow(wctx, `SELECT pgvigil.import_mssql_protection_override($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
++		s.log.Error("backup ages: not written", "op", in.Op, "user", user, "err", err)
++		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
++		return
++	}
++	if err := json.Unmarshal(out, &res); err != nil {
++		writeErr(w, http.StatusInternalServerError, fmt.Errorf("import_mssql_protection_override answered %q", out))
++		return
++	}
++	s.log.Info("backup ages: attempt", "op", in.Op, "user", user, "outcome", res.Outcome, "detail", res.Detail)
++	code := http.StatusOK
++	if res.Outcome != "done" {
++		code = http.StatusConflict
++	}
++	w.Header().Set("Content-Type", "application/json")
++	w.Header().Set("Cache-Control", "no-store")
++	w.WriteHeader(code)
++	_ = json.NewEncoder(w).Encode(map[string]any{"outcome": res.Outcome, "detail": res.Detail, "override_id": res.OverrideID})
++}
+diff --git c/internal/web/q_waits.go i/internal/web/q_waits.go
+index 6e2c11b6..327b5e81 100644
+--- c/internal/web/q_waits.go
++++ i/internal/web/q_waits.go
+@@ -97,6 +97,15 @@ SELECT q.queryid, q.samples, q.wait_secs, q.top_wait,
+  ORDER BY q.samples DESC, q.queryid
+  LIMIT 50`
+ 
++// sqlWaitsPoison (task 405, Changed 19, S4): PerformanceMonitor's poison wait at the window's
++// end (0156's pg_poison_wait_findings): each finding with its top statements, their text from statement_text as the
++// collector stored it (the query_text policy and the credential mask applied there, before the store: never a raw
++// text), or the one info row 'not judged: needs pg_wait_sampling' where no wait_sample row was written in a day.
++const sqlWaitsPoison = `
++SELECT p.severity, p.check_name, p.object, p.at, p.detail, p.query
++  FROM pgvigil.pg_poison_wait_findings($1, $2) p
++ ORDER BY CASE p.severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, p.object`
++
+ // sqlWaitsState: the waits collection's last run on the instance (why it is skipped, where it is).
+ const sqlWaitsState = `
+ SELECT c.status, c.note, c.snapshot_at
+@@ -124,6 +133,7 @@ func (s *Server) Waits(w http.ResponseWriter, r *http.Request) {
+ 		{"series", sqlWaitsSeries, []any{id, from, to}},
+ 		{"queries", sqlWaitsQueries, []any{id, from, to}},
+ 		{"locktree", sqlWaitsLockTree, []any{id, to}},
++		{"poison", sqlWaitsPoison, []any{id, to}},
+ 	})
+ }
+ 
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 1262da76..e4e1a8a9 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -262,6 +262,8 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/alerts", s.Alerts)
+ 	api.HandleFunc("GET /api/alertrules", s.AlertRules)
+ 	api.HandleFunc("POST /api/alertrules", s.AlertRuleWrite)
++	api.HandleFunc("GET /api/mssql/protection", s.MSSQLProtection)
++	api.HandleFunc("POST /api/mssql/protection", s.MSSQLProtectionWrite)
+ 	api.HandleFunc("POST /api/alertrules/end", s.AlertRuleEnd)
+ 	api.HandleFunc("GET /api/alertscope", s.AlertScope)          // task 403a: windows, held sends, flapping, overrides, history, digests
+ 	api.HandleFunc("POST /api/alertwindows", s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator, B24f)
+diff --git c/scripts/proof-darling-cpu.sh i/scripts/proof-darling-cpu.sh
+index e00d70ef..46434580 100755
+--- c/scripts/proof-darling-cpu.sh
++++ i/scripts/proof-darling-cpu.sh
+@@ -57,8 +57,8 @@
+ #  G. the rules on stored rows: mssql_sched_levels on a table of cases (pgvigil's and PerformanceMonitor's levels and
+ #     PerformanceMonitor's recommendation, each band's edge); 'other processes use the CPU' at 50.0 % over 10 records
+ #     raises, 49.9 % or 9 records none; 'a transaction open for a long time' idle 30 min warning, 29 min none, 4 h
+-#     critical, running 4 h warning (never critical), running 3 h 59 none; 'slow data file writes' at 100.1 ms over
+-#     1,000 writes raises, 100 ms or 999 writes none; Running now's p95 and % of average equal a hand computation on the
++#     critical, running 4 h warning (never critical), running 3 h 59 none; 'slow data file writes' never on a user
++#     database (task 405 D1), on tempdb at 10 ms over 250 writes (9.96 ms or 249 writes none); Running now's p95 and % of average equal a hand computation on the
+ #     stored job runs.
+ #  H. pgvigil serve: GET /api/mssql/cpu, /connections, /counters (one series picked), /fileio, /tempdb answer every
+ #     part, the counted ones equal to their functions.
+@@ -567,8 +567,19 @@ wr() { pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND d
+   fnd 'slow data file writes'; }
+ W1=$(wr 1000 100100); W2=$(wr 1000 100000); W3=$(wr 999 999000)
+ pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND database_name = 'pgvproof'" >/dev/null
+-[[ "$W1/$W2/$W3" == "1/0/0" ]] || fail "G: slow data file writes: 100.1 ms x1000 $W1, 100 ms x1000 $W2, 1000 ms x999 $W3 (want 1/0/0)"
+-echo "ok   G: the levels table; other processes 50 % x10 raises, 49 % or 9 records none; a long transaction idle 30 min warning, 29 min none, 4 h critical, running 4 h warning, 3 h 59 none, 30 h warning; slow data file writes 100.1 ms over 1,000 writes raises, 100 ms or 999 writes none"
++# task 405 D1 (0156, PerformanceMonitor 3.13's Changed 2): a user database's data file is never judged on its write
++# latency (was: 100.1 ms over 1,000 writes raised); tempdb's data files are, at 10 / 30 ms over 250 writes
++# (proof-pm313-rules.sh R1)
++[[ "$W1/$W2/$W3" == "0/0/0" ]] || fail "G: slow data file writes on a user database: 100.1 ms x1000 $W1, 100 ms x1000 $W2, 1000 ms x999 $W3 (want 0/0/0: D1)"
++# the rule still raises on tempdb (the zeros above pass if the arm dies): a tempdb data
++# file of its own name at 10 ms over 250 writes raises one warning; 9.96 ms or 249 writes none
++wt() { pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND file_name = 'pgvproof_tmp'" >/dev/null
++  pq "INSERT INTO pgvigil.mssql_fileio_sample (instance_id, snapshot_at, database_id, file_id, database_name, file_name, type_desc, reads, read_bytes, read_stall_ms, writes, write_bytes, write_stall_ms, interval_secs) VALUES ($SB, now() - interval '5 minutes', 2, 99, 'tempdb', 'pgvproof_tmp', 'ROWS', 0, 0, 0, $1, $1 * 8192, $2, 60)" >/dev/null
++  pq "SELECT count(*) || ':' || coalesce(max(severity), 'none') FROM pgvigil.mssql_cpu_findings WHERE instance_id = $SB AND check_name = 'slow data file writes' AND object = 'tempdb: pgvproof_tmp'"; }
++WT1=$(wt 250 2500); WT2=$(wt 250 2490); WT3=$(wt 249 2490)
++pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND file_name = 'pgvproof_tmp'" >/dev/null
++[[ "$WT1/$WT2/$WT3" == "1:warning/0:none/0:none" ]] || fail "G: slow tempdb data file writes: 10 ms x250 $WT1, 9.96 ms x250 $WT2, 10 ms x249 $WT3 (want 1:warning/0:none/0:none)"
++echo "ok   G: the levels table; other processes 50 % x10 raises, 49 % or 9 records none; a long transaction idle 30 min warning, 29 min none, 4 h critical, running 4 h warning, 3 h 59 none, 30 h warning; slow data file writes on a user database never raised, on tempdb at 10 ms over 250 writes (task 405 D1)"
+ 
+ echo "== H. the API under pgvigil serve =="
+ (cd web && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -20 "$TMPD/web.log" >&2; fail "H: the web build"; }
+diff --git c/web/src/admin_protection.ts i/web/src/admin_protection.ts
+new file mode 100644
+index 00000000..597b22f8
+--- /dev/null
++++ i/web/src/admin_protection.ts
+@@ -0,0 +1,67 @@
++// Admin > Backup ages (task 405, PerformanceMonitor 3.13.0's Changed 46): the full backup hours and log backup minutes a
++// SQL Server database is judged by, set for a tag or for one database (an instance's own ages stay in pgvigil.yaml's
++// mssql_thresholds). The narrowest wins: a database row, then the instance's yaml, then its tags (the strictest), then
++// the default (168 h, 60 min); 0 = not judged. Data from /api/mssql/protection; writes ride the UI login and the
++// actions door's audit login; off, every control says why.
++import { get, post, Row, rowsOf, Table } from './api';
++import { Ctx } from './router';
++import { el, errorBox, fmtTime, grid, offControl } from './ui';
++
++export async function adminProtectionView(_ctx: Ctx): Promise<HTMLElement> {
++  const sec = el('section', {}, el('h2', {}, 'Backup ages (SQL Server)'));
++  type Data = { writable?: boolean; reason?: string; overrides: Table | null; log: Table | null };
++  let d: Data;
++  try { d = await get<Data>('mssql/protection'); } catch (e) { sec.append(errorBox(e)); return sec; }
++  const off = d.writable ? null : (d.reason ?? 'not writable here');
++  sec.append(el('p', { class: 'meta' }, 'A database is judged late when its newest full backup is older than its full backup hours, or its newest log backup older than its log backup minutes. Set them here for a tag or for one database; an instance\'s own ages are set in pgvigil.yaml (mssql_thresholds). The narrowest wins: a database row, then the instance\'s pgvigil.yaml, then its tags (the strictest when two disagree), then the default of 168 hours and 60 minutes. 0 = not judged.'),
++    ...(off ? [el('p', { class: 'meta' }, `Edits are off here: ${off}`)] : []));
++  const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
++  const send = async (body: Record<string, unknown>) => {
++    try {
++      const r = await post<{ outcome: string; detail: string }>('mssql/protection', body);
++      said.textContent = `${r.outcome}: ${r.detail}`;
++      window.dispatchEvent(new HashChangeEvent('hashchange'));
++    } catch (e) { said.textContent = 'Not written: ' + (e instanceof Error ? e.message : String(e)); }
++  };
++  const scope = el('select', { 'aria-label': 'Scope' }, el('option', { value: 'tag' }, 'a tag'), el('option', { value: 'database' }, 'one database')) as HTMLSelectElement;
++  const tag = el('input', { type: 'text', 'aria-label': 'Tag', placeholder: 'tag (key:value or value)', maxlength: '200' }) as HTMLInputElement;
++  const inst = el('select', { 'aria-label': 'Instance' }) as HTMLSelectElement;
++  const db = el('input', { type: 'text', 'aria-label': 'Database', placeholder: 'database', maxlength: '128' }) as HTMLInputElement;
++  const full = el('input', { type: 'number', min: '0', step: 'any', 'aria-label': 'Full backup hours', placeholder: 'full backup hours' }) as HTMLInputElement;
++  const logm = el('input', { type: 'number', min: '0', step: 'any', 'aria-label': 'Log backup minutes', placeholder: 'log backup minutes' }) as HTMLInputElement;
++  const note = el('input', { type: 'text', 'aria-label': 'Note', placeholder: 'note (optional)', maxlength: '500' }) as HTMLInputElement;
++  const showScope = () => { tag.hidden = scope.value !== 'tag'; inst.hidden = scope.value !== 'database'; db.hidden = scope.value !== 'database'; };
++  scope.addEventListener('change', showScope);
++  try {
++    const all = rowsOf(await get<Table>('instances')).filter(r => r.engine === 'sqlserver');
++    inst.replaceChildren(...all.map(r => el('option', { value: String(r.instance_id) }, String(r.name))));
++  } catch { /* the instance list is needed for a database row only */ }
++  showScope();
++  const num = (i: HTMLInputElement): number | null => i.value.trim() === '' ? null : Number(i.value);
++  const save = el('button', { type: 'button' }, 'Save row') as HTMLButtonElement;
++  save.addEventListener('click', () => {
++    if (num(full) === null && num(logm) === null) { said.textContent = 'Set the full backup hours, the log backup minutes, or both.'; return; }
++    void send({ op: 'add', scope: scope.value, tag: tag.value.trim(), instance_id: Number(inst.value || 0), database_name: db.value.trim(),
++      full_backup_hours: num(full), log_backup_minutes: num(logm), note: note.value.trim() });
++  });
++  const saveNote = offControl(save, off);
++  sec.append(el('h3', {}, 'Set an age'),
++    el('div', { class: 'toolbar', style: 'flex-wrap:wrap;gap:.5rem' }, scope, tag, inst, db, full, logm, note, save, saveNote), said);
++  const endCell = (_v: unknown, r: Row) => {
++    const b = el('button', { type: 'button', class: 'link', 'aria-label': `End row ${String(r.override_id)}` }, 'End') as HTMLButtonElement;
++    b.addEventListener('click', () => { void send({ op: 'end', override_id: Number(r.override_id) }); });
++    const short = off ? el('span', { class: 'off-reason' }, 'off here: the line above says why') : undefined;
++    return el('span', {}, b, ' ', offControl(b, off, short));
++  };
++  const age = (v: unknown, unit: string) => v == null ? 'not set' : Number(v) === 0 ? 'not judged (0)' : `${String(v)} ${unit}`;
++  sec.append(el('h3', {}, 'Rows made here'), grid(rowsOf(d.overrides), [
++    { key: 'scope', label: 'for', fmt: (_v, r) => r.scope === 'tag' ? `tag ${String(r.tag)}` : `${String(r.instance_name)}: ${String(r.database_name)}` },
++    { key: 'full_backup_hours', label: 'full backup', fmt: v => age(v, 'hours') },
++    { key: 'log_backup_minutes', label: 'log backup', fmt: v => age(v, 'minutes') },
++    { key: 'note' }, { key: 'created_by', label: 'by' }, { key: 'created_at', label: 'at', fmt: fmtTime }, { key: '_end', label: 'end', fmt: endCell },
++  ], 'No row: every database is judged by its instance\'s pgvigil.yaml or the defaults.'));
++  sec.append(el('h3', {}, 'The log'), grid(rowsOf(d.log), [
++    { key: 'at', fmt: fmtTime }, { key: 'ui_user', label: 'by' }, { key: 'op' }, { key: 'outcome' }, { key: 'detail' },
++  ], 'No attempt yet.'));
++  return sec;
++}
+diff --git c/web/src/main.ts i/web/src/main.ts
+index a3a91b2a..edad4bf4 100644
+--- c/web/src/main.ts
++++ i/web/src/main.ts
+@@ -96,6 +96,7 @@ import { aboutLink, aboutView } from './about';
+ import { adminInstancesView } from './admin_instances';
+ import { adminApplicationsView } from './applications';
+ import { adminCountersView } from './metrics';
++import { adminProtectionView } from './admin_protection';
+ import { reportPages } from './reports';
+ import { customReportsView } from './customreports';
+ import { communityView } from './community';
+@@ -170,7 +171,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
+ };
+ const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
+ const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
+-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, mssqlerrors: mssqlErrorFleetView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, admin_counters: adminCountersView, ...reportPages, admin: adminView };
++const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, mssqlerrors: mssqlErrorFleetView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, admin_counters: adminCountersView, admin_backupages: adminProtectionView, ...reportPages, admin: adminView };
+ const instancePages: Record<string, Render> = {
+   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
+   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
+diff --git c/web/src/mssql_perf.ts i/web/src/mssql_perf.ts
+index 04af0054..be4337e9 100644
+--- c/web/src/mssql_perf.ts
++++ i/web/src/mssql_perf.ts
+@@ -148,7 +148,7 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
+ // (sp_PressureDetector's) and the plan cache by type with its bloat level.
+ type MemoryParts = 'latest' | 'series' | 'clerks' | 'clerk_stats' | 'checks' | 'pools_window' | 'semaphores_window' | 'pools_newest'
+   | 'semaphores_newest' | 'pool_series' | 'rmon' | 'rmon_hourly' | 'caches' | 'plancache' | 'plancache_types' | 'plancache_trend'
+-  | 'grants_now' | 'rg' | 'skipped';
++  | 'grants_now' | 'rg' | 'skipped' | 'suggestion';
+ const mbOf = (v: unknown) => v == null ? '-' : fmtNum(Math.round(Number(v) / 102.4) / 10) + ' MB';
+ const grantWindowCols = (bySem: boolean): Col[] => [
+   { key: 'pool_name', label: 'pool', fmt: (v, r) => String(v ?? 'pool ' + String(r.pool_id)) },
+@@ -204,6 +204,10 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
+   sec.append(props([
+     ['max server memory', l.max_server_memory_mb == null ? 'not read (mssql_instance)' : `${fmtNum(l.max_server_memory_mb)} MB`
+       + (l.physical_kb ? ` (${fmtNum(Math.round(100 * Number(l.max_server_memory_mb) * 1024 / Number(l.physical_kb)))} % of physical)` : '')],
++    // task 405 (Fixed 8, S4): PerformanceMonitor's number beside the setting (0156's
++    // mssql_memory_suggestion, the one the Server options check states; none on a Managed Instance)
++    ...rowsOf(d.suggestion).slice(0, 1).map(sg => ['PerformanceMonitor\'s suggestion', `${fmtNum(sg.suggested_mb)} MB (${String(sg.status)}; `
++      + `leaving ${fmtNum(sg.reserve_mb)} MB of ${fmtNum(sg.ram_mb)} MB for the OS): ${String(sg.message ?? '')}`] as [string, string]),
+     ['SQL Server process working set', kb(l.process_kb) + (l.process_low ? ' - the process had a low-memory notification' : '')],
+     ['committed / target', `${kb(l.committed_kb)} of ${kb(l.committed_target_kb)}`],
+     ['memory grants', `${fmtNum(l.sem_granted ?? 0)} granted (${kb(l.sem_granted_kb)} of a ${kb(l.sem_target_kb)} target), ${fmtNum(l.sem_waiting ?? 0)} waiting; `
+@@ -439,6 +443,11 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
+   grid(rmon, [
+     { key: 'sample_at', label: 'time', fmt: fmtTime },
+     { key: 'notification', label: 'notification' },
++    // PerformanceMonitor 3.13.0's Node column (sql-memory.js pressureColumns): each memory node writes its own record of
++    // one event, so the column shows only when the rows hold 2 or more distinct nodes (a record read before the node
++    // column has none: 'not read')
++    ...(new Set(rmon.map(r => r.memory_node_id).filter(v => v != null)).size >= 2
++      ? [{ key: 'memory_node_id', label: 'node', num: true, fmt: (v: unknown) => v == null ? 'not read' : String(v) }] : []),
+     { key: 'ind_process', label: 'process', num: true },
+     { key: 'ind_system', label: 'system', num: true },
+     { key: 'avail_phys_kb', label: 'available physical', num: true, fmt: mbOf },
+diff --git c/web/src/router.ts i/web/src/router.ts
+index 4fede04d..eda439a4 100644
+--- c/web/src/router.ts
++++ i/web/src/router.ts
+@@ -58,7 +58,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
+   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
+ }
+ 
+-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', azuresummary: 'Azure Summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', mssqlerrors: 'SQL Server errors', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin_counters: 'Counters (admin)', admin: 'Overview' };
++export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', azuresummary: 'Azure Summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', mssqlerrors: 'SQL Server errors', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin_counters: 'Counters (admin)', admin_backupages: 'Backup ages (admin)', admin: 'Overview' };
+ export const instanceTabs: Record<string, string> = {
+   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Table Size', vacuum: 'Vacuum',
+   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
+@@ -82,7 +82,7 @@ export const rootGroups: TabGroup[] = [
+   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'tablesize', 'disks', 'storage', 'growth', 'dbchanges', 'indexes'] },
+   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
+   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
+-  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_applications', 'admin_counters', 'admin'] },
++  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_applications', 'admin_counters', 'admin_backupages', 'admin'] },
+   // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
+   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
+ ];
+diff --git c/web/src/waits.ts i/web/src/waits.ts
+index cce445ba..5dbf68ec 100644
+--- c/web/src/waits.ts
++++ i/web/src/waits.ts
+@@ -7,7 +7,7 @@ import { lineChart } from './chart';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+ 
+-interface WaitsData { state: Table | null; events: Table | null; series: Table | null; queries: Table | null; locktree: Table | null }
++interface WaitsData { state: Table | null; events: Table | null; series: Table | null; queries: Table | null; locktree: Table | null; poison: Table | null }
+ 
+ const sourceText: Record<string, string> = {
+   pg_wait_sampling: 'pg_wait_sampling: every backend sampled every profile period (10 ms by default)',
+@@ -35,6 +35,14 @@ const queryCols: Col[] = [
+   { key: 'query', wide: true },
+ ];
+ 
++// task 405 (Changed 19): PerformanceMonitor's poison waits, each with its top statements as the collector stored them
++const poisonCols: Col[] = [
++  { key: 'severity', fmt: v => badge(String(v ?? ''), v === 'critical' ? 'crit' : 'warn') },
++  { key: 'object', label: 'event' },
++  { key: 'detail', label: 'what it means', wide: true },
++  { key: 'query', label: 'top statements (as stored: the text policy and the credential mask applied)', wide: true },
++];
++
+ const treeCols: Col[] = [
+   { key: 'pid', fmt: (v, r) => el('span', { style: `padding-left:${(Number(r.level) - 1) * 1.2}em` }, (Number(r.level) > 1 ? '└ ' : '') + String(v)) },
+   { key: 'blocked', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '' },
+@@ -89,6 +97,15 @@ export async function waitsView(ctx: Ctx): Promise<HTMLElement> {
+     sec.append(el('h3', {}, 'Statements that waited most'), grid(rowsOf(d.queries), queryCols,
+       'No statement identified (query ids need compute_query_id, on by default with pg_stat_statements).'));
+   }
++  // task 405 (Changed 19, S4): the poison wait at the window's end; without pg_wait_sampling the
++  // page says it is not judged, in words, never an empty grid
++  const poison = rowsOf(d.poison), judged = poison.filter(r => r.severity !== 'info');
++  sec.append(el('h3', {}, 'Poison waits'));
++  if (poison.length && !judged.length) sec.append(el('p', { class: 'meta' }, String(poison[0].detail ?? '')));
++  else sec.append(el('p', { class: 'meta' }, 'PerformanceMonitor\'s poison waits: IPC:BtreePage and IPC:BufferIO, the backends '
++    + 'waiting on them on average over the newest 10 minutes of the window (1.0 or more there and in the 10 before: a warning; '
++    + '10.0 or more: critical at once).'),
++    grid(judged, poisonCols, 'No poison wait: IPC:BtreePage and IPC:BufferIO under 1.0 waiting backends on average over the newest 10 minutes of the window.'));
+   const tree = rowsOf(d.locktree);
+   sec.append(el('h3', {}, 'Lock tree'), el('p', { class: 'meta' },
+     (tree.length ? `The activity snapshot of ${fmtTime(tree[0].snapshot_at)}. ` : '')

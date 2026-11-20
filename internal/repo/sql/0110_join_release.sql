@@ -1,5 +1,5 @@
--- 0110 the join of the release (v0.4.0): what the slices of the release waves left to the lead's join, in one file that
--- each later join of this release extends in place (nothing of it has been released yet; it sorts after every slice's
+-- 0110 the release migration (v0.4.0): what the features of the release left to it, in one file that each later
+-- change of this release extends in place (nothing of it has been released yet; it sorts after every feature's
 -- own migration, 0090-0104).
 --   task 157 (pgaudit, 0100): pgvigil.findings gains the pgaudit_findings arm; purge() gains the two monthly partition
 --   parents pgaudit_events and pgaudit_counts, the per-second counts, the health rows and the pgaudit: log cursors.
@@ -72,7 +72,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the corruption column (0023): checksums off, ignore_checksum_failure on, a corruption event in 24 h, amcheck damage
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.corruption_findings WHERE setting <> 'zero_damaged_pages'
     UNION ALL
-    -- the plans slice (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
+    -- the plan findings (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.plan_findings
     UNION ALL
     -- the indexes collection (0030): invalid and duplicate indexes (warning), redundant and unused ones (info)

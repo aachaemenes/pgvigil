@@ -26,7 +26,7 @@ import (
 //     answer from an instance not in the down set at or after the anchor is the server answering).
 //   - 'a member answers after the anchor' (the guard): one member down at M, answered at M+1, down again from M+2 - no
 //     row on both (only the anchor minute's answers of the down set are ambiguous: an answer after it is the server's).
-//   - 'a slow fourth answered in the anchor minute' (the guard, the review's #1): the three down from M alike, a fourth
+//   - 'a slow fourth answered in the anchor minute' (the guard): the three down from M alike, a fourth
 //     instance on the target answered at M-2 .. M and has no row after M (read seldom) - no row on both: only a DOWN
 //     member's own row of M is exempt, an answer in M from an instance outside the down set is the server answering (a
 //     fix exempting every row of the anchor minute passes the four cases above and fails this one).

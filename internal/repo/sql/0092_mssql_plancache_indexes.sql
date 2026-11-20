@@ -39,7 +39,7 @@
 --                          the slice's findings in the findings columns (instance_id, severity, check_name, object,
 --                          at, detail).
 --
--- For the join: add the three findings views as arms of pgvigil.findings (sources 'mssql_plancache',
+-- For 0110 (the release migration): add the three findings views as arms of pgvigil.findings (sources 'mssql_plancache',
 -- 'mssql_indexes', 'mssql_stats'); add mssql_pc_read and mssql_pc_sample to purge()'s month-partition parents and
 -- n := n + pgvigil.mssql_plancache_purge(p_days) for the rest; put 'mssql_plancache_purge' on apply_roles()'
 -- owner-only list beside mssql_reads_purge (it deletes). mssql_qname, mssql_index_definition, mssql_index_verdicts

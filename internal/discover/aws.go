@@ -62,7 +62,7 @@ type Read struct {
 // AWSOptions names the credentials and the regions: Profile "" = the default chain (the environment, the shared
 // files' default profile, an EC2 / ECS role). Regions empty = a sweep from the configuration's own region (the
 // profile's, or AWS_REGION): rds:DescribeSourceRegions there lists its partition's regions (used when granted, never
-// required). pgvigil names no region, partition or endpoint of its own (the join's TestNoHardCodedAWSPartition):
+// required). pgvigil names no region, partition or endpoint of its own (TestNoHardCodedAWSPartition):
 // GovCloud and the China regions are read exactly as the commercial ones, from the configuration (NOT PROVEN: no lab).
 type AWSOptions struct {
 	Profile string
@@ -96,7 +96,7 @@ const awsCallWait = 20 * time.Second
 
 // awsListWait bounds the account's region list (ec2:DescribeRegions, optional): it is asked beside RDS's replication
 // list on every read, so an EC2 host an egress-restricted collector cannot reach costs each read this, not a call's
-// full wait (task 205's review).
+// full wait.
 const awsListWait = 5 * time.Second
 
 // firstAsked is the first region a read asks: the first of regions not skipped (a region silent since the last sweep
@@ -529,7 +529,7 @@ func AWS(ctx context.Context, o AWSOptions) (Read, error) {
 				refusals[why]++
 				if why == tokenThere {
 					// enabled for the account (the list said so) and a token error: the token's fault, not the
-					// region's - kept; a policy's refusal is not (the review's part c)
+					// region's - kept; a policy's refusal is not
 					rd.Regions = append(rd.Regions, region)
 				}
 			case errors.Is(err, errSilent):

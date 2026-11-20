@@ -3,7 +3,7 @@
 -- FailedCount: run_status IN (0, 3)). Read from rows the collectors already store; nothing is created, changed or
 -- switched on on a monitored server.
 --
---   pgvigil.mssql_jobs_findings   replaced WHOLE (0066's text, its only definition on every branch read 11-14 13:0x),
+--   pgvigil.mssql_jobs_findings   replaced WHOLE (0066's text, its only definition),
 --                        three changes: the newest failed run is the newest with run_status 0 OR 3; its detail says
 --                        'job X was cancelled at ...' for a 3 ('job X failed at ...' as before for a 0); and the step it
 --                        names is the step that ended the run the same way (run_status equal to the run's: the step

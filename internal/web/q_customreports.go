@@ -59,9 +59,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	mssqldb "github.com/microsoft/go-mssqldb"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
+	"github.com/aachaemenes/pgvigil/internal/mssqlread"
 	"github.com/aachaemenes/pgvigil/internal/plans"
 )
 
@@ -119,7 +120,7 @@ var (
 		"contains": true, "not_contains": true, "begins": true, "ends": true, "isnull": true, "notnull": true, "all": true}
 	reportStatuses  = map[string]bool{"ok": true, "warn": true, "crit": true}
 	reportParamName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,62}$`)
-	reportProcName  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$#]{0,127}(\.[A-Za-z_][A-Za-z0-9_$#]{0,127}){0,2}$`)
+	reportProcName  = mssqlread.ProcName // 1-3 parts, no bracket or quote (one pattern with custom: procedure, ST6)
 	reportBuiltins  = map[string]bool{"from": true, "to": true, "instance_ids": true}
 	pgIdent         = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]{0,62}$`)
 )
@@ -284,10 +285,7 @@ func procCall(engine, name string, params []reportParam, given map[string]any) s
 	parts := strings.Split(strings.TrimSpace(name), ".")
 	var b strings.Builder
 	if engine == "sqlserver" {
-		for i, p := range parts {
-			parts[i] = "[" + strings.ReplaceAll(p, "]", "]]") + "]"
-		}
-		b.WriteString("EXEC " + strings.Join(parts, "."))
+		b.WriteString("EXEC " + mssqlread.QuoteProc(name))
 		n := 0
 		for _, p := range params {
 			if given[p.Name] == nil {
@@ -321,8 +319,12 @@ func procCall(engine, name string, params []reportParam, given map[string]any) s
 
 // resultSet is one result set of a run as the page draws it: types says per column number, time or text.
 type resultSet struct {
-	Columns   []string `json:"columns"`
-	Types     []string `json:"types"`
+	Columns []string `json:"columns"`
+	Types   []string `json:"types"`
+	// SQLTypes and Nullable: the driver's own type name and nullability (nil = not known), only when the run asks for
+	// them ("exact_types": true - KITWATCH K4.1, opt-in, so today's answers and the demo samples do not change)
+	SQLTypes  []string `json:"sql_types,omitempty"`
+	Nullable  []*bool  `json:"nullable,omitempty"`
 	Rows      [][]any  `json:"rows"`
 	Truncated bool     `json:"truncated,omitempty"`
 }
@@ -336,7 +338,9 @@ type instanceRun struct {
 	Error      string `json:"error,omitempty"`
 	// a community procedure looked at this server and said no in its own words (q_community.go declines): the
 	// outcome stays failed (the statement reached the server), the page draws a note instead of an error box
-	Declined   bool        `json:"declined,omitempty"`
+	Declined bool `json:"declined,omitempty"`
+	// AtSetCap: the batch returned more result sets than a run keeps (maxSets): the ones after it were not read
+	AtSetCap   bool        `json:"at_set_cap,omitempty"`
 	DurationMS int         `json:"duration_ms"`
 	Rows       int         `json:"rows"`
 	Sets       []resultSet `json:"sets"`
@@ -365,8 +369,16 @@ const (
 	maxSets      = 50
 )
 
-// sizer counts the bytes a run keeps so one run cannot fill the server's memory.
-type sizer struct{ n int }
+// sizer counts the bytes a run keeps so one run cannot fill the server's memory; max is its cap (0 = maxRunBytes).
+type sizer struct{ n, max int }
+
+// over says the run kept more than its cap.
+func (z *sizer) over() bool {
+	if z.max > 0 {
+		return z.n > z.max
+	}
+	return z.n > maxRunBytes
+}
 
 func (z *sizer) cell(v any) any {
 	if s, ok := v.(string); ok {
@@ -386,7 +398,12 @@ func (z *sizer) cell(v any) any {
 // as its text, anything else as its text form.
 func pgCell(v any, oid uint32) any {
 	switch x := v.(type) {
-	case nil, bool, string, float32, int16, int32, int8, uint8, uint16, uint32:
+	case nil, bool, string, int16, int32, int8, uint8, uint16, uint32:
+		return x
+	case float32: // a float4 NaN or infinity has no JSON form (json.Marshal would refuse the whole reply)
+		if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
+			return strconv.FormatFloat(float64(x), 'g', -1, 32)
+		}
 		return x
 	case float64:
 		if math.IsNaN(x) || math.IsInf(x, 0) {
@@ -424,7 +441,7 @@ func pgCell(v any, oid uint32) any {
 		}
 		return nil
 	case map[string]any, []any:
-		return x
+		return collect.JSONValue(x) // walked: an infinity inside as its text (not JSON 1), a NaN inside as 'NaN'
 	case fmt.Stringer:
 		return x.String()
 	case driver.Valuer:
@@ -456,7 +473,7 @@ func readPG(rows pgx.Rows, maxRows int, z *sizer, stop func()) (resultSet, error
 		set.Columns[i], set.Types[i] = f.Name, pgType(f.DataTypeOID)
 	}
 	for rows.Next() {
-		if len(set.Rows) >= maxRows || z.n > maxRunBytes {
+		if len(set.Rows) >= maxRows || z.over() {
 			set.Truncated = true
 			stop()
 			return set, nil // the cancel's own error is not the run's
@@ -473,88 +490,71 @@ func readPG(rows pgx.Rows, maxRows int, z *sizer, stop func()) (resultSet, error
 	return set, rows.Err()
 }
 
-// msType is the page's type of a SQL Server column.
-func msType(name string) string {
-	switch strings.ToUpper(name) {
-	case "INT", "BIGINT", "SMALLINT", "TINYINT", "DECIMAL", "NUMERIC", "MONEY", "SMALLMONEY", "FLOAT", "REAL":
-		return "number"
-	case "DATETIMEOFFSET":
-		return "time"
-	}
-	return "text"
+// msType is the page's type of a SQL Server column (mssqlread.Type).
+func msType(name string) string { return mssqlread.Type(name) }
+
+// msCell turns a go-mssqldb value into the JSON answer's form (mssqlread.Cell; see pgCell); a datetime without an
+// offset is the server's wall clock and stays one (no zone, never moved to the reader's).
+func msCell(v any, typ string) any { return mssqlread.Cell(v, typ) }
+
+// colType is what readMS reads of a result column (*sql.ColumnType; a test's fake)
+type colType interface {
+	Name() string
+	DatabaseTypeName() string
+	Nullable() (nullable, ok bool)
 }
 
-// msCell turns a go-mssqldb value into the JSON answer's form (see pgCell); a datetime without an offset is the
-// server's wall clock and stays one (no zone, never moved to the reader's).
-func msCell(v any, typ string) any {
-	t := strings.ToUpper(typ)
-	switch x := v.(type) {
-	case nil, bool, string, float32:
-		return x
-	case float64:
-		if math.IsNaN(x) || math.IsInf(x, 0) {
-			return strconv.FormatFloat(x, 'g', -1, 64)
-		}
-		return x
-	case int64:
-		if x > 1<<53 || x < -(1<<53) {
-			return strconv.FormatInt(x, 10)
-		}
-		return x
-	case time.Time:
-		switch t {
-		case "DATE":
-			return x.Format("2006-01-02")
-		case "TIME":
-			return x.Format("15:04:05.9999999")
-		case "DATETIMEOFFSET":
-			return x.UTC().Format(time.RFC3339Nano)
-		}
-		return x.Format("2006-01-02 15:04:05.999")
-	case []byte:
-		switch t {
-		case "DECIMAL", "NUMERIC", "MONEY", "SMALLMONEY":
-			s := string(x)
-			if f, err := strconv.ParseFloat(s, 64); err == nil && len(strings.TrimLeft(strings.Replace(s, ".", "", 1), "-0")) <= 15 {
-				return f
-			}
-			return s
-		case "UNIQUEIDENTIFIER":
-			var u mssqldb.UniqueIdentifier
-			if err := u.Scan(x); err == nil {
-				return u.String()
-			}
-		}
-		return "0x" + strings.ToUpper(hex.EncodeToString(x))
+// msSet is an empty result set of these columns: the page's coarse types and, with exact, the driver's SQL type and
+// nullability (KITWATCH K4.1, opt-in)
+func msSet(cts []colType, exact bool) resultSet {
+	set := resultSet{Columns: make([]string, len(cts)), Types: make([]string, len(cts)), Rows: [][]any{}}
+	if exact {
+		set.SQLTypes, set.Nullable = make([]string, len(cts)), make([]*bool, len(cts))
 	}
-	return fmt.Sprint(v)
+	for i, c := range cts {
+		set.Columns[i], set.Types[i] = c.Name(), msType(c.DatabaseTypeName())
+		if exact {
+			set.SQLTypes[i] = strings.ToUpper(c.DatabaseTypeName())
+			if n, ok := c.Nullable(); ok {
+				set.Nullable[i] = &n
+			}
+		}
+	}
+	return set
 }
 
 // readMS reads every result set of a SQL Server request (at most maxRows rows each, at most maxSets sets). At a cap it
 // calls stop, which cancels the request (an attention: the server stops), and keeps what it read: a later result set
 // of the batch is then not read, and the cut set says so.
 func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, error) {
+	sets, _, err := readMSWith(rows, maxRows, z, stop, false)
+	return sets, err
+}
+
+// readMSWith is readMS with the exact types asked for (K4.1) and atCap: the batch had more sets than maxSets (the
+// ones past it not read - the community run says so: KITWATCH F3)
+func readMSWith(rows *sql.Rows, maxRows int, z *sizer, stop func(), exact bool) (sets []resultSet, atCap bool, err error) {
 	defer func() { _ = rows.Close() }()
-	var sets []resultSet
 	for {
 		cts, err := rows.ColumnTypes()
 		if err != nil {
-			return sets, err
+			return sets, false, err
 		}
 		if len(cts) > 0 {
 			if len(sets) >= maxSets {
 				stop()
-				return sets, nil
+				return sets, true, nil
 			}
-			set := resultSet{Columns: make([]string, len(cts)), Types: make([]string, len(cts)), Rows: [][]any{}}
+			cols := make([]colType, len(cts))
 			for i, c := range cts {
-				set.Columns[i], set.Types[i] = c.Name(), msType(c.DatabaseTypeName())
+				cols[i] = c
 			}
+			set := msSet(cols, exact)
 			for rows.Next() {
-				if len(set.Rows) >= maxRows || z.n > maxRunBytes {
+				if len(set.Rows) >= maxRows || z.over() {
 					set.Truncated = true
 					stop()
-					return append(sets, set), nil // the cancel's own error is not the run's
+					return append(sets, set), false, nil // the cancel's own error is not the run's
 				}
 				vals := make([]any, len(cts))
 				ptrs := make([]any, len(cts))
@@ -562,7 +562,7 @@ func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, er
 					ptrs[i] = &vals[i]
 				}
 				if err := rows.Scan(ptrs...); err != nil {
-					return append(sets, set), err
+					return append(sets, set), false, err
 				}
 				for i, v := range vals {
 					vals[i] = z.cell(msCell(v, cts[i].DatabaseTypeName()))
@@ -570,7 +570,7 @@ func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, er
 				set.Rows = append(set.Rows, vals)
 			}
 			if err := rows.Err(); err != nil {
-				return append(sets, set), err
+				return append(sets, set), false, err
 			}
 			sets = append(sets, set)
 		}
@@ -578,7 +578,7 @@ func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, er
 			break
 		}
 	}
-	return sets, rows.Err()
+	return sets, false, rows.Err()
 }
 
 // ---- running ----------------------------------------------------------------------------------------------------
@@ -589,10 +589,10 @@ func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, er
 // by the run itself (set_config('role', 'none', true): PostgreSQL checks a role change against the session user). Every
 // pgvigil name in oid form: a monitored server without the pgvigil roles or schema answers NULL, never an error. In a
 // database that is a pgvigil repository also plans.RepoSecretsCols: a member of the schema's owner (NOINHERIT too),
-// pg_read_all_data, a direct read of the hashes (the code review of REPORT ROLE, part A). A member of a superuser role
-// (plans.SuperMemberCol, NOINHERIT too) is refused as a superuser is (part B). A member of pgvigil_alerter (the alerts
+// pg_read_all_data, a direct read of the hashes. A member of a superuser role (plans.SuperMemberCol, NOINHERIT too) is
+// refused as a superuser is. A member of pgvigil_alerter (the alerts
 // login) is refused too: it reads like a reader, but alert_contact_routes() (0136, SECURITY DEFINER) answers it with
-// every alert contact's address (the j14 join review, B1).
+// every alert contact's address.
 const pgRightsSQL = `SELECT r.rolsuper,
        ` + plans.SuperMemberCol + `,
        pg_has_role(session_user, 'pg_execute_server_program', 'MEMBER'),
@@ -646,13 +646,20 @@ func pgRefusal(ctx context.Context, tx pgx.Tx) (string, error) {
 // refusal is the check asked inside the run's transaction before the statement: nil = pgRefusal (an instance's login);
 // a store run passes the store's own (storeRefusal: IN ROLE pgvigil_reader alone, serve's own repository).
 func runPG(ctx context.Context, cfg *pgx.ConnConfig, stmt string, args pgx.NamedArgs, timeout time.Duration, maxRows int, refusal func(context.Context, pgx.Tx) (string, error)) (sets []resultSet, refused string, err error) {
+	return runPGSized(ctx, cfg, "pgvigil-report", stmt, args, timeout, maxRows, 0, refusal)
+}
+
+// runPGSized is runPG with its session's name and its own byte cap (0 = maxRunBytes): the agent door's run_select keeps
+// 1 MB. args nil = a statement with no named arguments: its text is sent as it is (a nil pgx.NamedArgs would still
+// rewrite every @name in it, the @@ operator's right side among them).
+func runPGSized(ctx context.Context, cfg *pgx.ConnConfig, app, stmt string, args pgx.NamedArgs, timeout time.Duration, maxRows, maxBytes int, refusal func(context.Context, pgx.Tx) (string, error)) (sets []resultSet, refused string, err error) {
 	if refusal == nil {
 		refusal = pgRefusal
 	}
 	cfg = cfg.Copy()
 	cfg.ConnectTimeout = 10 * time.Second
 	rp := cfg.RuntimeParams
-	rp["application_name"] = "pgvigil-report"
+	rp["application_name"] = app
 	rp["default_transaction_read_only"] = "on"
 	rp["statement_timeout"] = strconv.FormatInt(timeout.Milliseconds(), 10)
 	rp["lock_timeout"] = "2000"
@@ -672,11 +679,15 @@ func runPG(ctx context.Context, cfg *pgx.ConnConfig, stmt string, args pgx.Named
 	}
 	qctx, qcancel := context.WithCancel(ctx)
 	defer qcancel()
-	rows, err := tx.Query(qctx, stmt, pgx.QueryExecModeDescribeExec, args)
+	qargs := []any{pgx.QueryExecModeDescribeExec}
+	if args != nil {
+		qargs = append(qargs, args)
+	}
+	rows, err := tx.Query(qctx, stmt, qargs...)
 	if err != nil {
 		return nil, "", err
 	}
-	z := &sizer{}
+	z := &sizer{max: maxBytes}
 	set, err := readPG(rows, maxRows, z, qcancel)
 	if err != nil {
 		return nil, "", err
@@ -744,11 +755,36 @@ func openMS(ctx context.Context, dsn, app string) (*sql.DB, *sql.Conn, string, e
 
 // runMS runs one batch on the read login inside a transaction that is rolled back (rollback = true) or as it is.
 func runMS(ctx context.Context, dsn, stmt string, args []any, timeout time.Duration, maxRows int, rollback bool) (sets []resultSet, refused string, err error) {
+	return runMSWith(ctx, dsn, stmt, args, timeout, maxRows, rollback, nil)
+}
+
+// reportFence is a custom report's check of the read login before its SQL runs (ST6's one fence, mssqlread.Fence): a
+// login with any right outside the documented read login's, server-wide or in any database it can open, is refused by
+// name.
+func reportFence(ctx context.Context, conn *sql.Conn) (string, error) {
+	why, err := mssqlread.Fence(ctx, conn)
+	if why != "" {
+		why = "custom reports run only as the documented read login: " + why
+	}
+	return why, err
+}
+
+// runMSWith is runMS with a fence read on the connection before the batch (nil = the sysadmin check of openMS alone).
+func runMSWith(ctx context.Context, dsn, stmt string, args []any, timeout time.Duration, maxRows int, rollback bool,
+	fence func(context.Context, *sql.Conn) (string, error)) (sets []resultSet, refused string, err error) {
 	db, conn, why, err := openMS(ctx, dsn, "pgvigil-report")
 	if err != nil || why != "" {
 		return nil, why, err
 	}
 	defer func() { _ = conn.Close(); _ = db.Close() }()
+	if fence != nil {
+		fctx, fcancel := context.WithTimeout(ctx, 15*time.Second)
+		why, err := fence(fctx, conn)
+		fcancel()
+		if err != nil || why != "" {
+			return nil, why, err
+		}
+	}
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	z := &sizer{}
@@ -777,6 +813,9 @@ func runMS(ctx context.Context, dsn, stmt string, args []any, timeout time.Durat
 
 // customReportsOff is why reports cannot be saved or run on this server; "" = they can.
 func (s *Server) customReportsOff() string {
+	if s.queue() != nil { // queue mode (q_requests.go): custom reports do not go through the queue in this release
+		return queueNotYet
+	}
 	if w := s.serverOff(); w != "" {
 		return "Saving or running a report needs " + w + "."
 	}
@@ -832,14 +871,23 @@ func (s *Server) CustomReports(w http.ResponseWriter, r *http.Request) {
 		// Store is why a report on the store cannot run here (REPORT ROLE: reports_dsn), "" when it can; the page's
 		// Run on a store report is off with these words
 		Store string `json:"store,omitempty"`
+		// Can is what the session's role may do (B24f): a run is open to every role, a save, move or delete needs admin
+		Can map[string]bool `json:"can"`
+		// StoreText: decision T3 (TEXT-NOW) - a store report is the admin's own door: said while any instance's
+		// query_text policy is not full
+		StoreText string `json:"store_text,omitempty"`
 	}
 	why := s.customReportsOff()
-	state := onOff{Enabled: why == "", Reason: why}
+	state := onOff{Enabled: why == "", Reason: why, Can: s.roleCan(r)}
 	ctx := r.Context()
 	if state.Enabled {
 		state.Store = storeNoKey
 		if s.reports != nil {
 			state.Store = s.reports.state(ctx)
+		}
+		// the words fail closed: a policy read that fails says them too
+		if tr, err := s.textRuleOf(ctx, s.doorsNow()); err != nil || !tr.allFull() {
+			state.StoreText = storeTextWords
 		}
 	}
 	if q := r.URL.Query().Get("report"); q != "" {
@@ -1099,6 +1147,7 @@ const (
 // auditRun writes one run's row; the run's rows are withheld when it fails. ctx bounds it: the caller's audit budget,
 // never the run's own context (it may be spent).
 func (s *Server) auditRun(ctx context.Context, row map[string]any) error {
+	maskAudit(row) // CQ-LIVEMASK: its detail and statement masked before the write (the run log shows them)
 	b, err := json.Marshal(row)
 	if err != nil {
 		return err
@@ -1364,7 +1413,7 @@ func (s *Server) runOnInstance(ctx context.Context, ds *doorSet, d *reportDef, t
 				args = append(args, sql.Named(p.Name, v))
 			}
 		}
-		sets, why, err := runMS(ctx, dsn, stmt, args, timeout, d.MaxRows, true)
+		sets, why, err := runMSWith(ctx, dsn, stmt, args, timeout, d.MaxRows, true, reportFence)
 		run.finish(t0, sets, why, err)
 		return run
 	}

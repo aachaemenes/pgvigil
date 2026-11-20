@@ -32,13 +32,13 @@ SELECT s.capture, s.state, s.state_since, s.reads_in_state, s.source, s.session_
  ORDER BY CASE s.capture WHEN 'deadlocks' THEN 0 WHEN 'blocked' THEN 1 WHEN 'slow' THEN 2 WHEN 'attention' THEN 3 ELSE 4 END`
 
 const sqlMSSQLXEFindings = `
-SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_xe_findings
+SELECT severity, check_name AS "check_name@fcheck", object AS "object@fvalue", at, detail AS "detail@fdetail" FROM pgvigil.mssql_xe_findings
  WHERE instance_id = $1
  ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, at DESC`
 
 const sqlMSSQLXEDeadlocks = `
 SELECT d.event_at, d.event_key, d.source, d.process_count, d.victim_count, d.victim_spid, d.victim_login, d.victim_program,
-       d.victim_statement, d.database_names, d.object_names, (d.graph IS NOT NULL) AS has_graph
+       d.victim_statement AS "victim_statement@stmt", d.database_names, d.object_names, (d.graph IS NOT NULL) AS has_graph
   FROM pgvigil.mssql_deadlocks d
  WHERE d.instance_id = $1 AND d.event_at > $2 AND d.event_at <= $3
  ORDER BY d.event_at DESC
@@ -61,7 +61,7 @@ WITH b AS (
   SELECT tx.head_key, sum(tx.w) AS total_wait_ms FROM tx GROUP BY 1
 )
 SELECT b.head_key, (array_agg(b.source ORDER BY b.event_at DESC))[1] AS source,
-       (array_agg(b.blocking_statement ORDER BY b.event_at DESC))[1] AS blocking_statement,
+       (array_agg(b.blocking_statement ORDER BY b.event_at DESC))[1] AS "blocking_statement@stmt",
        (array_agg(b.blocking_spid ORDER BY b.event_at DESC))[1] AS blocking_spid,
        (array_agg(b.blocking_status ORDER BY b.event_at DESC))[1] AS blocking_status,
        (array_agg(b.blocking_login ORDER BY b.event_at DESC))[1] AS blocking_login,
@@ -78,10 +78,10 @@ SELECT b.head_key, (array_agg(b.source ORDER BY b.event_at DESC))[1] AS source,
 const sqlMSSQLXEBlockedOne = `
 SELECT b.event_at, b.source, b.blocking_spid, b.blocking_ecid, b.blocking_status, b.blocking_isolation, b.blocking_trancount,
        b.blocking_transaction_name, b.blocking_last_batch, b.blocking_last_batch_completed, b.blocking_last_tran_started,
-       b.blocking_log_used, b.blocking_priority, b.blocking_login, b.blocking_host, b.blocking_program, b.blocking_statement,
+       b.blocking_log_used, b.blocking_priority, b.blocking_login, b.blocking_host, b.blocking_program, b.blocking_statement AS "blocking_statement@stmt",
        b.blocked_spid, b.blocked_ecid, b.blocked_status, b.blocked_isolation, b.blocked_trancount, b.blocked_transaction_name,
        b.blocked_last_batch, b.blocked_last_batch_completed, b.blocked_last_tran_started, b.blocked_log_used, b.blocked_priority,
-       b.blocked_login, b.blocked_host, b.blocked_program, b.blocked_statement, b.wait_ms, b.wait_resource, b.lock_mode,
+       b.blocked_login, b.blocked_host, b.blocked_program, b.blocked_statement AS "blocked_statement@stmt", b.wait_ms, b.wait_resource, b.lock_mode,
        b.database_name, b.resource_owner_type, b.transaction_id, b.monitor_loop,
        coalesce(pgvigil.mssql_lock_object(b.instance_id, b.wait_resource, b.event_at),
                 'Unresolved: ' || coalesce(lower(pgvigil.mssql_lock_type(b.wait_resource)) || ' lock, ', '')
@@ -92,12 +92,18 @@ SELECT b.event_at, b.source, b.blocking_spid, b.blocking_ecid, b.blocking_status
  LIMIT 500`
 
 // sp_HumanEventsBlockViewer's findings and the blocked wait per lead blocker, object, database and login (migration 0116)
-const sqlMSSQLXEBlockFindings = `SELECT * FROM pgvigil.mssql_block_findings($1, $2, $3) LIMIT 5000`
+// check 9's object_name is the lead blocker's statement (0116 mssql_lead_name): the other checks' rows keep theirs
+const sqlMSSQLXEBlockFindings = `SELECT f.check_id, f.database_name, f.object_name AS "object_name@stmt", f.finding_group, f.finding, f.sort_order,
+       (f.check_id <> 9) AS "@keep"
+  FROM pgvigil.mssql_block_findings($1, $2, $3) f LIMIT 5000`
 
-const sqlMSSQLXEBlockRollup = `SELECT * FROM pgvigil.mssql_block_rollup($1, $2, $3)`
+// the 'lead' dimension's name is the lead blocker's statement; the other dimensions' names are databases, logins and objects
+const sqlMSSQLXEBlockRollup = `SELECT r.dimension, r.database_name, r.name AS "name@stmt", r.reports, r.blocked_sessions, r.total_wait_ms,
+       r.longest_wait_ms, r.first_at, r.last_at, (r.dimension <> 'lead') AS "@keep"
+  FROM pgvigil.mssql_block_rollup($1, $2, $3) r`
 
 const sqlMSSQLXESlowShapes = `
-SELECT e.shape_key, max(e.shape) AS shape, count(*) AS events, round(sum(e.duration_ms), 1) AS total_ms,
+SELECT e.shape_key, max(e.shape) AS "shape@shape", max(e.object_name) AS "object_name@obj", count(*) AS events, round(sum(e.duration_ms), 1) AS total_ms,
        round(max(e.duration_ms), 1) AS worst_ms, round(avg(e.duration_ms), 1) AS mean_ms, round(sum(e.cpu_ms), 1) AS cpu_ms,
        sum(e.logical_reads) AS logical_reads, sum(e.writes) AS writes,
        count(*) FILTER (WHERE e.result IS DISTINCT FROM 'OK') AS not_ok,
@@ -130,7 +136,7 @@ SELECT b.snapshot_at, coalesce(e.events, 0) AS events, e.worst_ms, coalesce(e.to
 const sqlMSSQLXESlowOne = `
 SELECT e.event_at, e.event_name, e.duration_ms, e.cpu_ms, e.logical_reads, e.physical_reads, e.writes, e.row_count, e.result,
        e.login_name, e.host_name, e.program_name, e.database_name, e.session_id, e.query_hash, e.query_plan_hash,
-       e.object_name, e.statement
+       e.object_name, e.statement AS "statement@stmt"
   FROM pgvigil.mssql_slow_events e
  WHERE e.instance_id = $1 AND e.event_at > $2 AND e.event_at <= $3 AND e.shape_key IS NOT DISTINCT FROM $4
    AND e.event_name IN ('rpc_completed', 'sql_batch_completed')
@@ -138,7 +144,8 @@ SELECT e.event_at, e.event_name, e.duration_ms, e.cpu_ms, e.logical_reads, e.phy
  LIMIT 500`
 
 const sqlMSSQLXEAttentions = `
-SELECT a.event_at, a.session_id, a.login_name, a.host_name, a.program_name, a.database_name, a.interrupt_us, a.statement
+SELECT a.event_at, a.session_id, a.login_name, a.host_name, a.program_name, a.database_name, a.interrupt_us, a.statement AS "statement@stmt",
+       pgvigil.mssql_attention_left_out(a.program_name, a.statement, a.interrupt_us, a.has_text) AS left_out
   FROM pgvigil.mssql_attentions a
  WHERE a.instance_id = $1 AND a.event_at > $2 AND a.event_at <= $3
  ORDER BY a.event_at DESC
@@ -146,7 +153,7 @@ SELECT a.event_at, a.session_id, a.login_name, a.host_name, a.program_name, a.da
 
 const sqlMSSQLXEAGEvents = `
 SELECT e.event_at, e.event_name, e.ag_name, e.replica_name, e.previous_state, e.current_state, e.is_failover, e.error_number,
-       e.severity, e.family, e.message, e.ddl_action, e.ddl_phase, e.statement
+       e.severity, e.family, e.message, e.ddl_action, e.ddl_phase, e.statement AS "statement@stmt"
   FROM pgvigil.mssql_ag_events e
  WHERE e.instance_id = $1 AND e.event_at > $2 AND e.event_at <= $3
  ORDER BY e.event_at DESC
@@ -154,7 +161,7 @@ SELECT e.event_at, e.event_name, e.ag_name, e.replica_name, e.previous_state, e.
 
 const sqlMSSQLXEDeadlockOne = `
 SELECT d.event_at, d.event_key, d.source, d.session_name, d.process_count, d.victim_count, d.victim_spid, d.database_names,
-       d.object_names, d.processes, d.resources, (d.graph IS NOT NULL) AS has_graph
+       d.object_names, d.processes AS "processes@stmtjson", d.resources, (d.graph IS NOT NULL) AS has_graph
   FROM pgvigil.mssql_deadlocks d
  WHERE d.instance_id = $1 AND d.event_at = $2 AND d.event_key = $3`
 
@@ -247,6 +254,11 @@ func (s *Server) MSSQLXEDeadlockXDL(w http.ResponseWriter, r *http.Request) {
 	}
 	if graph == nil || *graph == "" {
 		writeErr(w, http.StatusNotFound, errors.New("no graph is stored for this deadlock"))
+		return
+	}
+	// TEXT-NOW: a graph carries every process's statement whole: shown under the policy "full" NOW only (textread.go)
+	if qt := s.doorsNow().planPolicy(deref(name)); qt != "full" {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("not shown: this instance's query_text policy is %q, and a deadlock graph carries each process's statement text, so graphs are shown under \"full\" only", qt))
 		return
 	}
 	file := fmt.Sprintf("deadlock-%s-%s.xdl", safeFileName(deref(name)), at.UTC().Format("20060102-150405"))

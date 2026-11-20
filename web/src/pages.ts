@@ -4,12 +4,15 @@ import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
 import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, labelOf, notReadYet, summaryText, tagsOf, tagWords, inTagScope, cellTarget, withTarget } from './fleet';
-import { Ctx, href, isMssql, rangeLabel, window_ } from './router';
+import { Ctx, hashKeys, href, isMssql, noteAddress, rangeLabel, window_ } from './router';
+import { viewControl } from './views';
 import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, props, showMenu, tile } from './ui';
 import { dailyMailControl } from './reportmail';
+import { routeWhy } from './needs';
 import { diskReportView } from './host';
+import { patroniSection } from './pg_backups';
 import { storageFleetView } from './storage';
 import { dbinfoFleetView, dbLink } from './dbinfo';
 import { sessionSetsSection } from './sessionsets';
@@ -174,7 +177,7 @@ export async function counters(ctx: Ctx): Promise<HTMLElement> {
 
 const taskBadge = (v: unknown) => {
   const s = String(v ?? '');
-  const kind = ['failed', 'failed-move', 'error'].includes(s) ? 'crit' : s === 'running' ? 'ok' : ['stopped', 'stopping', 'starting', 'ready'].includes(s) ? 'warn' : '';
+  const kind = ['failed', 'failed-move', 'error'].includes(s) ? 'crit' : s === 'running' ? 'ok' : ['stopped', 'stopping', 'starting', 'ready'].includes(s) ? 'warn' : 'none';
   return badge(s, kind);
 };
 
@@ -315,7 +318,10 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   });
   // Sort (Darling's): severity (then name), name, or CPU (the newest host sample, highest first; none last)
   type SortBy = 'severity' | 'name' | 'cpu';
-  let sortBy: SortBy = (() => { const v = readSetting('pgvigil.summarySort'); return v === 'name' || v === 'cpu' ? v : 'severity'; })();
+  // the page's own keys (a saved view and a shared link carry them) are read from the address first; the
+  // browser's last choice (localStorage) is the default, and each change writes both
+  const hk = hashKeys();
+  let sortBy: SortBy = (() => { const v = hk.get('sort') ?? readSetting('pgvigil.summarySort'); return v === 'name' || v === 'cpu' ? v : 'severity'; })();
   const cpuOf = (r: Row) => { const v = rates.get(Number(r.instance_id))?.cpu_pct; return v == null ? -1 : Number(v); };
   const sortRows = () => rows.sort((a, b) => sortBy === 'name' ? String(a.name).localeCompare(String(b.name))
     : sortBy === 'cpu' ? cpuOf(b) - cpuOf(a) || String(a.name).localeCompare(String(b.name))
@@ -474,13 +480,24 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // The focused view (DBA Dash's View > Focused View, the same rules): only what needs a look - the instances with a
   // warning or a critical status, the tests with one, and the status columns that hold one. Out of it, a status column
   // in which every instance is N/A is still left out (DBA Dash's SetStatusColumnVisibility).
-  let focus = readSetting('pgvigil.summaryFocus') === '1';
-  let showTests = readSetting('pgvigil.summaryShowTests') !== '0';
-  let maxPct = (() => { const v = Number(readSetting('pgvigil.summaryTestsMaxPct')); return maxHeights.includes(v) ? v : 70; })();
+  let focus = (hk.get('focus') ?? readSetting('pgvigil.summaryFocus')) === '1';
+  let showTests = (hk.get('tests') ?? readSetting('pgvigil.summaryShowTests')) !== '0';
+  let maxPct = (() => { const v = Number(hk.get('tmax') ?? readSetting('pgvigil.summaryTestsMaxPct')); return maxHeights.includes(v) ? v : 70; })();
+  // a hand-typed value the page reads otherwise (focus=2, tmax=999) goes back into the address once, as read: the
+  // address, a saved view and '(changed)' then agree
+  {
+    const typed: Record<string, string> = {};
+    if (hk.has('focus') && !['0', '1'].includes(hk.get('focus')!)) typed.focus = focus ? '1' : '0';
+    if (hk.has('tests') && !['0', '1'].includes(hk.get('tests')!)) typed.tests = showTests ? '1' : '0';
+    if (hk.has('tmax') && hk.get('tmax') !== String(maxPct)) typed.tmax = String(maxPct);
+    if (hk.has('sort') && hk.get('sort') !== sortBy) typed.sort = sortBy;
+    if (Object.keys(typed).length) noteAddress(typed);
+  }
   const bad = (r: Row, key: string) => { const b = bucketOf(r, key); return b === 'warn' || b === 'crit'; };
   // its own scroll, as DBA Dash's upper pane, at most Test Summary Max Height % of the window: the instance grid below
   // stays on the first screen
-  const upper = el('div', { class: 'grid-wrap tests', tabindex: '0', role: 'region', 'aria-label': 'Test Summary' });
+  // no tab stop of its own: the grid's current cell is the one stop (task GM), and moving it scrolls this pane
+  const upper = el('div', { class: 'grid-wrap tests', role: 'region', 'aria-label': 'Test Summary' });
   const sizeUpper = () => { upper.style.maxHeight = `${maxPct}vh`; upper.hidden = !showTests; };
   sizeUpper();
   // the instances both grids speak of: all in scope, or in the focused view those with a warning or a critical
@@ -504,6 +521,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     // DBA Dash's empty grid is its header row alone; the words stay for a screen reader
     lower.replaceChildren(grid(shown, shownCols,
       rows.length === 0 ? 'No instances yet: run the collector.' : pick ? 'No instance matches.' : focus ? 'Nothing needs a look: every sampled check is OK.' : 'No instance matches.'));
+    lower.querySelector('table.grid')?.setAttribute('data-grid-name', 'Instances');   // its name in a saved view (gridtools)
   };
   // The test grid counts every instance in scope, in the focused view too (DBA Dash counts the whole table; the view
   // only chooses which tests are listed), so a count and the rows its click leaves agree: a picked count shows its
@@ -523,12 +541,13 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     const t = tests.filter(x => focus ? Number(x.warn) + Number(x.crit) > 0 : Number(x.ok) + Number(x.warn) + Number(x.crit) > 0);
     countBtns.clear();
     const g = grid(t, testCols, focus ? 'No test has a warning or a critical instance.' : 'No test has a sampled instance.');
-    g.querySelector('.grid-wrap')?.removeAttribute('tabindex');   // the pane around it is the scroll region the keyboard reaches
+    g.querySelector('table.grid')?.setAttribute('data-grid-name', 'Test Summary');
     upper.replaceChildren(g);
   };
   const setFocus = (v: boolean) => {
     focus = v;
     writeSetting('pgvigil.summaryFocus', focus ? '1' : '');
+    noteAddress({ focus: focus ? '1' : '0' });
     setPick(null);   // a count picked in the other view spoke of another set of instances
     drawUpper(); drawLower();
   };
@@ -555,12 +574,17 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // test without a page of its own (Memory Dump, Instance Uptime, Is Agent Running, DB Mail ...) filters the instance
   // grid below to the instances where it is a warning or a critical. Never the Daily checks list.
   const rootTabOf: Record<string, string> = {
-    full: 'backups', diff: 'backups', log: 'backups', disk: 'drives', jobs: 'jobs', errors: 'collectiondates', snapshot: 'collectiondates',
+    full: 'backups', diff: 'backups', log: 'backups', disk: 'drives', jobs: 'jobs', errors: 'collectionhealth', snapshot: 'collectiondates',
     checkdb: 'corruption', corruption: 'corruption', logspace: 'dbfiles', filespace: 'dbfiles', pctmax: 'dbfiles', replication: 'pgreplication', custom: 'custom',
     dbstate: 'mssqlrisks', activity: 'running', dms: 'dms', tables: 'tablesize', roles: 'roles', indexes: 'indexes', version: 'versions',
   };
+  // on a scope that holds a SQL Server instance the three HA tests open DBA Dash's HA/DR pages (task 383); a
+  // PostgreSQL-only scope keeps Replication on the PostgreSQL page - the same test the column labels use (labelOf)
+  const mssqlTabOf: Record<string, string> = { replication: 'mssqlag', logship: 'mssqllogshipping', mirroring: 'mssqlmirroring' };
+  const scopeHasSqlServer = insts.some(r => isMssql(r.engine));
+  const tabOfTest = (key: string) => (scopeHasSqlServer && mssqlTabOf[key]) || rootTabOf[key];
   const testLink = (r: Row, text: string): HTMLElement => {
-    const tab = rootTabOf[String(r.key)];
+    const tab = tabOfTest(String(r.key));
     // % Max Size opens Files over the scope (DBA Dash: PctMaxSizeStatus -> Tabs.Files) on the files the test counts
     const st = groups.find(g => g.key === r.key)?.mssqlStatus;
     if (tab) return el('a', { class: 'cell-link', href: withTarget(href(ctx, { tab, instance: undefined }), { tab, ...(st ? { status: st } : {}) }) }, text);
@@ -656,6 +680,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   sortSel.addEventListener('change', () => {
     sortBy = sortSel.value as SortBy;
     writeSetting('pgvigil.summarySort', sortBy);
+    noteAddress({ sort: sortBy });
     sortRows(); drawStrip(); drawLower();
   });
   // ---- DBA Dash's toolbar: Refresh, View, Options, Clear Filter, and the Refresh Time
@@ -665,6 +690,9 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const ackAll = async (key: 'dumps' | 'uptime', what: string): Promise<{ done: number; text: string }> => {
     const said = (done: number, text: string) => { note.textContent = text; return { done, text }; };
     if (!ad.writable && !ad.door) return said(0, `Acknowledge is off: ${ad.reason ?? ''}`);
+    // the role (B24f): an acknowledgement needs operator - said in the server's words, nothing asked
+    const role = routeWhy('ack', ad.can);
+    if (role) return said(0, `Acknowledge is off: ${role}`);
     const open = rows.filter(r => { const c = cellsOf(r)[key]; return !c.none && c.level > 0 && !(r._acked as Acked)[key]; });
     // on a demo serve the door's instances alone are acknowledged; the others are left alone - never asked for, the
     // door would refuse each - and counted in the answer
@@ -689,11 +717,13 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   refresh.addEventListener('click', () => { forget(); redraw(); });
   const below = (b: HTMLElement, dx = 0, dy = 0): [number, number] => { const r = b.getBoundingClientRect(); return [r.left + dx, r.bottom + dy]; };
   const tick = (on: boolean, label: string) => `${on ? '✓ ' : ''}${label}`;
-  const view = tbButton('View', true);
-  view.addEventListener('click', () => showMenu(...below(view), [
-    [tick(focus, 'Focused View'), () => setFocus(!focus)],
-    [tick(showTests, 'Show Test Summary'), () => { showTests = !showTests; writeSetting('pgvigil.summaryShowTests', showTests ? '1' : '0'); sizeUpper(); }],
-  ], view));
+  // DBA Dash's View drop-down: its two toggles first, then the saved views (views.ts, D16)
+  const setTests = () => { showTests = !showTests; writeSetting('pgvigil.summaryShowTests', showTests ? '1' : '0'); noteAddress({ tests: showTests ? '1' : '0' }); sizeUpper(); };
+  const vc = viewControl(ctx, {
+    read: () => ({ focus: focus ? '1' : '0', tests: showTests ? '1' : '0', tmax: String(maxPct), sort: sortBy }),
+    items: () => [[tick(focus, 'Focused View'), () => setFocus(!focus)], [tick(showTests, 'Show Test Summary'), setTests]],
+  });
+  const view = vc.button;
   const options = tbButton('Options', true);
   const sub = (items: [string, () => void][]) => () => showMenu(...below(options, 24, 8), items, options);
   options.addEventListener('click', () => showMenu(...below(options), [
@@ -701,7 +731,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     pgOnly ? ['Crash Restarts ▸', sub([['Acknowledge Crashes', () => void ackAll('dumps', 'Crash restarts')], ['Configure Thresholds', () => void openDumpDialog(() => ackAll('dumps', 'Crash restarts'), true, scopeIds())]])]
       : ['Memory Dumps ▸', sub([['Acknowledge Dumps', () => void ackAll('dumps', 'Memory dumps')], ['Configure Thresholds', () => void openDumpDialog(() => ackAll('dumps', 'Memory dumps'), false, scopeIds())]])],
     ['Instance Uptime ▸', sub([['Acknowledge Uptime', () => void ackAll('uptime', 'Instance uptime')], ['Configure Thresholds', () => void openUptimeDialog(-1, () => ackAll('uptime', 'Instance uptime'))]])],
-    ['Test Summary Max Height % ▸', sub(maxHeights.map(p => [tick(p === maxPct, `${p}%`), () => { maxPct = p; writeSetting('pgvigil.summaryTestsMaxPct', String(p)); sizeUpper(); }] as [string, () => void]))],
+    ['Test Summary Max Height % ▸', sub(maxHeights.map(p => [tick(p === maxPct, `${p}%`), () => { maxPct = p; writeSetting('pgvigil.summaryTestsMaxPct', String(p)); noteAddress({ tmax: String(p) }); sizeUpper(); }] as [string, () => void]))],
   ], options));
   // DBA Dash's 'Refresh Time: <time>' with its icon: OK, a warning when the read is over 10 minutes old, critical over 60
   const ageMin = (Date.now() - f.at) / 60000;
@@ -712,6 +742,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   return el('section', { class: 'fleet-summary' }, el('h2', {}, 'Summary' + scopeLabel(ctx)),
     el('div', { class: 'toolbar summary-toolbar', style: 'display:flex;flex-wrap:wrap;gap:.4rem;align-items:center' },
       refresh, view, options, clear, clearNote, el('label', {}, 'Sort ', sortSel), filterBar, refreshTime),
+    vc.notes,
     note,
     tiles,
     broken.length ? el('p', { class: 'error' }, `${broken.length} check(s) could not run: see Daily checks.`) : null,
@@ -815,13 +846,19 @@ function pivot(rows: Row[], name: (r: Row) => string, val: (r: Row) => number | 
 
 export async function replication(ctx: Ctx): Promise<HTMLElement> {
   const need = needInstance(ctx); if (need) return need;
-  const d = await get<Record<'latest' | 'checks' | 'series' | 'series_meta', Table>>('replication', { instance: ctx.instance, ...range(ctx) });
+  const d = await get<Record<'latest' | 'checks' | 'patroni' | 'patroni_checks' | 'series' | 'series_meta', Table>>('replication', { instance: ctx.instance, ...range(ctx) });
   const sec = el('section', {}, el('h2', {}, 'Replication'));
   const checkCols: Col[] = [
-    { key: 'check_name', label: 'check', fmt: v => badge(String(v), String(v).startsWith('slot WAL status') ? 'crit' : 'warn') },
+    { key: 'check_name', label: 'check', fmt: (v, r) => badge(String(v), r.severity === 'critical' || String(v).startsWith('slot WAL status') ? 'crit' : 'warn') },
     { key: 'object' }, { key: 'value', num: true }, { key: 'unit' }, { key: 'state' }, { key: 'snapshot_at', label: 'seen', fmt: fmtTime },
   ];
-  sec.append(el('h3', {}, 'Checks'), grid(rowsOf(d.checks), checkCols, 'No replication problems in the newest snapshot.'));
+  // Patroni's checks are counted in the Summary's Replication cell, which lands here: its block is drawn right under
+  // the replication checks (pg_backups.ts' patroniSection, the Server state tab's own)
+  const patroni = patroniSection(rowsOf(d.patroni), rowsOf(d.patroni_checks));
+  sec.append(el('h3', {}, 'Checks'), grid(rowsOf(d.checks), checkCols,
+    rowsOf(d.patroni_checks).length ? 'No replication check is hit in the newest snapshot; Patroni\'s checks are below.'
+      : 'No replication problems in the newest snapshot.'));
+  if (patroni) sec.append(patroni);
   const latest = rowsOf(d.latest);
   const cols: Col[] = [
     { key: 'kind' }, { key: 'key', label: 'name' }, { key: 'state' },
@@ -882,7 +919,7 @@ export async function logs(ctx: Ctx): Promise<HTMLElement> {
     ...Object.entries(logKinds).filter(([k]) => logKindsAlways.has(k) || (counts.get(k) ?? 0) > 0 || k === kind).map(([k, l]) => el('a', { href: href(ctx, { tab: 'logs', logKind: k }), class: k === kind ? 'on' : '' }, `${l} (${counts.get(k) ?? 0})`)));
   const cols: Col[] = [
     { key: 'at', label: 'when', fmt: fmtTime },
-    { key: 'kind', fmt: v => badge(logKinds[String(v)] ?? String(v), critKinds.has(String(v)) ? 'crit' : v === 'slow' || v === 'plan' ? '' : 'warn') },
+    { key: 'kind', fmt: v => badge(logKinds[String(v)] ?? String(v), critKinds.has(String(v)) ? 'crit' : v === 'slow' || v === 'plan' ? 'none' : 'warn') },
     { key: 'duration_ms', label: 'ms', num: true },
     { key: 'pid', num: true }, { key: 'datname', label: 'db' }, { key: 'usename', label: 'user' }, { key: 'client' },
     { key: 'statement', wide: true }, { key: 'detail', wide: true },

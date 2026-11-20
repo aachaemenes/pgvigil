@@ -124,7 +124,8 @@ func (s *Server) ReportMail(w http.ResponseWriter, r *http.Request) {
 	if browser == "" {
 		noBrowser = "no Chromium-family browser on this server (PGVIGIL_BROWSER names one): a schedule's turn cannot be rendered; Send now works from any browser"
 	}
-	out["door"] = map[string]any{"writable": why == "", "reason": why, "user": s.reportMailUser(r), "browser": browser != "", "browser_reason": noBrowser,
+	// can: the session's role (B24f): Send now and a schedule's test need operator, a schedule's change admin
+	out["door"] = map[string]any{"writable": why == "", "reason": why, "can": s.roleCan(r), "user": s.reportMailUser(r), "browser": browser != "", "browser_reason": noBrowser,
 		"max_html": reportmail.MaxHTML, "max_xlsx": reportmail.MaxXLSX, "max_recipients": reportmail.MaxRecipients, "min_gap_secs": int(reportmail.MinGap.Seconds())}
 	ctx := r.Context()
 	if part == "send" {
@@ -510,7 +511,9 @@ func (s *Server) renderPage(ctx context.Context, user, route, tz, prefs string, 
 	if browser == "" {
 		return mailRequest{}, errors.New("no Chromium-family browser on this server (PGVIGIL_BROWSER names one)")
 	}
-	hash, err := s.auth.lookup(ctx, user)
+	// the render runs as the schedule's user, whatever its role now (it only reads): a disabled or
+	// removed user's schedule stops here with its words
+	hash, _, err := s.auth.lookup(ctx, user)
 	if err != nil {
 		return mailRequest{}, fmt.Errorf("the user %s could not be read: %w", user, err)
 	}
@@ -753,7 +756,7 @@ func (s *Server) reportMailTurns(ctx context.Context) {
 // renderCopy is the server as report mail's render serves it on loopback for the render's life: no Host list (the port
 // is new), no TLS; origin names the server it was copied from, so the settings serve keeps in maps keyed by *Server
 // (the door set, its watcher's wake, the job allow lists, the Plan page's configuration, the SQL Server door, Admin >
-// Instances' settings) are the server's own on the copy (uidoor-u7: a mailed custom report on a page instance was
+// Instances' settings) are the server's own on the copy (a test found it: a mailed custom report on a page instance was
 // refused 'in neither pgvigil.yaml nor Admin > Instances' - the copy found no door set).
 func (s *Server) renderCopy() *Server {
 	inner := *s

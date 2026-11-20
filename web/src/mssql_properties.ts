@@ -3,6 +3,7 @@
 // tempdb's layout and the host; and under it every value that differed between two reads. A property the server
 // did not give says 'not read' and why. Data from /api/mssql/properties; the route and the tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
+import { unreadCount, valueWord } from './props_count';
 import { Ctx } from './router';
 import { badge, Col, el, fmtNum, fmtTime, grid, tile } from './ui';
 
@@ -26,7 +27,7 @@ export async function mssqlPropertiesView(ctx: Ctx): Promise<HTMLElement> {
   const by = new Map(props.map(r => [String(r.name), r] as [string, Row]));
   const val = (name: string) => shown(by.get(name)?.value) || 'not read';
   const lastRead = props.map(r => String(r.snapshot_at ?? '')).reduce((a, b) => b > a ? b : a, '');
-  const unread = props.filter(r => r.value == null).length;
+  const unread = unreadCount(props);
   sec.append(el('p', { class: 'meta counts' }, `${props.length} properties, read ${fmtTime(lastRead)}; `,
     unread ? el('span', { class: 'warn' }, `${unread} not read (each row says why)`) : 'every one read',
     changes.length >= 500 ? '; the newest 500 changes are listed.' : `; ${changes.length} change(s) logged.`, stateNote));
@@ -46,7 +47,7 @@ export async function mssqlPropertiesView(ctx: Ctx): Promise<HTMLElement> {
   const cols: Col[] = [
     { key: 'grp', label: 'group' },
     { key: 'label', label: 'property' },
-    { key: 'value', fmt: v => v == null ? el('span', { class: 'meta' }, 'not read') : shown(v) },
+    { key: 'value', fmt: (v, r) => v == null ? el('span', { class: 'meta' }, valueWord(r)) : shown(v) },
     // prose, in the page's own font, wrapping inside a block that keeps its width in a narrow window
     { key: 'note', fmt: v => v == null ? '' : el('span', { style: 'display:inline-block;min-width:16rem;max-width:40rem;white-space:normal' }, String(v)) },
     { key: 'since', label: 'has this value since', fmt: (v, r) => r.value == null ? '' : fmtTime(v) },

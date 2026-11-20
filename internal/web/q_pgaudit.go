@@ -58,14 +58,14 @@ SELECT r.rule_id, r.name, r.what, r.command_like, r.object_like, r.min_count, r.
 
 const sqlPgAuditEvents = `
 SELECT snapshot_at AS at, usename, datname, client, class, command, object_type, object_name, target_role, audit_type,
-       row_count, statement, parameters, pid
+       row_count, statement AS "statement@stmt", parameters AS "parameters@doc", pid
   FROM pgvigil.pgaudit_events
  WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
  ORDER BY snapshot_at DESC, pid, statement_id DESC, substatement_id DESC, event_key
  LIMIT 1000`
 
 const sqlPgAuditSignins = `
-SELECT snapshot_at AS at, usename, datname, client, detail
+SELECT snapshot_at AS at, usename, datname, client, detail AS "detail@logdetail", kind AS "@logkind"
   FROM pgvigil.log_events
  WHERE instance_id = $1 AND kind = 'auth_fail' AND snapshot_at > $2 AND snapshot_at <= $3
  ORDER BY snapshot_at DESC

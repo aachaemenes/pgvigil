@@ -12,7 +12,7 @@
 # the -drop script). The login and the user database are the lab's (logins), gone with the instance at down.
 #
 # Expected (written before the first run; the plancache cap exception added after run 3: every platform's rule; the
-# default trace's state and the statement texts added after run 4 by its review, not run yet):
+# default trace's state and the statement texts added after run 4, not run yet):
 #  M0 `collect -once mssql_instance` as pgv_monitor: ok, platform azuresqlmi (EngineEdition 8).
 #  M1 every mssql_ collection once as pgv_monitor: a row for each listed collection, each ok or skipped (a 'partial' or
 #     an 'error' is a finding, listed - except mssql_plancache partial by its cap, every platform's rule, RECORDED, with

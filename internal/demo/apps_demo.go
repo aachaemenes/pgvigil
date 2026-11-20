@@ -19,7 +19,7 @@ func SeedApplications(ctx context.Context, pool *pgxpool.Pool, prefix string) er
 	if err := pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.import_app_application(timestamptz, jsonb)') IS NOT NULL`).Scan(&have); err != nil || !have {
 		return err
 	}
-	// the demo's applications of THIS fleet (its prefix): another demo fleet's stay (review B, m7)
+	// the demo's applications of THIS fleet (its prefix): another demo fleet's stay
 	if _, err := pool.Exec(ctx, `DELETE FROM pgvigil.app_applications a WHERE a.created_by = 'pgvigil demo'
 	   AND NOT EXISTS (SELECT 1 FROM pgvigil.app_assignments s JOIN pgvigil.instances i ON i.instance_id = s.instance_id
 	                    WHERE s.app_id = a.app_id AND NOT starts_with(i.name, $1))`, prefix); err != nil {
@@ -70,7 +70,7 @@ func SeedApplications(ctx context.Context, pool *pgxpool.Pool, prefix string) er
 	for i, a := range apps {
 		ans, err := call("application", map[string]any{"op": "add", "name": a.name, "tier": a.tier, "environment": a.env, "description": a.desc})
 		if err != nil && strings.Contains(err.Error(), "exists already") {
-			continue // a name someone already uses (or another demo fleet's): that application is left out (review B, m7)
+			continue // a name someone already uses (or another demo fleet's): that application is left out
 		}
 		if err != nil {
 			return err

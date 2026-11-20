@@ -9,7 +9,7 @@ import (
 // is one instance's Custom tab (each present check with its definition and its latest run: status, value, row count,
 // columns, rows, error; the chart's series over the window, one point per check and step; the instance's custom
 // findings); without instance it is the Custom report at the root (every present check of every active instance with
-// its latest run, the worst first: pgvigil.custom_report, 0060). The join wires the route in Handler
+// its latest run, the worst first: pgvigil.custom_report, 0060). The route is wired in Handler
 // (GET /api/custom -> s.Custom). The overview check below feeds a Summary column Custom (check_group 'custom').
 
 func init() {
@@ -40,10 +40,23 @@ SELECT check_name, targets, snapshot_at AS gone_at FROM pgvigil.custom_checks WH
 
 const sqlCustomReport = `SELECT * FROM pgvigil.custom_report()`
 
+// sqlCustomInstance is the instance's engine: the tab's words follow it (a SQL Server instance's checks run behind
+// another fence: internal/mssql/custom.go)
+const sqlCustomInstance = `SELECT engine FROM pgvigil.instances WHERE instance_id = $1`
+
+// sqlCustomFleet says whether the fleet holds a SQL Server instance: the report's empty words name the SQL Server form
+// only then
+const sqlCustomFleet = `SELECT EXISTS (SELECT 1 FROM pgvigil.instances WHERE engine = 'sqlserver' AND is_active) AS sqlserver`
+
+// sqlCustomStatusRows is each status check's current rows on the instance (DBA Dash's custom check, ST6b: 0269), the
+// worst first
+const sqlCustomStatusRows = `SELECT check_name, test, context, status, info, snapshot_at FROM pgvigil.custom_status_rows
+ WHERE instance_id = $1 ORDER BY check_name, status, test, context`
+
 // Custom serves one instance's Custom tab, or the fleet's Custom report without instance.
 func (s *Server) Custom(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("instance") == "" {
-		s.multi(w, r, []part{{"report", sqlCustomReport, nil}})
+		s.multi(w, r, []part{{"report", sqlCustomReport, nil}, {"fleet", sqlCustomFleet, nil}})
 		return
 	}
 	id, from, to, err := params(r, true)
@@ -61,5 +74,7 @@ func (s *Server) Custom(w http.ResponseWriter, r *http.Request) {
 		{"series", sqlCustomSeries, []any{id, from, to, step}},
 		{"findings", sqlCustomFindings, []any{id}},
 		{"gone", sqlCustomGone, []any{id}},
+		{"instance", sqlCustomInstance, []any{id}},
+		{"statusrows", sqlCustomStatusRows, []any{id}},
 	})
 }

@@ -14,7 +14,7 @@ export const rowVersionsHeading = 'Row versions';
 
 type Parts = Record<'latest' | 'series' | 'holders' | 'databases' | 'pvs' | 'checks', Table | null>;
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const kbs = (v: unknown) => v == null ? '' : fmtNum(v) + ' KB/s';
 const stmt = (v: unknown) => el('pre', { class: 'sql', style: 'white-space:pre-wrap;margin:0' }, String(v ?? ''));
 
@@ -118,7 +118,7 @@ export async function mssqlRowVersionsView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'adr_on', label: 'recovery', fmt: v => v ? 'accelerated' : 'off' },
       { key: 'pvs_bytes', label: 'version store', num: true, fmt: fmtBytes },
       { key: 'online_index_bytes', label: 'online index versions', num: true, fmt: fmtBytes },
-      { key: 'aborted_tx_count', label: 'aborted transactions', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : fmtNum(v) },
+      { key: 'aborted_tx_count', label: 'aborted transactions', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : fmtNum(v), cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
       { key: 'oldest_tx_session_id', label: 'oldest transaction\'s session', num: true, fmt: v => String(v ?? '') },
       { key: 'oldest_tx_started_at', label: 'oldest transaction started', fmt: fmtTime },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },

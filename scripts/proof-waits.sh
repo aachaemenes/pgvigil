@@ -34,12 +34,12 @@
 #     wait_secs 0.5 and 0.3; at +120 s {X q1 20} (a reset) -> X 20; the same import again at +120 s adds nothing; at
 #     +180 s {X q1 25, Y q2 5} -> X 5 and Y 5 (Y left the profile at +120 s and starts again). Two pgms buckets ->
 #     2 rows source pgms_wait_sampling, wait_secs NULL; imported twice -> still 2 rows.
-#  [review B fold, expected before the rerun:] the seeded events are of type IO (the tab leaves the background Activity
+#  [added later, expected before the rerun:] the seeded events are of type IO (the tab leaves the background Activity
 #     type out) and a key Z (queryid 1) enters at +180 s with 60 samples, so the rows end '... 180 Z 60 0.6'. The Waits
 #     statements over 00:00-00:04 read the series exactly (one-minute steps, every read 60 s): +60 s IO 0.013 sessions
 #     ((0.5 + 0.3) / 60), +120 s IO 0.003, +180 s IO 0.012; the statements '1 135 IO:X' (X's 75 samples over three reads
 #     beat Z's single 60) and '2 35 IO:Y'.
-#  [review A fold, expected before the rerun:]
+#  [added after that, expected before the rerun:]
 #  D2. at +240 s {X q1 30, Y q2 1, Z q1 70}: Y fell, so the whole read counts from zero -> rows '240 X 30 0.3, 240 Y 1
 #      0.01, 240 Z 70 0.7' (not X 5 and Z 10).
 #  E. lock_tree on seeded activity snapshots of a scratch instance: a hot-row queue (holder 1000 idle in a transaction,

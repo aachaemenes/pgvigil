@@ -12,10 +12,10 @@ One row per counter, over the time range picked in the header:
 |---|---|
 | counter | The counter's name; its key (`sessions.idle_in_txn`) and unit are in the cell's title. |
 | max, min, avg | The highest, lowest and average sample of the range. |
-| current | The newest sample of the range; *last sample* says when it was taken. |
+| current | The newest sample of the range; *last sample* says when it was taken. A ratio under its floor (too few batch requests or full scans a second to judge) has no value: the cell reads *N/A* in grey with the words, the input's rate and the floor. |
 | samples | How many samples the range holds. 0 = nothing was collected in the range (the figures are empty). |
 | warning, critical | The thresholds in force for the row, with their direction (`above 80 %`). |
-| rule | For how long the value must hold, what the rule covers, and what the alert sender last made of it: ok, pending, warning, critical, no data, or *not judged yet*. |
+| rule | For how long the value must hold, what the rule covers, and what the alert sender last made of it: ok, pending, warning, critical, no data, *N/A* with its reason in words (*too few to judge* under a floor, or the metric's own reason), or *not judged yet*. |
 | threshold | *New threshold* where none is in force; *Edit* for the rule in force; *Override here* to give this instance its own rule over a wider one. |
 | chart | Draws the row over the range, with its thresholds as flat lines. *Chart every row* draws the family. |
 
@@ -36,13 +36,17 @@ The families:
 | SQL Server | CPU | SQL Server's, the other processes' and the machine's CPU. |
 | SQL Server | Scheduler | Batch requests, transactions, compilations and recompilations per second; runnable tasks, the work queue, pending IO, workers. |
 | SQL Server | Memory | Page life expectancy, memory grants pending and outstanding, total and target server memory, the buffer pool, the plan cache, stolen and available memory, physical memory used. |
+| SQL Server | Extended Events | The attention capture of `mssql_xe` (pgvigil's own session): client timeouts per minute over the newest 3 minutes of reads (PerformanceMonitor 3.13.0's rule: the reads back to 3 minutes, the attentions they stored over that span, at least a minute), without SSMS IntelliSense, the VS Code mssql metadata connections, cancels under 1 ms that came with no statement (a cancel of a command that had already finished; whether the server sent a statement is recorded before the text policy, so under `query_text: none` a real timeout still counts), Azure Data Studio's metadata statements and pgvigil's own reads; those are their own metric, and the XE page's Attentions grid names each one's reason. A read the run did not finish gives no point (the next read's span covers it); a ring buffer that dropped events between reads undercounts; an `mssql_xe` interval over 10 minutes gives no fresh point; with `query_text: none` no statement is stored, so Azure Data Studio's metadata reads count (as in PerformanceMonitor). The seeded rule (off) warns at 10 a minute and pages at 60; a firing alert whose capture stops is held, where PerformanceMonitor resolves it after 30 minutes. pgvigil's own reads are left out by the collector's app name `pgvigil` (a DSN that sets its own app name is not recognised). |
+| SQL Server | Waits | Wait seconds per core per minute, SQLMonitor's figure: at each wait read, the waits of the newest five minutes of reads (benign waits and SQLMonitor's per-core list of 84 types left out, CXCONSUMER among them) in seconds, over the visible online schedulers, per minute; no point until five minutes of reads are covered; a point with no value where no scheduler count is read (the mssql_cpu collection off, or Azure SQL Database), said in words. The Waits page's ms/sec/core of one wait type is the same measure per second: 1 ms/sec/core = 0.06 s/core/min. |
 | both | Host | CPU, CPU in IO wait, memory used and free, swap, load (where the instance has a host source). |
+| both (CPU and logical reads: SQL Server) | Collection | Hidden until the toolbar's **Collection Metrics** is ticked (kept per browser; a link that names the family shows it). DBA Dash's collection counters from the hourly collection rows: each collection's average duration, CPU and logical reads per run (SQL Server's runs alone read their session), import duration and the failed per cent of its runs. One point an hour, stamped at the hour's end, so an hour still running has no point yet. One collection picked above the grid, or **the worst collection** - each hour's highest value over the instance's collections, per counter, which is what a rule with no collection named watches. Not read: DBA Dash's Import CPU, Import Logical Reads and Import Lag. A rule on the family takes a window of 60 minutes or more; a collection that runs less often than every 2 hours reads *no data* between its points. |
 
 A cumulative counter is shown as its **rate over each collection interval**. An interval in which the counter was
 reset gives no sample, never a dip. A metric the server's version does not have reads no samples.
 
 The tab keeps the Counters page's address: `?kind=` is the family (`db`, `server`, `io` and `sessions` still open
-theirs; none shows every family).
+theirs; none shows every family). `?mdb=` is the Database family's database, `?mcol=` the Collection family's
+collection; a range change keeps both.
 
 ## Thresholds are alert rules
 
@@ -73,10 +77,10 @@ sample, and says the bucket's length in the legend. The warning and critical val
 
 | Endpoint | Answer |
 |---|---|
-| `GET /api/metrics?instance=&from=&to=[&db=][&family=]` | `grid` (the rows above, with `max_status` ... `current_status` and the rule's columns; one family's rows with `family=`), `families`, `databases`, `engine`, and `writable` with its `reason`. `part=families` leaves the grid out. |
+| `GET /api/metrics?instance=&from=&to=[&db=][&family=]` | `grid` (the rows above, with `max_status` ... `current_status` and the rule's columns; one family's rows with `family=`), `families`, `databases`, `collections` (the instance's collections with an hourly row in the day before `to`: the Collection family's `db=`), `engine`, and `writable` with its `reason`. `part=families` leaves the grid out. |
 | `GET /api/metrics/series?instance=&metric=<family.metric>&from=&to=[&db=]` | `series` (`snapshot_at`, `value`, `max_value`, `min_value`, `samples`), `step_secs` (1 = every sample as stored) and `metric` (label, unit, the thresholds in force). |
 
-The grid, a row's chart and the rule's evaluation read the same function (`pgvigil.metric_points`, migration 0085),
+The grid, a row's chart and the rule's evaluation read the same function (`pgvigil.metric_points`, migration 0085; 0166 adds the Collection family),
 so the three agree. The page reads each family with its own request: over a long range one family that is slow or
 fails shows its error under its own heading, and the others still draw.
 

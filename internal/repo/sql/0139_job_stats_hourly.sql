@@ -454,8 +454,12 @@ BEGIN
     SELECT c.relname
       FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
      WHERE i.inhparent = 'pgvigil.job_stats_hourly'::regclass
-       AND c.relname ~ '_[0-9]{6}$'
-       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => v_days)
+       -- a name ending in a month (YYYYMM), parsed inside a CASE: the server may test these conditions on every pg_class
+       -- row before the join, in any order, and a TOAST table pg_toast_<six digits> ending in no month (a database past
+       -- OID 100,000) failed the whole purge with 22008 (proof-purge's OID row)
+       AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
+       AND (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
+            + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => v_days)
      ORDER BY c.relname
   LOOP
     EXECUTE format('DROP TABLE pgvigil.%I', v_part.relname);

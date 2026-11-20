@@ -1,7 +1,7 @@
--- 0036: the wave A join for the host and storage collections (0021, 0033). The findings view gains the host rules
+-- 0036: wires in the host and storage collections (0021, 0033). The findings view gains the host rules
 -- (CPU, swap, a volume under 10 % free: one per volume) and the storage forecast (a volume full within 30 days);
 -- purge() gains their partitioned tables and the rows of volumes no longer present. Both bodies are 0016's with the
--- additions (a frozen file is never edited; a later join re-creates them again with its own additions).
+-- additions (a frozen file is never edited; a later wiring migration re-creates them again with its own additions).
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (

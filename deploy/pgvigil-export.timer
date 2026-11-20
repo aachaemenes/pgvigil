@@ -1,0 +1,11 @@
+[Unit]
+Description=pgvigil repository export to Parquet, hourly
+
+[Timer]
+# minute 35: a window is first exported 20 minutes after it ends, and the purge runs 03:15 to 03:30
+OnCalendar=*-*-* *:35:00
+RandomizedDelaySec=2m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

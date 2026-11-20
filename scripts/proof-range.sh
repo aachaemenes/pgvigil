@@ -6,8 +6,8 @@
 #   PGVIGIL_ADMIN_DSN   keyword-form connection to a cluster as a login that may create a database
 #   PGVIGIL_DEMO_WAIT_S the seconds to wait for the seeded demo to serve (default 900)
 #   RANGE_OUT           a folder to keep the downloads and the check's output in (default: removed with the temp folder)
-# Expected (written before the first run; red on 804cea4, whose API refuses a window over 31 days and whose panel has
-# ten lengths and no Date or Month):
+# Expected (written before the first run; red before the change, whose API refused a window over 31 days and whose
+# panel had ten lengths and no Date or Month):
 #   RA api         erp01's statements over 365 days: 200, X-Pgvigil-Read-From = to less 745 h, X-Pgvigil-Window-From =
 #                  the asked start, its JSON read_from the same instant; over 20 days: 200 and no read header, no read_from;
 #                  over 366 days, an hour and a second: 400 'window longer than a year'; dbinfo's db_series over 365 days:
@@ -17,7 +17,7 @@
 #   RB stored      after 'purge -days 8' then 'purge -days 10': /api/stored = the last run's days 10 and end, rows_from =
 #                  the LATEST cut of any run (the first run's start less 8 days, not the last run's end less 10: the
 #                  rows the 8-day run deleted stay gone), the oldest monthly / daily partition by the catalogue's
-#                  names, each = a psql hand read (red on c5c7e83, whose rows_from was the last run's end less 10 days)
+#                  names, each = a psql hand read (red before the fix, whose rows_from was the last run's end less 10 days)
 #   R1 menu        the panel: the twenty quick ranges in DBA Dash's order in pgvigil's words, 'Last 5 minutes' to 'Last
 #                  year'; the Date select 15 days ('YYYY-MM-DD (Ddd - Today)', '- Yesterday)', '- 2 days ago)' ...
 #                  '- 14 days ago)') and the Month select 13 months ('Mon YYYY (This Month)', '(Last Month)', '(2 months
@@ -48,13 +48,13 @@
 #   R9 late reply  erp01's Statements at w=60d with every reply of that page held at its response (CDP Fetch; the
 #                  statements reply among them, at least one cut by the server), the address moved to w=1h: the 1-hour
 #                  page is placed with no range-cut line, the held replies are then let through (each release
-#                  answered without an error), and 1.5 s later the 1-hour page still shows none (red on c5c7e83)
+#                  answered without an error), and 1.5 s later the 1-hour page still shows none (red before the fix)
 #   R10 own span   erp01's sizes copied 60 days back, its Storage at w=1h with the 'Database growth' panel's '90 days'
 #                  pressed: w stays 1h, no range-cut line on the page, and inside that panel the note 'Marks are read
 #                  for the newest 31 days of this window: <from> to <to> (this chart is longer than they read).' (red
-#                  on c5c7e83)
+#                  before the fix)
 #   R11 once       sql01's SQL Server File IO at w=60d: at least two of its replies cut by the server (counted at their
-#                  responses), one range-cut line, 'the newest 31 days of this window' in it once (red on c5c7e83)
+#                  responses), one range-cut line, 'the newest 31 days of this window' in it once (red before the fix)
 #   R12 file rules that workbook (the one whose 'About' holds the 'Read' row) passes scripts/xlsx-check.py rules, X0-X12,
 #                  and 'About' is its last sheet
 # The R9-R11 lines were NOT written before those rows' first run: R9 and R11 first ran on 2026-11-13 (their expected
@@ -114,14 +114,14 @@ c4=$(hdr "api/dbinfo?instance=$ERP&part=db_series&from=$y365&to=$now")
 c5=$(hdr "api/replication?instance=$ERP&from=$y365&to=$now")
 parts=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(" ".join(k+("=cut" if isinstance(v,dict) and v.get("read_from") else "") for k,v in sorted(d.items())))' "$WORK/b.json")
 [[ "$c5" == 200 && " $parts " == *" series=cut "* && " $parts " == *" latest "* && " $parts " == *" checks "* ]] || no "RA: replication over 365 days: $c5, parts '$parts'"
-# a reply that is not one table (a struct, a map): each table that read the cut window carries it (red on c5c7e83)
+# a reply that is not one table (a struct, a map): each table that read the cut window carries it (red before the fix)
 c6=$(hdr "api/plans?instance=$ERP&from=$y365&to=$now")
 pf=$(python3 -I -c 'import json,sys; print((json.load(open(sys.argv[1])).get("plans") or {}).get("read_from",""))' "$WORK/b.json")
 c7=$(hdr "api/perfsummary?from=$y365&to=$now&part=pg")
 pg=$(python3 -I -c 'import json,sys; print((json.load(open(sys.argv[1])).get("pg") or {}).get("read_from",""))' "$WORK/b.json")
 [[ "$c6" == 200 && "$pf" == "$want_from" && "$c7" == 200 && "$pg" == "$want_from" ]] \
   || no "RA: plans over 365 days: $c6, plans.read_from '$pf'; perfsummary pg: $c7, pg.read_from '$pg' (want $want_from)"
-# a part with its own 7-day reach says 7 days, not the default's 31 (red on c5c7e83: it said 745 h and read 7 days)
+# a part with its own 7-day reach says 7 days, not the default's 31 (before the fix it said 745 h and read 7 days)
 d60=$(ts $((N - 60 * 86400))); want7=$(ts $((N - 7 * 86400)))
 c8=$(hdr "api/tables/top?instance=$ERP&from=$d60&to=$now")
 [[ "$c8" == 200 && "$(h X-Pgvigil-Read-From)" == "$want7" ]] || no "RA: tables/top over 60 days: $c8, read from '$(h X-Pgvigil-Read-From)' (want $want7)"

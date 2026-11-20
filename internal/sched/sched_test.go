@@ -155,7 +155,7 @@ func TestApplyFollowsThePageList(t *testing.T) {
 	done := make(chan struct{})
 	file := []config.Instance{{Name: "f1", Engine: config.EnginePostgres, DSNRaw: "env:F1"}}
 	go func() {
-		config.WatchInventory(ctx, log, inv, r.hold, file, "full", 20*time.Millisecond, func(all []config.Instance) { s.apply(ctx, all) })
+		config.WatchInventory(ctx, log, inv, r.hold, file, "full", config.CounterEdits{}, 20*time.Millisecond, func(all []config.Instance) { s.apply(ctx, all) })
 		s.wait()
 		close(done)
 	}()

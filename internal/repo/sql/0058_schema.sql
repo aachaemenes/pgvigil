@@ -10,7 +10,7 @@
 --                        neither read nor in error: dropped, or no longer connectable).
 --   schema_objects       the current snapshot, one row per object (instance, dbid, kind, identity): the identity is
 --                        pg_identify_object()'s text, the event trigger's too; is_present false = dropped (kept until
---                        the join's purge removes it past the window).
+--                        purge() removes it past the window).
 --   schema_changes       the diff history, monthly partitions: 'added' (after = the definition), 'dropped' (before =
 --                        the definition), 'changed' (one row per changed attribute: definition, owner or acl, with the
 --                        before and after text); prev_at is the read the change is measured from. A column, index,

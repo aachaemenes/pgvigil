@@ -35,7 +35,7 @@ import (
 // statements, lock waits, deadlocks and failed logins, and the corruption messages are the corruption reader's).
 //
 // Each class maps to one pgvigil event kind; ClassifyMore is called for a message no other rule of the reader
-// classified. The kinds this file adds to log_events (the join's CHECK must list them): see Kinds.
+// classified. The kinds this file adds to log_events (its kind CHECK must list them): see Kinds.
 
 // The kinds of event the pganalyze classes add.
 const (
@@ -86,7 +86,7 @@ func KnownKind(s string) bool {
 	return false
 }
 
-// Kinds lists the event kinds the pganalyze classes add, one per class; the join's log_events CHECK lists them.
+// Kinds lists the event kinds the pganalyze classes add, one per class; the log_events kind CHECK lists them.
 var Kinds = []Kind{ConnectionLimit, ConnectionLost, Timeout, Canceled, AutovacuumCancel, VacuumSkipped, Wraparound,
 	CheckpointFrequent, Crash, OutOfMemory, ArchiveFailed, StandbyConflict, SerializationFailure, TempFile}
 

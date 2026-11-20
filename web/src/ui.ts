@@ -59,13 +59,15 @@ export interface Col {
   num?: boolean;          // right-aligned, sorted numerically
   wide?: boolean;         // long text, clipped with a title
   cls?: (v: unknown, row: Record<string, unknown>) => string;   // an extra cell class (a status colour)
+  title?: string;         // the header's tooltip (a column DBA Dash describes in its own words)
 }
 
 // The page model of a rendered grid, kept beside its table for the export (export.ts): the columns and the
 // rows in the order the screen shows them now, their raw values unformatted, so a number exports as a number.
 // rows: the grid's rows as filtered and sorted; allRows: each of them as a table row, the ones not drawn yet (past the
 // grid's page) built off the screen, so the export and Copy all take every row without drawing them
-export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[]; allRows?(): HTMLTableRowElement[] }
+// text: a row's cell as the screen words it (the grid menu's statistics read the rows without building them)
+export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[]; allRows?(): HTMLTableRowElement[]; text?(r: Record<string, unknown>, c: Col): string }
 const models = new WeakMap<HTMLTableElement, GridModel>();
 export function gridModel(t: HTMLTableElement): GridModel | undefined { return models.get(t); }
 
@@ -116,7 +118,7 @@ function plainNumber(text: string): number | null {
 // the decimal mark and the other groups; a lone ',' is the decimal mark only where the locale writes it so. The result
 // is written with '.' and no grouping, the form reading() takes for a unit's number.
 function typedNumber(text: string): string {
-  const t = text.replace(/[\s\u00a0\u202f]+(?=\d)/g, '');
+  const t = text.replace(/(?<=\d)[\s\u00a0\u202f]+(?=\d)/g, '');   // a space between two digits groups ('1 234'); '18m 0s' keeps its own
   const dot = t.lastIndexOf('.'), comma = t.lastIndexOf(',');
   if (dot >= 0 && comma >= 0) return dot > comma ? t.replace(/,/g, '') : t.replace(/\./g, '').replace(',', '.');
   if (comma >= 0) return localeMarks.decimal === ',' && t.indexOf(',') === comma ? t.replace(',', '.') : t.replace(/,/g, '');
@@ -140,7 +142,7 @@ function reading(text: string, typed = false): Reading | null {
 // a filter's test on one cell's words: '>5', '<10', '>=', '<=', '=3', '>500 MB', '<10m' compare a number column as
 // shown (reading()); anything else is a case-insensitive part of the words ('!x' = does not contain x)
 export function passes(f: string, words: string, num: boolean): boolean {
-  const m = num ? /^(>=|<=|>|<|=)\s*(.+)$/.exec(f) : null;
+  const m = num ? /^(<>|>=|<=|>|<|=)\s*(.+)$/.exec(f) : null;
   const want = m ? reading(typedNumber(m[2]), true) : null;
   if (m && want) {
     const got = reading(words);
@@ -149,11 +151,100 @@ export function passes(f: string, words: string, num: boolean): boolean {
     const v = want.scale === 'plain' ? (got.scale === 'plain' ? got.n : Number(/-?\d+(?:\.\d+)?/.exec(words)?.[0] ?? NaN)) : got.scale === want.scale ? got.n : NaN;
     if (Number.isNaN(v)) return false;
     const x = want.n, eq = Math.abs(v - x) <= 1e-9 * Math.max(1, Math.abs(x));
-    return m[1] === '>' ? v > x && !eq : m[1] === '<' ? v < x && !eq : m[1] === '>=' ? v > x || eq : m[1] === '<=' ? v < x || eq : eq;
+    return m[1] === '<>' ? !eq : m[1] === '>' ? v > x && !eq : m[1] === '<' ? v < x && !eq : m[1] === '>=' ? v > x || eq : m[1] === '<=' ? v < x || eq : eq;
   }
   const w = words.toLowerCase();
   return f.startsWith('!') ? !w.includes(f.slice(1).toLowerCase()) : w.includes(f.toLowerCase());
 }
+
+// ---- a filter's conditions (task GM) ----------------------------------------------------------------------------
+// A typed filter with no double quote keeps its meaning whole (passes: '>5', '!x', and 'R & D' is the words 'R & D').
+// One with quotes is a list of conditions a row must all meet, joined by ' & ' outside the quotes (a quote inside one is
+// doubled):  "x" the words hold x;  !"x" they do not;  ="x"  <>"x"  >"x"  <"x"  >="x"  <="x" (a number column compares
+// the number shown, as passes does; a text column the words, case aside);  like "a%"  not like "a%" (% any run, _ one
+// character, \% \_ \\ themselves);  in:"a","b"  !in:"a","b" (the words one of them / none of them);  an operator with a
+// bare number (>5) as passes. A condition that reads as none of these makes the whole filter typed words again. The grid
+// menu writes every condition quoted. compileFilter reads a filter once per redraw.
+const QV = '"((?:[^"]|"")*)"';
+const unq = (s: string) => s.replace(/""/g, '"');
+export const quoteFilter = (v: string) => '"' + v.replace(/"/g, '""') + '"';
+function splitConds(f: string): string[] {
+  const out: string[] = []; let cur = '', q = false;
+  for (let i = 0; i < f.length; i++) {
+    const ch = f[i];
+    if (ch === '"') { if (q && f[i + 1] === '"') { cur += '""'; i++; continue; } q = !q; cur += ch; continue; }
+    if (!q && f.startsWith(' & ', i)) { out.push(cur.trim()); cur = ''; i += 2; continue; }
+    cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+function likeRe(p: string): RegExp {
+  let r = '';
+  for (let i = 0; i < p.length; i++) {
+    const ch = p[i];
+    if (ch === '\\' && i + 1 < p.length) { r += p[++i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); continue; }
+    if (ch === '%' && p[i - 1] === '%' && p[i - 2] !== '\\') continue;   // a run of % is one '.*' (no backtracking storm on a long cell)
+    r += ch === '%' ? '.*' : ch === '_' ? '.' : ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp('^' + r + '$', 'is');
+}
+function condTest(c: string, num: boolean): ((w: string) => boolean) | undefined {
+  let m = new RegExp('^(!?)' + QV + '$').exec(c);
+  if (m) { const v = unq(m[2]).toLowerCase(), not = m[1] === '!'; return w => w.toLowerCase().includes(v) !== not; }
+  m = new RegExp('^(<>|>=|<=|=|>|<)\\s*' + QV + '$').exec(c);
+  if (m) {
+    const op = m[1], v = unq(m[2]), n = num && reading(typedNumber(v), true);
+    if (n) return op === '<>' ? w => !!reading(w) && !passes('=' + v, w, true) : w => passes(op + v, w, true);
+    const lv = v.toLowerCase();
+    return w => { const x = w.toLowerCase(), k = x.localeCompare(lv); return op === '=' ? x === lv : op === '<>' ? x !== lv : op === '>' ? k > 0 : op === '<' ? k < 0 : op === '>=' ? k >= 0 : k <= 0; };
+  }
+  m = new RegExp('^(not like|like)\\s+' + QV + '$', 'i').exec(c);
+  if (m) { const re = likeRe(unq(m[2])), not = m[1].toLowerCase() === 'not like'; return w => re.test(w) !== not; }
+  m = new RegExp('^(!?)in:\\s*(' + QV + '(?:\\s*,\\s*' + QV + ')*)$').exec(c);
+  if (m) {
+    const set = new Set([...m[2].matchAll(new RegExp(QV, 'g'))].map(x => unq(x[1]).toLowerCase())), not = m[1] === '!';
+    return w => set.has(w.toLowerCase()) !== not;
+  }
+  if (/^(<>|>=|<=|>|<|=)\s*[^"\s]/.test(c) && !c.includes('"')) return w => passes(c, w, num);
+  return undefined;
+}
+// isCondList: a filter with quotes that reads as a list of conditions (else compileFilter reads it as typed words)
+export const isCondList = (f: string, num: boolean) => splitConds(f).every(c => !!condTest(c, num));
+export function compileFilter(f: string, num: boolean): (w: string) => boolean {
+  if (!f.includes('"')) return w => passes(f, w, num);
+  const tests = splitConds(f).map(c => condTest(c, num));
+  if (tests.some(t => !t)) return w => passes(f, w, num);
+  return w => tests.every(t => t!(w));
+}
+
+// ---- the grid menu's ask (task GM) -----------------------------------------------------------------------------------
+// ui.ts asks, gridtools.ts gridMenu answers (done): a grid of grid(), a table.grid a page draws itself, the group panel's
+// .gt-table, a grid empty from the start (empty: its p.empty[data-cols], as the export reads it). A page adds its own
+// lines to the end of the menu (extra: [label, action] pairs) from a listener on an element around its grid: the event
+// bubbles there before it reaches gridtools' listener on the document (mssql_backups.ts: Verify this backup...).
+export interface GridMenuAsk { table: HTMLTableElement | null; empty?: Element | null; td: Element | null; th: Element | null; x: number; y: number; back: HTMLElement; extra: [string, () => void][]; done: boolean }
+export function askGridMenu(at: Element, d: Omit<GridMenuAsk, 'done' | 'extra'>): boolean {
+  const detail: GridMenuAsk = { ...d, extra: [], done: false };
+  at.dispatchEvent(new CustomEvent('pgvigil:gridmenu', { bubbles: true, detail }));
+  return detail.done;
+}
+// every table.grid not drawn by grid() (a page's own, inside its own .grid-wrap or not), the group panel's table and a
+// grid empty from the start: one handler for all of them (grid()'s own grids stop at their wrap, and their model skips them)
+if (typeof document !== 'undefined') document.addEventListener('contextmenu', e => {
+  const tgt = e.target;
+  if (!(tgt instanceof Element) || tgt.closest('input, textarea, select, a[href]') || String(window.getSelection() ?? '').trim()) return;
+  // a page's own focusable .grid-wrap (the menu key or Shift+F10 there) answers for its table
+  const host = tgt.closest('table.grid, table.gt-table, .empty-grid') ?? (tgt.matches('.grid-wrap') ? tgt.querySelector('table.grid') : null);
+  if (!host || (host instanceof HTMLTableElement && models.has(host))) return;
+  const table = host.tagName === 'TABLE' ? host as HTMLTableElement : null;
+  const cell = tgt.closest('td, th');
+  const td = table && cell?.tagName === 'TD' && cell.closest('table') === table && cell.parentElement?.parentElement?.tagName === 'TBODY' ? cell : null;
+  const th = table && cell?.tagName === 'TH' && cell.closest('table') === table && !!cell.closest('thead') ? cell : null;
+  const r = tgt.getBoundingClientRect();
+  const back = (document.activeElement instanceof HTMLElement ? document.activeElement : document.body);
+  if (askGridMenu(host, { table, empty: table ? null : host.querySelector('p.empty[data-cols]'), td, th, x: e.clientX || r.left + 8, y: e.clientY || r.top + 8, back })) e.preventDefault();
+});
 
 // one small menu at a time (the grids' copy menu): Escape, a click elsewhere or a choice closes it and gives the focus back
 let openMenu: { box: HTMLElement; back: HTMLElement | null } | null = null;
@@ -222,7 +313,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   // the copy and the report mail still find the one p.empty and its data-cols), in a box that never scrolls; the words
   // stay for a screen reader and the proofs
   const rw = readWindowOf(rows);
-  if (rows.length === 0) return el('div', { class: 'empty-grid' }, ...(rw ? [readWindowNote(rw)] : []),
+  if (rows.length === 0) return el('div', { class: 'empty-grid', tabindex: '0', role: 'group', 'aria-label': 'Empty grid: ' + empty }, ...(rw ? [readWindowNote(rw)] : []),
     el('table', { class: 'grid-empty', 'aria-hidden': 'true' }, el('thead', {}, el('tr', {}, ...cols.map(c => el('th', {}, el('span', { class: 'th-label' }, c.label ?? c.key)))))),
     el('p', { class: 'empty visually-hidden', 'data-cols': JSON.stringify(cols.map(c => c.label ?? c.key)) }, empty));
   let sortKey = '', asc = true;
@@ -236,7 +327,8 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   const filterBtns: HTMLButtonElement[] = [];
   for (const c of cols) {
     const name = c.label ?? c.key;
-    const fb = el('button', { type: 'button', class: 'filter-btn', title: 'Filter ' + name, 'aria-label': 'Filter ' + name, 'aria-expanded': 'false' }) as HTMLButtonElement;   // its glyph is CSS (::before), so a header's text stays its label
+    // (tabindex -1: the grid is one tab stop; F2 on its header cell opens the filter row - the ARIA grid pattern)
+    const fb = el('button', { type: 'button', class: 'filter-btn', title: 'Filter ' + name, 'aria-label': 'Filter ' + name, 'aria-expanded': 'false', tabindex: '-1' }) as HTMLButtonElement;   // its glyph is CSS (::before), so a header's text stays its label
     filterBtns.push(fb);
     fb.addEventListener('click', e => {
       e.stopPropagation();
@@ -245,7 +337,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       for (const b of filterBtns) b.setAttribute('aria-expanded', String(open));
       if (open) inputs.get(c.key)!.focus();
     });
-    const th = el('th', c.num ? { class: 'num' } : {}, el('span', { class: 'th-label' }, name), fb);
+    const th = el('th', { ...(c.num ? { class: 'num' } : {}), ...(c.title ? { title: c.title } : {}) }, el('span', { class: 'th-label' }, name), fb);
     // a heading's click sorts and says so: aria-sort on it (app.css draws the arrow from it, so no text is added to
     // the heading's words, which the export and the proofs read), cleared on the others - a sort of equal values
     // still shows that it happened (DBA Dash's sort glyph)
@@ -273,6 +365,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   thead.append(head, filterRow);
   table.append(thead, tbody);
   const fmtCell = (c: Col, r: Record<string, unknown>) => { const v = r[c.key]; return c.fmt ? c.fmt(v, r) : (c.num ? fmtNum(v) : fmtAny(v)); };
+  const shownWords = (w: string) => w.replace(/\s+/g, ' ').trim();   // what a cell shows (cellText's rule), the filter's side
   const words = (out: string | Node) => typeof out === 'string' ? out : cellText(el('span', {}, out instanceof Node ? out.cloneNode(true) : String(out)));
   const count = el('p', { class: 'meta filter-count', role: 'status' });
   // a long grid draws its first GRID_PAGE rows and a 'show more' line under them; filters, sorting, Copy all and the
@@ -282,8 +375,8 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   function draw() {
     let data = scope ? rows.filter(scope) : [...rows];
     if (filters.size) {
-      const active = cols.filter(c => filters.has(c.key));
-      data = data.filter(r => active.every(c => passes(filters.get(c.key)!, words(fmtCell(c, r)), !!c.num)));
+      const active = cols.filter(c => filters.has(c.key)).map(c => [c, compileFilter(filters.get(c.key)!, !!c.num)] as const);
+      data = data.filter(r => active.every(([c, t]) => t(shownWords(words(fmtCell(c, r))))));
     }
     if (sortKey) {
       const col = cols.find(c => c.key === sortKey)!;
@@ -305,13 +398,16 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       const next = Math.min(GRID_PAGE, data.length - drawn.length);
       const step = el('button', { type: 'button', class: 'link' }, `Show ${next} more`);
       // the clicked button is replaced: the focus goes to the next 'Show more', else to the grid (WCAG 2.4.3)
-      const refocus = () => { ((more.querySelector('button') ?? table.parentElement) as HTMLElement | null)?.focus(); };
+      const refocus = () => { const b = more.querySelector('button') as HTMLElement | null; if (b) b.focus(); else rove(true); };
       step.addEventListener('click', () => { limit += GRID_PAGE; draw(); refocus(); });
       const all = el('button', { type: 'button', class: 'link' }, `Show all ${data.length}`);
       all.addEventListener('click', () => { limit = Infinity; draw(); refocus(); });
       more.append(`The first ${drawn.length} of ${data.length} rows. `, step, ' · ', all);
     }
+    const had = tbody.contains(document.activeElement);
     tbody.replaceChildren(...drawn.map(rowEl));
+    table.setAttribute('aria-rowcount', String(data.length));
+    quiet(); rove(had);
   }
   function rowEl(r: Record<string, unknown>): HTMLTableRowElement {
     const tr = el('tr') as HTMLTableRowElement;
@@ -330,10 +426,78 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     }
     return tr;
   }
+  // ---- the keyboard (the ARIA grid pattern, task GM): the grid is one tab stop, its current cell (a roving tabindex);
+  // the arrows, Home / End (Ctrl: the first / last row), PageUp / PageDown move it (PageDown past the drawn rows reaches
+  // 'Show more'); Enter or F2 reaches a cell's own link or button (Escape there comes back to the cell); on a header
+  // cell Enter sorts and F2 opens the filter row; the menu key or Shift+F10 opens the grid's menu at the cell
+  table.setAttribute('role', 'grid');
+  let cur: [number, number] = [0, 0];   // the current cell: its drawn row (-1 the header) and its column
+  // a hidden column is data-gt-hidden on its header (gridtools.ts apply), read at once - a detached table has no style
+  const vis = (j: number) => { const h = head.children[j] as HTMLElement | undefined; return !!h && !h.hasAttribute('data-gt-hidden'); };
+  // the grid's rows: a statement's History (.trend-row) is not one of them
+  const bodyRows = () => [...tbody.children].filter(tr => !tr.classList.contains('trend-row')) as HTMLElement[];
+  const cellAt = (r: number, j: number) => (r < 0 ? head.children[j] : bodyRows()[r]?.children[j]) as HTMLElement | undefined;
+  // a cell's place, null for a History row's cell
+  const at = (cell: HTMLElement): [number, number] | null => {
+    const tr = cell.parentElement!, r = tr === head ? -1 : bodyRows().indexOf(tr);
+    return tr !== head && r < 0 ? null : [r, [...tr.children].indexOf(cell)];
+  };
+  const firstCol = () => { for (let j = 0; j < cols.length; j++) if (vis(j)) return j; return 0; };
+  const lastCol = () => { for (let j = cols.length - 1; j >= 0; j--) if (vis(j)) return j; return 0; };
+  const stepCol = (j: number, by: number) => { for (let k = j + by; k >= 0 && k < cols.length; k += by) if (vis(k)) return k; return j; };
+  function rove(focus: boolean) {
+    const n = bodyRows().length;
+    if (cur[0] >= n) cur[0] = n - 1;
+    if (!vis(cur[1])) cur[1] = firstCol();
+    const c = cellAt(cur[0], cur[1]) ?? cellAt(-1, cur[1]);
+    table.querySelectorAll<HTMLElement>(':scope > thead > tr > th[tabindex], :scope > tbody > tr > td[tabindex]').forEach(x => { if (x !== c) x.removeAttribute('tabindex'); });
+    if (!c) return;
+    c.tabIndex = 0;
+    if (focus) { c.focus({ preventScroll: true }); c.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+  }
+  // a cell's own links and buttons leave the tab order (Enter or F2 reaches them)
+  function quiet() { tbody.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, summary, [tabindex]').forEach(x => { if (x.tagName !== 'TD') x.tabIndex = -1; }); }
+  table.addEventListener('keydown', e => {
+    const t = e.target as HTMLElement, cell = t.closest('td, th') as HTMLElement | null;
+    if (!cell || cell.closest('table') !== table || cell.parentElement === filterRow) return;
+    const place = at(cell);
+    if (!place) return;
+    if (t !== cell) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cur = place; rove(true); } return; }
+    const [r, j] = place;
+    cur = place;
+    const last = bodyRows().length - 1;
+    let to: [number, number] | null = null;
+    if (e.key === 'ArrowDown') to = [Math.min(last, r + 1), j];
+    else if (e.key === 'ArrowUp') to = [Math.max(-1, r - 1), j];
+    else if (e.key === 'ArrowRight') to = [r, stepCol(j, 1)];
+    else if (e.key === 'ArrowLeft') to = [r, stepCol(j, -1)];
+    else if (e.key === 'Home') to = [e.ctrlKey ? 0 : r, firstCol()];
+    else if (e.key === 'End') to = [e.ctrlKey ? last : r, lastCol()];
+    else if (e.key === 'PageUp') to = [Math.max(r < 0 ? -1 : 0, r - 10), j];
+    else if (e.key === 'PageDown') {
+      if (r + 10 > last && !more.hidden) { e.preventDefault(); (more.querySelector('button') as HTMLElement | null)?.focus(); return; }
+      to = [Math.min(last, r + 10), j];
+    } else if (e.key === 'Enter' || e.key === 'F2') {
+      e.preventDefault();
+      if (r < 0) { if (e.key === 'Enter') cell.click(); else (cell.querySelector('.filter-btn') as HTMLElement | null)?.click(); return; }
+      (cell.querySelector('a[href], button, input, select, textarea, summary') as HTMLElement | null)?.focus();
+      return;
+    } else if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+      e.preventDefault();
+      const b = cell.getBoundingClientRect();
+      openGrid(cell, b.left + 8, b.bottom - 4, cell);
+      return;
+    }
+    if (!to) return;
+    e.preventDefault();
+    cur = to; rove(true);
+  });
   models.set(table, { cols, rows: () => shown,
-    allRows: () => shown.length > limit ? shown.map(rowEl) : [...tbody.children] as HTMLTableRowElement[] });
+    allRows: () => shown.length > limit ? shown.map(rowEl) : [...tbody.children] as HTMLTableRowElement[],
+    text: (r, c) => words(fmtCell(c, r)) });
   draw();
-  const wrap = el('div', { class: 'grid-wrap', tabindex: '0' }, table);   // a scrollable region the keyboard can reach (WCAG 2.1.1)
+  new MutationObserver(() => rove(document.activeElement === document.body)).observe(head, { attributes: true, subtree: true, attributeFilter: ['data-gt-hidden'] });
+  const wrap = el('div', { class: 'grid-wrap' }, table);   // its scroll is the keyboard's through the table's current cell (one tab stop)
   const tsv = (trs: Element[]) => trs.filter(tr => !tr.classList.contains('trend-row')).map(tr => [...tr.children].map(td => cellText(td).replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
   const header = () => cols.map(c => c.label ?? c.key).join('\t');
   // a copy that says what it did, in the grid's own status line, for a moment
@@ -342,29 +506,36 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     count.textContent = ok ? 'Copied ' + what : 'Not copied: the browser refused the clipboard';
     window.setTimeout(() => { if (count.textContent?.startsWith('Copied') || count.textContent?.startsWith('Not copied')) count.textContent = before; }, 2500);
   };
-  wrap.addEventListener('contextmenu', e => {
-    // the browser's own menu stays on a field (paste), a link (open in a new tab), a button, and over selected text
-    if ((e.target as Element).closest('input, textarea, select, button, a[href]') || String(window.getSelection() ?? '').trim()) return;
-    // a grid inside a grid's row (a statement's History) answers for itself; the outer grid does not replace its menu
-    if ((e.target as Element).closest('.grid-wrap') !== wrap) return;
-    e.stopPropagation();
-    const hit = (e.target as Element).closest('tbody td');
-    const td = hit && hit.parentElement?.parentElement === tbody && !hit.parentElement.classList.contains('trend-row') ? hit : null;
+  // openGrid: the grid's menu (gridtools.ts gridMenu answers the ask) at a cell, a header cell or none; the cell becomes
+  // the current one, so the menu gives the focus back to it. With no grid tools on the page: the three copies.
+  function openGrid(cell: Element | null, x: number, y: number, back: HTMLElement) {
+    const td = cell?.tagName === 'TD' && cell.parentElement?.parentElement === tbody && !cell.parentElement.classList.contains('trend-row') ? cell : null;
+    const th = cell?.tagName === 'TH' && cell.parentElement === head ? cell : null;
+    if (td) cur = [bodyRows().indexOf(td.parentElement!), [...td.parentElement!.children].indexOf(td)];
+    else if (th) cur = [-1, [...head.children].indexOf(th)];
+    if (td || th) rove(false);
+    if (askGridMenu(table, { table, td, th, x, y, back: (td ?? th ?? back) as HTMLElement })) return;
     const items: [string, () => void][] = [];
     if (td) {
       items.push(['Copy cell', () => { void copyText(cellText(td)).then(done('the cell')); }]);
       items.push(['Copy row', () => { void copyText(header() + '\n' + tsv([td.parentElement!])).then(done('the row')); }]);
     }
     items.push([filters.size || scope ? `Copy all ${shown.length} rows shown` : 'Copy all rows', () => {
-      // every row, the ones past the grid's page built off the screen (the grid itself stays as drawn)
       void copyText(header() + '\n' + tsv(models.get(table)!.allRows!())).then(done(shown.length + ' rows'));
     }]);
-    // the grid tools (gridtools.ts) add their lines to this menu: the copies with the colours, the columns, the groups, the bars
-    wrap.dispatchEvent(new CustomEvent('pgvigil:gridmenu', { bubbles: true, detail: { table, td, items } }));
+    showMenu(x, y, items, (td as HTMLElement | null) ?? back);
+  }
+  wrap.addEventListener('contextmenu', e => {
+    // the browser's own menu stays on a field (paste), a link (open in a new tab) and over selected text; a statement's
+    // button (sqlview.ts) gets the grid's menu (its Copy > Cell is the whole statement)
+    const tgt = e.target as Element;
+    if (tgt.closest('input, textarea, select, a[href]') || String(window.getSelection() ?? '').trim()) return;
+    // a grid inside a grid's row (a statement's History) answers for itself; the outer grid does not replace its menu
+    if (tgt.closest('.grid-wrap') !== wrap) return;
+    e.stopPropagation();
     e.preventDefault();
-    const r = (e.target as Element).getBoundingClientRect();
-    const x = e.clientX || r.left + 8, y = e.clientY || r.top + 8;
-    showMenu(x, y, items, (td as HTMLElement | null) ?? wrap);
+    const r = tgt.getBoundingClientRect();
+    openGrid(tgt.closest('td, th'), e.clientX || r.left + 8, e.clientY || r.top + 8, table);
   });
   // a list whose part read only the newest part of a long window says so above itself, and its table carries the read
   // window for the export's sheet note (export.ts)

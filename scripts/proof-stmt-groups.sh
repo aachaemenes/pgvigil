@@ -15,7 +15,7 @@
 # pgvigil_reader, pgvigil_alerter and pgvigil_auth where they are missing: those stay, as every pgvigil migrate leaves
 # them. Nothing else is touched.
 #
-# The routes are the lead's lines in web.go, the switch hypo_index the lead's lines in config.go and serve.go: where
+# The routes are lines in web.go, the switch hypo_index lines in config.go and serve.go: where
 # the tree lacks them the proof builds a scratch copy with exactly those lines and says so (the report's WIRING BLOCK).
 #
 # Expected (written before the first run; T = the proof's start; the API window [T - 1 h, now + 1 min]):
@@ -26,7 +26,7 @@
 #     each; logins ua and ub. Each workload statement runs once before the first statements read, then: Q1 (ua, appa,
 #     n = 7) 20 times, Q3 (ua, appb, id < 100) 10 times, Q2 (ub, appb, n between 1 and 3) 15 times, and S (ua, appa,
 #     pg_sleep(2)) twice at once, from inside the container over 127.0.0.1 and over the container's own address, with
-#     one activity read while both sleep. [review fold, before the rerun: S runs three times at once, twice over
+#     one activity read while both sleep. [added before the rerun: S runs three times at once, twice over
 #     127.0.0.1 and once over the container's address, so the split is 2/3 and 1/3, not an even one; S 3 calls] Hand reads H1 / H2 of pg_stat_statements right after the two statements reads
 #     give the differences per statement of appa and appb.
 #     B1 /api/stmtgroups?db=appa&db=appb&group=db: two rows; each total_ms equals H2 - H1 of its database (within
@@ -34,7 +34,7 @@
 #     B2 the same ticks, group=user: ua and ub, totals and shares equal the hand sums per user the same way.
 #     B3 db=appa alone: the user facet lists ua only, share 100; the db facet still lists appa (ticked) and appb (not).
 #     B4 group=query with the two ticks: Q1 20 calls, Q2 15, Q3 10, S 2 (each equal to the hand calls).
-#     B5 db=appa, group=client: [fold: 127.0.0.1 holds S's total x 2/3, the container's address x 1/3] (within 0.05 ms); the
+#     B5 db=appa, group=client: [127.0.0.1 holds S's total x 2/3, the container's address x 1/3] (within 0.05 ms); the
 #        group '(not sampled)' holds appa's total - S's total; totals.sampled_pct is present and above 0.
 #     B6 totals: total_ms equals the sum of the db facet's totals with no tick (within 0.05 ms).
 #  C. The trend and the lag compare.
@@ -45,22 +45,22 @@
 #        calls mean 10 ms, one hour earlier 5 calls mean 20 ms; each equal to a hand sum of statements_delta over that
 #        window. at=T-3 d-30 min: the third row 3 calls mean 30 ms (a hand sum). lag=604800: the third row calls NULL,
 #        snapshots 0, instance_snapshots 0 (the page's "no data").
-#  F. [review fold, written before the rerun] F1 lag=86400 (the preset beside day over day): the third row equals the
+#  F. [written before the rerun] F1 lag=86400 (the preset beside day over day): the third row equals the
 #     second, 7 calls mean 10 ms, not twice that. F2 imported for a made-up queryid 4343 in the window: a delta of
 #     user NULL (a dropped role) in database lagdb, 40 calls 800 ms, and two activity samples of it with client NULL (a
 #     socket session): group=client on db=lagdb and user= (empty) gives '[local]' 800 ms and no '(not sampled)'; user= (empty) ticked
 #     gives the groups 4343 alone. F3 lag=18446744073 is a 400 (no Duration overflow).
-#  G. [review fold, written before the rerun] G1 a stored plan (PA's plan) whose text is
+#  G. [written before the rerun] G1 a stored plan (PA's plan) whose text is
 #     "SELECT $1::int, name'\'; COMMIT; BEGIN READ WRITE; CREATE TABLE pwn(); COMMIT; --'" (one statement to ScanSQL
 #     when the e of name is read as an E'' escape, several to the server): the check answers 502, outcome failed, its
-#     detail naming "cannot insert multiple commands into a prepared statement"; no table pwn in appa. [the join's review,
-#     expected before the rerun: ScanSQL now refuses this text itself ("the text holds more than one statement"); the
+#     detail naming "cannot insert multiple commands into a prepared statement"; no table pwn in appa. [expected
+#     before the rerun: ScanSQL now refuses this text itself ("the text holds more than one statement"); the
 #     detail may name either refusal, no table pwn is the hard check, and the server's layer has its own Go test] G2 a check of PA
 #     sent with a ddl other than suggestion 0's: 409 "changed since the page read it". actions_log hypo_index rows then:
 #     done 1, failed 1, refused 4.
 #     F4 a delta of queryid 4444 at T-29 min covering 120 s (half inside [T-30 min, T]): 10 calls 100 ms -> the window
 #     row 5 calls 50 ms (the edge share).
-#  H. [review fold] Suggest on fixed plans (a Go test the proof writes into its scratch copy): a text plan's "Orders" /
+#  H. [added later] Suggest on fixed plans (a Go test the proof writes into its scratch copy): a text plan's "Orders" /
 #     "Status" -> ON "Orders" ("Status"); a table named user -> ON "user" (id); casts on columns -> no suggestion,
 #     skipped naming the cast; no schema -> ON orders (status) with the no-schema line; pg_class without a schema ->
 #     skipped; = ANY of an array and a "char" constant -> (status), (flag); a quoted column "it's" with b -> ("it's", b);
@@ -69,7 +69,7 @@
 #     D1 POST /api/plans/explain on P, appa, "select count(*) from big where n = 42": a plan PA. GET plans/suggest?id=PA:
 #        one suggestion, ddl "CREATE INDEX CONCURRENTLY ON big (n)", label 'not planner-checked', hypo true. The same
 #        plan found under the statement: plans/suggest?instance=P&queryid=<Q1>&db=appa answers plan_id PA (by shape).
-#        [fold] S's queryid in appa and Q1's in appb answer plan_id null (no plan of theirs).
+#        [added later] S's queryid in appa and Q1's in appb answer plan_id null (no plan of theirs).
 #     D2 POST /api/plans/hypo {PA, 0, reason}: 200, checked true, used true, cost_after < cost_before; actions_log:
 #        one 'hypo_index' row, outcome done, pid NULL, datname appa, statement beginning with the ddl.
 #     D3 the same in appb (no hypopg): plan PB, the same ddl; hypo 200, checked false, detail "not planner-checked:
@@ -115,7 +115,7 @@ for t in docker psql curl python3 go; do command -v $t >/dev/null || fail "$t is
 freeport() { python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'; }
 PORT=$(freeport); API_PORT=$(freeport)
 
-# ---- the binary: a scratch build with the lead's lines where the tree lacks them
+# ---- the binary: a scratch build with the wiring's lines where the tree lacks them
 mkdir -p "$SCRATCH"
 git ls-files -z --cached --others --exclude-standard | grep -zv '^web/' | xargs -0 cp --parents -t "$SCRATCH"
 if grep -q '/api/stmtgroups' internal/web/web.go; then
@@ -139,7 +139,7 @@ edit("cmd/pgvigil/serve.go", 'pc := web.PlansConfig{Gates: map[string]actions.Ex
      'pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}, Hypo: map[string]bool{}}\n')
 edit("cmd/pgvigil/serve.go", '\t\tpc.QueryText[in.Name] = in.QueryText\n', '\t\tpc.QueryText[in.Name] = in.QueryText\n\t\tpc.Hypo[in.Name] = in.HypoIndex\n')
 PY
-  WIRED="wired in a scratch build (the join applies the same lines)"
+  WIRED="wired in a scratch build (the release applies the same lines)"
 fi
 (cd "$SCRATCH" && CGO_ENABLED=0 go build -o "$SCRATCH/pgvigil-wired" ./cmd/pgvigil) || fail "the scratch build"
 BIN=$SCRATCH/pgvigil-wired
@@ -382,9 +382,9 @@ got=$(jq_ '"%d|%s|%s|%s" % (len(d["suggestions"]), d["suggestions"][0]["ddl"], d
 [ "$got" = "1|CREATE INDEX CONCURRENTLY ON big (n)|not planner-checked|True" ] || fail "D1: $got"
 code "$API/api/plans/suggest?instance=$P&queryid=$QID1&db=appa" >/dev/null
 [ "$(jq_ 'd["plan_id"]')" = "$PA" ] || fail "D1 under the statement: $(cat "$WORK/body")"
-code "$API/api/plans/suggest?instance=$P&queryid=$QIDS&db=appa" >/dev/null   # [review fold] another statement: no plan
+code "$API/api/plans/suggest?instance=$P&queryid=$QIDS&db=appa" >/dev/null   # another statement: no plan
 [ "$(jq_ 'd["plan_id"]')" = None ] || fail "D1 S has no plan: $(cat "$WORK/body")"
-code "$API/api/plans/suggest?instance=$P&queryid=$QID1&db=appb" >/dev/null   # [review fold] Q1 in another database: no plan
+code "$API/api/plans/suggest?instance=$P&queryid=$QID1&db=appb" >/dev/null   # Q1 in another database: no plan
 [ "$(jq_ 'd["plan_id"]')" = None ] || fail "D1 Q1 in appb has no plan: $(cat "$WORK/body")"
 ok "D1 the suggestion of plan $PA, found under the statement too"
 c=$(post plans/hypo "{\"plan_id\":$PA,\"n\":0,\"reason\":\"proof check of the index\"}")
@@ -418,7 +418,7 @@ code "$API/api/plans/suggest?id=$PM" >/dev/null
 PO=$(explain $P appa "select * from big where n = 1 or id = 2")
 code "$API/api/plans/suggest?id=$PO" >/dev/null
 got=$(jq_ '"%d|%s" % (len(d["suggestions"]), any("OR" in s["reason"] for s in d["skipped"]))')
-[ "$got" = "0|True" ] || fail "D6 OR: $got $(cat "$WORK/body")"   # [review fold: graded whole; big.n has no index, so no BitmapOr]
+[ "$got" = "0|True" ] || fail "D6 OR: $got $(cat "$WORK/body")"   # graded whole; big.n has no index, so no BitmapOr
 PL=$(explain $P appa "select count(*) from big where payload like 'x%'")
 code "$API/api/plans/suggest?id=$PL" >/dev/null
 got=$(jq_ '"%d|%s" % (len(d["suggestions"]), any("LIKE" in s["reason"] for s in d["skipped"]))')

@@ -92,6 +92,21 @@ The approve row offers the instance's name (prefilled from the proposal's), a lo
 
 An Azure SQL server or Managed Instance with Microsoft Entra-only authentication, or a PostgreSQL flexible server with password authentication off, is proposed with a note. A SQL login is refused there: approve it with an Entra login - a service principal (`entra`: its application id and secret) or the managed identity of the host serve runs on (`entra-identity`: no secret; the login is a user-assigned identity's client id, or empty for the host's own system-assigned identity). A source whose authentication is `entra-identity` (any SQL Server source, a CMS, a DBA Dash repository or a list file included) needs no credential file: every server approved from it signs in as that identity, which an Entra admin has made a user of each database first ([sqlserver-cloud.md](sqlserver-cloud.md)). Such a PostgreSQL server cannot be monitored until its password authentication is on, because pgvigil signs in to PostgreSQL with a password. For the same reason a PostgreSQL server of a source that signs in to Azure as an Entra application (`entra`) or a managed identity (`entra-identity`) is approved only with a PostgreSQL login and password typed on the approve form: the source's own secret is never used as a PostgreSQL password, and with none typed the approve says so. A `pg_service` source follows the same rule. A server that signs in through IAM (Aurora with IAM authentication, Cloud SQL IAM users) is approved like any other; its login is set in Admin > Instances > Edit afterwards.
 
+An approved proposal also gets its **cloud block** from the server's own identity, used only where `pgvigil.yaml`
+turns `doors.page_cloud_blocks` on ([Configuration](configuration.md#cloud-blocks-on-a-page-instance)): an AWS
+PostgreSQL server its `aws:` block (its region, its DB instance and, for an Aurora member, its cluster - the cluster's
+log group is read), an Azure SQL Database its `azure:` block (its subscription, resource group and logical server, the
+source's cloud). RDS for SQL Server gets none yet. The approve writes the instance and its block in one transaction;
+a block the repository refuses (a resource group outside its ASCII rule, say) is left out and the server approved
+without it - the approve's answer says so, and the refusal is in the admin audit. The block reads with the
+**collector host's** default AWS chain; the source's own profile is copied only when `doors.page_cloud_blocks` is on
+and `doors.page_aws_profiles` lists it **at the approve** (an approve made while either was off keeps no profile: a
+later change of the file does not add it; Clear the block and approve again, or set the instance in `pgvigil.yaml`),
+and it must then exist on the collector's host (a profile only `pgvigil serve`'s host holds fails there in AWS's
+words). The collector checks an AWS block against the endpoint RDS gives for it before its first read
+([Configuration](configuration.md#cloud-blocks-on-a-page-instance)). An instance approved before this release has no
+block: give it one in Admin > Instances > Edit > Cloud.
+
 ## Not proven
 
 - GovCloud, the China regions, Azure Government and Azure China: no lab.
@@ -101,3 +116,7 @@ An Azure SQL server or Managed Instance with Microsoft Entra-only authentication
 - That `rds:DescribeSourceRegions` covers every region the account holds servers in, without `ec2:DescribeRegions`: outside the lab it is RDS's own list.
 - The Azure and GCP list-only custom roles: creating a role in a lab is the owner's hand.
 - The GCP `SERVICE_DISABLED` project check live: the lab's host account is refused by scope first.
+- A page instance's `aws:` block in the AWS isolated partitions (their own domains): the block's host is matched by name
+  to an RDS endpoint of the commercial or China partitions' domains (GovCloud shares the commercial one), so an isolated
+  partition's host is refused at the approve; the collector's own check against RDS's `Endpoint.Address` is the one
+  that names no domain. No lab there.

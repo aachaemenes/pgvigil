@@ -137,12 +137,12 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 	stmt := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(r.Statement), ";"))
 
 	// the two logins must reach one server (the monitoring login's is the instance the user looked at)
-	mon, err := plans.Connect(ctx, d.Monitor, "", "pgvigil-actions-check", 5*time.Second)
+	mon, err := plans.Connect(ctx, d.Monitor, d.Secret, "", "pgvigil-actions-check", 5*time.Second)
 	if err != nil {
 		return refused("the monitoring login could not connect to check the server: %v", err), nil
 	}
 	defer func() { _ = mon.Close(context.WithoutCancel(ctx)) }()
-	act, err := plans.Connect(ctx, g.DSN, r.Datname, "pgvigil-actions-explain", timeout)
+	act, err := plans.Connect(ctx, g.DSN, nil, r.Datname, "pgvigil-actions-explain", timeout)
 	if err != nil {
 		return Result{Outcome: Failed, Detail: fmt.Sprintf("the explain login could not connect to %s: %v", dbName(r.Datname), err)}, nil
 	}
@@ -154,10 +154,10 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 	// the SESSION user's rights (REPORT ROLE): a role set at connect (ALTER ROLE ... SET role) or by the statement itself
 	// (set_config('role', 'none', true)) is undone by the statement, so the current role's rights say nothing
 	// in a database that is a pgvigil repository also plans.RepoSecretsCols: a member of the schema's owner (NOINHERIT
-	// too), pg_read_all_data, a direct read of the UI's hashes (the code review of REPORT ROLE, part A)
-	// a member of a superuser role (NOINHERIT too) counts as a superuser: the statement can SET ROLE to it (part B)
+	// too), pg_read_all_data, a direct read of the UI's hashes
+	// a member of a superuser role (NOINHERIT too) counts as a superuser: the statement can SET ROLE to it
 	// a member of pgvigil_alerter is refused as pgvigil_auth is: alert_contact_routes() answers it with every alert
-	// contact's address (the j14 join review, B1)
+	// contact's address
 	var actSuper, superMember, actOwner, ownerMember, readAll, hashes bool
 	var acting, secrets *string
 	if err := act.QueryRow(ctx, `SELECT pg_postmaster_start_time(), (SELECT rolsuper FROM pg_roles WHERE rolname = session_user),

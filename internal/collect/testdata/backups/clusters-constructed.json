@@ -2,6 +2,7 @@
   "DBClusters": [
     {
       "DBClusterIdentifier": "dba-lab-pg",
+      "DBClusterArn": "arn:aws:rds:us-east-1:123456789012:cluster:dba-lab-pg",
       "Engine": "aurora-postgresql",
       "EngineVersion": "17.5",
       "BackupRetentionPeriod": 1,

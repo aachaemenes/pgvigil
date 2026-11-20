@@ -53,7 +53,7 @@ func TestTagOpsRefusesApplication(t *testing.T) {
 			t.Errorf("tagOps(%q, reset %v): %v; want a refusal naming Admin > Applications", c.args, c.reset, err)
 		}
 	}
-	// -reset clears an older store's application override (review A, m9)
+	// -reset clears an older store's application override
 	if ops, err := tagOps([]string{"application"}, true); err != nil || len(ops) != 1 || !ops[0].Reset || ops[0].Key != "application" {
 		t.Errorf("-reset application: %v %v; want one reset of the key", ops, err)
 	}

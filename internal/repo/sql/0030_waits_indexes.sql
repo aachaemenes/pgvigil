@@ -11,11 +11,11 @@
 --   3. indexes: unused, redundant, duplicate and invalid indexes per database (hourly). The redundant and invalid
 --      reads are postgres_dba's i2_redundant_indexes.sql and i4_invalid_indexes.sql (BSD-3, as above) in the
 --      collector; the unused rule is pgvigil's own (postgres_dba's i1 comes from pgx_scripts, whose licence was
---      not read). index_findings: the findings view's ten columns (the join puts them under pgvigil.findings).
--- Retention: wait_sample is monthly partitions (its name joins pgvigil.purge's list at the join); index_state and
--- index_databases rows no longer present are deleted after the retention (the join's purge deletes);
+--      not read). index_findings: the findings view's ten columns (0045 puts them under pgvigil.findings).
+-- Retention: wait_sample is monthly partitions (its name joins pgvigil.purge's list in 0045); index_state and
+-- index_databases rows no longer present are deleted after the retention (0045's purge deletes);
 -- statements_monitor_seen keeps two days of bucket keys and trims itself (a bucket older than that is never added);
--- statements_monitor_total is one row per statement: the join's purge deletes the rows whose statements_current row it
+-- statements_monitor_total is one row per statement: 0045's purge deletes the rows whose statements_current row it
 -- removed (and the import restarts a total whose current row is gone).
 
 -- ---------------------------------------------------------------------------------------------------------

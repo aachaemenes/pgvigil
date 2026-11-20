@@ -30,17 +30,17 @@
 #      collects the file's only (filepg), never a page instance
 #   J. the fenced lease: a take-over (the lease made 60 s old) bumps the generation; the first collector, superseded,
 #      drops the page's instances at its next tick; released, it takes the lease back with the next generation
-#   K. a page instance whose server is down is seen failing (the join's review, finding 1): pg-down (its own
+#   K. a page instance whose server is down is seen failing: pg-down (its own
 #      PostgreSQL container) collected, disabled, its server stopped, enabled -> is_active true at once and, within one
 #      interval, a new 'connect:' error and a 'server unreachable' finding; removed and added again while its server is
 #      still down -> the same; pg-never, added while its server is down and never collected -> its instances row at
 #      the add (active) and the same finding; sql-down (a SQL Server page instance on A's container, the last row: the
-#      container stopped) enabled while down -> the same through the SQL Server collector; the join's w9e: pg-wrong
-#      added as sqlserver against a PostgreSQL port (never connects), removed (its row goes: no read reached it) and
-#      added again as postgres -> 200 and collected (finding 1); pg-plat added with platform onprem while nothing
-#      listens on its port, its server started -> first_seen at or after the start (finding 4); sql-never, a SQL
+#      container stopped) enabled while down -> the same through the SQL Server collector; pg-wrong added as
+#      sqlserver against a PostgreSQL port (never connects), removed (its row goes: no read reached it) and added
+#      again as postgres -> 200 and collected; pg-plat added with platform onprem while nothing listens on its port,
+#      its server started -> first_seen at or after the start; sql-never, a SQL
 #      Server page instance never collected (A's container stopped) -> its row at the add and 'server unreachable'
-#   L. the page on a serve with no UI login (-no-login, the join's w9c): the list renders read only, a plain note in the
+#   L. the page on a serve with no UI login (-no-login): the list renders read only, a plain note in the
 #      page's own words ('adding and changing instances needs the UI login: ...'), no error box, every control that
 #      writes off - a field natively disabled, a button aria-disabled (B7 DONE-2: in the tab order, a click does
 #      nothing) - saying why on hover, the grids' filters still usable; an add through the API refused with the
@@ -77,7 +77,7 @@
 # catch. Every password is made at run time and reaches the tools through environment files or the environment.
 #
 # The wiring (sched.go, repo.go, main.go, serve.go, web.go, config.go's Resolve, main.ts, router.ts) is
-# scripts/proof-instances-wiring.patch until the release join holds it: applied to the run's own copy with patch -p1
+# scripts/proof-instances-wiring.patch until the release holds it: applied to the run's own copy with patch -p1
 # when the tree does not hold it yet.
 #
 # NOT PROVEN HERE: the DBA Dash source (no DBA Dash repository on the box: its read is the one query in
@@ -182,7 +182,12 @@ psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $PGDB" >/dev/null
 PGDSN="$ADMIN_DSN"; PGDSN="${PGDSN/dbname=postgres/dbname=$PGDB}"; [[ "$PGDSN" == *"dbname=$PGDB"* ]] || PGDSN="$PGDSN dbname=$PGDB"
 CFGD=$TMPD/etc; mkdir -p "$CFGD"
 export PGV_FILE_DSN="host=127.0.0.1 port=$PA user=postgres password=$PG_PW dbname=postgres"
-export PGV_COL_DSN="host=127.0.0.1 port=5432 user=$COL password=$COL_PW dbname=$PGDB"
+# the collector's login on the server ADMIN_DSN names (its database and roles are made there; a driver's own PostgreSQL
+# may listen on another port than 5432)
+[[ "$ADMIN_DSN" != *://* ]] || fail "ADMIN_DSN must be in keyword form (host=... port=... user=...): its host and port are read for the collector's DSN"
+dsnkey() { sed -n "s/.*\b$1=\([^ ]*\).*/\1/p" <<<"$ADMIN_DSN" | head -1; }
+ADM_HOST=$(dsnkey host); ADM_PORT=$(dsnkey port)
+export PGV_COL_DSN="host=${ADM_HOST:-127.0.0.1} port=${ADM_PORT:-5432} user=$COL password=$COL_PW dbname=$PGDB"
 cat > "$CFGD/pgvigil.yaml" <<EOF
 repository:
   dsn: "$PGDSN"
@@ -546,7 +551,7 @@ T3=$(pq "SELECT now()")
 code=$(api POST admin/instances "$(js op=enable name=sql-down)"); [[ "$code" == 200 && "$(active sql-down)" == true ]] || fail "K: enable sql-down: $code, is_active $(active sql-down)"
 unreachable sql-down "$T3" "a SQL Server enabled while its server is down"
 code=$(api POST admin/instances "$(js op=remove name=sql-down)"); [[ "$code" == 200 ]] || fail "K: remove sql-down: $code"
-# the join's w9e, finding 1: a page add that never connects left a row that kept its engine for good
+# a page add that never connects left a row that kept its engine for good
 code=$(api POST admin/instances "$(js op=add name=pg-wrong engine=sqlserver host=127.0.0.1 port="$PA" auth=sql login=sa options=TrustServerCertificate=true password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add pg-wrong as sqlserver: $code $(cat "$TMPD/ans.json")"
 T4=$(pq "SELECT now()")
 unreachable pg-wrong "$T4" "pg-wrong added as sqlserver against a PostgreSQL port"
@@ -559,7 +564,7 @@ waitcol pg-wrong 120 "K"
 code=$(api POST admin/instances "$(js op=remove name=pg-wrong)"); [[ "$code" == 200 ]] || fail "K: remove pg-wrong (postgres): $code"
 [[ "$(pq "SELECT count(*) || ' ' || bool_or(is_active)::text FROM pgvigil.instances WHERE name = 'pg-wrong'")" == "1 false" ]] || fail "K: pg-wrong, read once, must keep its row (history) at its remove: $(pq "SELECT count(*) FROM pgvigil.instances WHERE name = 'pg-wrong'")"
 echo "K: pg-wrong: added as sqlserver against a PostgreSQL port (unreachable), removed (its never-read row gone), added again as postgres -> 200 and collected; removed again after a read -> its row kept, inactive"
-# the join's w9e, finding 4: an explicit platform's first read moves first_seen (the Diff page's 'history from')
+# an explicit platform's first read moves first_seen (the Diff page's 'history from')
 PP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 code=$(api POST admin/instances "$(js op=add name=pg-plat engine=postgres host=127.0.0.1 port="$PP" dbname=postgres auth=password login=postgres platform=onprem password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add pg-plat: $code $(cat "$TMPD/ans.json")"
 [[ "$(pq "SELECT platform || ' ' || (server_version IS NULL)::text FROM pgvigil.instances WHERE name = 'pg-plat'")" == "onprem true" ]] || fail "K: pg-plat's row at its add: $(pq "SELECT platform, server_version FROM pgvigil.instances WHERE name = 'pg-plat'")"
@@ -616,7 +621,7 @@ console.log(`filters ${await ev(`[...document.querySelectorAll('main .filter-btn
 console.log(`titles ${await ev(`[...new Set([...document.querySelectorAll('main button:disabled, main button[aria-disabled="true"]')].map(b => b.title))].join(' | ')`)}`);
 console.log(`rows ${await ev(`document.querySelectorAll('main table tbody tr').length`)}`);
 console.log(`cloud ${await ev(`[...document.querySelectorAll('main .actions button')].filter(b => b.textContent === 'Read the regions again').length`)} ${await ev(`[...document.querySelectorAll('main .actions button')].filter(b => b.textContent === 'Edit' && / cloud tags$/.test(b.getAttribute('aria-label') ?? '')).length`)}`);
-// a sort redraws a grid's rows through its columns' formats (the join's w9e, finding 5): each grid's first header
+// a sort redraws a grid's rows through its columns' formats: each grid's first header
 // clicked, then the controls that write counted again
 console.log(`sorted ${await ev(`[...document.querySelectorAll('main table.grid thead tr:first-child th:first-child')].map(th => (th.click(), 1)).length`)}`);
 await sleep(500);
@@ -631,13 +636,13 @@ echo "$lout" | grep -q '^ready true$' && echo "$lout" | grep -q '^errors 0$' && 
 echo "$lout" | grep -qF "note \"Read only: $NL.\"" && echo "$lout" | grep -qxF "titles $NL" || fail "L: the note or the hover words"
 [[ "$(echo "$lout" | sed -n 's/^rows //p')" -gt 0 ]] || fail "L: the list did not render"
 echo "$lout" | grep -qx 'cloud 1 3' || fail "L: the cloud sources' controls (want 'Read the regions again' once, a cloud Edit three times): $(echo "$lout" | grep '^cloud')"
-[[ "$(echo "$lout" | sed -n 's/^sorted //p')" -ge 1 && "$(echo "$lout" | sed -n 's/^actions2 //p')" -gt 0 ]] && echo "$lout" | grep -q '^enabled2 0$' || fail "L: after a sort of each grid a control that writes is enabled again, or no grid / action was redrawn (the join's w9e, finding 5)"
+[[ "$(echo "$lout" | sed -n 's/^sorted //p')" -ge 1 && "$(echo "$lout" | sed -n 's/^actions2 //p')" -gt 0 ]] && echo "$lout" | grep -q '^enabled2 0$' || fail "L: after a sort of each grid a control that writes is enabled again, or no grid / action was redrawn"
 kill "$SRVLPID" 2>/dev/null || true; SRVLPID=
 echo "ok   L: on -no-login the page lists the instances read only: the note 'Read only: $NL.', no error box, every control that writes disabled with those words on hover, still after a sort redraws each grid, the filters usable; an add refused 403 with them, nothing written"
 # L2: the actions door's audit login off: serve on the UI's read-only repository login (docs/app.md), the UI login on
 # (the walk signs in by fetch, then loads the page anew: a hash change alone does not redraw the sign-in form)
 printf "CREATE ROLE %s LOGIN PASSWORD '%s' IN ROLE pgvigil_reader, pgvigil_auth;\n" "$RDL" "$RDL_PW" | psql "$ADMIN_DSN" -Xq -v ON_ERROR_STOP=1 >/dev/null || fail "L2: the read-only login"
-export PGV_RD_DSN="host=127.0.0.1 port=5432 user=$RDL password=$RDL_PW dbname=$PGDB"
+export PGV_RD_DSN="host=${ADM_HOST:-127.0.0.1} port=${ADM_PORT:-5432} user=$RDL password=$RDL_PW dbname=$PGDB"
 sed "s|dsn: \"$PGDSN\"|dsn: env:PGV_RD_DSN|" "$CFGD/pgvigil.yaml" > "$CFGD/reader.yaml"
 PORTR=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'); UR="http://127.0.0.1:$PORTR"
 (umask 022; exec "$TMPD/pgvigil" serve -config "$CFGD/reader.yaml" -listen "127.0.0.1:$PORTR") >"$TMPD/serve-rd.log" 2>&1 & SRVRPID=$!
@@ -930,4 +935,89 @@ for n in z.namelist():
 sys.exit(bad)
 PY
 echo "ok   G2: after L2, M and N no password (the read-only login's and the door's too) in the repository's tables, serve's three logs, the run's log, the API's last answer or M's report zip ($(python3 -c 'import sys, zipfile; print(len(zipfile.ZipFile(sys.argv[1]).namelist()))' "$TMPD/rep.zip") files)"
-echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; read only on -no-login and with the audit login off, no error box; a page instance never read says so until its first read; the NOT PROVEN lines above stand; the page door: off on a fresh install, on with doors.page_instance_reads, serve's own identity refused, EXPLAIN / the advisor / actions off, at once on this serve, report mail as the owner, sp_start_job refused)"
+# P (task B24p): the aws: and azure: blocks of page instances. Off by default: serve (this file's doors: none) refuses a
+# Cloud part in the switch's words and writes nothing. Then the collector of B is stopped (H graded it already) and
+# one is started on collector.yaml + doors.page_cloud_blocks: on + io and mssql_failover_groups every 20 s (the file's
+# global schedules: reach page instances); three page instances get their blocks through the store's function. Their
+# hosts are the providers' own name forms under a random per-run label (pgvproof-<hex>: refused here if it resolves,
+# so no stranger's server is ever dialled) and nothing answers there, so the rows prove the MERGE, not the cloud:
+# pg-cloud (PostgreSQL, rds, aws) and ms-cloud (SQL Server, azuresqldb, azure) keep their blocks, so io and
+# mssql_failover_groups run as loops whose rows are the failed connect's ('connect: ...': the collection's own read
+# and the collector's provider check come after the connect - those are the Go cases'); pg-alias (a host that is not
+# an RDS endpoint) loses its block at the merge, so io never runs for it (no row) and the collector's log names both
+# names; pg-cloud's io row moves every 20 s while the block is set, and after the clear (the collector's list read at
+# the clear's generation) it does not move for 70 s.
+echo "== P. B24p: cloud blocks on page instances =="
+# N stopped both serves (N2: one renderer of report mail; the door serve after N7): P has a serve of its own on
+# pgvigil.yaml (doors: none, so its first row gets the switch's refusal) on a fresh port, the UI login again (the
+# cookie jar of a stopped serve is void); the cleanup stops it
+PORTP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'); U="http://127.0.0.1:$PORTP"
+(umask 022; exec "$TMPD/pgvigil" serve -config "$CFGD/pgvigil.yaml" -listen "127.0.0.1:$PORTP") >"$TMPD/serve-p.log" 2>&1 & SRVPID=$!
+for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.1; done
+kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve-p.log" >&2; fail "P: its serve exited"; }
+[[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "P: the UI login on its serve"
+PRX="pgvproof-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+CLOUDH="$PRX.c0proof.us-east-2.rds.amazonaws.com"; AZH="$PRX.database.windows.net"
+for h in "$CLOUDH" "$AZH" "billing-$PRX.corp.example"; do getent hosts "$h" >/dev/null && fail "P: $h resolves (a random name must not: no stranger's server is dialled)"; done
+cbody() { python3 -c 'import json, sys
+d = {"op": "add", "name": sys.argv[1], "engine": sys.argv[2], "platform": sys.argv[3], "host": sys.argv[4], "port": sys.argv[5], "dbname": sys.argv[6],
+     "auth": sys.argv[7], "login": "pgv_cloud", "password": "Pv9cloud-proof!"}
+if len(sys.argv) > 8: d["cloud"] = json.loads(sys.argv[8])
+print(json.dumps(d))' "$@"; }
+code=$(api POST admin/instances "$(cbody pg-cloud postgres rds "$CLOUDH" 5432 postgres password "{\"aws\":{\"region\":\"us-east-2\",\"db_instance\":\"$PRX\"}}")")
+[[ "$code" == 409 && "$(cat "$TMPD/ans.json")" == *page_cloud_blocks* && "$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE name = 'pg-cloud'")" == 0 ]] \
+  || fail "P: a Cloud part with the switch off: $code $(head -c 300 "$TMPD/ans.json") (want 409 in the switch's words, nothing written)"
+for a in "pg-cloud postgres rds $CLOUDH 5432 postgres password" "ms-cloud sqlserver azuresqldb $AZH 1433 app sql" \
+         "pg-alias postgres rds billing-$PRX.corp.example 5432 postgres password"; do
+  # shellcheck disable=SC2086
+  code=$(api POST admin/instances "$(cbody $a)"); [[ "$code" == 200 ]] || fail "P: add ${a%% *}: $code $(head -c 300 "$TMPD/ans.json")"
+done
+kill "$RUNPID" 2>/dev/null || true; wait "$RUNPID" 2>/dev/null || true
+grep -qE '^(doors|schedules):' "$CFGD/collector.yaml" && fail "P: collector.yaml has a doors: or schedules: key already"
+{ cat "$CFGD/collector.yaml"; printf 'doors:\n  page_cloud_blocks: on\nschedules:\n  io: 20s\n  mssql_failover_groups: 20s\n'; } > "$CFGD/collector-cloud.yaml"
+"$TMPD/pgvigil" run -config "$CFGD/collector-cloud.yaml" >"$TMPD/run-cloud.log" 2>&1 & RUNPID=$!
+GP=$(gen)
+pq "SELECT pgvigil.import_admin_instance_cloud(now(), '{\"op\":\"set\",\"ui_user\":\"proof\",\"name\":\"pg-cloud\",\"aws\":{\"region\":\"us-east-2\",\"db_instance\":\"$PRX\"},\"azure\":null}')->>'outcome'" | grep -qx done || fail "P: set pg-cloud's block"
+pq "SELECT pgvigil.import_admin_instance_cloud(now(), '{\"op\":\"set\",\"ui_user\":\"proof\",\"name\":\"ms-cloud\",\"aws\":null,\"azure\":{\"subscription\":\"0b1f6471-1bf0-4dda-aec3-111122223333\",\"resource_group\":\"rg-proof\",\"server\":\"$PRX\"}}')->>'outcome'" | grep -qx done || fail "P: set ms-cloud's block"
+pq "SELECT pgvigil.import_admin_instance_cloud(now(), '{\"op\":\"set\",\"ui_user\":\"proof\",\"name\":\"pg-alias\",\"aws\":{\"region\":\"us-east-2\",\"db_instance\":\"$PRX\"},\"azure\":null}')->>'outcome'" | grep -qx done || fail "P: set pg-alias's block"
+[[ "$(gen)" -gt "$GP" ]] || fail "P: the blocks did not move the generation"
+# the collector reads the list at once when it starts and then every 15 s: its first read can fall between the three
+# sets above, and the rows of the two it holds then come within seconds - so nothing below is read before a list read
+# at (or past) the last set's generation, the read whose lines name pg-alias's block
+GS=$(gen); lr=0
+for _ in $(seq 1 45); do
+  g=$(grep -oE 'instances: list read.*generation=[0-9]+' "$TMPD/run-cloud.log" | grep -oE '[0-9]+$' | sort -n | tail -1 || true)
+  [[ -n "$g" && "$g" -ge "$GS" ]] && { lr=1; break; }
+  kill -0 "$RUNPID" 2>/dev/null || break
+  sleep 2
+done
+# cloudsay: the collector's own lines for a failure of P (a log without one, or a collector that is gone, still gets
+# its FAIL line: a grep that finds nothing must not end the script before it)
+cloudsay() { grep -E 'instances: ' "$TMPD/run-cloud.log" | tail -12 >&2 || true; kill -0 "$RUNPID" 2>/dev/null || { echo "the collector exited; its last lines:" >&2; tail -5 "$TMPD/run-cloud.log" >&2 || true; }; }
+[[ "$lr" == 1 ]] || { cloudsay; fail "P: the collector did not read the list at the sets' generation $GS in 90 s"; }
+row() { pq "SELECT coalesce((SELECT d.status || '|' || coalesce(d.note, '') FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND d.collection = '$2'), 'none')"; }
+waitrow() { local v=none; for _ in $(seq 1 "$3"); do v=$(row "$1" "$2"); [[ "$v" != none ]] && { echo "$v"; return 0; }; sleep 2; done; echo "$v"; return 1; }
+IO=$(waitrow pg-cloud io 300) || { tail -30 "$TMPD/run-cloud.log" >&2; fail "P: pg-cloud's io has no row in 600 s (its block did not open a loop): $IO"; }
+FG=$(waitrow ms-cloud mssql_failover_groups 300) || { tail -30 "$TMPD/run-cloud.log" >&2; fail "P: ms-cloud's mssql_failover_groups has no row in 600 s: $FG"; }
+# the rows as they are: a loop the block opened, whose run failed at the connect (nothing answers there)
+[[ "$IO" == "error|connect: "* ]] || fail "P: pg-cloud's io row is not the failed connect's: '$IO'"
+[[ "$FG" == "error|connect: "* ]] || fail "P: ms-cloud's mssql_failover_groups row is not the failed connect's: '$FG'"
+grep -q "cloud block is not used.*pg-alias.*billing-$PRX.corp.example" "$TMPD/run-cloud.log" || { cloudsay; fail "P: the collector did not log pg-alias's refused block with its host"; }
+grep -q "cloud block is not used.*pg-cloud\|cloud block is not used.*ms-cloud" "$TMPD/run-cloud.log" && fail "P: a block whose host matches was not used"
+[[ "$(row pg-alias io)" == none ]] || fail "P: pg-alias's io ran with a refused block: $(row pg-alias io)"
+echo "P: pg-cloud io '${IO:0:160}'; ms-cloud failover groups '${FG:0:160}'"
+iot() { pq "SELECT coalesce(max(d.snapshot_at)::text, '') FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'pg-cloud' AND d.collection = 'io'"; }
+# the check below can fail: while the block is set, the row moves within 70 s (20 s interval)
+TA=$(iot); sleep 70; TB=$(iot)
+[[ -n "$TA" && "$TA" != "$TB" ]] || fail "P: pg-cloud's io row did not move in 70 s with its block set ($TA -> $TB): the clear's check would prove nothing"
+pq "SELECT pgvigil.import_admin_instance_cloud(now(), '{\"op\":\"clear\",\"ui_user\":\"proof\",\"name\":\"pg-cloud\"}')->>'outcome'" | grep -qx done || fail "P: clear pg-cloud's block"
+GC=$(gen)
+lr=0; for _ in $(seq 1 30); do grep -E "instances: list read.*generation=$GC( |$)" "$TMPD/run-cloud.log" >/dev/null && { lr=1; break; }; sleep 2; done
+[[ "$lr" == 1 ]] || fail "P: the collector did not read the list at the clear's generation $GC in 60 s"
+sleep 2; T0=$(iot); sleep 70; T1=$(iot)
+[[ "$T0" == "$T1" ]] || fail "P: pg-cloud's io ran after its block was cleared ($T0 -> $T1)"
+kill -0 "$RUNPID" 2>/dev/null || fail "P: the cloud collector stopped"
+kill -0 "$SRVPID" 2>/dev/null || { tail -20 "$TMPD/serve-p.log" >&2; fail "P: its serve stopped"; }
+kill "$SRVPID" 2>/dev/null || true; SRVPID=
+echo "ok   P: B24p - a Cloud part refused in doors.page_cloud_blocks' words on serve with the switch off (nothing written); with the switch on in the collector, pg-cloud's aws: block and ms-cloud's azure: block kept at the merge (io and mssql_failover_groups loops: their rows the failed connect's, random hosts that do not resolve); pg-alias's block (host not an RDS endpoint) dropped with both names in the log, no io row, the instance kept; pg-cloud's io row moved every 20 s with the block and not in 70 s after the list read at the clear's generation"
+echo "proof-instances: OK (B24p's page cloud blocks (P); the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; read only on -no-login and with the audit login off, no error box; a page instance never read says so until its first read; the NOT PROVEN lines above stand; the page door: off on a fresh install, on with doors.page_instance_reads, serve's own identity refused, EXPLAIN / the advisor / actions off, at once on this serve, report mail as the owner, sp_start_job refused)"

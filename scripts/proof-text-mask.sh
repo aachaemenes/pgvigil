@@ -20,7 +20,7 @@
 # SQL Server on Linux has no xp_cmdshell, so the sqlcmd command line rides in a string literal of the running
 # statement: the statement text the requests sample stores is the same text an xp_cmdshell call would carry.
 #
-# Expected (written before the first run; the base f8e89d2 is RED on A1, A3, A4, A5 and B1-B6). Part A's way of
+# Expected (written before the first run; the code before the fix is RED on A1, A3, A4, A5 and B1-B6). Part A's way of
 # keeping a request running changed after the first three red runs, its expected outcome did not: a CROSS JOIN
 # statement holding a passphrase function had its whole text withheld by the server (now A2), and one without it
 # finished before the read, so A gave no evidence either way; a request waiting on a lock stays until it is read.
@@ -35,13 +35,13 @@
 #     proof's red run, where it hid the whole statement of the first draft). Expected: its row is stored with no
 #     statement and S2 is not in the dump - the server's own redaction, written down so a change of it shows.
 #  A6. the same server read as an instance under query_text normalized and one under none: neither stores S1-S4.
-#  A7 (the 415 review's fold, written before its first run): the stored statement holds each masked form - '-P <masked>',
+#  A7 (written before its first run): the stored statement holds each masked form - '-P <masked>',
 #     '-P<masked>' (the doubled-quote form) and 'SQLCMDPASSWORD = <masked>' - so a cut text cannot pass A1-A4 by itself.
-#  X (the fold): Extended Events. Before part A the proof sets 'blocked process threshold (s)' to 5 on its container
+#  X: Extended Events. Before part A the proof sets 'blocked process threshold (s)' to 5 on its container
 #     and runs `pgvigil mssql-xe -print` there; part A's two waiting UPDATEs then raise blocked process reports, which
 #     hold each blocked session's input buffer. `collect -once mssql_xe` stores them: X1 at least one report of the
-#     -P session is stored, and each such report holds '&lt;masked&gt;' and is a well-formed XML document (the join
-#     with task 406, written before its first run: the mask writes <masked> escaped inside an XML document - a raw
+#     -P session is stored, and each such report holds '&lt;masked&gt;' and is a well-formed XML document (written
+#     with task 406, before its first run: the mask writes <masked> escaped inside an XML document - a raw
 #     <masked> in an input buffer was an unclosed tag, and the report page could not parse it); the dump checks of
 #     A1-A4 then cover the reports too. A
 #     report of the passphrase session is written down as the server gives it (the server withheld its text in the
@@ -69,7 +69,7 @@ die() { echo "FAIL (setup) $*"; exit 1; }
 MADE_DB=
 cleanup() {
   rc=$?
-  docker rm -f "$SQL" "$PGC" >/dev/null 2>&1
+  docker rm -fv "$SQL" "$PGC" >/dev/null 2>&1
   if [ -n "$MADE_DB" ]; then psql "$ADMIN_DSN" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped"; fi
   rm -rf "$TMPD"
   exit $rc

@@ -109,6 +109,7 @@ func (amcheckCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info pl
 			continue
 		}
 		out = append(out, rows...)
+		out = append(out, amcheckUnchecked(rows)...) // relations left unchecked: the run ends partial (health.go)
 	}
 	return out, nil
 }
@@ -123,7 +124,7 @@ func amcheckOther(ctx context.Context, in config.Instance, info platform.Info, d
 		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
 	cfg.Database = db
-	conn, err := connectCounted(ctx, in.Name, cfg)
+	conn, err := connectCounted(ctx, in, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}

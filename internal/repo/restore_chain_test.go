@@ -13,10 +13,10 @@ import (
 )
 
 // On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it): stubbed reads of mssql_restore_chain through its import
-// and the chain the repository decides (task 304's fold F1-F3, F7, F8): the steps in LSN order, the differential on its
-// full, a newer copy-only full as the start set, a NUL log as a hole, a gap as a break or held while a replica's read is
-// older than the set after it, a copy-only log never a step, the previous fork's full past the fork point not taken; and
-// the 304 review's rows: a restore over the database whose new fork's LSNs lie BELOW the old fork's (the fork of the
+// and the chain the repository decides: the steps in LSN order, the differential on its full, a newer copy-only full
+// as the start set, a NUL log as a hole, a gap as a break or held while a replica's read is older than the set after
+// it, a copy-only log never a step, the previous fork's full past the fork point not taken; and a restore over the
+// database whose new fork's LSNs lie BELOW the old fork's (the fork of the
 // newest set by its finish), a capped read and a replica without a start set (a gap below what they listed is held 'not
 // read whole'), a distributed group (held 'not judged'), a backup_set_uuid sent twice, a 25-digit LSN round trip, the
 // device and NUL marks, a log's start as its restorable point where msdb has no last_valid_restore_time.

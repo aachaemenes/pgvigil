@@ -4,9 +4,11 @@ package web
 // its instance menu's Pause/Resume Collections and Configure Schedule):
 //
 //   GET /api/retention[?days=N]               every table of the repository's schema: its size with its partitions,
-//                                             what the retention does to it (read from pgvigil.purge()'s own text and
-//                                             the text of the *_purge functions it calls, so the page follows the
-//                                             functions as installed; an hours table's own age from
+//                                             what the retention does to it (read from pgvigil.purge()'s own text, the
+//                                             text of the *_purge functions it calls and of the collector's beat
+//                                             functions - import_collector_* and collector_trim, which trim their own
+//                                             tables at a fixed age - so the page follows the functions as installed;
+//                                             an hours table's own age from
 //                                             pgvigil.hours_retention, 0139), its oldest partition or oldest row, the days that
 //                                             oldest row is from now, whether that age can be judged against the purge
 //                                             age, and what a purge with -days N would drop (N 1-3650, default 30: the
@@ -37,13 +39,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// sqlRetentionSource is the text of purge(int) and of the *_purge functions it calls (pg_proc is readable by every
-// login); $1 the names of the called ones.
+// sqlRetentionSource is the text of purge(int), of the *_purge functions it calls ($1 their names) and of the
+// collector's beat functions, which trim their own tables at a fixed age, whatever purge's (0121's
+// import_collector_beat and collector_trim, 0254's import_collector_probe; pg_proc is readable by every login).
 const sqlRetentionSource = `
 SELECT p.proname, p.prosrc
   FROM pg_proc p
   JOIN pg_namespace n ON n.oid = p.pronamespace
- WHERE n.nspname = 'pgvigil' AND (p.proname = 'purge' OR p.proname = ANY($1::text[]))
+ WHERE n.nspname = 'pgvigil' AND (p.proname = 'purge' OR p.proname = ANY($1::text[])
+       OR p.proname LIKE 'import\_collector\_%' OR p.proname = 'collector_trim')
  ORDER BY p.proname, p.oid DESC`
 
 // sqlRetentionTables is every table of schema pgvigil that is not a partition: its size with its partitions (each
@@ -56,10 +60,13 @@ WITH t AS (
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
    WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
-), p AS (
+), p AS MATERIALIZED (
+  -- MATERIALIZED with the strict patterns: the parses then meet only the joined rows (a pgvigil parent's partitions);
+  -- inlined, a month test outside could reach every pg_class row, and a TOAST table pg_toast_<six digits> ending in no
+  -- month (a database past OID 100,000) failed with 22008 (N4-P10, purge()'s fault)
   SELECT i.inhparent AS parent, k.relname, pg_total_relation_size(k.oid) AS bytes, k.reltuples,
-         CASE WHEN k.relname ~ '_[0-9]{6}$' THEN to_date(right(k.relname, 6) || '01', 'YYYYMMDD') END AS month,
-         CASE WHEN k.relname ~ '_[0-9]{8}$' THEN to_date(right(k.relname, 8), 'YYYYMMDD') END AS day
+         CASE WHEN k.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(k.relname, 6) || '01', 'YYYYMMDD') END AS month,
+         CASE WHEN k.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])$' THEN to_date(right(k.relname, 8), 'YYYYMMDD') END AS day
     FROM pg_inherits i
     JOIN pg_class k ON k.oid = i.inhrelid
    WHERE i.inhparent IN (SELECT oid FROM t)
@@ -83,25 +90,33 @@ SELECT t.relname AS table_name, t.relkind = 'p' AS partitioned,
 
 // sqlRetentionHours is every hours table of pgvigil.hours_retention (0139): its own age in days (not purge's -days) and
 // the monthly partitions that age drops (its function, called by purge()'s last block, holds the drop; purge()'s text
-// does not name these parents).
+// does not name these parents); partitioned false for one with no partitions, whose rows its own writer trims
+// (collection_health_hour, 0166: import_collection_health).
 const sqlRetentionHours = `
 SELECT h.table_name, h.days,
-       count(c.oid) FILTER (WHERE (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => h.days))::int AS drop_months,
-       coalesce(sum(pg_total_relation_size(c.oid)) FILTER (WHERE (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC'
-                                                             < now() - make_interval(days => h.days)), 0)::bigint AS drop_bytes
+       count(c.oid) FILTER (WHERE (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
+                                   + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => h.days))::int AS drop_months,
+       coalesce(sum(pg_total_relation_size(c.oid)) FILTER (WHERE (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
+                                                                  + interval '1 month') AT TIME ZONE 'UTC'
+                                                             < now() - make_interval(days => h.days)), 0)::bigint AS drop_bytes,
+       coalesce((SELECT k.relkind = 'p' FROM pg_class k WHERE k.oid = to_regclass('pgvigil.' || h.table_name)), false) AS partitioned
   FROM pgvigil.hours_retention h
   LEFT JOIN pg_inherits i ON i.inhparent = to_regclass('pgvigil.' || h.table_name)
-  LEFT JOIN pg_class c ON c.oid = i.inhrelid AND c.relname ~ '_[0-9]{6}$'
+  LEFT JOIN pg_class c ON c.oid = i.inhrelid AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
  GROUP BY h.table_name, h.days`
 
 // del is one DELETE of the purge functions: the time column it compares with the age, whether it takes only the rows
 // no longer present, the table whose rows keep these (its first NOT EXISTS), and whether it is a pure age rule (the
-// age comparison and nothing else, so a row older than the age means the purge did not run with that age).
+// age comparison and nothing else, so a row older than the age means the purge did not run with that age). days is a
+// fixed age of its own ('< now() - interval '8 days”: the collector's beats), whatever the purge's; whole: that
+// comparison and nothing else.
 type del struct {
 	column string
 	absent bool
 	sameAs string
 	pure   bool
+	days   int
+	whole  bool
 }
 
 // rule is what the purge functions do to one table.
@@ -117,12 +132,37 @@ var (
 	reQuoted      = regexp.MustCompile(`'([a-z_][a-z0-9_]*)'`)
 	reCalled      = regexp.MustCompile(`pgvigil\.([a-z_][a-z0-9_]*_purge)\s*\(`)
 	reDelete      = regexp.MustCompile(`(?is)DELETE\s+FROM\s+pgvigil\.([a-z_][a-z0-9_]*)(?:\s+[a-z_][a-z0-9_]*)?\s+WHERE\s+(.*?);`)
-	reAge         = `(?:now\(\)\s*-\s*make_interval\(days\s*=>\s*p_days\)|v_old|date_trunc\(.*\)|\(SELECT\s+max)`
+	reAge         = `(?:now\(\)\s*-\s*make_interval\(days\s*=>\s*p_days\)|v_old|date_trunc\(.*\)|\(SELECT\s+max|now\(\)\s*-\s*interval\s*'\d+\s+days?')`
 	reTimeCompare = regexp.MustCompile(`(?is)(?:^|[\s(])(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)\s*<\s*` + reAge)
 	rePure        = regexp.MustCompile(`(?is)^\s*(?:NOT\s+(?:[a-z_][a-z0-9_]*\.)?is_present\s+AND\s+)?(?:[a-z_][a-z0-9_]*\.)?[a-z_][a-z0-9_]*\s*<\s*(?:now\(\)\s*-\s*make_interval\(days\s*=>\s*p_days\)\s*$|v_old\s*$|date_trunc\(.*$)`)
 	reAbsent      = regexp.MustCompile(`(?i)NOT\s+(?:[a-z_][a-z0-9_]*\.)?is_present`)
 	reNotExists   = regexp.MustCompile(`(?i)NOT\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+pgvigil\.([a-z_][a-z0-9_]*)`)
+	// a fixed age ('< now() - interval '8 days''), and a WHERE that is that comparison alone (a column or an expression
+	// of columns before it)
+	reFixed      = regexp.MustCompile(`(?is)<\s*now\(\)\s*-\s*interval\s*'(\d+)\s+days?'`)
+	reFixedWhole = regexp.MustCompile(`(?is)^\s*(?:coalesce\([a-z0-9_,\s.]*\)|(?:[a-z_][a-z0-9_]*\.)?[a-z_][a-z0-9_]*)\s*<\s*now\(\)\s*-\s*interval\s*'\d+\s+days?'\s*$`)
+	// a function argument other than the purge's age (p_minute, p_id): a DELETE bounded by its call's own arguments
+	reArg = regexp.MustCompile(`\bp_[a-z0-9_]+\b`)
+	// collector_trim (0121): its own cut and time column, and the tables the beats trim through it
+	reTrimBody = regexp.MustCompile(`(?is)DELETE\s+FROM\s+pgvigil\.%I\s+WHERE\s+([a-z_][a-z0-9_]*)\s*>=`)
+	reTrimCut  = regexp.MustCompile(`(?is)now\(\)\s*-\s*interval\s*'(\d+)\s+days?'`)
+	reTrimCall = regexp.MustCompile(`collector_trim\(\s*'([a-z_][a-z0-9_]*)'\s*\)`)
 )
+
+// ownRowsOnly: a DELETE that compares no age, keeps no table's rows and names its call's own arguments (other than the
+// purge's p_days) - a beat deleting its own late rows (0121: minute = p_minute AND collector_id = p_id) - is no
+// retention rule.
+func ownRowsOnly(where string) bool {
+	if reTimeCompare.MatchString(where) || reFixed.MatchString(where) || reNotExists.MatchString(where) || reAbsent.MatchString(where) {
+		return false
+	}
+	for _, a := range reArg.FindAllString(where, -1) {
+		if a != "p_days" {
+			return true
+		}
+	}
+	return false
+}
 
 // purgeRules reads the purge functions' texts: the parents whose monthly partitions purge() drops, the parents whose
 // daily partitions a called function drops, and every DELETE of a table.
@@ -138,15 +178,36 @@ func purgeRules(srcs []string) map[string]*rule {
 			out[m[1]] = &rule{kind: "daily"}
 		}
 	}
+	add := func(table string, d del) {
+		r := out[table]
+		if r == nil {
+			r = &rule{kind: "rows"}
+			out[table] = r
+		}
+		if r.kind != "rows" {
+			return
+		}
+		for _, x := range r.dels {
+			if x == d { // the same rule twice (0254's guarded fallback beside collector_trim): once
+				return
+			}
+		}
+		r.dels = append(r.dels, d)
+	}
+	// collector_trim's own cut and column: the tables the beats trim through it take them
+	trimDays, trimColumn := 0, ""
+	for _, src := range srcs {
+		if b := reTrimBody.FindStringSubmatch(src); b != nil {
+			if c := reTrimCut.FindStringSubmatch(src); c != nil {
+				trimDays, _ = strconv.Atoi(c[1])
+				trimColumn = b[1]
+			}
+		}
+	}
 	for _, src := range srcs {
 		for _, m := range reDelete.FindAllStringSubmatch(src, -1) {
 			table, where := m[1], m[2]
-			r := out[table]
-			if r == nil {
-				r = &rule{kind: "rows"}
-				out[table] = r
-			}
-			if r.kind != "rows" {
+			if ownRowsOnly(where) {
 				continue
 			}
 			d := del{absent: reAbsent.MatchString(where), pure: rePure.MatchString(where)}
@@ -156,7 +217,16 @@ func purgeRules(srcs []string) map[string]*rule {
 			if x := reNotExists.FindStringSubmatch(where); x != nil {
 				d.sameAs = x[1]
 			}
-			r.dels = append(r.dels, d)
+			if f := reFixed.FindStringSubmatch(where); f != nil {
+				d.days, _ = strconv.Atoi(f[1])
+				d.whole = reFixedWhole.MatchString(where)
+			}
+			add(table, d)
+		}
+		if trimDays > 0 {
+			for _, m := range reTrimCall.FindAllStringSubmatch(src, -1) {
+				add(m[1], del{column: trimColumn, days: trimDays, whole: true})
+			}
 		}
 	}
 	return out
@@ -182,6 +252,14 @@ func retentionWords(r *rule) (words, column, sameAs string, judged bool) {
 			sameAs = d.sameAs
 		}
 		switch {
+		case d.days > 0 && d.whole:
+			parts = append(parts, fmt.Sprintf("rows older than %d days, whatever the age", d.days))
+		case d.days > 0 && d.sameAs != "":
+			// never alone: a NOT EXISTS beside a fixed age is always more than the comparison (collector_streaks' delete
+			// also takes only the beating host's rows)
+			parts = append(parts, fmt.Sprintf("rows older than %d days that %s no longer names, under conditions, whatever the age", d.days, d.sameAs))
+		case d.days > 0:
+			parts = append(parts, fmt.Sprintf("rows older than %d days, under conditions, whatever the age", d.days))
 		case d.pure && d.absent:
 			parts = append(parts, "rows absent longer than the age")
 		case d.pure:
@@ -336,7 +414,11 @@ func (s *Server) Retention(w http.ResponseWriter, r *http.Request) {
 		}
 		if hr, ok := hours[name]; ok {
 			// an hours table keeps its own age, whatever the -days previewed: its words and drops say that age
-			words, judged, note = fmt.Sprintf("monthly partitions kept %v days, its own age (pgvigil.hours_retention; 'pgvigil purge -hours %s=<days>' sets it)", hr[1], name), false, ""
+			kept := "monthly partitions kept"
+			if part, _ := hr[4].(bool); !part {
+				kept = "rows kept" // no partitions: its own writer trims its rows (collection_health_hour, 0166)
+			}
+			words, judged, note = fmt.Sprintf("%s %v days, its own age (pgvigil.hours_retention; 'pgvigil purge -hours %s=<days>' sets it)", kept, hr[1], name), false, ""
 			drop, dropBytes = hr[2], hr[3]
 		}
 		var actual, oldest any
@@ -406,12 +488,13 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, err)
 		return
 	}
-	own := s.expected.Instances[name]
+	exp := s.expectedNow() // one read per request: the file's and the page instances' intervals
+	own := exp.Instances[name]
 	interval := func(c string) any {
 		if v, ok := own[c]; ok {
 			return v
 		}
-		if v, ok := s.expected.Defaults[c]; ok {
+		if v, ok := exp.Defaults[c]; ok {
 			return v
 		}
 		return nil
@@ -419,10 +502,10 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
 	// default_s: the collector's own interval; 0 = an opt-in collection (off until a schedule gives it one), which a
 	// disabled: line has nothing to do with
 	def := func(c string) any {
-		if v, ok := s.expected.Builtin[c]; ok {
+		if v, ok := exp.Builtin[c]; ok {
 			return v
 		}
-		if v, ok := s.expected.Defaults[c]; ok {
+		if v, ok := exp.Defaults[c]; ok {
 			return v
 		}
 		return nil
@@ -432,7 +515,11 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
 		c, _ := row[0].(string)
 		out.Rows = append(out.Rows, append([]any{interval(c), def(c)}, row...))
 	}
-	s.reply(w, r, map[string]any{"instance": name, "engine": engine, "collections": out}, nil)
+	ans := map[string]any{"instance": name, "engine": engine, "collections": out}
+	for k, v := range s.collectionsSettingsParts(ctx, name, engine) { // ST5b: a page instance's settings for the dialogs
+		ans[k] = v
+	}
+	s.reply(w, r, ans, nil)
 }
 
 // sqlStored is GET /api/stored: the last purge run (its age and end, for the words) and the oldest partitions held. A
@@ -443,9 +530,10 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
 // oldest day. No purge run yet: no rows_from.
 const sqlStored = `
 WITH pr AS (SELECT days, finished_at FROM pgvigil.purge_runs ORDER BY run_id DESC LIMIT 1),
-p AS (
-  SELECT CASE WHEN k.relname ~ '_[0-9]{6}$' THEN to_date(right(k.relname, 6) || '01', 'YYYYMMDD') END AS month,
-         CASE WHEN k.relname ~ '_[0-9]{8}$' THEN to_date(right(k.relname, 8), 'YYYYMMDD') END AS day
+p AS MATERIALIZED (
+  -- MATERIALIZED with the strict patterns, as sqlRetentionTables' p (N4-P10)
+  SELECT CASE WHEN k.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(k.relname, 6) || '01', 'YYYYMMDD') END AS month,
+         CASE WHEN k.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])$' THEN to_date(right(k.relname, 8), 'YYYYMMDD') END AS day
     FROM pg_inherits i
     JOIN pg_class k ON k.oid = i.inhrelid
     JOIN pg_class t ON t.oid = i.inhparent

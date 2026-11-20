@@ -75,7 +75,7 @@ yellow or red even where the server's value is green, and the server's value sta
   measurement, never by a default rule).
 - `ALTER ROLE ALL SET` and an override of the database the collector connects to are also seen by the `instance`
   collection as server-level values (`pg_settings` sources `global` and `database`), so the Best practice grid can
-  show the same value. On such a row the server's value is shown uncoloured, marked as read under the override.
+  show the same value. On such a row the server's value is shown N/A (grey), marked as read under the override.
 - Values that can carry a credential are masked as the server's are.
 
 **Findings.** Every override that breaks a rule is a finding with the rule's severity. The database cells raise
@@ -93,6 +93,13 @@ API: `GET /api/pg/dboptions?instance=<id>[&part=state|databases|overrides|overri
 
 Proof: `scripts/proof-pg-dboptions.sh` (PostgreSQL 13, 16 and 18).
 
+## The request queue (cq, actions)
+
+`cq:` (a collector's `enabled`, `workers`, `result_keep`: read or 7d) and `actions: via:` (serve's `direct` or `queue`) send the
+community tools through the repository, so serve and the collector can run on different machines; both are off by
+default. An instance's `community_allow` (all, none or tool names) and `jobs_allow` (names, `*`, `-name`) are DBA Dash's
+allow-lists. What each key opens, and what serve stops doing in queue mode: [queue.md](queue.md).
+
 ## The custom reports' login on the store (reports_dsn)
 
 ```yaml
@@ -106,6 +113,19 @@ a member of any role but `pgvigil_reader`, a login that may read the hashes, or 
 database than the repository dsn's is refused, with words. Without the key (or when it resolves to nothing) a report on
 the store is refused and the page and a mailed report say why; `serve` starts anyway, with one WARN. Reports on
 instances need nothing here. The rules and the words: [customreports.md](customreports.md).
+
+## The agent door (agents)
+
+```yaml
+agents:
+  enabled: true     # default false: the Investigate button, the Ask box and the Investigations page are not drawn
+```
+
+Off (the default), serve's list `GET /api/investigations` answers 200 with `"enabled": false` and "agents.enabled is off:
+...", one request (`?id=`) and the writes answer 404 with the same words, and the pages draw nothing of the door. On, a person may ask for an investigation of a finding or ask a question; the site's own agent
+claims it through `pgvigil mcp` on a login IN ROLE `pgvigil_reader, pgvigil_investigator`, and an answered question's SELECT
+runs on Run as `reports_dsn` (without that key Run is off, with the words). pgvigil holds no agent, no model and no key:
+[agents.md](agents.md).
 
 ## The Daily checks mail (reports.daily_checks)
 
@@ -129,12 +149,31 @@ key read as what they stand for. `pgvigil serve` reads the block once, at its st
 file and the page, and what the mail holds: `docs/reportmail.md`, *The Daily checks mail*. In a support report
 (`pgvigil report`) the switch, the hour and the zone are shown; the addresses, the user and the channel are masked.
 
+## Saved views: who writes shared ones (views.shared_editors)
+
+```yaml
+views:
+  shared_editors: [ann, bob]   # read and ignored since the roles: a shared view needs the admin role
+```
+
+Every signed-in user saves personal views (a page's state, a dashboard) and reads the shared ones; a shared view is
+created, changed, deleted or made a page's shared default only by a user of the admin role (`docs/roles.md`). A personal view is its owner's
+alone, and removing a user (`pgvigil user remove`) deletes that user's personal views; a shared one stays. Views are
+saved through the actions door's audit login, so saving is off under `-no-login` and on `pgvigil demo -serve`; every
+attempt that reaches the store is kept in `ui_view_log` (a request serve refuses before it - no X-Pgvigil header, a
+body over 256 KB - is not). These rules are serve's: like alert rules, the store's write functions
+(`import_view_save`, `import_view_delete`) are the collector's door, so a login of the collector's role can write any
+view as any user - keep the collector's login on the hosts you trust. `views.shared_editors`, the list
+that decided this before the roles, is read and ignored: a viewer or an operator named there is refused like any
+other, and the key goes in a later release.
+
 ## Instances added in the page
 
 Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click
 approves or ignores: a SQL Server Central Management Server (its login needs msdb's `ServerGroupReaderRole`), a DBA Dash
 repository named under `dbadash:`, a server list file, a `pg_service.conf` and a CSV. A server gone from its source is
-marked gone, never removed. The instances of `pgvigil.yaml` are shown read-only. The collector takes a change within
+marked gone, never removed. The instances of `pgvigil.yaml` are shown read-only. An instance added here has its own
+schedules and statement-text policy in its Settings ([instance-settings.md](instance-settings.md)). The collector takes a change within
 15 seconds, without a restart. A disabled instance is collected no more and leaves the fleet's stale and failing
 checks until it is enabled. An instance enabled, or added (again), while its server is down is reported at its first
 read: 'server unreachable' and a failing collection, as for any instance that cannot be reached; so is an instance of `pgvigil.yaml` whose server has never answered (its row is made at that first read, with the file's engine, platform and tags). Until a read of an added instance connects, Admin > Servers, the fleet list, its Summary card and `pgvigil report` say 'not read yet (added <time>)': beside its name on the fleet list (which shows no last-seen time), in place of a last-seen time elsewhere; its 'history from' (the Diff page) is that first read. Removing a page instance no read ever reached (and `pgvigil import dbadash` never filled) removes its row too, so the name can be added again with the other engine; an instance read once, or imported, keeps its row and its history. A network (UNC) path and a `.pgpass`-shaped line are refused as a server list or CSV, and on
@@ -175,6 +214,53 @@ off Windows Kerberos, the login the principal and the driver options naming the 
 (an Entra service principal and its secret) or `entra-identity` (the host's Azure managed identity, no secret): which
 works where is [SQL Server in the cloud](sqlserver-cloud.md#signing-in-without-a-stored-password). Entra and Kerberos
 are not proven against a live server in this release.
+
+### Cloud blocks on a page instance
+
+An instance of `pgvigil.yaml` reads its cloud side through its `aws:` block (CloudWatch IO and logs, Performance
+Insights, Aurora Serverless) or its `azure:` block (an Azure SQL Database's failover groups). An instance added in
+Admin > Instances, or approved from a discovery source, can carry the same blocks (the form's collapsed **Cloud**
+fieldset; an approved proposal gets its block from the cloud's own identity of the server) - but its reads run under
+the **collector host's own cloud identity**, while a page instance may be added by any signed-in user. So the file
+turns them on, off by default on every install:
+
+```yaml
+doors:
+  page_cloud_blocks: on          # let the instances of Admin > Instances carry an aws: or azure: block
+  page_aws_profiles: [prod-read] # the AWS profiles such a block may name (empty = none: the host's default chain)
+```
+
+- **Off** (the default): every page block is kept in the repository but not used - the collector logs 'a page
+  instance's cloud block is not used' with the switch's words, the page shows them on the row, and the instance keeps
+  collecting everything else. The form's Cloud fieldset is off with the same words.
+- **The block's keys**: `aws` region, cluster, db_instance (log_group and dms stay the file's); `azure` subscription,
+  resource_group, server, cloud. `aws:` on a PostgreSQL instance only (on SQL Server it waits for its own reads),
+  `azure:` on a SQL Server instance of platform `azuresqldb` only. No profile is typed on the page; an approved
+  proposal takes its source's profile only when `page_aws_profiles` lists it.
+- **The name match**: the block's target must be the instance's own host by name - an RDS instance endpoint
+  `<db_instance>.<x>.<region>.rds.amazonaws.com`, or a cluster's writer or reader endpoint
+  `<cluster>.cluster-[ro-]<x>.<region>.rds.amazonaws.com` (in the China regions `.amazonaws.com.cn`, either
+  `<region>.rds.` or `rds.<region>.`: not proven, no China account), or `<server>.database.windows.net`
+  (`.database.usgovcloudapi.net` with `cloud: usgov`, `.database.chinacloudapi.cn` with `cloud: china`). An instance
+  endpoint names the block's `db_instance` and a cluster endpoint its `cluster`; the other name, when given, is the
+  provider's to confirm (below). A custom cluster endpoint (`.cluster-custom-`), a CNAME, a private DNS name
+  (privatelink) or an address is refused with both names: give such an instance its block in `pgvigil.yaml`, where
+  the file's author answers for it.
+- **The provider's check (aws:)**: an RDS name is unique only inside one account, so before an `aws:` block's first
+  read the collector asks RDS - in the region and with the profile the block reads with - for the DB instance's
+  `Endpoint.Address` and the cluster's writer and reader endpoints, and keeps the block only when the instance's host
+  is one of them; a block naming both must name an instance of that cluster. A refused block is logged once ('a page
+  instance's aws: block is not used', with both names) and each collection that needs it says so as its skip; the
+  instance keeps collecting. An AWS error (no credentials, `AccessDenied`) refuses the block too, and it is asked
+  again after 5 minutes; a verdict is kept until the block or the host changes (or the collector restarts). The
+  rights are the reads' own: `rds:DescribeDBInstances`, and `rds:DescribeDBClusters` for a block naming a cluster.
+- **A resource group** is checked as ASCII letters, digits and `-_.()` on the page and in the repository alike; a
+  group named with other letters takes its block in `pgvigil.yaml`.
+- **A profile**: an approved instance's block keeps its source's profile when an edit on the page leaves the region
+  as it was (the form shows it, and has no profile field); an edit to another region, or Clear, removes it.
+- A block set, changed or cleared restarts the instance's loops within the collector's next read of the list (15 s).
+  Its Clear is its own control; an emptied fieldset clears nothing.
+- Not in this release: a `gcp:` block on a page instance (its credentials file is a path on the host).
 
 ### Community tools and custom reports on a page instance
 
@@ -238,6 +324,26 @@ that reached a door names it in its audit row (`custom_report_log`): `file` (an 
 page door's credential in memory while it runs. While a serve cannot read the repository, its last doors stay as they
 were: a disable written through another serve reaches it once its reads work again.
 
+### Prometheus endpoint
+
+```yaml
+doors:
+  prometheus_metrics: on    # GET /metrics for Prometheus (docs/prometheus.md)
+metrics:
+  token: file:/etc/pgvigil/metrics.token
+```
+
+`doors.prometheus_metrics` turns on `GET /metrics` (docs/prometheus.md): every active instance's newest figures in the
+Prometheus text format, read with a signed-in session or `metrics.token` (`file:/path` or `env:NAME`, 32 bytes at
+least); it opens server names, engines, platforms, versions and every figure to whoever reads that Prometheus. Its
+`metrics:` block holds `token`, `cache_seconds`, `databases`, `max_databases`, `include_databases` and `tags`.
+
+## SQL Server schema history (mssql_schema)
+
+A SQL Server instance's `mssql_schema: {databases: [...]}` turns the schema history on for those databases (`*` every
+user database, a name that one, `-name` leaves one out); without it the collection `mssql_schema` is off. What it
+reads and keeps, and the rights it needs: [schema snapshots, SQL Server](schema.md#sql-server-mssql_schema).
+
 ## The repository's own sessions run without jit
 
 Every `pgvigil migrate` (and so `install -upgrade` and `demo`) sets `jit = off` on the repository database
@@ -256,3 +362,58 @@ application that shares the repository database keeps jit on for its own login. 
 only: a connection already open keeps its jit until it reconnects, so restart Grafana (or reconnect its data source)
 and any pooler's server connections after the migrate. Connections to a monitored instance are unchanged: that
 server's jit is its owner's choice.
+
+## The Parquet export (export:)
+
+Absent = off. [parquet-export.md](parquet-export.md) is the whole page; these are the keys.
+
+```yaml
+export:
+  name: prod-repo                 # required: the folder under the destination and part of every file name
+                                  #   (lower case, a letter first, a letter or digit last, no '__', at most 31)
+  dsn: env:PGVIGIL_EXPORT_DSN     # required: the export's login, IN ROLE pgvigil_exporter (or pgvigil_reader) alone;
+                                  #   env:NAME or file:/path - a connection string written here is refused
+  state_dir: /var/lib/pgvigil/export   # required: the lock and the files being built
+  destination:                    # required: one of
+    type: folder                  #   folder:     path
+    path: /srv/pgvigil-export     #   s3:         bucket, prefix, region, endpoint (an S3-compatible store), profile
+                                  #   azure_blob: container, prefix, and connection_string: env:NAME | sas_url: env:NAME
+                                  #               | account_url (the default credential)
+  settle_minutes: 20              # a window is first exported this long after it ends
+  final_after_hours: 24           # it is exported again, as final, once it is this old
+  max_window_age_hours: 48        # how far back a run looks for hours to export; an older hour with no manifest is
+                                  #   named as aged out (its final pass is owed at any age)
+  max_windows_per_run: 12
+  snapshot_max_bytes: 256MB       # a whole-table export over it (its size on disk with its indexes) is left out and
+                                  #   named; 0 = no line
+  statement_timeout: 120s         # of the reading session
+  carry: []                       # text (statement, plan and log text), audit (action logs, audit trails, logins,
+                                  #   roles and grants): each OFF unless named
+  tables: { exclude: [] }         # more tables left out by name (a name that is no table is refused); what the map
+                                  #   leaves out cannot be put back in
+```
+
+A key the section does not know is refused (exit 3): a mistyped key must not pass as a default.
+
+## The probes: /livez and /readyz (web:)
+
+`pgvigil serve` answers two probes for a load balancer or an orchestrator, without the UI login and with nothing but
+their words:
+
+- `GET /livez` - `200 ok` while the process answers. It reads nothing.
+- `GET /readyz` - `200 ok` while the repository answers and its schema is current (the answer `pgvigil run` checks at
+  its start, read from `pgvigil.schema_version` on serve's own login), else `503 not ready: <why>` (`the repository
+  does not answer`, or `the repository's schema is behind this binary (needs <migration>)`). The answer is kept 5
+  seconds: a burst of probes runs one check. The check has its own 3 seconds: a probe that gives up sooner does not cut
+  it, and what the next probes are told is the repository's answer. The repository's own error stays in the log (it
+  can name the login and the address).
+
+`/readyz` is open while the UI login is off. With the login on it answers `404` unless the configuration opens it:
+
+```yaml
+web:
+  readyz_without_login: true   # default false: /readyz then needs nothing from the caller
+```
+
+The collector's own state (a collection failing, the alert sender idle, the repository's autovacuum behind) is a
+finding on the Collector page and the Summary, never a probe's answer.

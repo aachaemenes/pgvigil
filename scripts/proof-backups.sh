@@ -36,7 +36,7 @@
 #      b6 onprem, on, never archived (last_archived_time NULL), lag 48 MB  -> 'last archive older than 60 min|warning'
 #                                                                             detail 'nothing archived since the stats reset'
 #      b7 onprem, archive_mode off, 90 min, lag 48 MB                      -> nothing
-#      [review fold, expected before the rerun:]
+#      [added later, expected before the rerun:]
 #      b8 onprem standby, archive_mode always, 90 min, lag 48 MB           -> 'last archive older than 60 min|warning'
 #      b9 onprem, archive_mode off, failed after the last success          -> nothing (a server that stopped archiving
 #                                                                             keeps its old failure; not failing)
@@ -46,9 +46,9 @@
 #                                                                             'no snapshot in 24 h|warning'
 #      c3 aurora retention 7, automated 30 h old, a manual 'creating' 1 h  -> 'no snapshot in 24 h|warning' only
 #      c4 aurora retention 14, automated 3 h old                           -> nothing
-#      [review fold] c5 rds read replica (archiver is_replica) retention 0, no snapshot -> nothing
+#      [added later] c5 rds read replica (archiver is_replica) retention 0, no snapshot -> nothing
 #      (a replica with retention > 0 keeps the rules: not seeded)
-#      [review fold] c6 rds retention 3 read 2 hours ago (a stale read)    -> no rule hit in backup_checks or
+#      [added later] c6 rds retention 3 read 2 hours ago (a stale read)    -> no rule hit in backup_checks or
 #                                                                             backup_findings (backup_rule_hits keeps it)
 #      backup_findings for c1-c4 = their rule hits (4 rows), platforms 'managed'.
 #      c3 re-imported with snapshots_read and only the manual one: the automated row is_present false; then a payload

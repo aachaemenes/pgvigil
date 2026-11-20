@@ -8,7 +8,7 @@ import (
 // per database the stored verdict (whole, broken, held - a replica's read late, a read that did not list every log, a
 // distributed group's other side not merged -, no full backup) with the read's counts; &db=<name> adds the steps a restore takes in order - each set's role, where it ran, its LSNs AS TEXT (an LSN
 // has up to 25 digits: a JSON number would lose some in a browser) and pgvigil's marks - and every file of each step. The
-// route is the lead's wiring in web.go. pgvigil writes no RESTORE statement and runs none.
+// route is wired in web.go. pgvigil writes no RESTORE statement and runs none.
 
 // sqlMSSQLRestoreDatabases: $1 the instance.
 const sqlMSSQLRestoreDatabases = `

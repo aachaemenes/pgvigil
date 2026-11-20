@@ -272,8 +272,7 @@ func TestUninstallAllOrder(t *testing.T) {
 	if err != nil || !strings.Contains(out, "running  pid 4242: /usr/local/bin/pgvigil serve") || len(removed) != 0 {
 		t.Fatalf("the dry run with a serve running: err %v:\n%s", err, out)
 	}
-	// the join review w9e, finding 2: a pgvigil from another path (a bundle's copy) refuses too; a pid both lists name
-	// is said once
+	// a pgvigil from another path (a bundle's copy) refuses too; a pid both lists name is said once
 	named = []string{"pid 4242: /usr/local/bin/pgvigil serve -config /etc/pgvigil/pgvigil.yaml", "pid 5151: /root/pgvigil-bundle/pgvigil serve -no-login"}
 	if _, err = captureStdout(t, func() error { return runUninstallAll(log, o) }); err == nil || strings.Count(err.Error(), "pid 4242") != 1 ||
 		!strings.Contains(err.Error(), "pid 5151: /root/pgvigil-bundle/pgvigil serve -no-login") || len(removed) != 0 || stopped != stoppedBefore {
@@ -297,7 +296,7 @@ func TestUninstallAllOrder(t *testing.T) {
 }
 
 // The page's credential folders (task 204) beside a config in a folder not named pgvigil are the installer's own: an
-// upgrade's folder check passes them and refuses anything else (the join review of 202, finding 2).
+// upgrade's folder check passes them and refuses anything else.
 func TestDedicatedFolderCredentials(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "pgvconf")
 	for _, d := range []string{"instances", "sources"} {

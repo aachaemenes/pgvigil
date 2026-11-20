@@ -44,6 +44,7 @@ export function seriesColors(): string[] {
 }
 export const neutralColor = () => getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#868e96';
 const colorAt = (p: string[], i: number) => i < p.length ? p[i] : neutralColor();
+const tokenOr = (token: string | undefined, p: string[], i: number) => (token && getComputedStyle(document.documentElement).getPropertyValue(token).trim()) || colorAt(p, i);
 // a #rrggbb colour at an alpha, for a stacked band's fill (any other form is returned as it is)
 const withAlpha = (c: string, a: number) => /^#[0-9a-f]{6}$/i.test(c)
   ? `rgba(${parseInt(c.slice(1, 3), 16)}, ${parseInt(c.slice(3, 5), 16)}, ${parseInt(c.slice(5, 7), 16)}, ${a})` : c;
@@ -90,9 +91,10 @@ function chartWindow(xs: number[]): { from: number; to: number } {
   const to = Math.ceil(b / minute) * minute;
   return { from: Math.max(Math.floor(a / minute) * minute, to - MAX_RANGE_MS), to };
 }
-const markWords: Record<string, string> = { setting: 'Setting change', restart: 'Restart', failover: 'Failover', deadlock: 'Deadlock' };
-const markPlural: Record<string, string> = { setting: 'setting changes', restart: 'restarts', failover: 'failovers', deadlock: 'deadlocks' };
-const markColour = (kind: string) => { const p = seriesColors(); return ({ setting: p[3], restart: p[7], failover: p[6], deadlock: p[1] } as Record<string, string>)[kind] ?? neutralColor(); };
+// task 404 (0155): 'crash restart' and 'build' beside the restarts and failovers it now reads between two reads
+const markWords: Record<string, string> = { setting: 'Setting change', restart: 'Restart', failover: 'Failover', deadlock: 'Deadlock', 'crash restart': 'Crash restart', build: 'Build change' };
+const markPlural: Record<string, string> = { setting: 'setting changes', restart: 'restarts', failover: 'failovers', deadlock: 'deadlocks', 'crash restart': 'crash restarts', build: 'build changes' };
+const markColour = (kind: string) => { const p = seriesColors(); return ({ setting: p[3], restart: p[7], failover: p[6], deadlock: p[1], 'crash restart': p[4], build: p[5] } as Record<string, string>)[kind] ?? neutralColor(); };
 // a mark's link: its rows' page over ten minutes around it (a deadlock opens the log's deadlocks)
 function markHref(m: FrameMark): string {
   const ctx = parse();
@@ -138,10 +140,12 @@ function whenPlaced(node: Node, fn: () => void) {
 // deadlocks are marked on the time axis, each mark a link to its rows; o.y2 draws named series on a second axis, o.lines
 // and o.limits draw thresholds and server limits; the heading's buttons open the chart menu and a full-window view.
 // A chart whose reads start well after the window's start, or that holds under three reads, says so under it (K09.02).
-export function lineChart(title: string, rows: Row[], series: { key: string; label: string }[],
+// a series' color: a CSS token of the theme ('--crit', '--warn', '--ok': a status colour), else the palette's next
+export function lineChart(title: string, rows: Row[], series: { key: string; label: string; color?: string }[],
                           fmt: (v: number) => string = v => v.toLocaleString(), o: ChartOpts = {}): HTMLElement {
   if (o.measure) { const k = chartKind(o.measure); o = { ...o, stacked: o.stacked || k === 'stacked', bars: o.bars || k === 'bars' }; }
   const box = el('div', { class: 'chart' }, el('h3', {}, title));
+  if (o.stacked) box.dataset.stacked = 'true';   // a page's proof reads the form it was drawn in
   if (rows.length < 2) {
     box.append(chartState('empty', rows.length ? 'Only one read in this window: a chart needs two.' : o.ownSpan ? 'No data in this span.' : undefined));
     // a drag narrower than two reads leaves the charts empty: the way back stays (once the chart is in the page: a page
@@ -191,9 +195,9 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   const yRange = (scale: string) => (_u: uPlot, min: number, max: number): uPlot.Range.MinMax => uPlot.rangeNum(Math.min(min, 0), reach(scale, max), 0.1, true);
   const opts: uPlot.Options = {
     width: 560, height: 220,
-    series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: colorAt(palette, i), width: o.stacked || o.bars ? 1 : 2,
+    series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: tokenOr(s.color, palette, i), width: o.stacked || o.bars ? 1 : 2,
                                             scale: on2.has(s.key) ? 'y2' : 'y',
-                                            fill: o.stacked || o.bars ? withAlpha(colorAt(palette, i), o.bars ? 0.75 : 0.45) : undefined,
+                                            fill: o.stacked || o.bars ? withAlpha(tokenOr(s.color, palette, i), o.bars ? 0.75 : 0.45) : undefined,
                                             ...(o.bars ? { paths: uPlot.paths.bars!({ size: [0.6, 48] }), points: { show: false } } : {}),
                                             // stacked: the data are running totals, the legend (the screen reader's form) gives the
                                             // band's own value, as the tooltip does
@@ -610,7 +614,7 @@ function topSet(title: string, n: number) { try { localStorage.setItem(topKey(ti
 // slice's page on a second tap of the same slice. Each slice carries its label where it fits the drawn size (P4).
 // PieOpts.big: the pie fills a row of its own or the room beside its grid (DB Space beside its grid, the PostgreSQL
 // Storage's 'Databases by size' alone in its row), as DBA Dash's DB Space pie does (the per-caller table: the design
-// pdfp-lead-pies-design.md, 'P0 per caller')
+// for pies, 'P0 per caller')
 export interface PieOpts { big?: boolean }
 export function donutChart(title: string, slices: Slice[], fmt: (v: number) => string = v => v.toLocaleString(),
                            max = 8, keepOrder = false, empty = 'Nothing to show yet.', opts: PieOpts = {}): HTMLElement {

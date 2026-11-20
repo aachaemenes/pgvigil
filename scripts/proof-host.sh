@@ -27,7 +27,7 @@
 #     scratch instance 2 (cloudwatch, Aurora shape): SwapUsage 10 MB, CPU 95 % on 3 samples only -> no check;
 #     scratch instance 3 (cloudwatch, RDS shape): rds:storage 20 GiB with 1 GiB free (5 %, not under 5) ->
 #       disk free under 10 %|warning; SwapUsage 100 MB -> swap used|warning
-#       [review s2-32 fold, expected before the rerun: the cloud swap floor is now 1 GB (an idle Serverless instance
+#       [added later, expected before the rerun: the cloud swap floor is now 1 GB (an idle Serverless instance
 #        carries 325-384 MB), so instance 3 gives only 'disk free under 10 %|warning|rds:storage'; and two new scratch
 #        instances raise nothing: instance 5 (cloudwatch) with 1 sample at 95 % and 4 samples without a CPU value;
 #        instance 6 (cloudwatch) with 6 samples at 95 % over 10 minutes that all carry one metrics_at (one datapoint

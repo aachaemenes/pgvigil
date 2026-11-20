@@ -1,4 +1,4 @@
--- 0062: the join of phase 3 wave F (schema snapshots 59, alerts out 60, custom checks 61, memory and poolers 62), rebuilt
+-- 0062: the wiring migration of phase 3 wave F (schema snapshots 59, alerts out 60, custom checks 61, memory and poolers 62), rebuilt
 -- at every slice's merge from 0057's definitions (never edited by hand): pgvigil.findings re-created with the arms of the
 -- merged slices (memory_findings from 0061: clients waiting on the pooler, a pool at its size, temp-file spills, one
 -- relation holding over half of shared_buffers; custom_findings from 0060: a threshold crossed, a failed run, not run in
@@ -9,7 +9,7 @@
 -- custom_checks not listed within the window, present or not: a collection switched off lists nothing; schema_objects
 -- and schema_databases absent past the window; the schema_ddl log cursors of databases no longer present; alert_state
 -- rows cleared past the window or open for a channel no longer configured; alert_channels no longer configured). A
--- frozen file is never edited; a later join re-creates both again with its own additions.
+-- frozen file is never edited; a later wiring migration re-creates both again with its own additions.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (
@@ -147,7 +147,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the corruption column (0023): checksums off, ignore_checksum_failure on, a corruption event in 24 h, amcheck damage
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.corruption_findings WHERE setting <> 'zero_damaged_pages'
     UNION ALL
-    -- the plans slice (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
+    -- the plan findings (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.plan_findings
     UNION ALL
     -- the indexes collection (0030): invalid and duplicate indexes (warning), redundant and unused ones (info)

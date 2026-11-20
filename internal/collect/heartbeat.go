@@ -27,6 +27,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // RunsAs says how the process runs when set before StartHeartbeat (the Windows service handler sets "windows
@@ -36,12 +39,20 @@ var RunsAs string
 // HeartbeatInfo is what the caller knows about this collector.
 type HeartbeatInfo struct {
 	Version string
+	// SendsAlerts: this run sends alerts (its alerts: list names a channel); each beat says so ('alert sender idle'
+	// counts only the live runs that send: B6.2 part c #3)
+	SendsAlerts bool
+	// the reachability probe (B24h-1b, probe.go): 'tcp', 'icmp' (B24h-2; read as tcp until then), 'off'; "" = icmp;
+	// ProbeEveryMinute probes every known address each minute (the opt-in), else only after a failed collection
+	Probe            string
+	ProbeEveryMinute bool
 }
 
 const histBuckets = 19 // b 0 = under 1 ms, b n = 2^(n-1) to 2^n ms, b 18 = 131 s and over
 
 type runAgg struct {
 	runs, failures int
+	retries        int // the runs' imports taken again after a deadlock (Result.Retries; N4)
 	rows           int64
 	durSum         int64
 	durMax         int
@@ -56,6 +67,12 @@ type loadAgg struct {
 	timed     int
 	connMsSum int64
 	connMsMax int
+	// the query round trip (B24h-1a, roundtrip.go): the minute's measures (one an instance), their ms summed and the
+	// longest; rtClaimed while a collection measures
+	rtCount   int
+	rtMsSum   int64
+	rtMsMax   int
+	rtClaimed bool
 }
 
 type streak struct {
@@ -74,11 +91,16 @@ type Heartbeat struct {
 	pool     *pgxpool.Pool
 	log      *slog.Logger
 	mu       sync.Mutex
-	runs     map[[2]string]*runAgg // engine, collection
-	load     map[string]*loadAgg   // instance name
-	streaks  map[[2]string]*streak // instance name, collection
-	seen     map[string]time.Time  // instance name: when this run last named it in the repository (seenDue)
-	targets  map[string]string     // instance name: its dial target (InstanceTarget: N8)
+	runs     map[[2]string]*runAgg    // engine, collection
+	load     map[string]*loadAgg      // instance name
+	streaks  map[[2]string]*streak    // instance name, collection
+	hourly   map[healthKey]*healthAgg // B6.1: instance, collection, UTC hour (health.go)
+	hourNew  time.Time                // the newest hour counted
+	seen     map[string]time.Time     // instance name: when this run last named it in the repository (seenDue)
+	targets  map[string]string        // instance name: its dial target (InstanceTarget: N8)
+	probe    *prober                  // the reachability probe (B24h-1b); nil when 'off'
+	// noProbeImport: the repository has no import_collector_probe (0254): not asked again this run
+	noProbeImport bool
 }
 
 var current atomic.Pointer[Heartbeat]
@@ -329,12 +351,16 @@ func withConnectTimeout(cfg *pgx.ConnConfig) {
 
 // connectCounted is pgx.ConnectConfig counted for the instance's load, under DefaultConnectTimeout where the DSN set
 // no connect_timeout.
-func connectCounted(ctx context.Context, instance string, cfg *pgx.ConnConfig) (*pgx.Conn, error) {
+func connectCounted(ctx context.Context, in config.Instance, cfg *pgx.ConnConfig) (*pgx.Conn, error) {
 	withConnectTimeout(cfg)
-	InstanceTarget(instance, PgTarget(cfg))
 	t0 := time.Now()
-	conn, err := pgx.ConnectConfig(ctx, cfg)
-	CountConnectTimed(instance, err, connTook(t0)) // the slow-connect tier times the per-database connects too (#6)
+	conn, err := dialWithSecret(ctx, in, cfg, func() { InstanceTarget(in.Name, PgTarget(cfg)); t0 = time.Now() },
+		func(c *pgx.ConnConfig) (*pgx.Conn, error) { return pgx.ConnectConfig(ctx, c) })
+	var se *secrets.ReadError
+	if errors.As(err, &se) {
+		return nil, err // the secret, not the server: not counted as a connect (B24e)
+	}
+	CountConnectTimed(in.Name, err, connTook(t0)) // the slow-connect tier times the per-database connects too (#6)
 	return conn, err
 }
 
@@ -380,6 +406,14 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.health(instance, collection, res, now, every) // B6.1's hourly counts: every outcome, a skip too
+	// B24h-1b: the default mode probes an address after a collection got no answer - a dial refused or timed out, a
+	// deadline, a dropped connection (NoAnswer reads through connectError) - never after an error the server sent: a
+	// query it refused on an opened connection (else a missing grant is probed every minute) or a login it refused at
+	// the connect (28P01, 18456: else a rotated password is probed every minute)
+	if res.Err != nil && h.probe != nil && NoAnswer(res.Err) {
+		h.probe.noteFailed(instance)
+	}
 	if skipped(res) {
 		// a collection that skips (no system_stats, no pg_cron, no log door) after it failed - its login refused, or
 		// a setting changed - is failing no more: its streak (a stored one too) ends at 0 and is written
@@ -404,6 +438,7 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 		h.runs[k] = a
 	}
 	a.runs++
+	a.retries += res.Retries
 	if failed {
 		a.failures++
 	} else {
@@ -415,6 +450,11 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	a.hist[bucket(res.Duration)]++
 	if ce := (*connectError)(nil); failed && errors.As(res.Err, &ce) {
 		return // the instance's own connect failed: its connect streak and 'authentication failing' speak for it
+	}
+	if se := (*secrets.ReadError)(nil); failed && errors.As(res.Err, &se) {
+		// the login's password could not be read from AWS Secrets Manager (B24e): 0192's one finding
+		// speaks for the instance, never a 'collection failing' streak per collection
+		return
 	}
 	sk := [2]string{instance, collection}
 	s := h.streaks[sk]
@@ -448,6 +488,7 @@ type beatRun struct {
 	DurSum     int64  `json:"dur_sum"`
 	DurMax     int    `json:"dur_max"`
 	Hist       []int  `json:"hist"`
+	Retries    int    `json:"retries,omitempty"` // N4: collector_runs.retries (absent = 0)
 }
 
 type beatLoad struct {
@@ -467,6 +508,10 @@ type beatLoad struct {
 	Timed        int   `json:"timed,omitempty"`
 	ConnectMsSum int64 `json:"connect_ms_sum,omitempty"`
 	ConnectMsMax int   `json:"connect_ms_max,omitempty"`
+	// the query round trip (B24h-1a): read by import_collector_probe (0254), which import_collector_beat leaves alone
+	RtCount int   `json:"rt_count,omitempty"`
+	RtMsSum int64 `json:"rt_ms_sum,omitempty"`
+	RtMsMax int   `json:"rt_ms_max,omitempty"`
 }
 
 type beatStreak struct {
@@ -479,12 +524,19 @@ type beatStreak struct {
 }
 
 type beat struct {
-	MemBytes   uint64       `json:"mem_bytes"`
-	Goroutines int          `json:"goroutines"`
-	Instances  int          `json:"instances"`
-	Runs       []beatRun    `json:"runs"`
-	Load       []beatLoad   `json:"load"`
-	Streaks    []beatStreak `json:"streaks"`
+	MemBytes    uint64       `json:"mem_bytes"`
+	Goroutines  int          `json:"goroutines"`
+	Instances   int          `json:"instances"`
+	SendsAlerts bool         `json:"sends_alerts"`
+	Runs        []beatRun    `json:"runs"`
+	Load        []beatLoad   `json:"load"`
+	Streaks     []beatStreak `json:"streaks"`
+	Health      []beatHealth `json:"-"` // B6.1: running totals per instance, collection and UTC hour - their own body (healthBody)
+	// the probe's rows since the last beat (B24h-1b; read by import_collector_probe, 0254; import_collector_beat leaves it)
+	Probes []beatProbe `json:"probes"`
+	// the addresses a connection opened to since the last beat (a TCP answer; import_collector_probe sets the host's
+	// last answer from them)
+	Opened []beatOpened `json:"opened"`
 }
 
 // take empties the minute's counts into a beat (the streaks keep their counts; only the changed ones are sent).
@@ -494,17 +546,21 @@ func (h *Heartbeat) take() beat {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	// empty lists as [] (a nil slice is JSON null, which jsonb_to_recordset refuses)
-	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load),
-		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}}
+	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load), SendsAlerts: h.info.SendsAlerts,
+		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}, Health: h.takeHealth(), Probes: []beatProbe{}, Opened: []beatOpened{}}
+	if h.probe != nil {
+		b.Probes = append(b.Probes, h.probe.take()...)
+		b.Opened = append(b.Opened, h.probe.takeOpened()...)
+	}
 	for k, a := range h.runs {
 		b.Runs = append(b.Runs, beatRun{Engine: k[0], Collection: k[1], Runs: a.runs, Failures: a.failures, Rows: a.rows,
-			DurSum: a.durSum, DurMax: a.durMax, Hist: append([]int(nil), a.hist[:]...)})
+			DurSum: a.durSum, DurMax: a.durMax, Hist: append([]int(nil), a.hist[:]...), Retries: a.retries})
 	}
 	now := time.Now()
 	for name, l := range h.load {
 		b.Load = append(b.Load, beatLoad{Instance: name, Attempts: l.attempts, Opened: l.opened, Runs: l.runs, Failures: l.failures, Auth: l.auth,
 			IntervalS: int(l.every / time.Second), NoAnswer: l.noanswer, Target: h.targets[name],
-			Timed: l.timed, ConnectMsSum: l.connMsSum, ConnectMsMax: l.connMsMax})
+			Timed: l.timed, ConnectMsSum: l.connMsSum, ConnectMsMax: l.connMsMax, RtCount: l.rtCount, RtMsSum: l.rtMsSum, RtMsMax: l.rtMsMax})
 		if h.seen == nil {
 			h.seen = map[string]time.Time{}
 		}
@@ -546,6 +602,24 @@ func runsAs() string {
 	return "console"
 }
 
+// repoNotices logs a WARNING the repository raises on the beat's connections: import_collection_health
+// warns when the 'collections run long' stamps fail and keeps the beat's hour rows - without this the warning reached
+// only the server's log. The severity is read unlocalized; a NOTICE is not logged.
+func repoNotices(log *slog.Logger) func(*pgconn.PgConn, *pgconn.Notice) {
+	return func(_ *pgconn.PgConn, n *pgconn.Notice) {
+		if n == nil {
+			return
+		}
+		sev := n.SeverityUnlocalized
+		if sev == "" {
+			sev = n.Severity
+		}
+		if sev == "WARNING" {
+			log.Warn("repository warning", "message", n.Message, "where", n.Where)
+		}
+	}
+}
+
 // StartHeartbeat writes this collector's row (its start in the repository's clock) and beats every minute until ctx ends,
 // then writes the last minute and marks a clean stop. dsn is the collector's repository DSN (the import_ door). The
 // returned wait blocks until that is done (at most 15 s: the final beat 8 s, the stop mark 5 s, the pool's close): the
@@ -557,6 +631,7 @@ func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info Hear
 	}
 	cfg.MaxConns = 2
 	cfg.ConnConfig.RuntimeParams["application_name"] = "pgvigil-heartbeat"
+	cfg.ConnConfig.OnNotice = repoNotices(log)
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("heartbeat: %w", err)
@@ -569,6 +644,12 @@ func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info Hear
 		return nil, err
 	}
 	h.loadStreaks(ctx)
+	switch info.Probe {
+	case "off":
+	case "", "icmp", "tcp":
+		h.probe = newProber("tcp", info.ProbeEveryMinute) // B24h-1: the TCP measure ('icmp' lands in B24h-2)
+		go h.probe.loop(ctx)
+	}
 	current.Store(h)
 	log.Info("heartbeat started", "collector", h.id, "runs_as", runsAs())
 	done := make(chan struct{})
@@ -666,11 +747,58 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 		h.log.Warn("heartbeat: the beat was not written", "err", err)
 		return
 	}
+	if len(b.Health) > 0 {
+		// running totals: a beat lost here is repaired by the next one; their own body and their own 30 s (a slow
+		// heartbeat statement leaves this one its full time; at a stop both share the caller's 8 s)
+		q, args, err := healthWrite(h.id, b.Health)
+		if err == nil {
+			hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
+			_, err = h.pool.Exec(hctx, q, args...)
+			hcancel()
+		}
+		if err != nil {
+			h.log.Warn("heartbeat: the hourly collection health was not written", "err", err)
+		}
+	}
 	if !known { // the row is gone (trimmed after 8 days without a beat, or deleted): claimed again
 		if err := h.claim(ctx); err != nil {
 			h.log.Warn("heartbeat: the collector's row was not written again", "err", err)
 		}
+		return
 	}
+	// B24h (0254): the round trips and the probe's rows, through B24h's own import function with the same body (no
+	// joined function changes); a repository without it (42883: not migrated to 0254) is not asked again
+	if !h.noProbeImport && (len(b.Probes) > 0 || len(b.Opened) > 0 || anyRoundTrip(b.Load)) {
+		if _, err := h.pool.Exec(bctx, `SELECT pgvigil.import_collector_probe($1, $2, $3::jsonb)`, h.id, minute, string(body)); err != nil {
+			var pe *pgconn.PgError
+			if errors.As(err, &pe) && pe.Code == "42883" {
+				h.noProbeImport = true
+				h.log.Warn("heartbeat: the repository has no import_collector_probe (0254): the round trips and probes are not kept until it is migrated")
+			} else {
+				h.log.Warn("heartbeat: the round trips and probes were not written", "err", err)
+			}
+		}
+	}
+}
+
+// anyRoundTrip: a load row with a round trip measured
+func anyRoundTrip(load []beatLoad) bool {
+	for _, l := range load {
+		if l.RtCount > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// healthWrite: the hourly rows' statement and its arguments as beat() sends them - their own body (healthBody), never
+// the heartbeat's; TestBeatBodyHealthOnce reads what beat() writes through it
+func healthWrite(id string, rows []beatHealth) (string, []any, error) {
+	hb, err := healthBody(rows)
+	if err != nil {
+		return "", nil, err
+	}
+	return `SELECT pgvigil.import_collection_health($1, $2::jsonb)`, []any{id, string(hb)}, nil
 }
 
 // ChannelBackoff keeps a failing alert channel out of the next passes, as the collector's own alert loop does

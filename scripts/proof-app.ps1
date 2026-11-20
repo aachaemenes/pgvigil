@@ -51,7 +51,7 @@
 # HKCU\Software\pgvigil are set aside and put back; the cleanup stops and removes only what the proof made.
 # Not proven here: the standard user's own window (a second interactive desktop logon is not scriptable on the
 # sandbox; the window code is the same as B5's), and the CI build on a Windows runner (the release workflow's
-# job, the lead's file).
+# job).
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3
 $repoRoot = Split-Path -Parent $PSScriptRoot

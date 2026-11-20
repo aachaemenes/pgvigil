@@ -197,7 +197,7 @@ else {
 }
 
 // ---- R1b a DEMO instance's own pages. An instance's own Summary page draws no Acknowledge (the strip with it is the
-// fleet Summary's; vis-b7a printed that page's buttons), so the row clicks what an instance's pages do offer:
+// fleet Summary's; a lab run printed that page's buttons), so the row clicks what an instance's pages do offer:
 // (a) the header's Silence, then Unsilence, on its Summary page; (b) the Acknowledge of a failed job on its Jobs page.
 // The instance is one with a failed job run - another than R1's and than the one the seed silenced, where there is
 // one (an instance the seed silenced starts with Unsilence: the row then ends that silence first and silences after,
@@ -437,7 +437,7 @@ if (acked) {
 }
 
 // ---- R6b the demo's OWN seeded silence (stored by the instance's name, without an id) has its Unsilence on the
-// Alerts page's list of silenced servers, and it works (the review's fold: the list drew no button for it). The button
+// Alerts page's list of silenced servers, and it works (the list once drew no button for it). The button
 // is the one that names the seed's instance: R6 ended its own silence, so no other is live.
 {
   await go('#/alerts');
@@ -555,13 +555,13 @@ if (NOLOGIN) {
     + `; the footer's seat: '${seatPlain}' (want 'read only, actions off'); the Summary's dump dialog (${dumpMenus}), Clear: ${JSON.stringify(clearPlain)}`);
 }
 
-// ---- R18 (DONE-3, the pgLabel item: Item 6 of the drives-range review) PostgreSQL's own words for its checks. On a
+// ---- R18 (DONE-3, the pgLabel item) PostgreSQL's own words for its checks. On a
 // scope with NO SQL Server instance (the demo's tag 'aurora': its PostgreSQL instances alone) the Summary's column
 // headers, its tests and its cells' accessible names say 'Crash restarts', 'Last amcheck', 'Replication', 'Jobs',
 // 'WAL archive' - never DBA Dash's 'Memory Dump', 'Last Good Check DB', 'Availability Groups', 'Agent Jobs', 'Backup
 // LOG' - and its Options menu says 'Crash Restarts'; a PostgreSQL instance's own Summary page ('Not OK:' links) and its
-// band dot's title use them too; the mixed root keeps DBA Dash's names (a scope that holds SQL Server). At the review of
-// DONE-3 (items 1 and 7): the scope is first read to hold PostgreSQL instances alone; the acknowledged list's items are
+// band dot's title use them too; the mixed root keeps DBA Dash's names (a scope that holds SQL Server). Also: the
+// scope is first read to hold PostgreSQL instances alone; the acknowledged list's items are
 // read with the rest; the instance page is one whose counts line names a PostgreSQL group (never 'Every check group is
 // OK.' alone); and the scope's Options > Crash Restarts > Configure Thresholds is titled 'Crash Restart Thresholds' and
 // its Clear and the date beside it know only the scope's acknowledgements - prod-db2's Memory Dump acknowledgement
@@ -633,7 +633,7 @@ if (NOLOGIN) {
 // is off and shown (the disabled attribute or aria-disabled) has a visible, non-empty description (aria-describedby)
 // that is words, not a badge alone, and not a sentence that ends at its colon ('... are off: ' with no reason after it).
 // A page that drew only an error is NOT walked: it is listed and fails the row. The TOP BAR is walked on every page
-// under its own rule (the lead 01:38): a control that is off there must be DESCRIBED (aria-describedby naming an
+// under its own rule: a control that is off there must be DESCRIBED (aria-describedby naming an
 // element that holds words) - 'Later' while the range ends now by a description and its title, with no words in the
 // bar (a pager's end), the Auto refresh select by the footer's own visible sentence (a form field). The scope, named
 // in the ok line: the page's main and the top bar, on the tab strip's pages - not a drill page behind a row (a plan, a
@@ -656,7 +656,7 @@ if (NOLOGIN) {
       bar: bar.map(name), barBad: barBad.map(name),
       // with a top-bar line, what the footer said (a status read that failed takes the refresh words with it)
       foot: barBad.length ? (document.querySelector('footer')?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 120) : '' }; })()`);
-  // THIS page's drawing (finding 3 of DONE-2's review): the old page's main is marked, the mark must be gone (render
+  // THIS page's drawing: the old page's main is marked, the mark must be gone (render
   // replaced main's children) and main must hold more than the router's own note (empty, then 'Loading...')
   const markJS = `(() => { const m = document.querySelector('main'); if (m) m.append(Object.assign(document.createElement('span'), { hidden: true, className: 'r12-mark' })); return 1; })()`;
   const ownDrawnJS = `(() => { const m = document.querySelector('main'); if (!m || m.querySelector('.r12-mark')) return false;
@@ -805,9 +805,9 @@ if (NOLOGIN) {
 // ---- R17 (DONE-3) the two job pages taught the door: on a demo instance's Jobs page the job thresholds dialog writes
 // the job's and the instance's own levels (Save on) and says its root level is off in words before any request; the
 // exclusions form adds this instance's exclusions and offers 'every instance' natively disabled, its reason in words
-// beside the form (the level field described by it) before any click (the lead 09:28, the review's nit 9); on the real instance's Jobs page the dialog's Save is off in its words and no form is offered - the page says
+// beside the form (the level field described by it) before any click; on the real instance's Jobs page the dialog's Save is off in its words and no form is offered - the page says
 // why instead. Nothing is saved by a click here (part A writes both at the API). Two requests come from controls that
-// are ON (the review of DONE-3, item 2): the job level saved with every box empty and an exclusion of pattern '*' on
+// are ON: the job level saved with every box empty and an exclusion of pattern '*' on
 // this instance - the door passes the page's own payloads and the functions refuse them in their own words (409), so
 // a door that read the page's body wrongly fails here; part B's table count still finds nothing written.
 {

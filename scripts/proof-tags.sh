@@ -2,7 +2,7 @@
 # Proof of tags as key:value pairs, the ui: block and the repository-side override (migration 0032, pgvigil tag,
 # GET /api/tags, the instances read) on the sandbox; the sandbox server is both the repository and the monitored one.
 #   PGVIGIL_REPO_DSN  repository owner connection. Creates and drops one instance and one login with a random suffix.
-# Needs the join's wiring: the 'tag' command in main.go, GET /api/tags and the merged tags column of the instances read.
+# Needs the release wiring: the 'tag' command in main.go, GET /api/tags and the merged tags column of the instances read.
 # Expected: migrate applies 0032; a config whose tag is "env:" is refused ("has no value"), one with the plain word
 # "tag:a:b" ("cannot hold ':'") and one with group_by [env, env] ("listed twice"); an owner insert of an empty
 # override value is refused by the CHECK; a collection writes the config's [prod, erp, env:prod, team:billing] as written and

@@ -15,7 +15,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
-// TestCustomRightsLogins (CUSTOMRIGHTS, the lead 11:5x): the custom checks run the DBA's own SQL read-only, and
+// TestCustomRightsLogins (CUSTOMRIGHTS): the custom checks run the DBA's own SQL read-only, and
 // customRights refuses, on the SESSION user, a login whose rights a read-only transaction does not stop. On a server
 // where PGVIGIL_CUSTOM_TEST_SUPER_DSN (a superuser, keyword form) may make roles - skipped without it - a pg_monitor
 // login runs; refused: a NOINHERIT member of a superuser role (one statement can SET ROLE to it) and a superuser that

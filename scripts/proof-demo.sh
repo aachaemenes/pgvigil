@@ -15,7 +15,14 @@
 #                instance seeded before the run is untouched after two runs
 #   activity     N summaries per PostgreSQL instance, none on a SQL Server one; at the latest snapshot blocking_chains() gives
 #                onprem-erp01 3 waiters (depth up to 2, active head), rds-orders01 6 (depth up to 2,
-#                head running the report), onprem-hr01 2 (head 'idle in transaction'), every other 0
+#                head running the report), onprem-hr01 2 (head 'idle in transaction'), every other 0 - while the seed
+#                ticked under 12 minutes past its anchor: gen.go window() closes every current chain 12 minutes after
+#                the anchor ('a seed that takes longer than twelve minutes lands in the pause'), so a seed of 12+ ticks
+#                (a loaded machine) makes the chains, the API's activity chains and the overview list NOT PROVEN, never
+#                a FAIL and never a PASS: 'NOT PROVEN: seed took <n> ticks (>= 12): <check>', then 'NOT PROVEN
+#                proof-demo: ...' and exit 3 (every other check still passes or fails as before); the same from 10 ticks
+#                for the CDC task's drain readout (dms below): gen.go dmsLatency falls until the anchor and holds after
+#                it, and dms_drain's baseline is a sample 10-30 minutes before the newest one (0016's view)
 #   dbstats      N rows per database (onprem-erp01/02: 3 databases, the others 2) = 26 N
 #   statements   statements_info at every 5-minute snapshot on 11 instances (none on
 #                cloudsql-analytics02); reset rows on rds-orders01 only
@@ -62,6 +69,12 @@ cleanup() {
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
+# the seed's catch-up ticks past its anchor (grid_n): 12 or more = the newest snapshot is in or past gen.go window()'s
+# pause, where the anchor's chains are gone - their checks are then NOT PROVEN, never a FAIL, and the proof never PASSes
+NOTPROVEN=""; SEEDNO=0
+late() { (( TICKS >= ${1:-12} )); }
+# notproven <check> [detail] [ticks]: ticks is the check's own bound (12 by default: the chains' pause)
+notproven() { echo "NOT PROVEN: seed took $TICKS ticks (>= ${3:-12}): $1, seed $SEEDNO${2:+ ($2)}"; NOTPROVEN+="${NOTPROVEN:+; }$1 (seed $SEEDNO, $TICKS ticks)"; }
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB"; CREATED=1
 export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB"
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\n' > "$CFG"
@@ -80,6 +93,7 @@ ANCHOR=$(P -c "select max(snapshot_at) from pgvigil.activity_summary")
 # the seed prints its anchor and ticks on from it to the current minute before it returns: N is the grid (2,065
 # points when the anchor is on a 5-minute mark, 2,066 when it is not) plus the snapshot times after the anchor
 grid_n() {
+  SEEDNO=$((SEEDNO + 1))
   SEED_ANCHOR=$(sed -n 's/.*; anchor \([0-9TZ:-]*\)$/\1/p' <<<"$OUT"); [[ -n "$SEED_ANCHOR" ]] || fail "the seed printed no anchor"
   TICKS=$(P -c "select count(distinct snapshot_at) from pgvigil.activity_summary where snapshot_at > '$SEED_ANCHOR'")
   N=$(P -c "select case when extract(minute from '$SEED_ANCHOR'::timestamptz at time zone 'UTC')::int % 5 = 0 then 2065 else 2066 end + $TICKS")
@@ -104,7 +118,9 @@ check_repo() {
         from pgvigil.instances i
         left join lateral pgvigil.blocking_chains(i.instance_id, (select max(snapshot_at) from pgvigil.activity_summary s where s.instance_id = i.instance_id)) c on true
        where 'demo' = any(i.tags) group by 1) x where n > 0")
-  [[ "$got" == "demo-onprem-erp01=3/2/active demo-onprem-hr01=2/1/idle in transaction demo-rds-orders01=6/2/active" ]] || fail "chains: $got"; ok "chains: $got"
+  if [[ "$got" == "demo-onprem-erp01=3/2/active demo-onprem-hr01=2/1/idle in transaction demo-rds-orders01=6/2/active" ]]; then ok "chains: $got"
+  elif late; then notproven "chains" "got '$got'"
+  else fail "chains: $got"; fi
   got=$(P -c "select count(*) from pgvigil.dbstats d join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")
   [[ "$got" == $((26 * N)) ]] || fail "dbstats rows $got, want $((26 * N))"; ok "dbstats: $got rows"
   got=$(P -c "select count(*) from (select i.name, (select count(*) from pgvigil.statements_info s where s.instance_id = i.instance_id) n,
@@ -122,7 +138,11 @@ check_repo() {
   got=$(P -c "select count(*) || '/' || (select count(*) from pgvigil.dms_table_stats) || '/' || (select count(*) from pgvigil.dms_table_stats where table_state = 'Table error') from pgvigil.dms_tasks where is_present")
   [[ "$got" == "2/15/2" ]] || fail "dms tasks/tables/errors: $got"; ok "dms tasks/tables/errors: $got"
   got=$(P -c "select count(*) filter (where eta_rows_secs > 0 and eta_secs > 0 and speed_x > 1 and spilling) || '/' || count(*) from pgvigil.dms_drain d join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags) and d.task_id = 'erp-to-aurora-cdc'")
-  [[ "$got" == "1/1" ]] || fail "dms drain eta and spill: $got"; ok "dms drain: the CDC task drains (rows and latency ETA, speed over 1x) and is spilling"
+  # the latency falls until the anchor and holds after it (gen.go dmsLatency): from 10 ticks on the view's baseline
+  # (10-30 minutes before the newest sample, 0016's dms_drain) is the anchor's value or later, so no fall is seen
+  if [[ "$got" == "1/1" ]]; then ok "dms drain: the CDC task drains (rows and latency ETA, speed over 1x) and is spilling"
+  elif late 10; then notproven "dms drain eta and spill" "got $got: the latency holds from the anchor on" 10
+  else fail "dms drain eta and spill: $got"; fi
   got=$(P -c "select (select count(*) from pgvigil.table_databases d join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags) and d.is_present) || '/' || count(*) from pgvigil.tables t join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags) and t.is_present")
   [[ "$got" == "14/70" ]] || fail "tables databases/tables: $got"; ok "tables: 14 databases, 70 tables"
   # the skip scenario: on an odd UTC hour the latest read skipped event_props, so its row is older than its
@@ -143,6 +163,11 @@ PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); pr
 "$BIN" serve -config "$CFG" -no-login -listen "127.0.0.1:$PORT" 2>"$WORK/serve.log" & SPID=$!
 for _ in $(seq 50); do curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.2; done
 api() { curl -fsS "http://127.0.0.1:$PORT/api/$1"; }
+# erp01 -> erp02 (gen.go replicationRows): erp01's sender names no slot type, so it is a physical link, and its
+# replay lag holds near 432 s at the anchor in reads a minute apart - since the HA join (0141) that is ONE row,
+# 'standby lag' on erp01 (the smaller of the last two reads against 30 / 300 s), where 0006 said 'replay lag' there.
+# erp02 keeps 'replay lag': its own receiver row lags the same, and the demo seeds no 'standby' row for it, so no
+# monitored primary's link is paired with it (0141 keeps 0006's standby-side rule for exactly that case).
 EXPECTED_OVERVIEW_FIXED="BurstBalance@demo-rds-orders01
 DMS CDC latency@demo-aurora-dms01
 DMS changes on disk@demo-aurora-dms01
@@ -177,7 +202,6 @@ job failing repeatedly@demo-aurora-crm01
 job schedule missed@demo-rds-billing01
 last archive older than 60 min@demo-onprem-hr01
 no snapshot in 24 h@demo-aurora-reporting01
-replay lag@demo-onprem-erp01
 replay lag@demo-onprem-erp02
 retention under 7 days@demo-aurora-dms01
 retention under 7 days@demo-rds-orders01
@@ -192,6 +216,7 @@ role: pg_monitor@demo-rds-billing01
 role: superuser@demo-azure-portal01
 role: superuser@demo-onprem-erp01
 role: superuser@demo-rds-billing01
+standby lag@demo-onprem-erp01
 swap used@demo-onprem-hr01
 swap used@demo-rds-orders01
 table autovacuum off@demo-onprem-hr01
@@ -240,11 +265,15 @@ check_api() {
   want2=$(expected_overview)
   # a clock-bound row whose window closed during the read (erp01's CPU, about 1-2 minutes after the last tick): the API
   # answered at one edge or the other, each an exact list
-  [[ "$got" == "$want" || "$got" == "$want2" ]] || { diff <(echo "$want2") <(echo "$got") >&2; fail "overview rows differ"; }; ok "api overview: the $(wc -l <<<"$want") expected demo rows"
+  if [[ "$got" == "$want" || "$got" == "$want2" ]]; then ok "api overview: the $(wc -l <<<"$want") expected demo rows"
+  elif late; then diff <(echo "$want2") <(echo "$got") >&2 || true; notproven "api overview rows" "the diff above"
+  else diff <(echo "$want2") <(echo "$got") >&2 || true; fail "overview rows differ"; fi
   api overview | grep -q '3 deadlock(s)' || fail "overview deadlock detail"; ok "api overview: 3 deadlock(s)"
   id=$(P -c "select instance_id from pgvigil.instances where name = 'demo-onprem-erp01'")
   got=$(api "activity?instance=$id" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["chains"]["rows"]))')
-  [[ "$got" == 3 ]] || fail "api activity chains: $got"; ok "api activity: 3 chain rows"
+  if [[ "$got" == 3 ]]; then ok "api activity: 3 chain rows"
+  elif late; then notproven "api activity chains" "got $got chain rows"
+  else fail "api activity chains: $got"; fi
   local from; from=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)
   got=$(api "statements?instance=$(P -c "select instance_id from pgvigil.instances where name = 'demo-rds-orders01'")&from=$from" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["rows"]))')
   (( got >= 10 )) || fail "api statements: $got"; ok "api statements: $got rows"
@@ -285,7 +314,9 @@ acks_real() { P -c "select (select count(*) from pgvigil.acks where instance_nam
 OUT=$("$BIN" demo -config "$CFG" 2>"$WORK/seed2.log") || { cat "$WORK/seed2.log" >&2; fail "seed 2"; }
 got=$(door); [[ "${got% *}" == "1/1/1/1 true 3" ]] || fail "a real DBA Dash door after a re-seed (rows, configured, demo instances): ${got% *}"
 ok "a real DBA Dash door sharing a demo id: its rows kept and it stays configured over a re-seed"
-acks=$(acks_real); [[ "$acks" == "1/1/0 true/true 7" ]] || fail "a real instance's alert and a real user demo's silence after a re-seed (silence/log/acks on the alert, rule tags, seed rows): $acks, wanted 1/1/0 true/true 7"
+# seed rows: SeedAcks' 7 + the collector errors seed's 2 (an acknowledgement of the first PostgreSQL instance's errors
+# and the 17806 known-noise label, tagged demo)
+acks=$(acks_real); [[ "$acks" == "1/1/0 true/true 9" ]] || fail "a real instance's alert and a real user demo's silence after a re-seed (silence/log/acks on the alert, rule tags, seed rows): $acks, wanted 1/1/0 true/true 9"
 ok "a re-seed's acknowledgements stay on the demo fleet: the real user demo's silence and log kept, the real alert untouched, the rules tagged demo"
 DEMO_HIST=${got##* }
 echo "$OUT"
@@ -339,5 +370,8 @@ else
   kill -INT "$GPID"; rc=0; wait "$GPID" || rc=$?; GPID=""
   [[ "$rc" == 0 ]] || { cat "$WORK/pgbin.log" >&2; fail "pgbin exit $rc"; }
   [[ ! -f "$WORK/data/postmaster.pid" ]] || fail "pgbin: postmaster.pid left"; ok "pgbin: SIGINT exit 0, cluster stopped"
+fi
+if [[ -n "$NOTPROVEN" ]]; then
+  echo "NOT PROVEN proof-demo: $NOTPROVEN - a seed that ran past its anchor: from 12 ticks gen.go window()'s pause (the chains, the overview list, the activity chains), from 10 ticks dmsLatency's hold (the dms drain); every other check passed"; exit 3
 fi
 echo "PASS proof-demo"

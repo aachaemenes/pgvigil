@@ -32,7 +32,7 @@ func prepareDir(dir string) error {
 }
 
 // writeSecret (Windows): the value sealed with DPAPI at machine scope (any process of this machine can open it,
-// none elsewhere: the lead's decision), written beside its final name and renamed over it.
+// none elsewhere), written beside its final name and renamed over it.
 func writeSecret(dir, name, value string) (string, error) {
 	in := []byte(value)
 	var out windows.DataBlob
@@ -40,7 +40,7 @@ func writeSecret(dir, name, value string) (string, error) {
 		windows.CRYPTPROTECT_LOCAL_MACHINE|windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
 		return "", err
 	}
-	defer windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data)))
+	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }()
 	blob := unsafe.Slice(out.Data, out.Size)
 	p := filepath.Join(dir, name+".dpapi")
 	tmp := p + ".new"
@@ -67,6 +67,6 @@ func ResolveDPAPI(path string) (string, error) {
 	if err := windows.CryptUnprotectData(&windows.DataBlob{Size: uint32(len(b)), Data: &b[0]}, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
 		return "", err
 	}
-	defer windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data)))
+	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }()
 	return strings.TrimRight(string(unsafe.Slice(out.Data, out.Size)), "\r\n"), nil
 }

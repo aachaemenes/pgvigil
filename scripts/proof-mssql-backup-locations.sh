@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Proof of task 301: where a SQL Server database's newest backups went (migration 0140, internal/mssql/backups.go's
-# collection mssql_backup_files, /api/mssql/backup_files, the Backups tab's added cells through the lead's wiring).
+# collection mssql_backup_files, /api/mssql/backup_files, the Backups tab's added cells through the wiring).
 #
 # Needs: docker (it starts and removes its own containers: SQL Server 2022 and 2019 Developer, a MinIO S3 stand-in with
 # its own TLS certificate, a PowerShell container for dbatools; a network and two volumes of its own), openssl, psql,
@@ -8,9 +8,8 @@
 #   PGVIGIL_REPO_DSN   a superuser connection to a PostgreSQL sandbox in KEYWORD form (host=... user=... dbname=...);
 #                      the proof makes its own database there and drops it.
 # Optional: PGVIGIL_BIN (default bin/pgvigil, built here when missing), PROOF_SKIP_S3=1, PROOF_SKIP_DBATOOLS=1,
-# PROOF_SKIP_2019=1 (each such row then prints NOT PROVEN). Part H needs the lead's wiring in the binary (web.go's route,
-# sqlMSSQLBackups' join): on a tree that does not carry it yet, scripts/inv-301-wiring.patch is applied to the tree the
-# binary is built from (patch -p1) before the run.
+# PROOF_SKIP_2019=1 (each such row then prints NOT PROVEN). Part H needs the wiring in the binary (web.go's route,
+# sqlMSSQLBackups' join): this tree carries it.
 # Nothing it did not make is touched; every container, volume, network and the repository database go on every exit path.
 #
 # Expected (written before the first run):
@@ -41,7 +40,7 @@
 #      of ...' and 'a full backup on the volume of the database's own files'; then a full into /var/opt/mssql/pgvbk_sib/
 #      (a sibling directory on the same filesystem) and one on another docker volume: each 'not judged: on Linux only ...',
 #      no finding; one into /var/opt/mssql/data/pgvbk_below/ (below the data directory: it may be a mounted folder - added
-#      with the review of run 11) 'not judged: /var/opt/mssql/data/pgvbk_below/ is below /var/opt/mssql/data/, ...', no finding. The Windows mounted-folder and Cluster Shared Volume rows: TestBackupLocationsOnAStore.
+#      after run 11) 'not judged: /var/opt/mssql/data/pgvbk_below/ is below /var/opt/mssql/data/, ...', no finding. The Windows mounted-folder and Cluster Shared Volume rows: TestBackupLocationsOnAStore.
 #  L10 (F11) pgvbkr: fulls to /backups, then /backups2, then /backups again: roots seen 2; 'a backup destination not
 #      seen before' (info) after the second; still 2 roots after the third.
 #  L16 (F2) pgvbkd: a full now and a differential whose dates are hand-set 30 days back (another database's, before this
@@ -57,12 +56,12 @@
 #      and pgvbka's log rows; every other set keeps the first read's snapshot); the cursor = msdb's newest backup_set_id
 #      with its mark. The row at the cursor's number given another backup_set_uuid by hand (the mark differs): the next read
 #      is one whole pass - every stored set re-stored by it, none keeps an earlier snapshot; the cursor msdb's newest with
-#      the new mark. (Added after the review of run 11: the mark-changed branch ran nowhere.) msdb replaced: its history
+#      the new mark. (Added after run 11: the mark-changed branch ran nowhere.) msdb replaced: its history
 #      deleted and backupset's identity reseeded, a full of pgvbkr taken (a backup_set_id below the cursor): the next read
 #      stores it.
 #  L12 (run before L17 empties msdb) the least-privilege login (a user in msdb with db_datareader, no server right): its
 #      one whole read stores the same sets as the monitor login's cursor reads over the same msdb state - (database, type,
-#      copy-only, backup_set_id) equal. (Changed after the review of run 11: the row only counted more than 0 sets, after
+#      copy-only, backup_set_id) equal. (Changed after run 11: the row only counted more than 0 sets, after
 #      L17 had emptied msdb.) A login without a user in msdb: read through msdb's guest where public may select the backup tables, else
 #      'skipped' naming the table - never an error. (Changed after run 9: the expected said 'skipped'; on this container
 #      public may select them and the login read 20 rows.)
@@ -77,7 +76,7 @@
 #      stripe and mirror of pgvbka's kept sets, each path cell's data-full equal to its path and a Copy button in it; the
 #      Backup files grid every file of the instance; #/backups the SQL Server section; axe-core 4.14.0 (WCAG 2.1 A and AA)
 #      0 violation nodes on both pages in the light and the dark theme. Skipped (NOT PROVEN) without chromium and node.
-#  J   (F10, only with PROOF_AG=1) rel-160's lab (scripts/dag/trial.sh, KEEP=1) forms a clusterless group ag1 (d1a primary,
+#  J   (F10, only with PROOF_AG=1) the lab scripts/dag/trial.sh (KEEP=1) forms a clusterless group ag1 (d1a primary,
 #      d1b secondary, database dagdb): a full on d1a and a log on d1b, both instances read: from d1a the locations show
 #      the full from d1a and the log from d1b, the log 'is partner backup' with d1b as its partner; from d1b the same
 #      two sets; replicas_unseen false. Without PROOF_AG=1, or the lab refused: 'NOT PROVEN live: an availability group'.

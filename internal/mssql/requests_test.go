@@ -67,7 +67,7 @@ func TestBuildChainsEdges(t *testing.T) {
 	}
 
 	// a negative blocker is not a session: the session that waits behind one still heads the sessions behind it,
-	// with the note on its rows and on its blocking row (the reviewer's case: 51 on a latch, 52 behind 51 for 60 s)
+	// with the note on its rows and on its blocking row (51 on a latch, 52 behind 51 for 60 s)
 	rows = []collect.Row{req(51, -5, 200), req(52, 51, 60000)}
 	b = buildChains(rows)
 	m = bySession(rows)

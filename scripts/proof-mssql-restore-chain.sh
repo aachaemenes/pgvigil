@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Proof of task 304: the restore chain (migration 0147, internal/mssql/restore_chain.go's collection mssql_restore_chain,
-# /api/mssql/restore through the lead's wiring, scripts/inv-304-wiring.patch on top of inv-301-wiring.patch).
+# /api/mssql/restore through its wiring: web.go, the summary and the pages).
 #
 # Needs: docker (its own SQL Server 2022 Developer container, a PowerShell container for dbatools 2.9.1, and with
-# PROOF_AG=1 rel-160's clusterless group lab scripts/dag/trial.sh), psql, curl, python3, a go toolchain, and
+# PROOF_AG=1 the clusterless group lab scripts/dag/trial.sh), psql, curl, python3, a go toolchain, and
 #   PGVIGIL_REPO_DSN   a superuser connection to a PostgreSQL sandbox in KEYWORD form; the proof makes its own database there.
 # Optional: PGVIGIL_BIN (default bin/pgvigil), PROOF_SKIP_DBATOOLS=1. Everything it makes goes on every exit path.
 #

@@ -20,6 +20,9 @@ schedules:
 #   normalized  every literal replaced by ? before the text leaves the collector
 #   none        no statement text at all, only hashes and counters
 query_text: full
+# the reachability probe: icmp (measured as tcp until B24h-2) | tcp | off; probe_every_minute: an admin's opt-in
+probe: icmp
+probe_every_minute: false
 
 # The UI's tree: one folder level per tag key, in order (a tag is a plain word or key:value, below);
 # env_order ranks the values of every level, prod first; the rest follow by name.
@@ -42,6 +45,7 @@ instances:
     #                                  # Audit); they can carry data: absent = the class, command and object only
     # backups:
     #   archive_warn_minutes: 60         # the last archived WAL older than this while WAL waits is a finding
+    #   read_tools: true                 # run the backup tool the server names and read its configuration here (off by default)
     schedules:
       instance: 30m
     # The AWS door of an RDS / Aurora instance: the postgresql log over CloudWatch Logs (logs) and the

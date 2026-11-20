@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -54,7 +55,7 @@ func TestLivePages(t *testing.T) {
 		for _, rs := range out.Results {
 			counts = append(counts, strconv.Itoa(len(rs.Rows)))
 		}
-		fmt.Printf("page %s %s version=%s proven=%t sets=%d rows=%s err=%s\n", p.Key, state, out.Version, out.Proven, len(out.Results), strings.Join(counts, ","), msg)
+		fmt.Printf("page %s %s version=%s proven=%t sets=%d rows=%s err=%s note=%s\n", p.Key, state, out.Version, out.Proven, len(out.Results), strings.Join(counts, ","), msg, out.Note)
 		if dir != "" && err == nil {
 			b, err := json.Marshal(out)
 			if err != nil {
@@ -64,6 +65,64 @@ func TestLivePages(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+// TestMaskCells hands scripts/proof-dbadash-door.sh the pages' text columns and their mask (skipped without
+// PGVIGIL_DBADASH_MASK_OUT). The proof compares each page with a second client's call of the same procedure; that
+// client's cells of the text columns must pass the mask the page's cells passed - this package's, never a copy of it,
+// and the columns by this package's list. It writes PGVIGIL_DBADASH_MASK_OUT as
+//
+//	{"columns": {"<page>": ["<column>", ...]}, "masked": ["<text>", ...]}
+//
+// columns being pageText's and masked the texts of the JSON list in PGVIGIL_DBADASH_MASK_IN (none without it) through
+// maskPage, in the list's order. It prints no text.
+func TestMaskCells(t *testing.T) {
+	out := os.Getenv("PGVIGIL_DBADASH_MASK_OUT")
+	if out == "" {
+		t.Skip("PGVIGIL_DBADASH_MASK_OUT not set (scripts/proof-dbadash-door.sh sets it)")
+	}
+	cells := []string{}
+	if in := os.Getenv("PGVIGIL_DBADASH_MASK_IN"); in != "" {
+		b, err := os.ReadFile(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(b, &cells); err != nil {
+			t.Fatal("PGVIGIL_DBADASH_MASK_IN is not a JSON list of texts")
+		}
+	}
+	reply := struct {
+		Columns map[string][]string `json:"columns"`
+		Masked  []string            `json:"masked"`
+	}{Columns: map[string][]string{}, Masked: []string{}}
+	var page, column string
+	for p, cols := range pageText {
+		for c := range cols {
+			reply.Columns[p] = append(reply.Columns[p], c)
+			page, column = p, c
+		}
+		sort.Strings(reply.Columns[p])
+	}
+	if page == "" {
+		t.Fatal("no page lists a text column")
+	}
+	// every text column passes the one mask: a reply of one such column carries the texts through maskPage
+	r := PageReply{Page: page, Results: []ResultSet{{Columns: []Column{{Name: column, Type: "NVARCHAR"}}}}}
+	for _, c := range cells {
+		r.Results[0].Rows = append(r.Results[0].Rows, []any{c})
+	}
+	maskPage(&r)
+	for _, row := range r.Results[0].Rows {
+		s, _ := row[0].(string)
+		reply.Masked = append(reply.Masked, s)
+	}
+	b, err := json.Marshal(reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(out, b, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -98,8 +157,8 @@ func TestLiveImport(t *testing.T) {
 	}
 	repoDSN := os.Getenv("PGVIGIL_DBADASH_IMPORT_REPO")
 	if os.Getenv("PGVIGIL_DBADASH_IMPORT_STORE") == "1" {
-		// the pool handed to Import is the only way to the store: Import is given no dsn of its own (review 206e 2: an
-		// Import that opened the dsn itself would pass every E2 row otherwise)
+		// the pool handed to Import is the only way to the store: Import is given no dsn of its own (an Import that
+		// opened the dsn itself would pass every E2 row otherwise)
 		pool, err := pgxpool.New(ctx, repoDSN)
 		repoDSN = "host=/nonexistent-pgvigil-e2 dbname=none"
 		if err != nil {

@@ -1,7 +1,7 @@
 // The Restore chain tab of a SQL Server instance (task 304): per database what a restore from the backups msdb lists
 // would take and how far it reaches - the newest start set (a full, its differential, or a newer copy-only full), then the
 // log backups in LSN order, with where each ran and every file. Data from /api/mssql/restore (the verdicts and steps the
-// repository decided at the last read); the lead wires the tab (router.ts, main.ts). pgvigil writes no RESTORE statement
+// repository decided at the last read); the shell wires the tab (router.ts, main.ts). pgvigil writes no RESTORE statement
 // and runs none: 'Copy the file list' copies the paths in restore order, nothing else. An LSN is shown as the text the API
 // gives (up to 25 digits: never a JavaScript number, never compared here).
 import { get, Row, rowsOf, Table } from './api';

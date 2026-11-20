@@ -13,10 +13,10 @@
 #   PGVIGIL_DEMO_WAIT_S   seconds to wait for the seeded demo (default 240)
 #   PGVIGIL_WORDING_OUT   a file that gets the walk's JSON (every page, every red, the grade)
 #   PGVIGIL_WORDING_SHOTS a folder: a shot of each page read
-# Expected (the run on the join's tip 6690789 with the five SQL Server group names' 31 rows moved to must-not: the
-# join's j11 on af0d2e9 listed 26 must rows 'not seen' - Memory Dump, Availability Group, Last Good Check DB, Agent
-# Jobs, Backup LOG on PostgreSQL rows and scopes, gone since a1e161f's labelOf / pgLabel - and the 5 may rows of the
-# same names showed no red either; every other line of j11 unchanged; written before it):
+# Expected (the run with the five SQL Server group names' 31 rows moved to must-not: an earlier run
+# listed 26 must rows 'not seen' - Memory Dump, Availability Group, Last Good Check DB, Agent
+# Jobs, Backup LOG on PostgreSQL rows and scopes, gone since the labelOf / pgLabel change - and the 5 may rows of the
+# same names showed no red either; every other line of that run unchanged; written before it):
 #   the matcher's self-test: 65 of 65 cases (63 words, 5 allow rows, 147 expected rows)
 #   picked: PostgreSQL demo-onprem-erp01, demo-rds-billing01, the Pooler on demo-aurora-crm01; SQL Server
 #     demo-onprem-sql01, demo-azure-sql03; tags aurora (PostgreSQL; 3 instance(s)), sales (SQL Server; 2)

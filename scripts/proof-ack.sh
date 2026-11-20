@@ -6,7 +6,7 @@
 #
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a superuser (the proof makes its database and logins with
 #                      a random suffix and drops them at the end)
-#   PGVIGIL_BIN        a build with the routes GET /api/ack, POST /api/ack, POST /api/ack/end (the lead's wiring in
+#   PGVIGIL_BIN        a build with the routes GET /api/ack, POST /api/ack, POST /api/ack/end (the wiring in
 #                      web.go) and the bundle rebuilt; default bin/pgvigil
 #   chromium, node     the Summary read (Chrome DevTools Protocol over node's WebSocket)
 #
@@ -35,7 +35,7 @@
 #  L. a silence covers one server: L (the demo instance with the most critical findings, not M) silenced; a pass to a
 #     fresh channel drop2: no file of L, at least one file of another instance; every ack_suppressed row of the
 #     silence is L's and there is at least one; a second silence of L refused 409 ('already silenced').
-#  [Added at the review fold, before their first run:]
+#  [Added later, before their first run:]
 #  H. holds and acknowledgements on OPEN alerts: a channel rep (file, critical, repeat 5m) opens its alerts in a pass;
 #     A1 muted by 'Mute this alert' (its finding key), A2 acknowledged, A3's setting labelled by a known pattern, K
 #     (an instance with open rep alerts) in a blackout from a minute ago to an hour on, K2 in a blackout that starts
@@ -55,7 +55,7 @@
 #     and critical cells, and none coloured.
 #  A. the audit: ack_log's rows read add:done=<the rows of acks> add:refused=1 end:done=1, at least as many done adds
 #     as the proof made through the API [run 6: 71 against a count of 69: the counter was a variable that
-#     MUTE=$(add ...) incremented in a subshell; then a file; at the fold the acks rows, which the page's adds join],
+#     MUTE=$(add ...) incremented in a subshell; then a file; since the fix the acks rows, which the page's adds join],
 #     every row with ui_user the proof user and client 127.0.0.1, or the demo seed's (demo, client 'demo seed'); every acks
 #     row has created_by the proof user or demo.
 set -euo pipefail
@@ -259,10 +259,12 @@ ok "C: $P's $PBAD warning / critical cells shown as acknowledged, counted ($((PB
 ok "U: $UN's until-change acknowledgements for another reading leave its $UBAD cells coloured"
 
 # ---- X: expiry --------------------------------------------------------------------------------------------------------
-# the proof's own rows only (kind 'ack'): the demo seeds a permanent alert_ack and note on the instances holding its two
-# oldest alerts (internal/demo/ack_demo.go), and which instances those are moves with the build's findings
+# the proof's own rows only (kind 'ack', not the demo seed's): the demo seeds a permanent alert_ack and note on the
+# instances holding its two oldest alerts (internal/demo/ack_demo.go), and which instances those are moves with the
+# build's findings; it also seeds a never-ending kind 'ack' on its first PostgreSQL instance's collector errors
+# (internal/demo/collector_errors_demo.go), which Q can be
 sleep $(( $(date -d "$QEXP" +%s) - $(date +%s) + 2 ))
-[[ $(curl -s -b "$JAR" "$U/api/ack?part=acks" | python3 -c "import json,sys; d=json.load(sys.stdin)['acks']; c=d['columns']; print(sum(1 for r in d['rows'] if r[c.index('instance')]=='$Q' and r[c.index('kind')]=='ack' and r[c.index('live')]))") == 0 ]] || fail "X: $Q's acks still live"
+[[ $(curl -s -b "$JAR" "$U/api/ack?part=acks" | python3 -c "import json,sys; d=json.load(sys.stdin)['acks']; c=d['columns']; print(sum(1 for r in d['rows'] if r[c.index('instance')]=='$Q' and r[c.index('kind')]=='ack' and r[c.index('client')]!='demo seed' and r[c.index('live')]))") == 0 ]] || fail "X: $Q's acks still live"
 summary
 [[ $(get "d['rows']['$Q']['ack']") == 0 && $(get "d['rows']['$Q']['warn'] + d['rows']['$Q']['crit']") -ge "$QACK" ]] || fail "X: $Q after expiry: $(cat "$WORK/sum.json")"
 ok "X: $Q's acknowledgements expired: live false, its cells coloured again"

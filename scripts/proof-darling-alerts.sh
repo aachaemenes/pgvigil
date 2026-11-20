@@ -26,7 +26,7 @@
 #  T. the starter rules: 'Starter rules' on #/alertrules opens a menu of PerformanceMonitor's starter templates whose
 #     measure pgvigil charts as a metric: 'PostgreSQL: connection count high' and 'SQL Server: sustained blocking'; the
 #     first opens the New alert rule dialog filled: sessions.total, above, 200, 500, 15 minutes, its name (Save off on
-#     the demo's read-only serve, the reason said).
+#     the demo's read-only serve: aria-disabled, B3's offControl, the reason said).
 #  C. the click table: every a[href] and button inside the page (main) of #/alerts, one #/alert page and #/alertrules:
 #     every link's target read (a page of the UI); one of each kind clicked (a link kind: its tab, its parameters' names,
 #     its words without figures; a button kind: its words), the kind's count in the table: a link lands on its own tab with no error box (its h2 named), a button opens a dialog (its title named), a
@@ -34,8 +34,9 @@
 #     a download, a status line or a redraw of the page, or is disabled with
 #     its reason (the demo serves read only); 0 FAIL.
 #  A. #/admin (its route the WIRING BLOCK's): five tabs - Servers (a row per instance of /api/instances), Notification
-#     routes, Alert settings (the sentence and the eight built-in thresholds of 0118), Threshold overrides, Server actions
-#     (three switches per SQL Server instance) -, each its heading and a grid, no error box, the tab in the address
+#     routes, Alert settings (the sentence and the six built-in thresholds of 0118), Threshold overrides, Server actions
+#     (five switches per SQL Server instance - kill, job_start, job_stop and B9c's job_enable / job_disable - read from the
+#     tab's own rows, no other engine's row) -, each its heading and a grid, no error box, the tab in the address
 #     (atab=); its links and buttons in C.
 #  P. shots of #/alerts, an alert page, #/alertrules and #/admin in the light and the dark theme.
 #  F. migration 0118 (PerformanceMonitor's defaults as findings) on a fresh repository leaves pgvigil.findings alone;
@@ -47,11 +48,14 @@
 #     pass sends it to a file drop; after VACUUM and a read the finding is gone, and a pass that misses it, a read and a
 #     pass clear the alert (the sender's clear rule: a read newer than the pass that first missed it);
 #     F2-F5 seeded at the collected rows (no standby, 10 GB slot, small volume or AG here: NOT PROVEN on a live engine):
-#     replay lag 45 s warning / 400 s critical / 10 s none, slot WAL 12 GB warning / 60 GB critical / 9 GB none, a
+#     F2 a LOGICAL slot's sender 45 s behind warning / 400 s critical / 10 s none: 'replay lag', since the HA join
+#     0141's rule at the same tiers (its key logical_sender_lag; 0118's arm judged every sender and is dropped: a
+#     physical link's lag is 0141's 'standby lag', proven by proof-pg-hadr.sh), slot WAL 12 GB warning / 60 GB critical / 9 GB none, a
 #     volume of 20 GB with 4.5 GB free warning, one of 15 GB with 1.8 GB free critical (its drive threshold 5 % / 2 %,
 #     so its percent rule raises nothing), 8 GB with 4 GB free none (10 GB or smaller), 500 GB with 3 GB free none (its
-#     percent rule judges it), 40 GB with 8 GB free none; an AG database 400 s behind warning / 20 s none; the rows
-#     recovered raise nothing.
+#     percent rule judges it), 40 GB with 8 GB free none; F5 an AG database 400 s behind raises NO 'AG secondary
+#     behind' here (the HA join dropped 0118's arm: 0143's 'a secondary would lose data in a failover' judges it,
+#     proven by proof-mssql-hadr.sh); the rows recovered raise nothing.
 #     F6 live: an instance reached through a loopback forwarder: the forwarder stopped, its next read fails to connect
 #     (the collector records it through import_connect_failure: the WIRING BLOCK; its note 'connect: ...')
 #     -> 'server unreachable' (critical) on it alone, sent to the file drop; the forwarder back, the next read connects
@@ -90,7 +94,7 @@ printf 'repository:\n  dsn: env:D30_DEMO_DSN\n' > "$WORK/demo-cfg.yaml"
 "$WORK/pgvigil" migrate -config "$WORK/demo-cfg.yaml" > "$WORK/demo-migrate.log" 2>&1 || { tail -5 "$WORK/demo-migrate.log"; fail "the demo database's migrate"; }
 if [[ $(psql "$D30_DEMO_DSN" -XAt -c "select pg_get_viewdef('pgvigil.findings'::regclass) like '%darling_alert_findings%'") == f ]]; then
   psql "$D30_DEMO_DSN" -XAtq -v ON_ERROR_STOP=1 -f scripts/proof-darling-alerts-findings.sql >/dev/null || fail "the findings arm (scripts/proof-darling-alerts-findings.sql) on the demo"
-  echo "SPLICED (demo): darling arm absent from the applied migrations (the lead's 0190 line)"
+  echo "SPLICED (demo): darling arm absent from the applied migrations (0190's line)"
 fi
 "$WORK/pgvigil" demo -dsn "$PGVIGIL_ADMIN_DSN dbname=$DB" -serve -listen "127.0.0.1:$PORT" -days 2 > "$WORK/demo.log" 2>&1 &
 SRV=$!
@@ -143,7 +147,7 @@ await shot('alerts');
 // 0021, 0006, 0024, 0067, 0074, 0085), not the page's rules; an alert rule's alert is 'Alert rule'; a setting outside the
 // table is opened and its section required, its family printed, not graded
 const WANT = { 'dead tuples piling up': 'Vacuum', 'database xid age': 'Vacuum', 'autovacuum is off': 'Vacuum', 'replay lag': 'Replication',
-  'replication slot retaining WAL': 'Replication', 'inactive replication slot': 'Replication', 'AG secondary behind': 'Replication',
+  'replication slot retaining WAL': 'Replication', 'inactive replication slot': 'Replication',
   'swap used': 'Memory', 'a volume under 5 GB free': 'Storage and IO', 'a volume under 10 % free': 'Storage and IO', 'runnable queue per scheduler': 'CPU',
   'scheduler pressure': 'CPU', 'server unreachable': 'The instance', 'the redo queue is over its threshold': 'Replication',
   'the log send queue is over its threshold': 'Replication', 'log shipping is behind its threshold': 'Replication', 'a database is suspended': 'Replication', 'lock_timeout': 'The instance', 'autovacuum_max_workers': 'The instance', 'work_mem': 'The instance' };
@@ -179,20 +183,23 @@ out.starters = await ev(`(async () => { const b = [...document.querySelectorAll(
   const form = d ? [...d.querySelectorAll('input, select, textarea')].map(x => x.value) : null;
   const title = d?.querySelector('h3, h2')?.textContent ?? null; const save = d?.querySelector('button[type=submit]');
   const need = d ? [...d.querySelectorAll('p.meta')].map(p => p.textContent).find(t => /^Save needs/.test(t)) ?? '' : '';
-  const res = { items, title, form, saveOff: !!save?.disabled, need }; if (d) d.close(); return res; })()`);
-// A: the Admin page, every tab opened (the route is the WIRING BLOCK's: the box run applies it)
+  // Save off is B3's offControl: aria-disabled 'true' (the control stays focusable and says why), never the disabled attribute
+  const res = { items, title, form, saveOff: save?.getAttribute('aria-disabled') === 'true', need }; if (d) d.close(); return res; })()`);
+// A: the Admin page, every tab opened (the route is the WIRING BLOCK's: a lab run applies it)
 out.admin = { tabs: [] };
 await go('#/admin'); await sleep(800);
 const atabs = await ev(`[...document.querySelectorAll('main .seg[aria-label="Admin tabs"] button')].map(b => b.textContent)`);
 for (const [i, label] of (atabs || []).entries()) {
   await ev(`document.querySelectorAll('main .seg[aria-label="Admin tabs"] button')[${i}].click()`); await sleep(1500);
   out.admin.tabs.push(await ev(`(() => { const b = document.querySelector('main .admin-body'); return { label: ${JSON.stringify(label)}, h3: b?.querySelector('h3')?.textContent ?? '', error: !!b?.querySelector('.error'),
-    rows: b ? [...b.querySelectorAll('table.grid')].map(t => Number(t.dataset.rows ?? t.querySelectorAll(':scope > tbody > tr').length)) : [], sentence: b?.querySelector('p.will-alert')?.textContent ?? null, hash: location.hash }; })()`));
+    rows: b ? [...b.querySelectorAll('table.grid')].map(t => Number(t.dataset.rows ?? t.querySelectorAll(':scope > tbody > tr').length)) : [], sentence: b?.querySelector('p.will-alert')?.textContent ?? null, hash: location.hash,
+    pairs: ${JSON.stringify(label)} === 'Server actions' && b ? [...b.querySelectorAll('table.grid > tbody > tr')].map(tr => [tr.children[0]?.textContent ?? '', tr.children[1]?.textContent ?? '']) : null }; })()`));
   if (i === 0) await shot('admin');
 }
 const instsAll = await (await fetch(U + 'api/instances')).json();
 out.admin.instances = instsAll.rows.length;
 out.admin.sqlservers = instsAll.rows.filter(r => r[instsAll.columns.indexOf('engine')] === 'sqlserver').length;
+out.admin.sqlnames = instsAll.rows.filter(r => r[instsAll.columns.indexOf('engine')] === 'sqlserver').map(r => r[instsAll.columns.indexOf('name')]);
 // C: every link and button of the three pages: every link's target read and checked; one of each kind clicked (a link
 // kind: its tab, its parameters' names and its words with the figures out; a button kind: its words the same way)
 const pages = ['#/alerts?w=7d', out.evidence[0] ? `#/alert?k=${out.evidence[0].key}` : null, '#/alertrules?w=7d', '#/admin?atab=settings'].filter(Boolean);
@@ -302,10 +309,16 @@ links = d['links']; odd = [x for x in links if off(x['href'])]
 check(len(links) > 0 and not odd, f"C: every link's target read: {len(links)} links on the pages walked, each a page of the UI ({len(odd)} not: {odd[:3]})")
 a = d.get('admin') or {}; tabsA = {t['label']: t for t in a.get('tabs', [])}
 want_tabs = ['Servers', 'Notification routes', 'Alert settings', 'Threshold overrides', 'Server actions']
+ACTS = ['kill', 'job_start', 'job_stop', 'job_enable', 'job_disable']
 check(list(tabsA) == want_tabs and all(t['h3'] == t['label'] and not t['error'] and t['rows'] for t in tabsA.values())
-      and tabsA['Servers']['rows'][0] == a.get('instances') and tabsA['Alert settings']['rows'][0] == 8 and (tabsA['Alert settings'].get('sentence') or '').startswith('pgvigil ')
-      and tabsA['Server actions']['rows'][0] == 3 * a.get('sqlservers', -1) and all('atab=' in t['hash'] for t in tabsA.values()),
-      f"A: #/admin's tabs {list(tabsA)}: each its heading and grid, no error box; Servers {tabsA.get('Servers', {}).get('rows')} = {a.get('instances')} instances, the built-in thresholds 8 rows and the sentence, Server actions {tabsA.get('Server actions', {}).get('rows')} = 3 x {a.get('sqlservers')} SQL Server instances, the tab in the address")
+      and tabsA['Servers']['rows'][0] == a.get('instances') and tabsA['Alert settings']['rows'][0] == 6 and (tabsA['Alert settings'].get('sentence') or '').startswith('pgvigil ')
+      # Server actions: each SQL Server instance's five actions (B9c added job_enable / job_disable to kill, job_start, job_stop),
+      # read from the tab's own rows, and no row of another engine (alerts.ts: the tab lists SQL Server instances only)
+      and tabsA['Server actions']['rows'][0] == len(ACTS) * a.get('sqlservers', -1)
+      and sorted({x[1] for x in tabsA['Server actions'].get('pairs') or []}) == sorted(ACTS)
+      and {x[0] for x in tabsA['Server actions'].get('pairs') or []} == set(a.get('sqlnames') or [])
+      and all('atab=' in t['hash'] for t in tabsA.values()),
+      f"A: #/admin's tabs {list(tabsA)}: each its heading and grid, no error box; Servers {tabsA.get('Servers', {}).get('rows')} = {a.get('instances')} instances, the built-in thresholds 6 rows and the sentence, Server actions {tabsA.get('Server actions', {}).get('rows')} = {len(ACTS)} x {a.get('sqlservers')} SQL Server instances (actions {sorted({x[1] for x in tabsA.get('Server actions', {}).get('pairs') or []})}, instances {sorted({x[0] for x in tabsA.get('Server actions', {}).get('pairs') or []})}), the tab in the address")
 cl = d['clicks']; kinds = {}
 for c in cl: kinds[c['kind']] = kinds.get(c['kind'], 0) + 1
 badc = [c for c in cl if c['kind'] in ('link-error', 'none', 'gone') or (c['kind'] == 'disabled' and not c.get('why')) or (c['kind'] == 'link' and not c.get('landing', {}).get('h2'))]
@@ -375,18 +388,18 @@ EOF
 rq() { psql "$D30_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 tq() { psql "$D30_TGT_DSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 [[ $(rq "select count(*) from pgvigil.schema_version where version = '0118_darling_alerts.sql'") == 1 ]] || fail "F: 0118 not applied"
-# 0118 leaves pgvigil.findings to the release's join (its text names no view of it); the arm is spliced only where the
-# migrations applied (0190's view, as the join writes it) do not hold it yet
-! grep -qiE 'VIEW +pgvigil\.findings' internal/repo/sql/0118_darling_alerts.sql || fail "F: 0118 itself writes pgvigil.findings (its arm is the release join's)"
+# 0118 leaves pgvigil.findings to the release migration (its text names no view of it); the arm is spliced only where
+# the migrations applied (0190's view, as the release migration writes it) do not hold it yet
+! grep -qiE 'VIEW +pgvigil\.findings' internal/repo/sql/0118_darling_alerts.sql || fail "F: 0118 itself writes pgvigil.findings (its arm is the release migration's)"
 JOINED=$(rq "select pg_get_viewdef('pgvigil.findings'::regclass) like '%darling_alert_findings%'")
 if [[ $JOINED == f ]]; then
   psql "$D30_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -f scripts/proof-darling-alerts-findings.sql >/dev/null || fail "F: the findings arm (scripts/proof-darling-alerts-findings.sql)"
-  echo "SPLICED: darling arm absent from the applied migrations (the lead's 0190 line)"
+  echo "SPLICED: darling arm absent from the applied migrations (0190's line)"
 fi
 [[ $(rq "select pg_get_viewdef('pgvigil.findings'::regclass) like '%darling_alert_findings%'") == t ]] || fail "F: pgvigil.findings does not read darling_alert_findings after the splice"
 psql "$D30_REPO_DSN" -XAtq -c "create role $ALR login password '$PW' in role pgvigil_alerter" >/dev/null
 export D30_ALERTS_DSN="$PGVIGIL_ADMIN_DSN dbname=$REPO2 user=$ALR password=$PW"
-ok "F: 0118 applied, beside $(rq "select string_agg(version, ', ' order by version) from pgvigil.schema_version where version > '0113' and version <> '0118_darling_alerts.sql'") (no view of pgvigil.findings in its text); $([[ $JOINED == f ]] && echo "the migrations' pgvigil.findings has no darling arm, the proof-only splice gives it the join's line" || echo "the migrations' pgvigil.findings already holds the darling_alert_findings arm")"
+ok "F: 0118 applied, beside $(rq "select string_agg(version, ', ' order by version) from pgvigil.schema_version where version > '0113' and version <> '0118_darling_alerts.sql'") (no view of pgvigil.findings in its text); $([[ $JOINED == f ]] && echo "the migrations' pgvigil.findings has no darling arm, the proof-only splice gives it the release migration's line" || echo "the migrations' pgvigil.findings already holds the darling_alert_findings arm")"
 collect() { "$WORK/pgvigil" collect -config "$WORK/cfg.yaml" -once "$1" > "$WORK/collect.$1.log" 2>&1 || { tail -5 "$WORK/collect.$1.log"; fail "F: collect -once $1"; }; }
 pass() { "$WORK/pgvigil" alerts -config "$WORK/cfg.yaml" > "$WORK/pass.$1.out" 2> "$WORK/pass.$1.err" || true; }
 # the sender clears a gone finding only on a pass after a read newer than the pass that first missed it (alert_due,
@@ -430,7 +443,7 @@ seed() { rq "$1" >/dev/null; }
 rq "select pgvigil.ensure_month_partition('replication_sample', now()), pgvigil.ensure_month_partition('mssql_sched_sample', now() - interval '5 minutes'), pgvigil.ensure_month_partition('mssql_sched_sample', now()), pgvigil.mssql_ensure_day_partition('mssql_requests', now())" >/dev/null
 tiers() { rq "select string_agg(severity || ':' || value, ',' order by value) from pgvigil.findings where setting = '$1' and instance_id = $IID"; }
 seed "insert into pgvigil.replication_sample (instance_id, snapshot_at, kind, key, lag_bytes, lag_secs, active, detail) values
-  ($IID, now(), 'sender', 'd30_s_warn', 0, 45, true, '{}'), ($IID, now(), 'sender', 'd30_s_crit', 0, 400, true, '{}'), ($IID, now(), 'sender', 'd30_s_ok', 0, 10, true, '{}'),
+  ($IID, now(), 'sender', 'd30_s_warn', 0, 45, true, '{\"slot_type\":\"logical\"}'), ($IID, now(), 'sender', 'd30_s_crit', 0, 400, true, '{\"slot_type\":\"logical\"}'), ($IID, now(), 'sender', 'd30_s_ok', 0, 10, true, '{\"slot_type\":\"logical\"}'),
   ($IID, now(), 'slot', 'd30_slot_warn', 12 * 1073741824::bigint, null, false, '{}'), ($IID, now(), 'slot', 'd30_slot_crit', 60 * 1073741824::bigint, null, true, '{}'), ($IID, now(), 'slot', 'd30_slot_ok', 9 * 1073741824::bigint, null, true, '{}')"
 # the volume rule judges only where the drive's own percent threshold raises nothing (drives_now, default 20 % / 10 %):
 # D30C: carries a drive threshold of 5 % / 2 % so its 1.8 GB of 15 GB (12 %) is 'ok' by percent and critical by the floor
@@ -441,12 +454,13 @@ seed "insert into pgvigil.mssql_volumes (instance_id, volume, total_bytes, free_
 seed "insert into pgvigil.drive_thresholds (level, instance_id, drive, warn_pct, crit_pct, created_by, created_at) values ('drive', $IID, 'D30C:', 5, 2, 'proof-darling-alerts', now())"
 seed "insert into pgvigil.mssql_ag_database_state (instance_id, group_id, replica_server, database_name, snapshot_at, group_name, secondary_lag_s) values
   ($IID, 'g1', 'r2', 'd30db_behind', now(), 'd30ag', 400), ($IID, 'g1', 'r2', 'd30db_ok', now(), 'd30ag', 20)"
-L=$(tiers 'replay lag'); S=$(tiers 'replication slot retaining WAL'); V=$(tiers 'a volume under 5 GB free'); A=$(tiers 'AG secondary behind')
-[[ $L == "critical:d30_s_crit,warning:d30_s_warn" ]] || fail "F2: replay lag tiers '$L' (want 400 s critical, 45 s warning, 10 s none)"
+# 'replay lag' is 0141's since the HA join: its value is the sender's key, then ': ' and the rule's fixed words
+L=$(rq "select string_agg(severity || ':' || split_part(value, ':', 1), ',' order by value) from pgvigil.findings where setting = 'replay lag' and instance_id = $IID"); S=$(tiers 'replication slot retaining WAL'); V=$(tiers 'a volume under 5 GB free'); A=$(tiers 'AG secondary behind')
+[[ $L == "critical:d30_s_crit,warning:d30_s_warn" ]] || fail "F2: replay lag tiers '$L' of the seeded logical senders (want 400 s critical, 45 s warning, 10 s none)"
 [[ $S == "critical:d30_slot_crit,warning:d30_slot_warn" ]] || fail "F3: slot WAL tiers '$S' (want 60 GB critical, 12 GB warning, 9 GB none)"
 [[ $V == "critical:D30C:,warning:D30W:" ]] || fail "F4: volume tiers '$V' (want D30C: 1.8 of 15 GB critical, D30W: 4.5 of 20 GB warning; D30S: 8 GB, D30P: 0.6 % and D30O: 8 GB free none): drives_now $(rq "select string_agg(drive || ' ' || free_pct || '% ' || status, ', ' order by drive) from pgvigil.drives_now where instance_id = $IID and drive like 'D30%'")"
-[[ $A == "warning:d30ag: d30db_behind on r2" ]] || fail "F5: AG lag '$A' (want 400 s warning, 20 s none)"
-ok "F2-F5: replay lag ($L), slot WAL ($S), volume free GB ($V), AG secondary ($A): PerformanceMonitor's tiers, each below-threshold row raising nothing"
+[[ -z $A ]] || fail "F5: 'AG secondary behind' findings '$A' on the seeded AG database (want none: the HA join dropped 0118's arm, 0143's data-loss finding judges it)"
+ok "F2-F5: replay lag of the logical senders ($L), slot WAL ($S), volume free GB ($V): PerformanceMonitor's tiers, each below-threshold row raising nothing; no 'AG secondary behind' on the seeded AG database (dropped at the HA join)"
 seed "delete from pgvigil.replication_sample where instance_id = $IID and key like 'd30_%'"
 seed "update pgvigil.mssql_volumes set free_bytes = total_bytes where instance_id = $IID"
 seed "update pgvigil.mssql_ag_database_state set secondary_lag_s = 0 where instance_id = $IID"
@@ -469,7 +483,7 @@ collect databases
 [[ $(rq "select count(*) from pgvigil.findings where setting = 'server unreachable' and instance_id = $DID") == 0 ]] || fail "F6: still unreachable after the server came back"
 clear_passes databases F6-up "$DKEY" "$DID"
 ok "F6: d30down unreachable ('${F6:0:160}') -> critical, sent; reachable again -> gone, the alert cleared"
-# F6b (the join's w9e, finding 7): a pgvigil.yaml instance whose server never answered, from its first read: its row
+# F6b: a pgvigil.yaml instance whose server never answered, from its first read: its row
 # is made with the file's engine, platform and tags, and it is 'server unreachable' (critical) at that read; then it is
 # retired (is_active false) so the later rows read the fleet as before
 NEVERP=$(freeport)

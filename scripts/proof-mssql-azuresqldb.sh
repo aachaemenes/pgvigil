@@ -29,8 +29,8 @@
 #  A. detection: `collect -once mssql_instance` as the collector stores the instance as engine sqlserver, platform
 #     azuresqldb, server_version_num 120000 (Azure SQL Database answers 12.0 whatever engine it runs); mssql_instance
 #     holds the setup login's ProductVersion, Edition ('SQL Azure'), EngineEdition 5 and server name.
-#  B. each of the 38 SQL Server collections (21 before the join of wave 1, 32 before mssql_waiting_tasks and mssql_reports
-#     joined, 34 before B2a: its two, and mssql_activity and mssql_pool, which joined without a row here) (the list is
+#  B. each of the 38 SQL Server collections (21 before the wave 1 release, 32 before mssql_waiting_tasks and mssql_reports
+#     were added, 34 before B2a: its two, and mssql_activity and mssql_pool, added without a row here) (the list is
 #     checked against internal/mssql's Name() functions):
 #     RUN - status ok, never partial, and rows equal to the setup login's read of the same view:
 #       mssql_instance  sys.configurations' row count and 'max server memory (MB)' value_in_use; sysinfo_read true
@@ -43,7 +43,7 @@
 #       mssql_xe        one state per capture (deadlocks, blocked, slow, attention) equal to the setup login's read of
 #                       sys.database_event_sessions / sys.dm_xe_database_sessions for pgvigil_p<n>_<capture>:
 #                       running for each of the four once the -form azuresqldb script ran
-#       mssql_waiting_tasks  [added at the release join, written before its first run here] status ok, never partial,
+#       mssql_waiting_tasks  [added with the release migration, written before its first run here] status ok, never partial,
 #                       its read stored (one mssql_waiting_summary row) with as many task rows as the row says it kept;
 #                       [165b, written before its first run:] a blocked pair the setup login makes on a global temp
 #                       table (a holder's open UPDATE, a waiter's UPDATE of the same row waiting LCK_M_X): the waiter's
@@ -53,14 +53,14 @@
 #       tables hold no row for the instance: mssql_services, mssql_ag, mssql_mirroring, mssql_logshipping,
 #       mssql_replication, mssql_jobs, mssql_backups, mssql_storage [B2a: moved to the RUN rows below], mssql_versionstore, mssql_cpu, mssql_memory,
 #       mssql_fileio, mssql_tempdb, mssql_properties, mssql_procstats, mssql_indexlocks, mssql_querystore.
-#       [Added after the join of wave 1 (rel-join-w1, 11 collections more; written before their first run here): mssql_audit,
+#       [Added with the wave 1 release (11 collections more; written before their first run here): mssql_audit,
 #        mssql_checks, mssql_defaulttrace, mssql_errorlog, mssql_identity, mssql_indexes, mssql_plancache,
 #        mssql_plancache_health, mssql_stats, mssql_syshealth, mssql_traceflags - each skipped by its Azure SQL Database
 #        rule, its own tables empty for the instance. Microsoft's pages for the five the platform has no object for:
 #        audit (auditing writes to a storage account, Log Analytics or Event Hubs), default trace ('SQL Server trace' is
 #        not supported), error log (sp_readerrorlog applies to SQL Server only), system_health (no built-in session),
 #        trace flags (instance configuration not supported); docs/sqlserver-cloud.md cites each page.
-#        Added at the release join: mssql_reports, skipped by its own rule (no server roles, SQL logins or service
+#        Added with the release migration: mssql_reports, skipped by its own rule (no server roles, SQL logins or service
 #        list of its own to read), its seven tables empty for the instance.]
 #       [B2a, written before their first run here: mssql_activity (skipped by its Azure SQL Database rule, its read
 #        tables empty) and mssql_pool (on a database outside a pool skipped 'not in an elastic pool (service
@@ -75,29 +75,29 @@
 #                       volume row; the 'max size' finding present only when the setup login's PRIMARY data files'
 #                       allocated / max size is over 80 %
 #       mssql_azuredb_governance  one current row whose 54 compared columns (pgvigil.mssql_azuredb_gov_compared)
-#                       equal the setup login's read of sys.dm_user_db_resource_governance [review b2a-d 7: all 54
+#                       equal the setup login's read of sys.dm_user_db_resource_governance [all 54
 #                       present]; edition and service objective equal to DATABASEPROPERTYEX; one history row, eleven
-#                       Properties rows, no change row [review b2a-d 8: a DTU limit on a DTU edition (Basic,
+#                       Properties rows, no change row [a DTU limit on a DTU edition (Basic,
 #                       Standard, Premium), else a vCore limit]; a second read minutes later opens no history row
-#       mssql_azuredb_resources  [review b2a-d 6: first the view holds 3 minutes or more, up to 5 minutes' wait]
+#       mssql_azuredb_resources  [first the view holds 3 minutes or more, up to 5 minutes' wait]
 #                       a 32 s CPU loop of the setup login (the burst), a first read [that stores a minute: else
 #                       FAIL, the cursor not exercised], a second read from
 #                       the cursor once the burst's minutes are complete: no minute missing between the two reads'
 #                       newest minutes and no gap row; every stored minute whose 15-second rows are all still in
 #                       the view equals the setup login's read of them (the averages within 0.00006, the maxima,
-#                       DBA Dash's DTU %, the sample count and the four bucket lists exact; [review b2a-d 1:] only a
+#                       DBA Dash's DTU %, the sample count and the four bucket lists exact; only a
 #                       stored minute at or before the view's oldest minute at the hand read may have lost rows in
 #                       the view since (the trim line moves on while the proof waits); a stored minute with fewer
 #                       samples than the view's rows is a FAIL); a minute of the burst holds max CPU >= 50 and over
-#                       its average (on a DTU tier max DTU % >= 50 too [review b2a-d 9: a DTU tier = dtu_limit > 0
+#                       its average (on a DTU tier max DTU % >= 50 too [a DTU tier = dtu_limit > 0
 #                       in the burst's minutes]); with the cursor set three hours back a third read is ok and stores
 #                       one gap row from that minute's end
 #       the missing rights, as a contained user of the proof holding CONNECT only (made before part D's first read,
 #                       dropped at the end): mssql_azuredb_resources skipped 'the login lacks VIEW DATABASE STATE:
 #                       the database's resource use is not readable', mssql_azuredb_governance skipped with its
 #                       sentence, mssql_storage ok (any user of the database reads its files) with the used space
-#                       read on every file [review b2a-a 5, written before its first run]
-#       the role without a user [review b2a-a 1, written before its first run]: as the lab's login pgv_conn
+#                       read on every file
+#       the role without a user: as the lab's login pgv_conn
 #                       (##MS_ServerStateReader## and ##MS_DatabaseConnector##, no user in the database; Microsoft's
 #                       governance page allows the role on every tier) mssql_azuredb_governance ok on any tier, its
 #                       compared columns equal to the setup login's read and its service objective the database's;
@@ -114,18 +114,18 @@
 #     listed here: task P08 made them DBA Dash's, e.g. full/diff/log for backups) [the collections that feed an ok
 #     cell run again right before C, so no cell reads stale from the proof's own order]; the Summary page renders (chromium) with the platform badge azuresqldb and names no n/a group as "not read
 #     yet"; each SQL Server tab of the instance renders without an error line, and each tab whose collections are
-#     all skipped here says so (the skip's own text, or "not on this platform") [at the release join: the Storage
+#     all skipped here says so (the skip's own text, or "not on this platform") [with the release migration: the Storage
 #     folder's Drives, DB Space, Files and Drive Performance too, and Waiting tasks renders] [165b: the Reports folder's
 #     fourteen tabs render; the six of mssql_reports (Database Extended Properties, Failed Logins, Server Role Members,
 #     Server Services, SQL Login Password Age, Table Size) each say mssql_reports is skipped here (web/src/main.ts's
-#     mssqlTabRuns holds the six since 43c3fbb, F14; reports.ts has no text naming Azure SQL Database, so the check
+#     mssqlTabRuns holds the six; reports.ts has no text naming Azure SQL Database, so the check
 #     catches a lost mssqlTabRuns entry)] [B2a, the click rows: the root page Azure Summary links the database to
-#     #/mssqlazure?i=<its id>, and that tab names the tier (the service objective)] [review b2a-d 4, written before
-#     its first run: over the window from 4 hours back, GET /api/mssql/azuredb gives the instance the stored minutes'
+#     #/mssqlazure?i=<its id>, and that tab names the tier (the service objective)] [over the window
+#     from 4 hours back, GET /api/mssql/azuredb gives the instance the stored minutes'
 #     sample sum and at least one gap, GET /api/azuredb/summary the same sample sum for it; the Azure tab over 6 hours
 #     names the gap ('gap(s) in this window'); the Properties tab shows the eleven Azure SQL Database rows by their
-#     labels [corrected after lab 1's third run, the lead 18:0x (a): no 'mssql_properties is skipped' line - the tab
-#     is in no mssqlTabRuns entry (web/src/main.ts, at 232222d too), so it never printed one; its eleven rows are
+#     labels [corrected after lab 1's third run: no 'mssql_properties is skipped' line - the tab
+#     is in no mssqlTabRuns entry (web/src/main.ts), so it never printed one; its eleven rows are
 #     what it shows there, nothing unexplained]].
 #  D. nothing of pgvigil is created in the monitored database: its objects (not shipped by Microsoft), principals,
 #     permissions, role members and event sessions read by the setup login after the proof's own setup equal the
@@ -177,8 +177,8 @@ sq() { local out rc=0
 cleanup() {
   rc=$?; set +e; trap '' INT TERM
   [ -n "$SRV" ] && { kill "$SRV" 2>/dev/null || true; }
-  [ -n "$WAITER" ] && { docker rm -f "$WAITER" >/dev/null 2>&1 || true; }
-  for c in ${HOLDER:-} ${WTR:-}; do docker rm -f "$c" >/dev/null 2>&1 || true; done
+  [ -n "$WAITER" ] && { docker rm -fv "$WAITER" >/dev/null 2>&1 || true; }
+  for c in ${HOLDER:-} ${WTR:-}; do docker rm -fv "$c" >/dev/null 2>&1 || true; done
   if [ -n "$MADE_XE" ]; then "$BIN" mssql-xe -print -drop -form azuresqldb -install-id "$XEID" > "$WORK/xe-drop.sql" 2>/dev/null \
     && docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$AZ_HOST,${AZ_PORT:-1433}" -U "$ADMIN_USER" -d "$AZ_DB" -C -b -l 60 -i /dev/stdin < "$WORK/xe-drop.sql" >/dev/null 2>&1 \
     || echo "CLEANUP: the event sessions pgvigil_${XEID}_* were NOT dropped" >&2; fi
@@ -271,14 +271,14 @@ echo "--- B. every collection"
 mapfile -t KNOWN < <(grep -ho 'Name() string *{ return Prefix + "[a-z_]*"' $(ls internal/mssql/*.go | grep -v _test.go) | sed 's/.*Prefix + "\([a-z_]*\)"/mssql_\1/' | sort)
 RUNS=(mssql_instance mssql_requests mssql_waits mssql_xe mssql_waiting_tasks mssql_azuredb_resources mssql_azuredb_governance mssql_storage)
 B2ARUNS=(mssql_azuredb_resources mssql_azuredb_governance mssql_storage)
-SKIPS=(mssql_services mssql_ag mssql_mirroring mssql_logshipping mssql_replication mssql_jobs mssql_backups mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore
+SKIPS=(mssql_services mssql_ag mssql_mirroring mssql_fci mssql_logshipping mssql_replication mssql_jobs mssql_backups mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore
   mssql_audit mssql_checks mssql_defaulttrace mssql_errorlog mssql_identity mssql_indexes mssql_plancache mssql_plancache_health mssql_stats mssql_syshealth mssql_traceflags
   mssql_reports mssql_activity mssql_pool)
 # the word a skip's note must hold: the platform's name, or for mssql_pool on a database outside a pool its own reason
-declare -A SKIPWORD=([mssql_pool]="not in an elastic pool")
+declare -A SKIPWORD=([mssql_pool]="not in an elastic pool" [mssql_fci]="a managed service runs its own failover")
 [ "$(printf '%s\n' "${KNOWN[@]}" | tr '\n' ' ')" = "$(printf '%s\n' "${RUNS[@]}" "${SKIPS[@]}" | sort | tr '\n' ' ')" ] \
   || bad "B: the collections of internal/mssql (${KNOWN[*]}) are not the proof's list"
-declare -A TABLES=([mssql_services]="mssql_service mssql_health" [mssql_ag]="mssql_ag_state mssql_ag_database_state" [mssql_mirroring]="mssql_mirroring_state"
+declare -A TABLES=([mssql_services]="mssql_service mssql_health" [mssql_ag]="mssql_ag_state mssql_ag_database_state" [mssql_mirroring]="mssql_mirroring_state" [mssql_fci]="mssql_fci_nodes"
   [mssql_logshipping]="mssql_logshipping_state" [mssql_replication]="mssql_replication_state" [mssql_jobs]="mssql_jobs mssql_job_runs" [mssql_backups]="mssql_backup_state"
   [mssql_versionstore]="mssql_versionstore_db mssql_versionstore_sample" [mssql_cpu]="mssql_cpu_sample mssql_sched_sample"
   [mssql_memory]="mssql_memory_sample mssql_memory_clerk" [mssql_fileio]="mssql_fileio_last" [mssql_tempdb]="mssql_tempdb mssql_tempdb_files"
@@ -330,7 +330,7 @@ elif run_ok mssql_requests; then
   GOT=$(q "select session_id || '|' || command || '|' || wait_type from pgvigil.mssql_requests where instance_id=$iid and session_id=$WSID order by snapshot_at desc limit 1")
   [ -n "$GOT" ] && [ "$GOT" = "$HAND" ] && VERDICT[mssql_requests]="PASS" || { VERDICT[mssql_requests]="FAIL"; bad "B: mssql_requests stored '$GOT' for session $WSID, the setup login reads '$HAND'"; }
 fi
-docker rm -f "$WAITER" >/dev/null 2>&1 || true; WAITER=
+docker rm -fv "$WAITER" >/dev/null 2>&1 || true; WAITER=
 # mssql_waits: bracketed by the setup login's reads before and after the run
 WSQL="SELECT wait_type + '|' + CAST(waiting_tasks_count AS varchar(20)) + '|' + CAST(wait_time_ms AS varchar(20)) FROM sys.dm_db_wait_stats WHERE waiting_tasks_count > 0 OR wait_time_ms > 0"
 sq "$WSQL" > "$WORK/w-before.txt"
@@ -395,7 +395,7 @@ else
     else VERDICT[mssql_waiting_tasks]="FAIL"; bad "B: mssql_waiting_tasks: stored [$(tr '\n' ' ' < "$WORK/wt-s.txt")], the setup login read [$(tr '\n' ' ' < "$WORK/wt-b.txt")] before and [$(tr '\n' ' ' < "$WORK/wt-a.txt")] after (want '$WSID2|LCK_M_X|$HSID|$AZ_DB' on all three); the newest read '$GOT'"; fi
   fi
 fi
-docker rm -f "$WTR" "$HOLDER" >/dev/null 2>&1 || true; WTR=; HOLDER=
+docker rm -fv "$WTR" "$HOLDER" >/dev/null 2>&1 || true; WTR=; HOLDER=
 # mssql_xe: one state per capture, as the setup login reads the sessions
 if run_ok mssql_xe; then
   HAND=$(sq "SELECT c.capture + '|' + CASE WHEN x.name IS NOT NULL THEN 'running' WHEN d.name IS NOT NULL THEN 'stopped' ELSE 'not installed' END
@@ -467,7 +467,7 @@ else
 fi
 # mssql_azuredb_resources: the burst, a first read, a read from the cursor, the hand read, the forced gap
 N1BAD=(); N1SAY=
-# [review b2a-d 6] a database just woken holds under 3 minutes in the view: the first read would store none
+# a database just woken holds under 3 minutes in the view: the first read would store none
 for _ in $(seq 1 20); do
   HELD=$(sq "SELECT ISNULL(DATEDIFF(second, MIN(end_time), SYSUTCDATETIME()), 0) FROM sys.dm_db_resource_stats")
   [[ $HELD =~ ^[0-9]+$ ]] && [ "$HELD" -ge 180 ] && break
@@ -665,7 +665,7 @@ else
     if grep -qE "href=\"#/mssqlazure\?i=$iid(&amp;|\")" "$WORK/r-azuresummary.html"; then CLICK+=("Azure Summary -> #/mssqlazure?i=$iid"); else bad "C: the Azure Summary page has no link to the instance's Azure tab (#/mssqlazure?i=$iid)"; fi
     if grep -qF "$SO" <<<"$(text < "$WORK/p-mssqlazure.html")"; then CLICK+=("the Azure tab names the tier $SO"); else bad "C: the Azure tab does not name the tier $SO"; fi
     [ ${#CLICK[@]} -eq 2 ] && echo "  clicks: ${CLICK[0]}; ${CLICK[1]}"
-    # [review b2a-d 4] what B2a's pages show: the window from 4 hours back holds the stored minutes and the forced gap
+    # what B2a's pages show: the window from 4 hours back holds the stored minutes and the forced gap
     AF=$(date -u -d '-4 hours' +%Y-%m-%dT%H:%M:%SZ); AT=$(date -u -d '+5 minutes' +%Y-%m-%dT%H:%M:%SZ); SHOWS=()
     WSUM=$(q "select coalesce(sum(samples), 0) from pgvigil.mssql_azuredb_minute where instance_id=$iid and snapshot_at >= '$AF' and snapshot_at < '$AT'")
     curl -fs "http://127.0.0.1:$PORT/api/mssql/azuredb?instance=$iid&from=$AF&to=$AT" > "$WORK/az.json" || true

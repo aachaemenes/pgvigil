@@ -132,7 +132,7 @@ func TestConfigErrorExitCode(t *testing.T) {
 	}
 }
 
-// The repository connection string is resolved as the installed service resolves it (review w9d findings 1 and M3): an
+// The repository connection string is resolved as the installed service resolves it: an
 // env: name from the unit's env file only (a name it lacks is empty, whatever the installer's own shell holds), else the
 // service's own environment and then the machine's, never this process's; a file: from its file; a literal as written.
 func TestServiceRepoDSN(t *testing.T) {
@@ -197,7 +197,7 @@ func TestServiceRepoDSN(t *testing.T) {
 }
 
 // envFileValue: the last assignment wins; a value wholly in one pair of quotes loses them, a quote inside or at one end
-// stays (the cases of 203's envValue test, review w9d M10).
+// stays (the cases of 203's envValue test).
 func TestEnvFileValue(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "pgvigil.env")
 	body := "# the repository\nPGVIGIL_REPO_DSN=\nPGVIGIL_OTHER=x\nPGVIGIL_REPO_DSN=host=127.0.0.1 port=5432 user=pgvigil_agent password='a b' dbname=pgvigil\n" +
@@ -225,7 +225,7 @@ func TestEnvFileValue(t *testing.T) {
 }
 
 // The page's credential folders are listed one by one with their file count; an absent one says so; a link is kept and
-// named with its target, and the configuration folder's own list leaves it out (review w9d M6).
+// named with its target, and the configuration folder's own list leaves it out.
 func TestCredentialItems(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "instances", "sub"), 0o700); err != nil {
@@ -255,7 +255,7 @@ func TestCredentialItems(t *testing.T) {
 	}
 }
 
-// TestPgvigilExe (the fold of the join review w9e, finding 2): a pgvigil binary is told by its build information under
+// TestPgvigilExe: a pgvigil binary is told by its build information under
 // any name; a file whose build information cannot be read falls back to the shipped names (pgvigil, pgvigil_<v>_...),
 // never the app's.
 func TestPgvigilExe(t *testing.T) {

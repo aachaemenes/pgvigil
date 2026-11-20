@@ -286,7 +286,7 @@ END $$;
 -- mssql_hadr_cursor (0083's, its sources unchanged) gains 'azdb_since': the newest stored minute's start of
 -- mssql_azuredb_minute, as epoch seconds (the next read asks for the rows ending after that minute's end). 0140 (task
 -- 301) replaced the same function before this file with 'backup_sets' / 'backup_sets_mark': this later file carries
--- that arm too (the join j15), so the backup files' cursor is not lost
+-- that arm too, so the backup files' cursor is not lost
 CREATE OR REPLACE FUNCTION pgvigil.mssql_hadr_cursor(p_instance_id int, p_source text)
 RETURNS bigint LANGUAGE sql STABLE AS $$
   SELECT CASE

@@ -9,7 +9,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
-// TestSysHealthDoneRing (A2 review 4, 6): system_health's state row after a ring buffer read - the events passed over
+// TestSysHealthDoneRing: system_health's state row after a ring buffer read - the events passed over
 // apart from the ones stored, and a ring that came back cut off or dropped events said in its note (before: both
 // counts were every event past the cursor, and the cut-off and dropped counts were lost).
 func TestSysHealthDoneRing(t *testing.T) {
@@ -39,7 +39,7 @@ func TestSysHealthDoneRing(t *testing.T) {
 	}
 }
 
-// TestReadSessionMIFileOnly (A2 review 8): on a Managed Instance a server's own session with an event file alone
+// TestReadSessionMIFileOnly: on a Managed Instance a server's own session with an event file alone
 // (AlwaysOn_health on Business Critical) is a note on its state row, never a failed read; the product's own session
 // in that shape (the wrong -form installed) stays an error.
 func TestReadSessionMIFileOnly(t *testing.T) {
@@ -58,7 +58,7 @@ func TestReadSessionMIFileOnly(t *testing.T) {
 	}
 }
 
-// TestRingRowsSysHealth (A2 review 4, 5, 6): system_health's ring buffer as a Managed Instance's syshealth reader takes
+// TestRingRowsSysHealth: system_health's ring buffer as a Managed Instance's syshealth reader takes
 // it - only the events past the cursor, new_events the wanted ones and scanned_events all of them, the cut-off flag
 // and the dropped count kept, the batch's cursor at the newest event; a ring whose oldest event is newer than the
 // cursor says it wrapped between reads.
@@ -108,5 +108,46 @@ func TestRingRowsSysHealth(t *testing.T) {
 	_, side = run(head + fixtureResourceWarning + fixtureBroker + `</RingBufferTarget>`)
 	if n, _ := side["note"].(string); !strings.Contains(n, "wrapped between reads") {
 		t.Fatalf("no wrap note: %v", side)
+	}
+}
+
+// TestRingRowsFailedBatchNotDone: a ring read whose batch import
+// fails leaves no new_events (nor scanned_events) in its state, so 0153's mssql_attention_reads never marks that read
+// done and the cursor takes its events again next run; before, new_events was set ahead of the batches.
+func TestRingRowsFailedBatchNotDone(t *testing.T) {
+	cutAt := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	head := `<RingBufferTarget truncated="0" processingTime="0" totalEventsProcessed="900" eventCount="4" droppedCount="0" memoryUsed="4096">`
+	ring, err := parseRing(head + fixtureSystemClean + fixtureResourceWarning + fixBatch + fixtureBroker + `</RingBufferTarget>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	was := xeBatchEvents
+	xeBatchEvents = 1 // one event per batch: three batches past the cursor
+	defer func() { xeBatchEvents = was }()
+	for _, c := range []xeContext{{source: "system_health", session: "system_health"}, {source: "product", session: "pgvigil_attention"}} {
+		calls := 0
+		r := &xeRun{ctx: context.Background(), info: Info{Kind: KindAzureMI}, now: time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC),
+			opt:    BatchOptions{Deadline: time.Now().Add(time.Hour)},
+			cursor: func(context.Context, string) (Cursor, error) { return Cursor{Found: true, LastEventAt: cutAt}, nil },
+			emit: func([]collect.Row) error {
+				calls++
+				if calls == 2 {
+					return context.Canceled // the store refused the second batch
+				}
+				return nil
+			}}
+		state := collect.Row{}
+		if err := r.ringRows(sysHealthSource, ring, 0, sysEventList(), c, state); err == nil {
+			t.Fatalf("%s: the failed batch gave no error", c.source)
+		}
+		if v, ok := state["new_events"]; ok {
+			t.Fatalf("%s: a read whose second batch failed carries new_events %v: it would count as a done read", c.source, v)
+		}
+		if v, ok := state["scanned_events"]; ok {
+			t.Fatalf("%s: a read whose second batch failed carries scanned_events %v", c.source, v)
+		}
+		if calls != 2 {
+			t.Fatalf("%s: %d batch imports, want 2 (the read stops at the failed one)", c.source, calls)
+		}
 	}
 }

@@ -7,12 +7,13 @@
 // move, a delete, a folder change) and /api/customreports/run (internal/web/q_customreports.go).
 // The shell mounts customReportsView(ctx) as the root tab 'customreports' and as an instance tab (the run's target
 // defaults to that instance); the page's own address: #/customreports?report=N (&run=1 runs it on open, &p.<name>=<value>
-// fills a parameter), ?edit=N, ?new=1&folder=<path> (the lead wires the route and the tree's Custom reports folder).
+// fills a parameter), ?edit=N, ?new=1&folder=<path> (the shell wires the route and the tree's Custom reports folder).
 import { reloadTree } from './tree';
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
 import { fleetWideNote, folderWords, inTagScope, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
+import { Can, markNeed, routeWhy } from './needs';
 
 export interface Param { name: string; type: string; label?: string; default?: string; required?: boolean }
 export interface ColFmt { set: number; column: string; label?: string; format?: string; decimals?: number; hidden?: boolean }
@@ -25,7 +26,8 @@ export interface ResultSet { columns: string[]; types: string[]; rows: unknown[]
 export interface InstanceRun { instance_id?: number; instance: string; engine: string; outcome: string; error?: string; duration_ms: number; rows: number; sets: ResultSet[]; declined?: boolean }
 // store: why a report on the store cannot run here (REPORT ROLE: reports_dsn, a login IN ROLE pgvigil_reader alone),
 // absent when it can
-interface State { enabled: boolean; reason?: string; store?: string }
+// can: what the session's role may do (B24f): a run is open to every role, a save, move or delete needs admin
+interface State { enabled: boolean; reason?: string; store?: string; store_text?: string; can?: Can | null }
 
 const engineName: Record<string, string> = { store: 'the repository', postgres: 'PostgreSQL instances', sqlserver: 'SQL Server instances' };
 export const condNames: Record<string, string> = {
@@ -255,10 +257,13 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
   const folders = folderTree(rowsOf(d.folders).map(r => String(r.folder)));
   const sec = el('section', {}, el('h2', {}, 'Custom reports' + (tagQ(ctx) ? ` - ${tagWords(ctx.tag!)}` : '')));
   const msg = el('p', { class: 'meta', role: 'status' });
-  const newBtn = el('button', { type: 'button' }, 'New report'), folderBtn = el('button', { type: 'button' }, 'New folder');
-  // off: every writing control says why beside it (one line under the toolbar, their description)
-  const off = d.state.enabled ? '' : (d.state.reason || 'Saving or running a report is off on this server.');
+  const newBtn = markNeed(el('button', { type: 'button' }, 'New report'), 'customreports'), folderBtn = markNeed(el('button', { type: 'button' }, 'New folder'), 'customreports');
+  // off: every writing control says why beside it (one line under the toolbar, their description) - the server's own
+  // reason first, then the role (B24f: a report is a shared view written against servers; changing one needs admin)
+  const off = d.state.enabled ? (routeWhy('customreports', d.state.can) ?? '') : (d.state.reason || 'Saving or running a report is off on this server.');
   const offNote = el('p', { class: 'meta off-reason' }, off);
+  // TEXT-NOW (decision T3): a store report reads stored statement text as stored, whatever an instance's policy is now
+  const storeText = d.state.store_text ? el('p', { class: 'meta said' }, d.state.store_text) : null;
   if (off) for (const b of [newBtn, folderBtn]) offControl(b, off, offNote);
   newBtn.addEventListener('click', () => go({ new: '1' }));
   const folderIn = el('input', { type: 'text', 'aria-label': 'New folder path (parts joined by /)', placeholder: 'Ops/Daily' }) as HTMLInputElement;
@@ -268,6 +273,7 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
   });
   sec.append(el('div', { class: 'toolbar' }, newBtn, el('span', {}, folderIn, ' ', folderBtn)), msg);
   if (off) sec.append(offNote);
+  if (storeText) sec.append(storeText);
   sec.append(el('p', { class: 'meta' }, 'Each report is the DBA\'s own SQL (or a procedure) with its parameters, column formats and colour rules, in folders every user shares. '
     + 'A report on the repository reads pgvigil\'s own tables; a PostgreSQL or SQL Server report runs read-only on a chosen instance or on a tag\'s instances, '
     + 'under its timeout and a 2 s lock timeout, and every run is audited (the log below).'));
@@ -303,17 +309,17 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
 function reportActions(r: ReportDef, folders: string[], msg: HTMLElement, off: string, offNote: HTMLElement): HTMLElement {
   const box = el('span', { class: 'row-actions' });
   const id = String(r.report_id);
-  const edit = el('button', { type: 'button', class: 'link' }, 'Edit');
+  const edit = markNeed(el('button', { type: 'button', class: 'link' }, 'Edit'), 'customreports');
   edit.addEventListener('click', () => go({ edit: id }));
   const listId = 'crf-' + id;
   const to = el('input', { type: 'text', list: listId, 'aria-label': `Move ${r.name} to the folder`, placeholder: 'folder (empty = top)', size: '14' }) as HTMLInputElement;
   const dl = el('datalist', { id: listId }, ...folders.map(f => el('option', { value: f })));
-  const move = el('button', { type: 'button', class: 'link' }, 'Move to folder');
+  const move = markNeed(el('button', { type: 'button', class: 'link' }, 'Move to folder'), 'customreports');
   move.addEventListener('click', async () => {
     try { const x = await post<{ detail: string }>('customreports', { op: 'move', report_id: r.report_id, folder: to.value }); msg.textContent = x.detail; location.reload(); }
     catch (e) { msg.textContent = e instanceof Error ? e.message : String(e); }
   });
-  const del = el('button', { type: 'button', class: 'link' }, 'Delete');
+  const del = markNeed(el('button', { type: 'button', class: 'link' }, 'Delete'), 'customreports');
   let armed = false;
   del.addEventListener('click', async () => {
     if (!armed) { armed = true; del.textContent = `Delete ${r.name}: click again`; return; }
@@ -327,17 +333,17 @@ function reportActions(r: ReportDef, folders: string[], msg: HTMLElement, off: s
 
 function folderActions(f: string, msg: HTMLElement, off: string, offNote: HTMLElement): HTMLElement {
   const name = el('input', { type: 'text', value: f, 'aria-label': `New path of the folder ${f}`, size: '18' }) as HTMLInputElement;
-  const ren = el('button', { type: 'button', class: 'link' }, 'Rename');
+  const ren = markNeed(el('button', { type: 'button', class: 'link' }, 'Rename'), 'customreports');
   ren.addEventListener('click', async () => {
     try { const x = await post<{ detail: string }>('customreports', { op: 'folder_rename', folder: f, new_folder: name.value }); msg.textContent = x.detail; location.reload(); }
     catch (e) { msg.textContent = e instanceof Error ? e.message : String(e); }
   });
-  const del = el('button', { type: 'button', class: 'link' }, 'Delete folder');
+  const del = markNeed(el('button', { type: 'button', class: 'link' }, 'Delete folder'), 'customreports');
   del.addEventListener('click', async () => {
     try { const x = await post<{ detail: string }>('customreports', { op: 'folder_delete', folder: f }); msg.textContent = x.detail; location.reload(); }
     catch (e) { msg.textContent = e instanceof Error ? e.message : String(e); }
   });
-  const add = el('button', { type: 'button', class: 'link' }, 'New report here');
+  const add = markNeed(el('button', { type: 'button', class: 'link' }, 'New report here'), 'customreports');
   add.addEventListener('click', () => go({ new: '1', folder: f }));
   if (off) for (const b of [ren, del, add]) offControl(b, off, offNote);
   // Rename waits for a new path (the same path is no rename), the words beside it
@@ -412,6 +418,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   // 'said': report mail carries this paragraph's words (reportmail.ts notesOf) - a run that is not made says why
   const runOff = el('p', { class: 'meta off-reason said' }, runWhy);
   if (runWhy) offControl(runBtn, runWhy, runOff);
+  const storeTextRun = def.engine === 'store' && d.state.store_text ? el('p', { class: 'meta said' }, d.state.store_text) : null;
   const editBtn = el('a', { href: `#/customreports?edit=${def.report_id}${tagQ(ctx) ? '&' + tagQ(ctx) : ''}` }, 'Edit this report');
   const form = el('div', { class: 'toolbar' }, el('label', {}, 'Run on ', target), instBox, tagBox,
     ...def.params.map((p, i) => el('label', {}, `${p.label || p.name} `, inputs[i])), runBtn, editBtn);
@@ -419,6 +426,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   if (folderTag) sec.append(el('p', { class: 'meta' }, `Opened from ${folderWords(folderTag)}: a run from here goes to its instances`
     + (runTag ? '.' : ', one at a time (the folder is no tag a run can name).')));
   if (runWhy) sec.append(runOff);
+  if (storeTextRun) sec.append(storeTextRun);
   if (def.engine === 'store' && !mine.length) sec.append(el('p', { class: 'empty' }, folderTag ? `No active instance in ${folderWords(folderTag)}.` : 'No active instance: a run reads none.'));
   const status = el('p', { class: 'meta', role: 'status' });
   const out = el('div', {});
@@ -509,7 +517,10 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
     def = defOf(r[0]);
   }
   const sec = el('section', {}, el('h2', {}, id ? `Edit ${def.name}` : 'New custom report'));
-  if (!list.state.enabled) sec.append(el('p', { class: 'meta' }, 'Saving is off here: ' + (list.state.reason ?? '')));
+  // the server's own reason first, then the role (B24f: saving a report needs admin), in one sentence Save points at
+  const saveWhy = list.state.enabled ? (routeWhy('customreports', list.state.can) ?? '') : (list.state.reason ?? '');
+  const saveOff = list.state.enabled && !saveWhy ? null : el('p', { class: 'meta off-reason' }, 'Saving is off here: ' + saveWhy);
+  if (saveOff) sec.append(saveOff);
   const folders = folderTree(rowsOf(list.folders).map(r => String(r.folder)));
   const name = inp('Name', def.name, { size: '40' });
   const desc = el('textarea', { 'aria-label': 'Description', rows: '2', cols: '80' }, def.description ?? '') as HTMLTextAreaElement;
@@ -551,8 +562,8 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
   sec.append(params.box, columns.box, rules.box);
 
   const msg = el('p', { class: 'meta', role: 'status' });
-  const save = el('button', { type: 'button' }, 'Save');
-  if (!list.state.enabled) save.setAttribute('disabled', '');
+  const save = markNeed(el('button', { type: 'button' }, 'Save'), 'customreports');
+  if (saveOff) offControl(save, saveWhy || 'saving is off on this server', saveOff);
   save.addEventListener('click', async () => {
     const out: ReportDef & { op: string } = {
       op: id ? 'edit' : 'add', report_id: id || undefined, version: def.version, name: name.value, description: desc.value, folder: fold.value,

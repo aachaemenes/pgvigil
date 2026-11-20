@@ -1,11 +1,11 @@
--- 0045: the wave C join for the gurus' tools slice (0030: pg_wait_sampling / pgms_wait_sampling waits with the
+-- 0045: wires in the gurus' tools (0030: pg_wait_sampling / pgms_wait_sampling waits with the
 -- activity samples as the fallback, pg_stat_monitor as a statements source, the index inventory with postgres_dba's
 -- redundant / invalid / unused reads and the HypoPG advisor, pganalyze's log line classes). The findings view gains
 -- the index rules (invalid, duplicate, redundant, unused); purge() gains the wait_sample partitions, the is_present
 -- deletes of index_state and index_databases, and the statements_monitor_total rows whose statements_current row is
 -- gone. log_events' kind CHECK is re-created with the fourteen pganalyze kinds beside 0024's five and 0043's two.
--- Both bodies are 0044's with the additions (a frozen file is never edited; a later join re-creates them again with
--- its own).
+-- Both bodies are 0044's with the additions (a frozen file is never edited; a later release migration re-creates
+-- them again with its own).
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (
@@ -143,7 +143,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the corruption column (0023): checksums off, ignore_checksum_failure on, a corruption event in 24 h, amcheck damage
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.corruption_findings WHERE setting <> 'zero_damaged_pages'
     UNION ALL
-    -- the plans slice (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
+    -- the plan findings (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.plan_findings
     UNION ALL
     -- the indexes collection (0030): invalid and duplicate indexes (warning), redundant and unused ones (info)

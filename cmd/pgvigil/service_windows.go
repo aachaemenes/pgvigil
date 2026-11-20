@@ -19,6 +19,7 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
@@ -385,6 +386,7 @@ func maybeRunAsService(args []string) (bool, int) {
 		w = f
 	}
 	log := slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged
 	log.Info("service starting", "version", version)
 	if err := svc.Run(serviceName, &pgvigilService{args: args[1:], log: log}); err != nil {
 		log.Error("service run failed", "err", err)
@@ -657,7 +659,7 @@ const purgeYAML = "pgvigil-purge.yaml"
 // (README fixes no task name, so the actions are read, through PowerShell's ScheduledTasks module).
 func purgeTasks() ([]string, error) {
 	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-		`Get-ScheduledTask | Where-Object { @($_.Actions | Where-Object { $_.Execute -like '*pgvigil*' -and " $($_.Arguments) " -match '\spurge\s' }).Count -gt 0 } | ForEach-Object { $_.TaskPath + $_.TaskName }`).Output()
+		`Get-ScheduledTask | Where-Object { @($_.Actions | Where-Object { $_.Execute -like '*pgvigil*' -and " $($_.Arguments) " -match '\s(purge|export)\s' }).Count -gt 0 } | ForEach-Object { $_.TaskPath + $_.TaskName }`).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -840,7 +842,7 @@ func windowsItems(inst installOptions, found bool) []removal {
 	appHome := filepath.Join(programFiles(), "pgvigil")
 	apps, _ := filepath.Glob(filepath.Join(appHome, "pgvigil-app.exe*"))
 	olds, _ := filepath.Glob(filepath.Join(appHome, "*.old-*"))
-	appFiles := append(apps, olds...)
+	appFiles := slices.Concat(apps, olds)
 	items = append(items, removal{what: "the app, machine-wide (" + filepath.Join(appHome, "pgvigil-app.exe") + " and its old copies)", present: len(appFiles) > 0, remove: func() error {
 		for _, f := range appFiles {
 			if err := removeNowOrAtRestart(f); err != nil {

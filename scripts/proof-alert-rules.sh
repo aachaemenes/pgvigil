@@ -11,7 +11,7 @@
 #                      repository on the cluster may hold them).
 #   PGVIGIL_BIN        a pgvigil binary to use; default: the proof builds one into its temp folder (go build) and uses
 #                      it throughout. Its serve must wire GET /api/metrics, /api/metrics/series, /api/alertrules and
-#                      POST /api/alertrules, /api/alertrules/end (the lead's wiring in web.go; part B fails without).
+#                      POST /api/alertrules, /api/alertrules/end (the wiring in web.go; part B fails without).
 #   PGVIGIL_SKIP_PG13  1 = skip part V (no docker here); the proof then prints NOT PROVEN ON POSTGRESQL 13 and its last
 #                      line says so. Default: part V starts a postgres:13 container on a loopback port with a
 #                      throwaway password, migrates a fresh database there, runs its checks and removes the container.
@@ -23,10 +23,10 @@
 #     the function it adds a rule and ends it (2 log rows by 'proof-r'). A login IN ROLE pgvigil_alerter runs
 #     alert_rules_run (an integer back), may INSERT into alert_rule_state, may not INSERT into alert_rules and is
 #     refused import_alert_rule (permission denied for function). A login IN ROLE pgvigil_reader reads
-#     metric_catalog (62 rows) and is refused by alert_rules_run (permission denied for table alert_rule_state).
-#     [Run 1 graded: the reader was refused, on the table alert_rule_fired: the statement that stores the state ends
-#     in the insert into alert_rule_fired, and that is the table the refusal names. Expected from run 2: permission
-#     denied for one of the sender's two tables, alert_rule_state or alert_rule_fired.]
+#     metric_catalog - every row the owner reads, at least 67 (0085's 62 and 0166's five Collection rows; a release
+#     migration adds families, so the count is the owner's, never a fixed number) - and is refused by alert_rules_run
+#     (permission denied for one of the sender's two tables, alert_rule_state or alert_rule_fired: the statement that
+#     stores the state ends in the insert into alert_rule_fired, so the refusal may name that table).
 #  B. the write door. POST /api/alertrules without a session 401; with a session and no X-Pgvigil header 403; with
 #     both, a malformed request 400 for each of: scope 'all', a warning that is a string, critical inside warning,
 #     for_minutes 5000, op 'end' on the add route. None of the seven leaves a row in alert_rules or alert_rule_log.
@@ -40,9 +40,10 @@
 #     that database alone. GET /api/metrics/series for sessions.active: step_secs 1, as many points as samples, the
 #     last point = current. 400 for metric sessions.nope, for a SQL Server metric on this instance, and for db= on a
 #     metric without a per-database series.
-#     [Added before run 4, with the family read: GET /api/metrics with family=sessions answers the sessions rows alone
+#     [Added with the family read: GET /api/metrics with family=sessions answers the sessions rows alone
 #     and sessions.active's five figures again equal the hand query; part=families answers the five PostgreSQL
-#     families and no grid; family=nope 400.]
+#     families and no grid; family=nope 400.] [B6g-4: 0166's Collection family is both engines' - the sixth
+#     family in part=families and in each engine's whole grid; part V's list of nine families is its own and stays.]
 #  S. a SQL Server instance's grid (seeded, not collected: the grid is a repository read; the collectors that fill
 #     these tables have their own proofs). mssql_requests_summary seeded with blocked = 3, 1, 7, 2, 0 (oldest to
 #     newest): requests.blocked reads max 7, min 0, avg 2.6, current 0, 5 samples. With an instance rule 'above 5
@@ -72,7 +73,7 @@
 #  A. the audit. alert_rule_log holds, by the proof user and from 127.0.0.1, exactly the done and refused attempts
 #     the proof made through the API (counted from the HTTP answers), plus R's two by 'proof-r'; every alert_rules
 #     row was created by one of the two.
-#  [Review fold, expected before run 5:]
+#  [Added expectations:]
 #  R. also: the reader may INSERT into neither alert_rule_state nor alert_rule_fired (has_table_privilege false, false).
 #  G. note: the hand rate re-types the rule of 0004's dbstats_rate (a delta per read over integer seconds, no point
 #     across a reset), so G proves the grid's summing, windowing and database cut, not that rule (proof-dbstats.sh's).
@@ -95,9 +96,8 @@
 #     not a recovery and not a new firing). The rule edited to critical 8: judged again, critical under the successor,
 #     whose fired record reads 1 (carried over) and whose 'since' is still the T-150 run. One sample at 0: ok, no
 #     finding.
-#     [Run 5 graded (the box): everything to E green; H stopped at its third check: the query for the samples-alone
-#     state named the instance and not the metric, and the fleet rules of parts T and D cover the seeded instance too
-#     (four rows came back, the rule's own reading 'pending' as expected). H's reads now name the metric or setting.]
+#     H's reads name the metric or setting, never the instance alone: the fleet rules of parts T and D cover the
+#     seeded instance too.
 #  A pass also fails the proof when its summary line says 'alert rules not judged'.
 #  V. PostgreSQL 13 runs the add branch of import_alert_rule only (edit, end, enable and disable run on the 14+ server).
 #  V. PostgreSQL 13. Every migration applies to a fresh database on a postgres:13 container. Seeded there (30
@@ -207,10 +207,13 @@ out=$(as "$COL" -c "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"u
 [[ $(as "$ALR" -c "select has_table_privilege('pgvigil.alert_rule_state', 'INSERT'), has_table_privilege('pgvigil.alert_rules', 'INSERT')") == "t|f" ]] || fail "R: the alerter's rights on alert_rule_state / alert_rules"
 out=$(as "$ALR" -c "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"ui_user\":\"x\",\"rule_id\":$RRULE}')")
 [[ $out == *"permission denied for function"* ]] || fail "R: the alerter called import_alert_rule: $out"
-[[ $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog") == 62 ]] || fail "R: the reader's metric_catalog: $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog")"
+# the owner's read can fail under set -e: its error text goes to the comparison, which then FAILs with it
+RCAT=$(as "$RDR" -c "select count(*) from pgvigil.metric_catalog"); OCAT=$(q "select count(*) from pgvigil.metric_catalog" 2>&1) || true
+[[ $OCAT =~ ^[0-9]+$ && $RCAT == "$OCAT" && $OCAT -ge 67 ]] || fail "R: the reader's metric_catalog: $RCAT rows, the owner's $OCAT (want the same, and at least 0085's 62 and 0166's five)"
 out=$(as "$RDR" -c "select pgvigil.alert_rules_run(now())")
-[[ $out == *"permission denied for table alert_rule_state"* || $out == *"permission denied for table alert_rule_fired"* ]] || fail "R: the reader ran alert_rules_run: $out"
-[[ $(as "$RDR" -c "select has_table_privilege('pgvigil.alert_rule_state', 'INSERT'), has_table_privilege('pgvigil.alert_rule_fired', 'INSERT')") == "f|f" ]] || fail "R: the reader may write the sender's tables"
+# refused at the first table alert_rules_run writes: since 0154 it refreshes the baselines first (alert_rule_baseline)
+[[ $out == *"permission denied for table alert_rule_state"* || $out == *"permission denied for table alert_rule_fired"* || $out == *"permission denied for table alert_rule_baseline"* ]] || fail "R: the reader ran alert_rules_run: $out"
+[[ $(as "$RDR" -c "select has_table_privilege('pgvigil.alert_rule_state', 'INSERT'), has_table_privilege('pgvigil.alert_rule_fired', 'INSERT'), coalesce(has_table_privilege(to_regclass('pgvigil.alert_rule_baseline'), 'INSERT, UPDATE, DELETE'), false)") == "f|f|f" ]] || fail "R: the reader may write the sender's tables"
 ok "R: the collector writes rules only through import_alert_rule; the alerter judges and stores the state, writes no rule; the reader reads"
 
 # ---- the first reads: the instances exist, the series have points ------------------------------------------------------
@@ -341,7 +344,7 @@ print(d["step_secs"], len(s["rows"]), s["rows"][-1][c.index("value")] if s["rows
 [[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["grid"]; c=d["columns"]; print(" ".join(sorted({r[c.index("family")] for r in d["rows"]})), len(d["rows"]))' "$WORK/gs.json") == "sessions 8" ]] || fail "G: family=sessions answered other rows"
 five "$WORK/gs.json" sessions.active "$HANDS" "the sessions family alone"
 [[ $(getj "metrics?instance=$AID&from=$FROM&to=$TO&part=families" "$WORK/gf.json") == 200 ]] || fail "G: GET /api/metrics part=families: $(cat "$WORK/gf.json")"
-[[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); f=d["families"]; print(" ".join(r[f["columns"].index("family")] for r in f["rows"]), "grid" in d)' "$WORK/gf.json") == "sessions database server io host False" ]] || fail "G: part=families: $(cat "$WORK/gf.json")"
+[[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); f=d["families"]; print(" ".join(r[f["columns"].index("family")] for r in f["rows"]), "grid" in d)' "$WORK/gf.json") == "sessions database server io host collection False" ]] || fail "G: part=families: $(cat "$WORK/gf.json")"
 [[ $(getj "metrics?instance=$AID&from=$FROM&to=$TO&family=nope" "$WORK/bad.json") == 400 ]] || fail "G: family=nope did not answer 400: $(cat "$WORK/bad.json")"
 for bad in "metric=sessions.nope" "metric=requests.blocked" "metric=sessions.active&db=$TGT"; do
   [[ $(getj "metrics/series?instance=$AID&$bad&from=$FROM&to=$TO" "$WORK/bad.json") == 400 ]] || fail "G: series $bad did not answer 400: $(cat "$WORK/bad.json")"
@@ -362,8 +365,15 @@ getj "metrics?instance=$MSID&from=$FROM&to=$TO2" "$WORK/gm.json" >/dev/null
 got="$(cell "$WORK/gm.json" requests.blocked max_status) $(cell "$WORK/gm.json" requests.blocked min_status) $(cell "$WORK/gm.json" requests.blocked avg_status) $(cell "$WORK/gm.json" requests.blocked current_status) $(cell "$WORK/gm.json" requests.blocked rule_scope)"
 [[ $got == "critical ok warning ok instance" ]] || fail "S: the statuses and scope read '$got'"
 fams() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["grid"]; c=d["columns"]; print(" ".join(sorted({r[c.index("family")] for r in d["rows"]})))' "$1"; }
-[[ $(fams "$WORK/gm.json") == "cpu host memory requests scheduler" ]] || fail "S: the SQL Server grid's families: $(fams "$WORK/gm.json")"
-[[ $(fams "$WORK/ga.json") == "database host io server sessions" ]] || fail "S: the PostgreSQL grid's families: $(fams "$WORK/ga.json")"
+# each engine's families are the owner's metric_catalog families of that engine or 'any' - the grid's own rule
+# (0300's metric_grid: c.engine IN (i.engine, 'any')) - never a fixed list: 0152's counters (task 401), 0153's xe
+# (task 402) and 0152's waits (task 412) joined the SQL Server catalogue after this part was written; the anchors hold
+# each list to its own engine's first family and none of the other's
+ofams() { q "select coalesce(string_agg(family, ' ' order by family collate \"C\"), '') from (select distinct family from pgvigil.metric_catalog where engine in ('$1', 'any')) x"; }
+MSFAM=$(ofams sqlserver); PGFAM=$(ofams postgres)
+[[ " $MSFAM " == *" requests "* && " $MSFAM " != *" sessions "* && " $PGFAM " == *" sessions "* && " $PGFAM " != *" requests "* ]] || fail "S: the owner's catalogue families: SQL Server '$MSFAM', PostgreSQL '$PGFAM'"
+[[ $(fams "$WORK/gm.json") == "$MSFAM" ]] || fail "S: the SQL Server grid's families: $(fams "$WORK/gm.json") (the owner's catalogue: $MSFAM)"
+[[ $(fams "$WORK/ga.json") == "$PGFAM" ]] || fail "S: the PostgreSQL grid's families: $(fams "$WORK/ga.json") (the owner's catalogue: $PGFAM)"
 ok "S: requests.blocked reads 7 / 0 / 2.6 / 0 over 5 samples; against above 2 / 6 the max is critical, the average warning, the rest ok; each engine lists its own families"
 
 # ---- F: fires once, clears once ----------------------------------------------------------------------------------------
@@ -543,9 +553,17 @@ DONE=$(grep -c '^done$' "$WORK/api.log" || true); REFUSED=$(grep -c '^refused$' 
 got=$(q "select string_agg(outcome || '=' || n, ' ' order by outcome) from (select outcome, count(*) n from pgvigil.alert_rule_log where ui_user = '$UIUSER' group by 1) x")
 [[ $got == "done=$DONE refused=$REFUSED" ]] || fail "A: the log holds '$got' by $UIUSER, the proof made done=$DONE refused=$REFUSED"
 [[ $(q "select count(*) from pgvigil.alert_rule_log where ui_user = '$UIUSER' and client is distinct from '127.0.0.1'") == 0 ]] || fail "A: a row of $UIUSER from another client"
-[[ $(q "select string_agg(ui_user || '=' || n, ' ' order by ui_user) from (select ui_user, count(*) n from pgvigil.alert_rule_log where ui_user <> '$UIUSER' group by 1) x") == "proof-r=2" ]] || fail "A: rows by another user: $(q "select ui_user, count(*) from pgvigil.alert_rule_log group by 1")"
-[[ $(q "select count(*) from pgvigil.alert_rules where created_by not in ('$UIUSER', 'proof-r')") == 0 ]] || fail "A: a rule made by another user"
-ok "A: the log holds the $DONE done and $REFUSED refused attempts of $UIUSER from 127.0.0.1 and R's two; every rule has its maker"
+# the migrations' starter rules (0153 / 0156: created_by 'pgvigil', client '<nnnn> seed', seeded off, one alert_rule_log
+# row each by 'pgvigil' with op 'seed') are the store's own, not a user's: set aside by those marks, their count equal on
+# both sides - never a fixed number (the seeds grow with the files)
+seed_rules="created_by = 'pgvigil' and client like '% seed'"; seed_log="ui_user = 'pgvigil' and op = 'seed' and client like '% seed'"
+NSEED=$(q "select count(*) from pgvigil.alert_rules where $seed_rules"); NSEEDLOG=$(q "select count(*) from pgvigil.alert_rule_log where $seed_log")
+[[ $NSEEDLOG == "$NSEED" ]] || fail "A: the migrations' seeds: $NSEEDLOG log row(s) for $NSEED seeded rule(s)"
+got=$(q "select coalesce(string_agg(ui_user || '=' || n, ' ' order by ui_user), '') from (select ui_user, count(*) n from pgvigil.alert_rule_log where ui_user <> '$UIUSER' and not ($seed_log) group by 1) x")
+[[ $got == "proof-r=2" ]] || fail "A: rows by another user ($UIUSER's and the migrations' seeds set aside): '$got'"
+got=$(q "select coalesce(string_agg(created_by || '/' || coalesce(client, '-'), ' ' order by rule_id), '') from pgvigil.alert_rules where created_by not in ('$UIUSER', 'proof-r') and not ($seed_rules)")
+[[ -z $got ]] || fail "A: a rule made by another user: $got"
+ok "A: the log holds the $DONE done and $REFUSED refused attempts of $UIUSER from 127.0.0.1 and R's two; every rule has its maker (the migrations' $NSEED seeded rules and their $NSEED log rows set aside)"
 
 # ---- V: PostgreSQL 13 ----------------------------------------------------------------------------------------------------
 if [[ ${PGVIGIL_SKIP_PG13:-0} == 1 ]]; then

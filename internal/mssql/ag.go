@@ -70,7 +70,12 @@ var HADRThresholds = map[string]float64{
 // ThresholdRows turns an instance's thresholds as the configuration gives them (name: number, and backup_exclude:
 // a list of LIKE patterns of database names whose backups are not judged) into the one-row payload of
 // pgvigil.import_mssql_hadr_thresholds. An unknown name or a negative number is an error here, before any write.
+// The identity rule's two lines (IdentityThresholds) live in the same block and are the collection's own: checked
+// here with the rest, never written to the threshold store.
 func ThresholdRows(t map[string]any) ([]collect.Row, error) {
+	if _, _, err := IdentityLimits(t); err != nil {
+		return nil, err
+	}
 	row := collect.Row{}
 	names := make([]string, 0, len(t))
 	for k := range t {
@@ -87,8 +92,11 @@ func ThresholdRows(t map[string]any) ([]collect.Row, error) {
 			row[k] = pats
 			continue
 		}
+		if _, identity := IdentityThresholds[k]; identity {
+			continue
+		}
 		if _, known := HADRThresholds[k]; !known {
-			return nil, fmt.Errorf("mssql threshold %q is not known; known: %s, backup_exclude", k, strings.Join(thresholdNames(), ", "))
+			return nil, fmt.Errorf("mssql threshold %q is not known; known: %s, backup_exclude, identity_warn_pct, identity_crit_pct", k, strings.Join(thresholdNames(), ", "))
 		}
 		n, ok := number(v)
 		if !ok || n < 0 {
@@ -188,7 +196,9 @@ func (agCollector) Applies(info Info) (bool, string) {
 }
 
 // agReplicaSQL: one row per replica of every group, the group's own columns on each (SQL Server 2016 SP1 and later;
-// cluster_type and required_synchronized_secondaries_to_commit from 2017, is_contained from 2022).
+// cluster_type and required_synchronized_secondaries_to_commit from 2017, is_contained from 2022). join_state is the
+// replica's own word on whether its server joined the group (NOT_JOINED: added on the primary, never joined there);
+// read_only_routing_url is where read-intent connections routed to the replica go.
 func agReplicaSQL(info Info) string {
 	return `SELECT 'replica' AS kind,
   ag.group_id, CAST(ag.name AS nvarchar(128)) AS group_name,
@@ -197,6 +207,7 @@ func agReplicaSQL(info Info) string {
   ` + colOr(atLeast(info, 16), "CAST(ag.is_contained AS int)", "int", "is_contained") + `,
   CAST(ag.automated_backup_preference_desc AS nvarchar(60)) AS backup_preference,
   CAST(ag.db_failover AS int) AS db_failover,
+  ag.failure_condition_level, ag.health_check_timeout AS health_check_timeout_ms,
   ` + colOr(atLeast(info, 14), "ag.required_synchronized_secondaries_to_commit", "int", "required_sync_secondaries") + `,
   CAST(ags.primary_replica AS nvarchar(256)) AS primary_replica,
   CAST(ags.synchronization_health_desc AS nvarchar(60)) AS group_health,
@@ -206,6 +217,9 @@ func agReplicaSQL(info Info) string {
   CAST(ar.failover_mode_desc AS nvarchar(60)) AS failover_mode,
   CAST(ar.seeding_mode_desc AS nvarchar(60)) AS seeding_mode,
   CAST(ar.secondary_role_allow_connections_desc AS nvarchar(60)) AS secondary_connections,
+  CAST(ar.primary_role_allow_connections_desc AS nvarchar(60)) AS primary_connections,
+  CAST(ar.read_only_routing_url AS nvarchar(256)) AS read_only_routing_url,
+  CAST(rcs.join_state_desc AS nvarchar(60)) AS join_state,
   ar.backup_priority, ar.session_timeout,
   CAST(COALESCE(ars.is_local, CASE WHEN ar.replica_server_name = @@SERVERNAME THEN 1 ELSE 0 END) AS int) AS is_local,
   CAST(ars.role_desc AS nvarchar(60)) AS role,
@@ -220,13 +234,16 @@ FROM sys.availability_groups ag
 JOIN sys.availability_replicas ar ON ar.group_id = ag.group_id
 LEFT JOIN sys.dm_hadr_availability_group_states ags ON ags.group_id = ag.group_id
 LEFT JOIN sys.dm_hadr_availability_replica_states ars ON ars.replica_id = ar.replica_id
+LEFT JOIN sys.dm_hadr_availability_replica_cluster_states rcs ON rcs.replica_id = ar.replica_id
 ORDER BY ag.name, ar.replica_server_name`
 }
 
 // agDatabaseSQL: one row per database replica the instance sees. The estimates are the two the documentation of
 // sys.dm_hadr_database_replica_states gives ("Monitor performance for Always On availability groups"): the
 // recovery time is the redo queue over the redo rate; the data loss is the primary's last commit time less the
-// secondary's, which only the primary can compute (it alone sees both rows). A distributed group has no row for its
+// secondary's, which only the primary can compute (it alone sees both rows). A secondary that has redone no commit yet
+// (its last_commit_time NULL) gets no estimate here; the repository measures it from its last hardened time against
+// the primary's row of the same read, as sp_Blitz's check 268 does. A distributed group has no row for its
 // primary side (the global primary sees the other member group's row only), so there the primary's last commit is
 // taken from the database's own row in the local member group (own): without it the link's data loss was never
 // estimated. SQL Server 2016 SP1 and later.
@@ -264,6 +281,88 @@ LEFT JOIN sys.dm_hadr_database_replica_states own
       AND own.group_id <> drs.group_id AND own.is_local = 1 AND own.is_primary_replica = 1
 ORDER BY ag.name, ar.replica_server_name, 5`
 
+// agDatabaseClusterSQL: per database of a group and replica, whether the database joined the group there and whether
+// it is ready for a failover (sys.dm_hadr_database_replica_cluster_states; it lists the replicas a database is NOT
+// joined on too, which sys.dm_hadr_database_replica_states does not). SQL Server 2016 SP1 and later.
+const agDatabaseClusterSQL = `SELECT 'db_cluster' AS kind, ar.group_id, CAST(ag.name AS nvarchar(128)) AS group_name,
+  CAST(ar.replica_server_name AS nvarchar(256)) AS replica_server, CAST(dcs.database_name AS nvarchar(128)) AS database_name,
+  CAST(dcs.is_failover_ready AS int) AS is_failover_ready, CAST(dcs.is_database_joined AS int) AS is_database_joined,
+  CAST(dcs.is_pending_secondary_suspend AS int) AS is_pending_secondary_suspend
+FROM sys.dm_hadr_database_replica_cluster_states dcs
+JOIN sys.availability_replicas ar ON ar.replica_id = dcs.replica_id
+JOIN sys.availability_groups ag ON ag.group_id = ar.group_id
+WHERE ag.is_distributed = 0
+ORDER BY ag.name, ar.replica_server_name, dcs.database_name`
+
+// agRoutingSQL: the read-only routing list of each replica, in priority order (an entry of one priority shares the
+// load with its siblings).
+const agRoutingSQL = `SELECT 'routing' AS kind, ar.group_id, CAST(ar.replica_server_name AS nvarchar(256)) AS replica_server,
+  rl.routing_priority, CAST(rr.replica_server_name AS nvarchar(256)) AS read_only_replica
+FROM sys.availability_read_only_routing_lists rl
+JOIN sys.availability_replicas ar ON ar.replica_id = rl.replica_id
+JOIN sys.availability_replicas rr ON rr.replica_id = rl.read_only_replica_id
+ORDER BY ar.replica_server_name, rl.routing_priority, rr.replica_server_name`
+
+// agSeedingSQL: the newest automatic seeding of each database and remote replica in the last 7 days as this server
+// saw it (sys.dm_hadr_automatic_seeding keeps its rows until the instance restarts), with the transfer's progress
+// from sys.dm_hadr_physical_seeding_stats while one runs. Times are the server's local clock, converted here.
+var agSeedingSQL = `WITH s AS (
+  SELECT a.ag_id, a.ag_db_id, a.ag_remote_replica_id, a.is_source, a.current_state, a.failure_state_desc, a.error_code,
+         a.number_of_attempts, a.start_time, a.completion_time, a.operation_id,
+         ROW_NUMBER() OVER (PARTITION BY a.ag_id, a.ag_db_id, a.ag_remote_replica_id ORDER BY a.start_time DESC) AS rn
+    FROM sys.dm_hadr_automatic_seeding a
+   WHERE a.start_time > DATEADD(day, -7, GETDATE()))
+SELECT 'seeding' AS kind, s.ag_id AS group_id, CAST(ag.name AS nvarchar(128)) AS group_name,
+  CAST(COALESCE(adc.database_name, CONVERT(nvarchar(40), s.ag_db_id)) AS nvarchar(128)) AS database_name,
+  CAST(rr.replica_server_name AS nvarchar(256)) AS remote_replica, CAST(s.is_source AS int) AS is_source,
+  CAST(s.current_state AS nvarchar(60)) AS seeding_state, CAST(s.failure_state_desc AS nvarchar(120)) AS failure_state,
+  s.error_code, s.number_of_attempts,
+  ` + utcText("s.start_time") + ` AS start_utc,
+  ` + utcText("s.completion_time") + ` AS completion_utc,
+  ps.transferred_size_bytes, ps.database_size_bytes,
+  CONVERT(varchar(33), ps.estimate_time_complete_utc, 126) + 'Z' AS estimate_complete_utc
+FROM s
+JOIN sys.availability_groups ag ON ag.group_id = s.ag_id
+LEFT JOIN sys.availability_databases_cluster adc ON adc.group_id = s.ag_id AND adc.group_database_id = s.ag_db_id
+LEFT JOIN sys.availability_replicas rr ON rr.replica_id = s.ag_remote_replica_id
+LEFT JOIN sys.dm_hadr_physical_seeding_stats ps ON ps.remote_physical_seeding_id = s.operation_id OR ps.local_physical_seeding_id = s.operation_id
+WHERE s.rn = 1
+ORDER BY ag.name, 4, 5`
+
+// agEndpointSQL: the instance's database mirroring endpoint, the one an availability group's replicas connect through.
+const agEndpointSQL = mirroringEndpointSQL
+
+// agCountersSQL: the cumulative counters of the two availability group objects (each with its cntr_type, so the
+// repository takes a difference only of a cumulative one): per replica this server talks to (Availability Replica,
+// instance_name = the replica, '_Total' left out) flow control and resent messages; per local database (Database
+// Replica, instance_name = the database) its flow control and the redo that was blocked. Rates come from two reads.
+const agCountersSQL = `SELECT CASE WHEN pc.object_name LIKE '%:Availability Replica%' THEN 'replica_counters' ELSE 'db_counters' END AS kind,
+  CAST(RTRIM(pc.instance_name) AS nvarchar(256)) AS counter_instance,
+  MAX(CASE WHEN RTRIM(pc.counter_name) = 'Flow Control Time (ms/sec)' THEN pc.cntr_value END) AS flow_control_ms_total,
+  MAX(CASE WHEN RTRIM(pc.counter_name) = 'Flow Control/sec' THEN pc.cntr_value END) AS flow_controls_total,
+  MAX(CASE WHEN RTRIM(pc.counter_name) = 'Resent Messages/sec' THEN pc.cntr_value END) AS resent_messages_total,
+  MAX(CASE WHEN RTRIM(pc.counter_name) = 'Database Flow Control Delay' THEN pc.cntr_value END) AS db_flow_control_delay_total,
+  MAX(CASE WHEN RTRIM(pc.counter_name) = 'Database Flow Controls/sec' THEN pc.cntr_value END) AS db_flow_controls_total,
+  MAX(CASE WHEN RTRIM(pc.counter_name) = 'Redo blocked/sec' THEN pc.cntr_value END) AS redo_blocked_total,
+  MAX(CASE WHEN RTRIM(pc.counter_name) IN ('Flow Control Time (ms/sec)', 'Database Flow Control Delay') THEN pc.cntr_type END) AS flow_control_type,
+  MAX(CASE WHEN RTRIM(pc.counter_name) IN ('Flow Control/sec', 'Database Flow Controls/sec') THEN pc.cntr_type END) AS flow_controls_type,
+  MAX(CASE WHEN RTRIM(pc.counter_name) IN ('Resent Messages/sec', 'Redo blocked/sec') THEN pc.cntr_type END) AS third_type
+FROM sys.dm_os_performance_counters pc
+WHERE (pc.object_name LIKE '%:Availability Replica%' OR pc.object_name LIKE '%:Database Replica%')
+  AND RTRIM(pc.instance_name) NOT IN ('', '_Total')
+GROUP BY CASE WHEN pc.object_name LIKE '%:Availability Replica%' THEN 'replica_counters' ELSE 'db_counters' END, RTRIM(pc.instance_name)
+ORDER BY 1, 2`
+
+// agHealthSessionSQL: the AlwaysOn_health event session (dbachecks' HADR checks: it exists, runs and starts with the
+// server); pgvigil's own reader of its events (mssql_xe) needs it running.
+const agHealthSessionSQL = `SELECT 'health_session' AS kind,
+  CAST(CASE WHEN es.name IS NULL THEN 0 ELSE 1 END AS int) AS session_exists,
+  CAST(CASE WHEN xs.name IS NULL THEN 0 ELSE 1 END AS int) AS session_running,
+  CAST(es.startup_state AS int) AS session_autostart
+FROM (SELECT 1 AS one) x
+LEFT JOIN sys.server_event_sessions es ON es.name = 'AlwaysOn_health'
+LEFT JOIN sys.dm_xe_sessions xs ON xs.name = 'AlwaysOn_health'`
+
 const agListenerSQL = `SELECT 'listener' AS kind, l.group_id, CAST(l.dns_name AS nvarchar(63)) AS dns_name, l.port,
   CAST(l.ip_configuration_string_from_cluster AS nvarchar(1000)) AS ip_configuration
 FROM sys.availability_group_listeners l
@@ -291,6 +390,22 @@ func (agCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collec
 		return nil, err
 	}
 	rows = append(rows, dbs...)
+	// the gaps reads (item 5): a statement that fails is a note on the read, never the read's failure
+	for _, part := range []struct{ source, query string }{
+		{"sys.dm_hadr_database_replica_cluster_states", agDatabaseClusterSQL},
+		{"sys.availability_read_only_routing_lists", agRoutingSQL},
+		{"sys.dm_hadr_automatic_seeding", agSeedingSQL},
+		{"sys.database_mirroring_endpoints", agEndpointSQL},
+		{"sys.dm_os_performance_counters", agCountersSQL},
+		{"sys.server_event_sessions", agHealthSessionSQL},
+	} {
+		got, err := QueryRows(ctx, conn, part.query)
+		if err != nil {
+			rows = append(rows, collect.Row{"kind": "collector_error", "source": part.source, "message": err.Error()})
+			continue
+		}
+		rows = append(rows, got...)
+	}
 	ls, err := QueryRows(ctx, conn, agListenerSQL)
 	if err != nil {
 		return append(rows, collect.Row{"kind": "collector_error", "source": "sys.availability_group_listeners", "message": err.Error()}), nil

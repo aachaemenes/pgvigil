@@ -46,8 +46,9 @@
 #   colours    (X0) every cell of every row the page draws (a grid draws its first 200 rows; the read must return
 #              exactly those), against the page: the status the screen shows on it (read by the driver's own code, not
 #              export_colours.ts: the cell's status, else a badge's in it, a link) is its named pair in the file, any
-#              other cell plain - no fill, no text colour of its own, not bold; the two Table Size cells the driver gives
-#              a bare class (crit, warn) take their named pairs (export.ts statusOf reads a bare class as its status).
+#              other cell plain - no fill, no text colour of its own, not bold; the two Table Size columns the driver gives
+#              a bare class (crit, warn on the first row, ok on the others: a whole column, as X18 wants) take their
+#              named pairs (export.ts statusOf reads a bare class as its status).
 #              Counted per sheet (the lines 'cells:')
 #   percent    Storage: every 'free' cell a number under numFmt 167 ('0.0%', DBA Dash's P1) whose value is the screen's percent / 100;
 #              its CSV keeps the percent figure itself (12.5, not 0.125)
@@ -59,11 +60,11 @@
 #              page ('12.0') and a number under '0.0' in the workbook (dbs_onedec, every DB Space grid)
 #   library    when python3 has openpyxl, each workbook loads with it without an error, its tables counted; none = said
 #   tools      when the grid's menu carries the grid tools (ui.ts sends 'pgvigil:gridmenu'; not wired = said), on
-#              the fleet Backups grid: 'Copy the rows as HTML with the colours' puts a table on the clipboard whose
+#              the fleet Backups grid: 'Copy > Grid' (task GM) puts a table on the clipboard whose
 #              header is #0063a3 and whose cells carry each status the screen shows as background and text colour, a
-#              row per grid row; 'Copy the rows as Markdown' a pipe table of rows + 2 lines; Ctrl+click on two numbers
+#              row per grid row; 'Copy > As Markdown > Standard' a pipe table of rows + 2 lines; Ctrl+click on two numbers
 #              says '2 cells selected' with their sum, a plain click clears it; 'Group by platform' lists one group
-#              per platform, their rows adding up to the grid's; 'Data bars on failed' draws a bar on each failed
+#              per platform, their rows adding up to the grid's; 'Data bar > Behind value' on failed draws a bar on each failed
 #              count above zero, the largest at 100 %; 'Freeze the columns up to platform' makes the first two sticky;
 #              'Hide column platform' hides it, keeps the choice in localStorage and after a reload it is still
 #              hidden, frozen and barred; the workbook exported then has no platform column (one column fewer, the
@@ -163,7 +164,11 @@
 #              passes scripts/xlsx-check.py rules: the file rules DBA Dash's own exports pass (a grid sheet per grid, the
 #              named colour pairs only, the fixed header, one table each, no pane, the formats General / '0' / '0.0%' /
 #              '0.00%' / 'yyyy-MM-dd HH:mm' / 'yyyy-MM-dd' and a fixed count of decimals '0.0' .., booleans, widths, no app
-#              link, no picture); 'ok xcheck Xn' only on one PASS line per workbook
+#              link, no picture); 'ok xcheck Xn' only on one PASS line per workbook. X18 (a status column has a status
+#              or N/A on every cell) on every page; scripts/status-column-scan.py first (its --self-test, then): every BADGE-DRAWN status column of
+#              web/src (a warning or critical badge, inline or through a helper) has a cls (its values read by hand) or
+#              is on its reviewed list with each badge of class ok / none; then --wide: every column coloured by a cls
+#              alone or by an OK badge alone is on its WIDE_REVIEWED list (read one by one)
 #   decimals   (X13) no number cell shows more decimals than its column shows on the screen (nor fewer under a fixed
 #              format): the read-back takes each grid column's most decimals from the screen's text (a grid drawn whole;
 #              not a chart's series: the driver reads one point of it) into page-<lang>.json and runs
@@ -203,6 +208,13 @@ ok "sheet names: $(tail -1 "$WORK/names-unit.out")"
 echo "== the X rules' own tests (scripts/xlsx-check.test.py: built workbooks, a probe per shape)"
 python3 -I scripts/xlsx-check.test.py "$XCHECK" > "$WORK/xcheck-unit.out" 2>&1 || { cat "$WORK/xcheck-unit.out"; fail "the X rules' own tests"; }
 ok "X rules' tests: $(tail -1 "$WORK/xcheck-unit.out")"
+echo "== a status column's other cells on the screen (scripts/status-column-scan.py)"
+python3 -I scripts/status-column-scan.py --self-test > "$WORK/status-column-self.out" 2>&1 || { cat "$WORK/status-column-self.out"; fail "the status column scan's self-test (scripts/status-column-scan.py --self-test)"; }
+ok "status-column-scan $(tail -1 "$WORK/status-column-self.out")"
+python3 -I scripts/status-column-scan.py web/src > "$WORK/status-column-scan.out" 2>&1 || { cat "$WORK/status-column-scan.out"; fail "a status column's other cells (scripts/status-column-scan.py)"; }
+ok "status-column-scan: $(tail -1 "$WORK/status-column-scan.out")"
+python3 -I scripts/status-column-scan.py --wide web/src > "$WORK/status-column-wide.out" 2>&1 || { cat "$WORK/status-column-wide.out"; fail "a cls- or OK-badge-coloured column's other cells (scripts/status-column-scan.py --wide)"; }
+ok "status-column-scan --wide: $(tail -1 "$WORK/status-column-wide.out")"
 # the same module as a script for the page (the driver runs it there: window.__pgvColours)
 web/node_modules/.bin/esbuild web/src/export_colours.ts --format=iife --global-name=__pgvColours --log-level=warning --outfile="$WORK/export_colours.js" || fail "esbuild could not compile web/src/export_colours.ts as a script"
 
@@ -457,10 +469,13 @@ const page = async (hash, sortBy, filterNone) => {
     // the page's last grid filtered to nothing: a grid without rows keeps the plain sheet filter, no Excel table
     await ev(`(() => { const t = [...document.querySelectorAll('main table.grid')].pop(); t.querySelector('thead .filter-btn').click(); const i = t.querySelector('thead tr.filters input'); i.value = 'zzzz-no-such-row'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await sleep(600);
-    // and two cells of the page's first grid given a class as a page's own rule gives one (ui.ts adds a Col's cls to the
-    // cell the same way): no tab of this proof's visits has such a rule in the demo, the export must read the class
+    // and two columns of the page's first grid given a class as a page's own rule gives one (ui.ts adds a Col's cls to
+    // the cell the same way): no tab of this proof's visits has such a rule in the demo, the export must read the class
     const drawn = await ev(`(() => { const t = document.querySelector('main table.grid'); if (Number(t.dataset.rows ?? 0) > 200) return false;   // past its page the export builds the rows off the screen
-      const tr = t.querySelector(':scope > tbody > tr'); tr.children[1].classList.add('crit'); tr.children[2].classList.add('warn'); return true; })()`);
+      // every row of the two columns classed, as a page's rule classes its whole column (X18: a status column has a
+      // status on every cell): the first row crit / warn, the others ok
+      const trs = [...t.querySelectorAll(':scope > tbody > tr')]; trs[0].children[1].classList.add('crit'); trs[0].children[2].classList.add('warn');
+      trs.slice(1).forEach(tr => { tr.children[1].classList.add('ok'); tr.children[2].classList.add('ok'); }); return true; })()`);
     if (!drawn) throw new Error('the first grid of the Table Size tab has over 200 rows: the class check needs a grid drawn whole');
   }
   if (sortBy) {
@@ -493,12 +508,13 @@ const tools = async () => {
     td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 320 })); return [...document.querySelectorAll('.menu button')].map(b => b.textContent); })()`);
   const choose = async (col, text) => {
     const items = await menu(col);
-    const hit = await ev(`(() => { const b = [...document.querySelectorAll('.menu button')].find(x => x.textContent === ${JSON.stringify(text)}); if (!b) return false; b.click(); return true; })()`);
-    if (!hit) throw new Error(`the menu on '${col}' has no '${text}': ${JSON.stringify(items)}`);
+    // text: an item, or a path 'Copy > Grid' through the grid menu's submenus (task GM), each step by its own label
+    const miss = await ev(`(path => { const lab = x => [...x.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(); for (const l of path) { const boxes = [...document.querySelectorAll('.menu')], box = boxes[boxes.length - 1], bs = box ? [...box.querySelectorAll(':scope > button')] : []; const b = bs.find(x => lab(x) === l); if (!b) return l + ' not among: ' + bs.map(lab).join(' | '); b.click(); } return ''; })(${JSON.stringify(text.split(' > '))})`);
+    if (miss) throw new Error(`the menu on '${col}' has no '${text}': ${miss}; top: ${JSON.stringify(items)}`);
     await sleep(250);
   };
   const first = await menu('platform');
-  const out = { wired: first.some(x => x.startsWith('Copy the rows as HTML')), menu: first };
+  const out = { wired: first.some(x => x.startsWith('Export file')), menu: first };   // the grid menu of task GM
   await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   if (!out.wired) return out;
   out.head = await ev(HS); out.rows = await ev(`Number(${T}.dataset.rows)`);
@@ -507,9 +523,9 @@ const tools = async () => {
   await ev(`(() => { window.__gt = {}; const c = navigator.clipboard;
     c.write = async items => { for (const it of items) for (const ty of it.types) window.__gt[ty] = await (await it.getType(ty)).text(); };
     c.writeText = async t => { window.__gt.text = t; }; })()`);
-  await choose('platform', 'Copy the rows as HTML with the colours'); await sleep(300);
+  await choose('platform', 'Copy > Grid'); await sleep(300);
   out.html = await ev(`window.__gt['text/html'] ?? null`); out.plain = await ev(`window.__gt['text/plain'] ?? null`);
-  await choose('platform', 'Copy the rows as Markdown'); await sleep(300);
+  await choose('platform', 'Copy > As Markdown > Standard'); await sleep(300);
   out.markdown = await ev(`window.__gt.text ?? null`);
   // Ctrl+click on the first two 'failed' counts, then a plain click
   out.sel = await ev(`(() => { const j = ${HS}.indexOf('failed'); const tds = [...${T}.querySelectorAll(':scope > tbody > tr')].slice(0, 2).map(tr => tr.children[j]);
@@ -523,7 +539,7 @@ const tools = async () => {
       platforms: [...new Set([...${T}.querySelectorAll(':scope > tbody > tr')].map(tr => tr.children[${HS}.indexOf('platform')].textContent.trim()))].length }; })()`);
   await choose('platform', 'Ungroup');
   out.ungrouped = await ev(`!document.querySelector('main .gt-groups')`);
-  await choose('failed', 'Data bars on failed');
+  await choose('failed', 'Data bar > Behind value');
   const BARS = `(() => { const j = ${HS}.indexOf('failed'); return [...${T}.querySelectorAll(':scope > tbody > tr')].map(tr => { const td = tr.children[j]; return { t: td.textContent.trim(), bar: td.classList.contains('gt-bar'), share: td.style.getPropertyValue('--gt-share'), badge: !!td.querySelector('.badge') }; }); })()`;
   out.bars = await ev(BARS);
   await choose('platform', 'Freeze the columns up to platform');
@@ -601,6 +617,53 @@ if (sq) {
 // a PostgreSQL instance's DB Space page: its grid with no data / log columns, used 'not read'
 const pq_ = rows.find(r => r.engine === 'postgres' && r.platform === 'onprem') ?? rows.find(r => r.engine === 'postgres');
 if (pq_) out.dbspace_p = { ...(await page(`#/dbspace?i=${pq_.instance_id}`)), instance: pq_.name };
+// (pickers) DB Space's Unit and Decimal places: MB and 2 picked on the SQL Server instance's page (its grid sorted by
+// allocated first: the sort must survive the unit), its export read (dbspace_imb), the API's bytes of the same draw; the
+// folder's page then shows MB / 2 (remembered), after a reload too; TB and 0 on the PostgreSQL instance's page read (its
+// figures all 0: the note under the grid), TB and 3 exported (dbspace_ptb); GB and 1 picked back and no size key left. A page without the pickers is said in each read, never a throw
+const dbsPick = (u, k) => ev(`(() => { const a = document.getElementById('dbs-unit'), b = document.getElementById('dbs-dp');
+  if (!a || !b) return { err: 'no Unit picker on the page' };
+  a.focus(); a.value = ${JSON.stringify(u)}; a.dispatchEvent(new Event('change', { bubbles: true }));
+  b.value = ${JSON.stringify(k)}; b.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true }; })()`);
+const dbsRead = () => ev(`(() => { const a = document.getElementById('dbs-unit'), b = document.getElementById('dbs-dp'), t = document.querySelector('main table.grid');
+  return { unit: a ? a.value : null, dp: b ? b.value : null, focus: document.activeElement ? document.activeElement.id : '',
+    labels: [...document.querySelectorAll('main label')].map(l => l.htmlFor).filter(Boolean),
+    head: t ? [...t.querySelectorAll('thead th')].map(h => h.textContent.trim()) : [],
+    first: t ? (t.querySelector('tbody tr td')?.textContent || '').trim() : '',
+    note: [...document.querySelectorAll('main p.meta')].map(p => p.textContent).filter(s => /shows 0/.test(s)),
+    keys: Object.keys(localStorage).filter(k => k.startsWith('pgvigil.grid.dbspace.size-')) }; })()`);
+const dbsApi = () => ev(`(async () => { const u = performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/dbspace')).pop();
+  if (!u) return { err: 'no /api/dbspace read' }; const r = await fetch(u); return r.ok ? await r.json() : { err: 'HTTP ' + r.status }; })()`);
+if (sq && pq_) {
+  await cmd('Page.navigate', { url: U + `#/dbspace?i=${sq.instance_id}` }); await sleep(300);
+  if (!await settled()) throw new Error('the SQL Server DB Space page did not render');
+  // sorted by allocated, smallest first (one click: the API's own order is largest first, so a sort the redraw lost
+  // shows), the first row read before the unit changes
+  await ev(`(() => { const t = document.querySelector('main table.grid'); const h = [...t.querySelectorAll('thead th')].find(x => /^allocated/.test(x.textContent.trim())); if (h) { h.click(); } return !!h; })()`);
+  await sleep(300);
+  out.dbs_sorted = await dbsRead();
+  out.dbs_pick_mb = await dbsPick('MB', '2'); await sleep(500);
+  out.dbs_after_mb = await dbsRead();
+  if (out.dbs_pick_mb.ok) {
+    out.dbs_api_i = await dbsApi();
+    // a window of its own (3h): the instance's DB Space was exported above in the default window, and two downloads in
+    // one minute would take one file name; the unit and decimals kept across the navigation
+    out.dbspace_imb = { ...(await page(`#/dbspace?i=${sq.instance_id}&w=3h`)), instance: sq.name };
+    await cmd('Page.navigate', { url: U + '#/dbspace' }); await sleep(300); await settled();
+    out.dbs_folder = await dbsRead();
+    await cmd('Page.reload', {}); await sleep(800); await settled();
+    out.dbs_reload = await dbsRead();
+    await cmd('Page.navigate', { url: U + `#/dbspace?i=${pq_.instance_id}` }); await sleep(300); await settled();
+    out.dbs_pick_tb0 = await dbsPick('TB', '0'); await sleep(500);
+    out.dbs_after_tb0 = await dbsRead();
+    out.dbs_pick_tb = await dbsPick('TB', '3'); await sleep(500);
+    out.dbs_api_p = await dbsApi();
+    out.dbspace_ptb = { ...(await page(`#/dbspace?i=${pq_.instance_id}&w=3h`)), instance: pq_.name };   // its own window, as above
+    out.dbs_pick_back = await dbsPick('GB', '1'); await sleep(500);
+    out.dbs_back = await dbsRead();
+  }
+}
 out.tools = await tools();
 // ---- P03: the new menu items, each clicked and its download read ---------------------------------------------------
 const waitDl = async (before, what) => {
@@ -637,7 +700,8 @@ let before = folder();
 if (!await click('Export Excel')) throw new Error("the grid's menu has no Export Excel: " + JSON.stringify(gm.items));
 gm.xlsx = await waitDl(before, "the grid menu's Export Excel");
 await sleep(200);
-gm.said = await ev(`document.querySelector('main .grid-box .filter-count')?.textContent ?? ''`);
+// the grid menu (task GM) says what it saved in the grid tools' own line (.gt-stats); main's hook wrote the filter count's
+gm.said = await ev(`(() => { const b = document.querySelector('main .grid-box'); return b?.querySelector('.gt-stats')?.textContent || b?.querySelector('.filter-count')?.textContent || ''; })()`);
 out.gridmenu = gm;
 // the fleet Summary's Export to Excel drop-down: Export Summary (the instance grid), Export Test Summary (the tests grid)
 await go('#/summary?w=2h');
@@ -696,7 +760,7 @@ out.charts = charts;
 // a chart the page draws in HTML (chart.ts volumeBars: the Volumes bars of an instance's Storage page, a table): the
 // bars' rows as the page draws them, then the page's export (its rows on the page sheet after the chart's line)
 {
-  // (the review's fold) graded as every page here too: its days, its rates, its Volumes
+  // graded as every page here too: its days, its rates, its Volumes
   const hashV = `#/storage?i=${one.instance_id}&w=24h`;
   await go(hashV); await sleep(700);
   const bars = await ev(`[...document.querySelectorAll('main .chart.bars tbody tr')].map(tr => [...tr.children].map(td => (td.textContent || '').replace(/\\s+/g, ' ').trim()))`);
@@ -942,6 +1006,10 @@ def carried(key, name, g, cells, cx, judge, value, least):
         if f == fill[s]: got[s] = got.get(s, 0) + 1
         else: miss.append(f"{colname(b)}{i + 2} {f} for {s}")
     check(not miss and sum(got.values()) >= 1 and all(got.get(k, 0) >= 1 for k in least), f"{key}: '{value}' is in the colour of '{judge}' in its row ({got}; at least one of {least or 'any'}; {len(miss)} wrong {miss[:3]})")
+def half_up(v, k):
+    # a value rounded as the page's toLocaleString rounds it: half away from zero on the exact binary value (100.125 -> 100.13)
+    from decimal import Decimal, ROUND_HALF_UP
+    return float(Decimal(v).quantize(Decimal(1).scaleb(-k), rounding=ROUND_HALF_UP))
 def number(t):
     t = re.sub(r'[\s\u202f\u00a0%+]', '', t)
     if ',' in t and '.' not in t: t = t.replace(',', '.')
@@ -949,7 +1017,8 @@ def number(t):
     except ValueError: return None
 def dbs_onedec(key, g, cells, cx):
     # (DBA Dash's 'Decimal Places: 1': '12.0', never '12') every GB figure of a DB Space grid shows exactly one decimal on
-    # the page (fr-FR '12,0'), its workbook cell a number under '0.0' whose value is the figure shown; a blank or 'not read'
+    # the page (fr-FR '12,0'), its workbook cell a number under '0.0' that rounds to the screen's figure (the value exact in
+    # its unit: only the display and the format round); a blank or 'not read'
     # cell is skipped. The grid must hold a whole figure (the case the rule is about), or the row proves nothing
     gb = [j for j, h in enumerate(g['head']) if h.endswith('(GB)')]
     seen, whole, bad = 0, 0, []
@@ -961,7 +1030,7 @@ def dbs_onedec(key, g, cells, cx):
             code = FMT_CODES.get(cx[sid]['fmt'], cx[sid]['fmt']) if sid < len(cx) else '?'
             n_ = number(t_); seen += 1
             if n_ is not None and n_ == int(n_): whole += 1
-            if not re.fullmatch(r'-?[\d\s\u202f\u00a0.,]*\d[.,]\d', t_) or v_ is None or code != '0.0' or n_ is None or abs(n_ - v_) >= 1e-9:
+            if not re.fullmatch(r'-?[\d\s\u202f\u00a0.,]*\d[.,]\d', t_) or v_ is None or code != '0.0' or n_ is None or abs(n_ - half_up(v_, 1)) >= 1e-9:
                 bad.append(f"{colname(j)}{i + 2} page {t_!r}, workbook {v_} under {code!r}")
     check(len(gb) >= 1 and seen >= 1 and whole >= 1 and not bad, f"{key}: every GB figure shows one decimal on the page and is a number under '0.0' in the workbook, the value shown ({len(gb)} GB columns, {seen} figures, {whole} whole; {len(bad)} off {bad[:3]})")
 def sheets_of(z):
@@ -1065,7 +1134,7 @@ def named_by(n, f, up):
     return n.endswith(' ' + f[:31 - 2]) or n.endswith(' ' + f)
 def safe_(n): return re.sub(r'[^A-Za-z0-9._-]+', '-', n).strip('-') or 'x'
 def norm_(t): return re.sub(r'\s+', ' ', t or '').strip()   # the page's text as the export reads it (a locale's narrow space one space)
-# (X7, the lead 13:44 (2)) a number with a unit as the pages write it: a size, a duration (fmtSecs's '1d 2h' too), a
+# (X7) a number with a unit as the pages write it: a size, a duration (fmtSecs's '1d 2h' too), a
 # rate, a count of days
 UNIT_TEXT = re.compile(r'-?[\d\s,.\u202f\u00a0]*\d ?(?:B|KB|MB|GB|TB|PB|ms|s|min|h|d|days?|hours?)(?: ?/ ?(?:day|h|s))?|-?\d+[dhm](?: \d+[hms])?|off \(\d+ days?\)')
 # the mixed list, by sheet and column: the Instance Summary's ages (DBA Dash's Summary writes its ages as text: 'Instance
@@ -1073,6 +1142,11 @@ UNIT_TEXT = re.compile(r'-?[\d\s,.\u202f\u00a0]*\d ?(?:B|KB|MB|GB|TB|PB|ms|s|min
 AGES = {'Memory Dump', 'Corruption', 'Last Good Check DB', 'Instance Uptime', 'Snapshot Age', 'Alerts'}
 SIZE_U = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 DUR_MS = {'ms': 1, 's': 1000, 'min': 60000}
+# a screen figure that groups its thousands in the language's way ('1,672.00'; fr-FR '1 672,00')
+GROUPED_SCREEN = r'\d,\d{3}(?!\d)' if sys.argv[3].startswith('en') else r'\d[\s\u202f\u00a0]\d{3}(?!\d)'
+def fmt_code(fid):
+    # a number format's code by its id: the workbook's own, else Excel's built-in ones the export can name
+    return FMT_CODES.get(fid) or {0: 'General', 1: '0', 2: '0.00', 3: '#,##0', 4: '#,##0.00', 9: '0%', 10: '0.00%'}.get(fid, '')
 def digits_(t):
     t = re.sub(r'[\s\u202f\u00a0]', '', t)
     t = t.replace(',', '') if want.startswith('en') else t.replace(',', '.')
@@ -1378,7 +1452,7 @@ def pictures_of(z):
                     'png': z.read('xl/media/' + tg[rid.group(1)]) if rid and rid.group(1) in tg else b''})
     return out
 def chart_audit(key, z, names, sst, look, light=None):
-    # (E2-8, the lead 19:22) each chart the page draws is a picture on the page sheet: as wide in the sheet as its plot
+    # (E2-8) each chart the page draws is a picture on the page sheet: as wide in the sheet as its plot
     # on the page (within 2 px), its pixels 2x that; its alt text names the title, the series shown and a numbers sheet
     # that exists, whose header is 'time' and those series and which holds points; its pixels hold every shown series'
     # colour of the light palette and the light card colour behind the title, not blank. light: the light page's facts
@@ -1521,6 +1595,12 @@ if d.get('dbspace_i'): PAGES.append(('dbspace_i', 'DB-Space', re.sub(r'[^A-Za-z0
 else: print("not checked: dbspace_i: the demo has no SQL Server instance (its DB Space grid)")
 if d.get('dbspace_p'): PAGES.append(('dbspace_p', 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d['dbspace_p']['instance'])))
 else: print("not checked: dbspace_p: the demo has no PostgreSQL instance (its DB Space grid)")
+def api_rows(part):   # a table part of the web API ({columns, rows}, web.go) as one dict per row
+    if isinstance(part, dict) and isinstance(part.get('columns'), list):
+        return [dict(zip(part['columns'], r)) for r in part.get('rows') or []]
+    return part if isinstance(part, list) else []
+for _k in ('dbspace_imb', 'dbspace_ptb'):   # (pickers) the DB Space pages exported in the unit and decimals picked
+    if d.get(_k): PAGES.append((_k, 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d[_k]['instance'])))
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
 for key, tab, inst in PAGES:
@@ -1550,7 +1630,7 @@ for key, tab, inst in PAGES:
         counts, cells = audit(key, names[gsheet[i] - 1], x, cx, g, sst)
         classed += counts['class']
         rels = f'xl/worksheets/_rels/sheet{gsheet[i]}.xml.rels'
-        # (changed by P1 / P2, the lead 22:34: an empty grid's sheet held the plain filter and no table; now, as DBA Dash
+        # (changed by P1 / P2: an empty grid's sheet held the plain filter and no table; now, as DBA Dash
         # writes it, every grid sheet is one table and an empty grid's covers its header and ONE empty row)
         if g['rows'] == 0:
             check('<tableParts count="1">' in x and '<autoFilter' not in x and rels in z.namelist() and '_xlnm._FilterDatabase' not in wbx and '<row r="2"' not in x,
@@ -1603,6 +1683,32 @@ for key, tab, inst in PAGES:
                 CONVERTED[0] += ncmp
                 if ncmp or off_:
                     check(not off_, f"{key}: sheet '{names[gsheet[i] - 1]}' {ncmp} figure(s) in its unit-headed columns = the screen's, converted, within the shown precision ({off_[:3]})")
+                # (X7, the page's grouping) a number under a grouped format ('#,##0.00') only in a column whose screen figures
+                # group their thousands: an ungrouped figure on the page exports ungrouped
+                goff, ngrp = [], 0
+                for j in range(len(g['head'])):
+                    gr_ = [k_ for k_ in range(len(g['cells'])) if (k_ + 2, j) in cells and cells[(k_ + 2, j)][1] is not None and fmt_code(cx[cells[(k_ + 2, j)][0]]['fmt']).startswith('#,##')]
+                    if not gr_: continue
+                    ngrp += 1
+                    if not any(re.search(GROUPED_SCREEN, r_[j]['t'] or '') for r_ in g['cells'] if j < len(r_)):
+                        goff.append(f"{colname(j)} '{g['head'][j]}': {len(gr_)} cell(s) under a grouped format, no screen figure grouped")
+                if ngrp or goff:
+                    check(not goff, f"{key}: sheet '{names[gsheet[i] - 1]}' a grouped number format only where the screen groups the column's figures ({ngrp} grouped column(s); {goff[:3]})")
+                # (X14) a percent column's share = the screen's figure / 100 within its shown precision: the file alone cannot
+                # tell 13.4 % from 1,340 % (a query's +4,900 % is a real share of 49, a run at 15 times its average 15.0)
+                poff, npct = [], 0
+                for j, c_ in enumerate(cols):
+                    if '%' not in (c_ or ''): continue
+                    for k_, r_ in enumerate(g['cells']):
+                        if j >= len(r_): continue
+                        _sid, v_, _t = cells.get((k_ + 2, j), (0, None, None)); mp = re.fullmatch(r'\+?(-?[\d.,\s\u202f\u00a0]*\d)\s?%?', r_[j]['t'] or '')
+                        if v_ is None or not mp: continue
+                        e_, kd = digits_(mp.group(1))
+                        if e_ is None: continue
+                        npct += 1
+                        if abs(v_ - e_ / 100) > 0.5 * 10 ** -kd / 100 + 1e-9: poff.append(f"{colname(j)}{k_ + 2} '{r_[j]['t']}' -> {v_}, want {e_ / 100:.6g}")
+                if npct or poff:
+                    check(not poff, f"{key}: sheet '{names[gsheet[i] - 1]}' {npct} share(s) in its percent columns = the screen's figure / 100, within the shown precision ({poff[:3]})")
                 # (X13) the most decimals the screen shows in each column of this grid, for xlsx-check's page - a grid the
                 # screen drew whole only (a long grid's rows past the drawn ones can show more: the writer reads them all)
                 if len(g['cells']) == g['rows']:
@@ -1639,7 +1745,7 @@ for key, tab, inst in PAGES:
               f"{key}: {len(extra)} section sheet(s) = {pl['tileRows']} tile row(s) + {1 if pl.get('attention') else 0} attention + {len(drawn_ch)} chart(s) with numbers; each chart's sheet named by its title in page order ({[(c.get('title'), k) for c, k in zip(drawn_ch, at_)]}; sections {[names[k - 1] for k in extra]})")
     else:
         print(f"not checked: {key}: the section sheets' count (the driver reads no tile rows)")
-    # (X7-X9, the lead 13:44 (1)) an Item | Value | Status sheet's Value typed by its content: no bare number in the page's
+    # (X7-X9) an Item | Value | Status sheet's Value typed by its content: no bare number in the page's
     # locale left as text (a version - its Item names one - is no number)
     BARE = r'-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?' if want.startswith('en') else r'-?\d{1,3}(?:[\u202f\u00a0 ]\d{3})+(?:,\d+)?|-?\d+(?:,\d+)?'
     vt = []
@@ -1648,8 +1754,8 @@ for key, tab, inst in PAGES:
         if [cv.get((1, j), (0, None, None))[2] for j in range(3)] != ['Item', 'Value', 'Status']: continue
         for (r_, c_), (_, v_, t_) in cv.items():
             if r_ > 1 and c_ == 1 and v_ is None and t_ and re.fullmatch(BARE, t_) and not re.search(r'\bversion\b', cv.get((r_, 0), (0, None, ''))[2] or '', re.I): vt.append(f"{names[k - 1]}!B{r_} '{t_}'")
-    check(not vt, f"{key}: no Value cell a bare number left as text (the lead 13:44 (1)) ({vt[:3]})")
-    # (X7, the review's second pass) no bare number in the page's locale left as text on any grid or chart sheet: a count,
+    check(not vt, f"{key}: no Value cell a bare number left as text ({vt[:3]})")
+    # (X7) no bare number in the page's locale left as text on any grid or chart sheet: a count,
     # a figure the page rounds; a column headed 'version' and a text the writer keeps by design ('0042', '+5') aside
     gt = []
     for k in [k_ for k_ in gsheet if k_] + extra:
@@ -1659,7 +1765,7 @@ for key, tab, inst in PAGES:
             if r_ > 1 and v_ is None and t_ and re.fullmatch(BARE, t_) and not re.match(r'[+0]\d', t_) and 'version' not in hd_.get(c_, '').lower():
                 gt.append(f"{names[k - 1]}!{colname(c_)}{r_} '{hd_.get(c_)}' '{t_}'")
     check(not gt, f"{key}: no bare number left as text on a grid or a chart's sheet ({len(gt)}: {gt[:3]})")
-    # (the lead 13:44 (3)) each chart's sheet holds its first figures in the unit its axis draws: a series whose axis shows
+    # each chart's sheet holds its first figures in the unit its axis draws: a series whose axis shows
     # a size or a duration names its unit, and its value is the axis's figure converted, within the shown precision
     if 'tileRows' in pl:
         cf_ = []; ncf = 0
@@ -1746,8 +1852,8 @@ for key, tab, inst in PAGES:
             dsi_scr = [(row[dsi_j]['t'] if dsi_j < len(row) else '') for row in dsi_g.get('cells') or []]
             dsi_nums = [v for _, v, _ in dsi_v if v is not None]
             dsi_texts = sorted({t for _, v, t in dsi_v if v is None and t})
-            dsi_odd = [v for v in dsi_nums if abs(v * 10 - round(v * 10)) >= 1e-9]
-            dsi_diff = [(s_, v) for (_, v, _), s_ in zip(dsi_v, dsi_scr) if not ((v is None and not s_) or (v is not None and s_ and number(s_) is not None and abs(number(s_) - v) < 1e-9))]
+            dsi_odd = []   # (each value exact in its unit; its figure under '0.0' is the screen's: dsi_diff and dbs_onedec)
+            dsi_diff = [(s_, v) for (_, v, _), s_ in zip(dsi_v, dsi_scr) if not ((v is None and not s_) or (v is not None and s_ and number(s_) is not None and abs(number(s_) - half_up(v, 1)) < 1e-9))]
             dsi_full = len(dsi_nums) >= 1 if dsi_w == 'used (GB)' else len(dsi_nums) == len(dsi_rows)
             check(len(dsi_rows) == dsi_g['rows'] == len(dsi_scr) and dsi_full and not dsi_texts and not dsi_odd and not dsi_diff,
                   f"dbspace_i: '{dsi_w}' a number in {len(dsi_nums)} of {len(dsi_rows)} rows (page {dsi_g['rows']}, screen read {len(dsi_scr)}), text cells {dsi_texts[:3]}, not a tenth {dsi_odd[:3]}, off the screen {dsi_diff[:3]}")
@@ -1765,12 +1871,53 @@ for key, tab, inst in PAGES:
         if len(dsp_cols) > 2:
             dsp_a = [(dsp_c.get((r, dsp_cols[1])) or (0, None, None)) for r in dsp_rows]
             dsp_as = [(row[1]['t'] if len(row) > 1 else '') for row in dsp_scr]
-            dsp_bad = [(t_, v) for (_, v, _), t_ in zip(dsp_a, dsp_as) if v is None or abs(v * 10 - round(v * 10)) >= 1e-9 or number(t_) is None or abs(number(t_) - v) >= 1e-9]
+            dsp_bad = [(t_, v) for (_, v, _), t_ in zip(dsp_a, dsp_as) if v is None or number(t_) is None or abs(number(t_) - half_up(v, 1)) >= 1e-9]
             check(len(dsp_rows) == dsp_g['rows'] == len(dsp_scr) and not dsp_bad, f"dbspace_p: 'allocated (GB)' a number rounded to 0.1, the screen's, in every row ({len(dsp_rows)} rows, page {dsp_g['rows']}, screen read {len(dsp_scr)}; off {dsp_bad[:3]})")
             dsp_u = [(dsp_c.get((r, dsp_cols[2])) or (0, None, None))[2] for r in dsp_rows]
             dsp_us = [(row[2]['t'] if len(row) > 2 else '') for row in dsp_scr]
             check(dsp_u and all(t_ == 'not read' for t_ in dsp_u + dsp_us), f"dbspace_p: 'used (GB)' 'not read' in every row (workbook {sorted(set(map(str, dsp_u)))[:3]}, screen {sorted(set(dsp_us))[:3]})")
         dbs_onedec('dbspace_p', dsp_g, dsp_c, cx)
+    if key in ('dbspace_imb', 'dbspace_ptb'):
+        # (pickers) the unit and the decimals picked (MB / 2 on the SQL Server instance, TB / 3 on the PostgreSQL one): the
+        # size headings carry the unit on the page and in the workbook; every figure on the page shows exactly that many
+        # decimals; each workbook cell is the size EXACT in the unit - the API's bytes of the same draw / 1024^p - and rounds
+        # to the screen's figure. Its names are its own (dpk_)
+        dpk_u, dpk_k, dpk_p, dpk_api = ('MB', 2, 2, 'dbs_api_i') if key == 'dbspace_imb' else ('TB', 3, 4, 'dbs_api_p')
+        dpk_g = gs[0]; dpk_c = cells_of(z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(), shared(z))
+        dpk_cols = sorted({c for r, c in dpk_c}); dpk_hdr = [(dpk_c.get((1, c)) or (0, None, None))[2] for c in dpk_cols]
+        dpk_want = [f'allocated ({dpk_u})', f'used ({dpk_u})'] + ([f'data ({dpk_u})', f'log ({dpk_u})'] if key == 'dbspace_imb' else [])
+        check(dpk_g['head'][1:1 + len(dpk_want)] == dpk_want and dpk_hdr[1:1 + len(dpk_want)] == dpk_want,
+              f"{key}: the size headings carry the unit picked, {dpk_want}: page {dpk_g['head'][1:1 + len(dpk_want)]}, workbook {dpk_hdr[1:1 + len(dpk_want)]}")
+        dpk_db = {str(r.get('database')): r for r in api_rows((d.get(dpk_api) or {}).get('databases'))}
+        dpk_seen, dpk_bad = 0, []
+        for i, row in enumerate(dpk_g.get('cells') or []):
+            nm = row[0]['t'] if row else ''
+            api = dpk_db.get(nm)
+            for j, w in enumerate(dpk_want, 1):
+                t_ = row[j]['t'] if j < len(row) else ''
+                if t_ in ('', 'not read'): continue
+                b_ = (api or {}).get(w.split(' ')[0] + '_bytes')
+                v_ = (dpk_c.get((i + 2, dpk_cols[j])) or (0, None, None))[1] if j < len(dpk_cols) else None
+                dec = re.search(r'[.,](\d+)$', t_.replace('\u202f', '').replace('\u00a0', ''))
+                shown_k = len(dec.group(1)) if dec and (dpk_k > 0 or not re.search(r'[.,]\d{3}$', t_)) else 0
+                dpk_seen += 1
+                if b_ is None or v_ is None or abs(v_ - float(b_) / 1024 ** dpk_p) > 1e-9 * max(1.0, abs(v_)) or shown_k != dpk_k or number(t_) is None or abs(number(t_) - half_up(v_, dpk_k)) > 1e-9:
+                    dpk_bad.append(f"{nm} {w}: page {t_!r}, workbook {v_}, API {b_}")
+        check(dpk_seen >= 2 and not dpk_bad, f"{key}: every size figure shows {dpk_k} decimals; each workbook cell = the API's bytes / 1024^{dpk_p} exact, rounding to the screen's figure ({dpk_seen} figures; {dpk_bad[:3]})")
+        # (the page's grouping) each size column under the screen's grouping: '#,##0.00' where a figure of the column groups
+        # its thousands ('1,672.00'), the plain fixed decimals where none does (an ungrouped figure exports ungrouped; TB / 3
+        # never groups)
+        dpk_fo, dpk_gr = [], 0
+        for j, w in enumerate(dpk_want, 1):
+            if j >= len(dpk_cols): continue
+            dpk_s = [row[j]['t'] for row in (dpk_g.get('cells') or []) if j < len(row) and row[j]['t'] not in ('', 'not read')]
+            if not dpk_s: continue
+            dpk_x = any(re.search(GROUPED_SCREEN, t_) for t_ in dpk_s); dpk_gr += dpk_x
+            dpk_w = ('#,##' if dpk_x else '') + ('0.' + '0' * dpk_k if dpk_k else '0')
+            dpk_f = {fmt_code(cx[s_]['fmt']) for (r_, c_), (s_, v_, _t) in dpk_c.items() if r_ > 1 and c_ == dpk_cols[j] and v_ is not None}
+            if dpk_f != {dpk_w}: dpk_fo.append(f"{w}: {sorted(dpk_f)}, want {dpk_w!r}")
+        check(not dpk_fo, f"{key}: each size column's number format follows the screen's grouping, grouped only where a figure groups its thousands ({dpk_gr} grouped column(s); {dpk_fo[:3]})")
+        if not dpk_gr: print(f"not checked: {key}: the grouped format ('#,##0.00'): no figure of 1,000 or more in the unit picked on this demo")
     if key == 'perf':
         hg = [(i, g) for i, g in enumerate(gs) if 'CPU histogram' in g['head'] and g['rows'] > 0]
         if hg:
@@ -1784,7 +1931,9 @@ for key, tab, inst in PAGES:
         # the screen read marks it; the audit above held both cells to that)
         x0 = z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(); c0 = cells_of(x0, sst)
         two = [cx[c0.get((2, j), (0, None, None))[0]] for j in (1, 2)]
-        check(classed == 2 and [q['fill'] for q in two] == [fill['crit'], fill['warn']], f"empty: the two cells given a bare class (crit, warn) take their named pairs (X0 ({classed} cells, {[q['fill'] for q in two]})")
+        rest = [cx[c0.get((k + 3, j), (0, None, None))[0]]['fill'] for k in range(tg[0]['rows'] - 1) for j in (1, 2)]
+        check(classed == 2 * tg[0]['rows'] and [q['fill'] for q in two] == [fill['crit'], fill['warn']] and all(f == fill['ok'] for f in rest),
+              f"empty: the two columns given a bare class (crit, warn on the first row, ok on the {tg[0]['rows'] - 1} others) take their named pairs (X0 ({classed} cells, {[q['fill'] for q in two]}, {len(rest)} ok cells: {sorted(set(map(str, rest)))})")
     if openpyxl is not None:
         try:
             wb = openpyxl.load_workbook(f"{dl}/{p['xlsx']}")
@@ -1811,7 +1960,7 @@ for key, tab, inst in PAGES:
     # each sheet named by the heading above its grid (h2 to h5, or the name the page gives it: data-sheet): the name starts
     # with the heading's first words (cut at 31 characters)
     # (the export's rule: a character Excel refuses becomes a space, then each run of spaces one space)
-    # (changed by P5, the lead 22:34: a time the heading carries in brackets is left out of the sheet's name)
+    # (changed by P5: a time the heading carries in brackets is left out of the sheet's name)
     # (changed by X2: a time after a word too; never a numbered repeat - two headings equal after the cut keep their start,
     # '…' and the words where they part; a name taken in full goes under the heading above it: export_names.ts)
     # (changed: the export's own time shapes only, a data-sheet's name kept whole or before its own
@@ -1890,7 +2039,7 @@ for key, tab, inst in PAGES:
             cnt = re.findall(r'<c r="C(\d+)"[^>]*?(/>|><v>|t="inlineStr")', x)
             numeric = [r for r, k in cnt if r != '1' and k == '><v>']
             check(len(numeric) == gs[i]['rows'], f"slow: Per day's statements column (no page model): {len(numeric)} of {gs[i]['rows']} rows numeric")
-            # (the lead 13:44 (4)) its day column dates under 'yyyy-MM-dd' (numFmt 169), never a false 00:00
+            # its day column dates under 'yyyy-MM-dd' (numFmt 169), never a false 00:00
             dc_ = cells_of(x, sst); days_ = [dc_.get((r_, 0)) for r_ in range(2, gs[i]['rows'] + 2)]
             check(all(v and v[1] is not None and FMT_CODES.get(cx[v[0]]['fmt']) == 'yyyy-MM-dd' for v in days_), f"slow: Per day's day column {len(days_)} dates under 'yyyy-MM-dd' ({[(v[1], cx[v[0]]['fmt']) if v else None for v in days_][:2]})")
     # (changed, X7: any number with a unit - a size, a duration, a rate, a count of days - is never
@@ -1972,6 +2121,71 @@ _cells = sum(int(m_.group(1)) for m_ in (re.search(r': (\d+) number cells', l) f
 _cols = sum(int(m_.group(1)) for m_ in (re.search(r', (\d+) with decimals', l) for l in _pass) if m_)   # columns judged whose screen shows decimals
 check(len(_books) >= len(PAGES) - 1 and len(_pass) == len(_books) and not _fail and _cells >= 50 and _cols >= 3,
       f"decimals (X13): no number cell shows more decimals than its column on the screen, none under a fixed format fewer - {len(_pass)} of {len(_books)} page workbooks PASS, {_cells} number cells judged, {_cols} columns whose screen shows decimals; page in {os.path.basename(_pg)} ({[l[:300].replace(dl + '/', '') for l in _fail][:4]}{(' rc ' + str(_r.returncode) + ' ' + _r.stderr[-200:]) if _r.returncode not in (0, 1) else ''})")
+# (pickers) DB Space's Unit and Decimal places, the reads around the exports (their workbooks are graded above)
+if d.get('dbs_pick_mb') is None:
+    print("not checked: the DB Space pickers: the demo has no SQL Server and PostgreSQL instance pair")
+else:
+    pk = d['dbs_pick_mb']
+    check(bool(pk.get('ok')), f"pickers: a Unit and a Decimal places select on the SQL Server instance's DB Space page ({pk.get('err', 'found')})")
+    if pk.get('ok'):
+        a_, s_ = d.get('dbs_after_mb') or {}, d.get('dbs_sorted') or {}
+        check(a_.get('unit') == 'MB' and a_.get('dp') == '2' and {'dbs-unit', 'dbs-dp'} <= set(a_.get('labels') or []), f"pickers: MB and 2 picked, each select with its label ({a_.get('unit')}, {a_.get('dp')}, labels {a_.get('labels')})")
+        check(a_.get('focus') == 'dbs-unit', f"pickers: the focus stays on the Unit select after the grid is drawn again (on {a_.get('focus')!r})")
+        # the API's own order is allocated, largest first: the click must have changed the first row, or a lost sort passes
+        api_ = [str(r.get('database')) for r in api_rows((d.get('dbs_api_i') or {}).get('databases'))]
+        check(bool(s_.get('first')) and a_.get('first') == s_.get('first') and any(h.startswith('allocated (MB)') for h in a_.get('head') or [])
+              and (len(set(api_)) < 2 or s_.get('first') != api_[0]),
+              f"pickers: the sort survives the unit - first row {s_.get('first')!r} before, {a_.get('first')!r} after (sorted by allocated, smallest first; the API's first {api_[:1]})")
+        check(sorted(a_.get('keys') or []) == ['pgvigil.grid.dbspace.size-decimals', 'pgvigil.grid.dbspace.size-unit'], f"pickers: the choice kept under the grid tools' prefix ({a_.get('keys')})")
+        for nm_, r_ in (('the folder\'s page', d.get('dbs_folder') or {}), ('after a reload', d.get('dbs_reload') or {})):
+            check(r_.get('unit') == 'MB' and r_.get('dp') == '2' and 'allocated (MB)' in (r_.get('head') or []), f"pickers: {nm_} shows MB / 2 and 'allocated (MB)' (remembered: {r_.get('unit')}, {r_.get('dp')}, {r_.get('head', [])[:3]})")
+        z_ = d.get('dbs_after_tb0') or {}
+        check(bool(z_.get('note')), f"pickers: TB / 0 on the PostgreSQL page, its figures 0 while its bytes are not: one line under the grid says so ({(z_.get('note') or ['no such line'])[0][:120]})")
+        bk = d.get('dbs_back') or {}
+        check(bk.get('unit') == 'GB' and bk.get('dp') == '1' and bk.get('keys') == [], f"pickers: GB / 1 picked back removes the size keys (the default kept as no key: {bk.get('keys')})")
+        big = [r for r in api_rows((d.get('dbs_api_p') or {}).get('databases')) if float(r.get('allocated_bytes') or 0) >= 1.1 * 1024 ** 3]
+        if big: print(f"the TB divisor: the dbspace_ptb row above holds TB / 3 against the API's bytes / 1024^4 on {len(big)} PostgreSQL database(s) of 1.1 GB or more")
+        else: print("not checked: the TB divisor: no PostgreSQL database of 1.1 GB or more in the demo (TB divisor not proven)")
+# (X17) the measured cell carries its row's status, as DBA Dash colours it: the map from the workbooks' own headers - a
+# 'Drives' sheet's free % (its status column's colour) and free in a size unit (N/A: no size threshold), a job grid's job
+# and last failure (its status) and the time since (any status) - handed to scripts/xlsx-check.py rules --measured; the
+# Drives sheet and a job grid found, every mapped workbook PASS
+import importlib.util
+_xs = importlib.util.spec_from_file_location('xlsx_check', 'scripts/xlsx-check.py'); _xc = importlib.util.module_from_spec(_xs); _xs.loader.exec_module(_xc)
+MEASURED = {}
+_n17 = {}   # (file, sheet) -> [data rows, the mapped columns' cells that hold a value]: what X17 can judge on each sheet
+for _n in sorted(os.listdir(dl)):
+    if not _n.endswith('.xlsx'): continue
+    try: _bk = _xc.Book(f"{dl}/{_n}")
+    except Exception: continue
+    for _s in _bk.sheets:
+        if not _s['grid']: continue
+        _h = [str(c['v'] if c['v'] is not None else '').strip() for c in _s['cells'] if c['row'] == 1]
+        _m = {}
+        if _s['name'] == 'Drives' and 'free %' in _h and 'status' in _h:
+            _m['free %'] = 'status'
+            _m.update({h: 'N/A' for h in _h if re.fullmatch(r'free \((?:B|KB|MB|GB|TB|PB)\)', h)})
+        if {'job', 'status', 'last failure'} <= set(_h):
+            _m.update({'job': 'status', 'last failure': 'status'})
+            if 'since last failure (minutes)' in _h: _m['since last failure (minutes)'] = '*'
+        if _m:
+            MEASURED.setdefault(_n, {})[_s['name']] = _m
+            _mc = {c['col'] for c in _s['cells'] if c['row'] == 1 and str(c['v'] if c['v'] is not None else '').strip() in _m}
+            _n17[(_n, _s['name'])] = [len({c['row'] for c in _s['cells'] if c['row'] > 1}),
+                                      sum(1 for c in _s['cells'] if c['row'] > 1 and c['col'] in _mc and str(c['v'] if c['v'] is not None else '').strip())]
+_mg = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), f'measured-{want}.json')
+json.dump(MEASURED, open(_mg, 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+if os.environ.get('PGVIGIL_EXPORT_OUT') and os.path.isdir(os.path.join(os.environ['PGVIGIL_EXPORT_OUT'], want)):   # kept beside the downloads
+    json.dump(MEASURED, open(os.path.join(os.environ['PGVIGIL_EXPORT_OUT'], want, os.path.basename(_mg)), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+_r17 = subprocess.run([sys.executable, '-I', 'scripts/xlsx-check.py', 'rules', '--measured', _mg] + [f"{dl}/{n}" for n in MEASURED], capture_output=True, text=True)
+_p17 = [l for l in _r17.stdout.splitlines() if l.startswith('PASS X17 ')]; _f17 = [l for l in _r17.stdout.splitlines() if l.startswith('FAIL X17 ')]
+_c17 = sum(int(m_.group(1)) for m_ in (re.search(r': (\d+) cells', l) for l in _p17) if m_)
+_s17 = sorted({s for v in MEASURED.values() for s in v})
+# every mapped sheet with rows judged on cells of its own: the Drives cells alone never carry the job grids
+_none17 = [f"{n}:{sn}" for (n, sn), (nr, nc) in _n17.items() if nr and not nc]
+_drv17 = sum(nc for (n, sn), (nr, nc) in _n17.items() if sn == 'Drives'); _job17 = sum(nc for (n, sn), (nr, nc) in _n17.items() if sn != 'Drives')
+check('Drives' in _s17 and any(s != 'Drives' for s in _s17) and len(_p17) == len(MEASURED) and not _f17 and _drv17 > 0 and _job17 > 0 and not _none17,
+      f"measured cells (X17): the Drives sheet's free % / free and the job grids' job / last failure carry their row's status - {len(_p17)} of {len(MEASURED)} workbooks PASS on sheets {_s17}, {_c17} cells judged ({_drv17} on Drives, {_job17} on the job grids; a sheet with rows and none judged: {_none17[:3]}); map in {os.path.basename(_mg)}; {(_f17 or [''])[0][:300]}")
 # ---- P03: the new menu items, each clicked, each download read --------------------------------------------------
 def one_book(key, fname, inst, tab, sheet, g):
     # a workbook of one grid: its name, one sheet named so then 'About' (X12, D-A), the grid's rows, every cell its named
@@ -2070,7 +2284,7 @@ for kind in ('line', 'ring'):
     else:
         sh = [cells.get((r, 2)) for r in range(2, n + 2)]
         tot = sum(v[1] for v in sh if v and v[1] is not None)
-        # (changed by the lead 13:44 (3): a size ring's size carries its axis's unit, 'size (GB)')
+        # (changed: a size ring's size carries its axis's unit, 'size (GB)')
         unit_ok = re.fullmatch(r'size \((?:B|KB|MB|GB|TB|PB)\)', hdr[1] or '') is not None if c['hash'].startswith('#/dbspace') else re.fullmatch(r'size(?: \(\w+\))?', hdr[1] or '') is not None
         check(hdr[0] == 'name' and unit_ok and hdr[2] == 'share' and all(v and cx[v[0]]['fmt'] == 167 for v in sh) and abs(tot - 1) < 1e-6, f"charts: the ring's sheet is name / size (its unit) / share, every share under '0.0%', adding up to 1 ({hdr}, {tot})")
     if openpyxl is not None:
@@ -2119,7 +2333,7 @@ else:
     md = (t.get('markdown') or '').rstrip('\n').split('\n')
     marks = md[1].replace(' ', '').strip('|').split('|') if len(md) > 1 else []
     check(len(md) == rows + 2 and md[0] == '| ' + ' | '.join(head) + ' |' and len(marks) == len(head) and set(marks) <= {'---', '---:'} and '---:' in marks
-          and md[2] == '| ' + ' | '.join(re.sub(r'([\\|*_`<\[\]])', r'\\\1', c['t']) for c in g['cells'][0]) + ' |',
+          and md[2] == '| ' + ' | '.join(re.sub(r'([\\|*_`<\[\]])', r'\\\1', c['t'].replace('&', '&amp;')) for c in g['cells'][0]) + ' |',
           f"tools: the Markdown copy is a pipe table of {len(md)} lines (the grid's {rows} rows + 2), number columns right-aligned, its first row the screen's")
     sel = t['sel']; sm = re.search(r'sum ([^\u00b7]+)\u00b7', sel['line'])
     check(sel['picked'] == 2 and sel['line'].startswith('2 cells selected: sum ') and sm is not None and digits(sm.group(1)) == str(sum(int(digits(x) or 0) for x in sel['cells'])),
@@ -2130,7 +2344,7 @@ else:
           and len(gp.get('rows', [])) == gp.get('platforms') and sum(int(digits(r[1]) or 0) for r in gp.get('rows', [])) == rows and t.get('ungrouped') is True,
           f"tools: 'Group by platform' lists {len(gp.get('rows', []))} groups for {gp.get('platforms')} platforms, their rows adding up to {rows}, each number column summed; 'Ungroup' removes it")
     def bars_ok(bs): return len(bs) == len(g['cells']) and all(b['bar'] == (int(digits(b['t']) or 0) > 0) for b in bs) and any(b['share'] == '100%' for b in bs) and any(b['bar'] for b in bs)
-    check(bars_ok(t['bars']), f"tools: 'Data bars on failed' draws a bar on each failed count above zero, the largest at 100 % ({[(b['t'], b['share']) for b in t['bars'] if b['bar']][:4]})")
+    check(bars_ok(t['bars']), f"tools: 'Data bar > Behind value' on failed draws a bar on each failed count above zero, the largest at 100 % ({[(b['t'], b['share']) for b in t['bars'] if b['bar']][:4]})")
     fz = t['frozen']
     check(fz['on'] and fz['classes'] == ['gt-f1', 'gt-f2'] and fz['sticky'][:2] == ['sticky', 'sticky'] and fz['sticky'][2] != 'sticky', f"tools: 'Freeze the columns up to platform' makes the first two columns sticky ({fz})")
     hd = t['hidden']
@@ -2266,6 +2480,7 @@ for L in en-US fr-FR; do
   echo "== the X rules on every workbook ($L): scripts/xlsx-check.py rules"
   XRC=0; python3 -I "$XCHECK" rules "$DL"/*.xlsx > "$WORK/xcheck-$L.txt" || XRC=$?   # exit 1 = a rule failed (set -e: caught)
   [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$WORK/xcheck-$L.txt" "$WORK/drive-$L.json" "$DL"/* "$PGVIGIL_EXPORT_OUT/$L"/; }
+  # every rule on every page (X18 too); any other exit than 0 / 1 is the check's own failure
   { grep -E '^FAIL' "$WORK/xcheck-$L.txt" || true; } | cut -c1-400   # no FAIL line: grep's exit 1 must not end the proof (pipefail)
   NW=$(ls "$DL"/*.xlsx | wc -l)
   for r in X0 X1 X2 X3 X4 X5 X6 X7 X8 X9 X10 X11 X12; do

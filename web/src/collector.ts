@@ -15,6 +15,20 @@ import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, pan
 
 // connectSecs: a connect time in seconds as the page shows it ('0.12 s'; '-' when none was timed)
 const connectSecs = (v: unknown): string => v == null || v === '' ? '-' : `${Number(v).toFixed(2)} s`;
+// B24h: a round trip or a probe's answer in milliseconds ('-' when none)
+const msOf = (v: unknown): string => v == null || v === '' ? '-' : `${Math.round(Number(v) * 1000)} ms`;
+// the host's probe over the hour in words: its answer (method, answered of probed), or why there is none - not probed
+// (by default a host is probed only after a failed collection), never answered (blocked or not allowed: no finding), or
+// not answering since it last did
+function probeWords(r: Row): string {
+  const rounds = Number(r.probe_rounds_1h ?? 0), answered = Number(r.probe_answered_1h ?? 0);
+  if (!rounds) return '-';
+  if (answered > 0) return `${msOf(r.probe_avg_s)} (${String(r.probe_method ?? '')}, ${answered} of ${rounds})`;
+  // a TCP probe goes to the port a connection of the instance opened: its silence is no blocked ICMP; an opened
+  // connection counts as an answer, so 'never' is ICMP's case alone
+  if (r.probe_last_answered == null) return String(r.probe_method ?? '') === 'tcp' ? 'no answer to the TCP handshake on its port' : 'never answered (blocked or not allowed)';
+  return `not answering since ${fmtTime(r.probe_last_answered)}`;
+}
 
 type Parts = Record<string, Table | null>;
 
@@ -93,13 +107,13 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'severity', fmt: v => badge(sevWord[String(v)] ?? String(v), sevKind[String(v)] ?? '') },
       { key: 'instance', fmt: (_v, r) => instLink(ctx, r) }, { key: 'setting', label: 'check' }, { key: 'value' },
       { key: 'detail', wide: true }, { key: 'at', label: 'since', fmt: fmtTime },
-    ] as Col[]) : stateNote('empty', 'No finding: the collector beats, no collection fails three runs in a row, no login is refused, purge ran in the last 2 days.'),
+    ] as Col[]) : stateNote('empty', 'No finding: the collector beats, no collection fails three runs in a row, no login is refused, purge ran in the last 2 days, and in a month\'s last three days next month\'s partitions are made.'),
     // a forming wait that ended without a parent (task 201 DONE-2 N7): only while no parent stands on that host
     ...waits.map(r => el('p', { class: 'state' }, `The wait for a shared cause ended on ${r.host} at ${fmtTime(r.ended_at)} without one: new alerts of its ${fmtNum(r.instances)} failing instance(s) are sent as they come.`)));
 
   // the collections over 24 h
   const sum = (k: string) => colls.reduce((a, r) => a + Number(r[k] ?? 0), 0);
-  const runs = sum('runs'), fails = sum('failures');
+  const runs = sum('runs'), fails = sum('failures'), retried = sum('retries');
   const worst = colls.reduce<Row | null>((a, r) => r.p95_ms != null && (a == null || Number(r.p95_ms) > Number(a.p95_ms)) ? r : a, null);
   const failing = streaks.filter(r => Number(r.fail_streak) >= 3).length;
   const runsPanel = panel('Collections', 'last 24 h',
@@ -108,16 +122,29 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       tile('Failures', fmtNum(fails), fails ? 'warn' : '', { sub: runs ? `${(100 * fails / runs).toFixed(1)} % of runs` : undefined }),
       tile('Rows written', fmtNum(sum('rows_written'))),
       tile('Slowest p95', worst ? fmtNum(worst.p95_ms) : '-', '', { unit: worst ? 'ms' : undefined, sub: worst ? String(worst.collection) : undefined }),
-      tile('Failing now', fmtNum(failing), failing ? 'crit' : '', { sub: 'three runs in a row or more' })),
+      tile('Failing now', fmtNum(failing), failing ? 'crit' : '', { sub: 'three runs in a row or more' }),
+      // N4: an import PostgreSQL ended as a deadlock's victim and pgvigil took again (stored once); shown when above 0
+      ...(retried ? [tile('Retried after a deadlock', fmtNum(retried), 'warn', { sub: 'imports taken again; one that failed every try counts in Failures' })] : [])),
     minutes.length >= 2
       ? lineChart('Runs and failures per minute', minutes,
           [{ key: 'runs', label: 'runs' }, { key: 'failures', label: 'failures' }, { key: 'rows_written', label: 'rows written' }],
           v => v.toLocaleString(), { ownSpan: true, marks: false, y2: { keys: ['rows_written'], unit: 'rows' } })
       : stateNote('empty', 'No minute of runs in the last 24 hours: the collector has not beaten, or it is new (a beat a minute).'),
+    // B6.4: the run duration a minute - its p95 over every collection (most runs slower) and its longest run (one
+    // collection running long, which moves no p95 among a minute's many runs: B6.2 part c #8)
+    ...(minutes.length >= 2 ? [lineChart('Run duration per minute (p95 and longest, ms)', minutes, [{ key: 'p95_ms', label: 'p95 (ms)' }, { key: 'max_ms', label: 'longest (ms)' }],
+      v => v.toLocaleString(), { ownSpan: true, marks: false, unit: 'ms' })] : []),
+    // B6.2: each instance's collections judged by DBA Dash's rule
+    el('p', { class: 'meta' }, el('a', { href: href(ctx, { tab: 'collectionhealth' }) }, 'Collection Health'), ': each collection\'s status per instance by DBA Dash\'s rule, its failure rates and its errors.'),
     grid(colls, [
       { key: 'collection' }, { key: 'engine' },
-      { key: 'runs', num: true, fmt: fmtNum }, { key: 'failures', num: true, fmt: fmtNum },
+      // a failure count opens the collector's error log of that collection over 24 h, its errors only (the count is the
+      // heartbeat's runs that ended with an error, the list collection_log's rows: the two can differ)
+      { key: 'runs', num: true, fmt: fmtNum }, { key: 'failures', num: true, fmt: (v, r) => !Number(v) ? fmtNum(v) : el('a', {
+        href: `#/collectorerrors?w=24h&view=error&type=Error&coll=${encodeURIComponent(String(r.collection))}`,
+        title: 'The errors kept for this collection in the last 24 hours, on every instance. The count is the collector\'s runs that ended with an error, over the whole repository and per engine; the list is the error log\'s rows: the two can differ.' }, fmtNum(v)) },
       { key: 'failure_pct', label: 'failure %', num: true, fmt: v => v == null ? '' : `${v}` },
+      { key: 'retries', label: 'retried after a deadlock', num: true, fmt: v => Number(v ?? 0) ? fmtNum(v) : '' },
       { key: 'avg_ms', label: 'avg (ms)', num: true, fmt: fmtNum }, { key: 'p50_ms', label: 'p50 (ms)', num: true, fmt: fmtNum },
       { key: 'p95_ms', label: 'p95 (ms)', num: true, fmt: fmtNum }, { key: 'max_ms', label: 'max (ms)', num: true, fmt: fmtNum },
       { key: 'rows_written', label: 'rows written', num: true, fmt: fmtNum },
@@ -153,7 +180,14 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'auth_failures_24h', label: 'logins refused (24 h)', num: true, fmt: fmtNum },
       { key: 'connect_avg_s', label: 'connect avg (1 h)', num: true, fmt: connectSecs },
       { key: 'connect_max_s', label: 'connect max (1 h)', num: true, fmt: connectSecs },
+      { key: 'rt_avg_s', label: 'round trip avg (1 h)', num: true, fmt: msOf },
+      { key: 'rt_max_s', label: 'round trip max (1 h)', num: true, fmt: msOf },
+      { key: 'probe_avg_s', label: 'host probe (1 h)', fmt: (_v, r) => probeWords(r) },
     ] as Col[], 'No run in the last 24 hours.'),
+    el('p', { class: 'meta' }, 'Round trip: one \'SELECT 1\' a minute on a collection\'s own connection - the network there and back and the server\'s answer, '
+      + 'not the network alone; over its round_trip_time threshold (0.040 s by default, warning only) it raises \'query round trip slow\'. '
+      + 'Host probe: the TCP handshake to the address the instance\'s last connection used (ICMP comes later), by default only after a failed collection '
+      + '(probe_every_minute: each minute); a host that never answered is shown, never a finding; a listener or balancer answers for the servers behind it.'),
     el('p', { class: 'meta' }, 'Counted at every connect a collection makes, a per-database connect included (each collection connects and closes; '
       + 'every collector of the instance summed). A login refused (PostgreSQL 28P01 / 28000, SQL Server 18456) is retried at every run: a changed password can lock the login out. '
       + 'Connect avg / max: from the call to the open connection - DNS, the TLS handshake, the login and the collector\'s own CPU; an Entra token fetch left out - over the hour. '
@@ -187,6 +221,21 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
     ] as Col[], 'purge() has not run on this repository: pgvigil purge daily keeps it to the retention.'));
 
   sec.append(svc, find, runsPanel, failPanel, loadPanel, repoPanel);
+  // the Parquet export (pgvigil export): drawn only where one is configured or has run
+  let x: Parts | null = null;
+  try { x = await get<Parts>('export'); } catch (e) { sec.append(errorBox(e)); }
+  const xruns = rowsOf(x?.runs ?? null), xstate = rowsOf(x?.state ?? null), xsvc = rowsOf(x?.service ?? null);
+  if (xruns.length || xstate.length) sec.append(panel('Parquet export', 'pgvigil export: the last windows it wrote',
+    ...xsvc.map(r => el('p', { class: 'meta' }, badge('behind or failing', 'crit'), ' ', String(r.detail ?? ''))),
+    ...xstate.map(r => el('p', { class: 'meta' }, `${r.name} to ${r.destination}: newest window ended ${r.newest_window_to ? fmtTime(r.newest_window_to) : 'never'}`
+      + (r.hours_behind == null ? '' : ` (${fmtNum(r.hours_behind)} h ago)`) + `; last run ${fmtTime(r.last_run_at)}.`)),
+    grid(xruns, [
+      { key: 'name', label: 'export' }, { key: 'window_from', label: 'window from', fmt: fmtTime }, { key: 'pass' },
+      { key: 'outcome', fmt: (v: unknown) => badge(String(v), v === 'ok' ? 'ok' : 'crit') },
+      { key: 'finished_at', label: 'finished', fmt: fmtTime }, { key: 'duration_ms', label: 'duration (ms)', num: true, fmt: fmtNum },
+      { key: 'tables', num: true, fmt: fmtNum }, { key: 'files', num: true, fmt: fmtNum }, { key: 'rows', num: true, fmt: fmtNum },
+      { key: 'bytes', label: 'size', num: true, fmt: fmtBytes }, { key: 'error', wide: true },
+    ] as Col[], 'The export is configured and has written no window yet.')));
   return sec;
 }
 

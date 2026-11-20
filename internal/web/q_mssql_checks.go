@@ -2,9 +2,11 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/aachaemenes/pgvigil/internal/mssql"
+	"github.com/jackc/pgx/v5"
 )
 
 // The day-one checks of a SQL Server instance (task 148; migration 0090, collections mssql_checks and
@@ -110,11 +112,28 @@ func databaseColumnsJSON() (string, error) {
 	return string(b), err
 }
 
+// sqlMSSQLChecksBuildDocs: the build's documentation links (task 412), made in Go from the binary's catalogue at serve
+// time and handed in as one jsonb argument (as the columns part); one row, nulls when the catalogue cannot place it
+const sqlMSSQLChecksBuildDocs = `
+SELECT d.build_url, d.build_url_words, d.newest_build, d.newest_url, d.newest_url_words
+  FROM jsonb_to_record($1::jsonb) AS d(build_url text, build_url_words text, newest_build text, newest_url text, newest_url_words text)`
+
 // MSSQLChecks is GET /api/mssql/checks?instance=N[&part=...]: the state as last read; no window.
 func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
 	id, _, _, err := params(r, true)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// task 412: the version the instance last reported (the first line of @@VERSION), for its build's links (no row: no links)
+	var ver string
+	if err := s.pool.QueryRow(r.Context(), `SELECT coalesce(server_version, '') FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&ver); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	docs, err := json.Marshal(mssql.BuildDocsOf(ver))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	cols, err := databaseColumnsJSON()
@@ -129,6 +148,7 @@ func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
 		{"options", sqlMSSQLChecksOptions, []any{id}},
 		{"flags", sqlMSSQLChecksFlags, []any{id}},
 		{"build", sqlMSSQLChecksBuild, []any{id}},
+		{"build_docs", sqlMSSQLChecksBuildDocs, []any{string(docs)}},
 		{"databases", sqlMSSQLChecksDatabases, []any{id}},
 		{"columns", sqlMSSQLChecksColumns, []any{cols}},
 		{"suspect", sqlMSSQLChecksSuspect, []any{id}},

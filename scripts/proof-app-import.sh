@@ -4,7 +4,7 @@
 # PGVIGIL_ADMIN_DSN names (a superuser, as the box's container gives it); PGVIGIL_BIN a binary of this tree.
 # Every row prints 'ok' or 'FAIL'; the last line counts the FAILs. IMP_ONLY=<letters> runs those sections alone.
 #
-# Section M, the import-never-overwrites rule (review A m3 and the 312 pass, 2): 0136's writes called as a login IN
+# Section M, the import-never-overwrites rule: 0136's writes called as a login IN
 # ROLE pgvigil_collector with source import:proof, unforced, against rows a person entered:
 #  M1 an unassign of an entered assignment: refused 'conflict', the row kept
 #  M2 an unmark of an entered mark: refused 'conflict', the mark kept
@@ -18,7 +18,7 @@
 #  M9 each of M1-M6 forced (force true): done - the refusals are the rule's, not a broken write
 #  M10 an application named '(none)' (the file's unassign token) refused in words
 #  M11 (R4's mark arm, as built) an import's mark of a database a person marked: done, nothing written, the mark the
-#      person's;  M12 (review A, M4) a payload whose line numbers repeat: refused in words
+#      person's;  M12 a payload whose line numbers repeat: refused in words
 # On a tree without 0146 M1-M7 and M10 FAIL: the red run (6a3b56b).
 #
 # Section F, the file through the API (a serve whose reads are a login IN ROLE pgvigil_reader, pgvigil_auth and whose
@@ -43,11 +43,11 @@
 #  F18 (R18) a second import while one holds the lock: refused at once;  F19 (R19) a credential-shaped cell refused,
 #      its text in no answer or audit row;  F21 (R21) '(none)': nothing on an inheriting database (the preview says so),
 #      a conflict on a person's own assignment (removed when ticked), a change on an import's (any case of the word)
-#  The review's rows: F22 a ticked application conflict's words
+#  F22 a ticked application conflict's words
 #  name every field it writes; F23 a line refused later adds or refuses no application; F24 an .xlsx with a repeated
-#  row number refused in words; F25 a server-level line applied, its tag move counted; F26 (P-6, as built) an import's
+#  row number refused in words; F25 a server-level line applied, its tag move counted; F26 (as built) an import's
 #  re-assign of its own row under a person's server is a change; F19b one cell at a time for the credential check
-#  F27 (P-5, section B: R18's second half, D3 'the page waits for the apply') during a 20000-line apply, a collector's
+#  F27 (section B: R18's second half, D3 'the page waits for the apply') during a 20000-line apply, a collector's
 #  list reads of one of its servers and a page assign: every read ends (or 40P01, which the collector retries), the page
 #  answers in words (409 past its 2 s lock_timeout, or 200), never 500 or a SQLSTATE; the apply ends done 20000
 set -uo pipefail
@@ -158,7 +158,7 @@ land="$(asg_of "$MI" "'m1'") $(q "select count(*) from pgvigil.app_not_applicati
 a=$(wp application '{"op": "add", "name": "(none)"}')
 [[ $(field "$a" outcome) == refused && $(q "select count(*) from pgvigil.app_applications where name = '(none)'") == 0 ]] \
   && ok "M10 an application named '(none)' (the file's unassign token) refused ('$(field "$a" detail | cut -c1-90)')" || bad "M10 '$a'"
-# M12 (review A, M4): the planner keys every join on the line: a payload whose line numbers repeat is refused in words
+# M12: the planner keys every join on the line: a payload whose line numbers repeat is refused in words
 a=$(qc "select pgvigil.import_app_file(now(), '{\"ui_user\": \"importer\", \"client\": \"proof\", \"dry\": true, \"rows\": [{\"line\": 2, \"instance\": \"proof-imp-m\", \"database\": \"m4\", \"application\": \"M Other\"}, {\"line\": 2, \"instance\": \"proof-imp-m\", \"database\": \"m3\", \"application\": \"M Entered\"}]}'::jsonb)")
 [[ $(field "$a" outcome) == refused && $(field "$a" detail) == *"line 2"* ]] && ok "M12 a payload whose line numbers repeat: refused ('$(field "$a" detail | cut -c1-80)')" || bad "M12 '${a:0:200}'"
 fi
@@ -206,11 +206,11 @@ q "insert into pgvigil.mssql_database_option (instance_id, database_name, databa
    ($MSF, 'master', 1, true, now()), ($MSF, 'msdb', 4, true, now()), ($MSF, 's1', 5, false, now()), ($MSF, 's2', 6, false, now()), ($MSF, 'sgone', 7, false, now())" >/dev/null
 OLD=$(newinst imp-old); q "update pgvigil.instances set is_active = false where instance_id = $OLD" >/dev/null
 FA=$(field "$(wp application '{"op": "add", "name": "F Alpha", "tier": 2, "description": "alpha"}')" app_id)
-# double-quoted: inside single quotes bash drops the '' and the store got '=x (t-im-g2 F7); SQL reads '' as one '
+# double-quoted: inside single quotes bash drops the '' and the store got '=x (a test import); SQL reads '' as one '
 FB=$(field "$(wi application "{\"op\": \"add\", \"name\": \"F Beta\", \"description\": \"''=x\"}")" app_id)
 wp assign "{\"op\": \"assign\", \"app_id\": $FA, \"targets\": [{\"instance_id\": $PGF, \"database\": null}, {\"instance_id\": $MSF, \"database\": \"s1\"}, {\"instance_id\": $PGF, \"database\": \"fgone\"}, {\"instance_id\": $PGF, \"database\": \"=x\"}]}" >/dev/null
 wp assign "{\"op\": \"assign\", \"app_id\": $FB, \"targets\": [{\"instance_id\": $PGF, \"database\": \"f1\"}]}" >/dev/null
-# forced: under imp-pg's ENTERED server assignment (F Alpha) an unforced import of another application is the m3 conflict (t-im-g2)
+# forced: under imp-pg's ENTERED server assignment (F Alpha) an unforced import of another application is a conflict (a test import)
 wi assign "{\"op\": \"assign\", \"force\": true, \"app_id\": $FB, \"targets\": [{\"instance_id\": $PGF, \"database\": \"f2\"}, {\"instance_id\": $MSF, \"database\": \"sgone\"}, {\"instance_id\": $PGF, \"database\": \"-name\"}]}" >/dev/null
 wp assign "{\"op\": \"mark\", \"targets\": [{\"instance_id\": $PGF, \"database\": \"f4\"}]}" >/dev/null
 # fgone and sgone dropped on their servers (absent, still named by their assignments)
@@ -251,7 +251,7 @@ pc="$(cnt applications_added)/$(cnt targets_changed)/$(cnt conflicts)/$(cnt unkn
 i3=$(item 4); i6=$(item 6)
 x=$(imp "$WORK/f2.csv" "dry=0&digest=$D2"); xo=$(js "print(d.get('outcome'))")
 st="$(asg imp-pg f3) $(asg imp-pg f2) $(asg imp-pg f1) $(asg imp-ms s2)"
-# review P, M-4: the file's environment, tier and cmdb_url stored
+# the file's environment, tier and cmdb_url stored
 f2v="$(q "select coalesce(a.environment, '-') from pgvigil.app_assignments a join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and a.database_name = 'f3'")|$(q "select tier || '|' || cmdb_url from pgvigil.app_applications where name = 'F Gamma'")"
 [[ $p == 200 && $pc == "1/3/1/1" && $i3 == conflict:* && $i6 == refused:*"no server named imp-nowhere"* && $x == 200 && $xo == done \
    && $st == "F Alpha|import:proof F Alpha|import:proof F Beta|entered F Gamma|import:proof" && $(q "select count(*) from pgvigil.instances") == "$n0" \
@@ -266,7 +266,7 @@ x=$(imp "$WORK/f2.csv" "dry=0&digest=$D3&force=t4"); xo=$(js "print(d.get('outco
 printf 'instance,database,application\nimp-pg,f2,F Beta\n' > "$WORK/f4.csv"
 imp "$WORK/f4.csv" "dry=1" >/dev/null; D4=$(dig)
 # the page write touches the plan: f2 itself re-assigned by hand (an edit of an application the file does not name
-# is not in the plan, so the digest rightly stays: t-im-g2)
+# is not in the plan, so the digest rightly stays: a test import)
 FG=$(q "select app_id from pgvigil.app_applications where name = 'F Gamma'")
 pw=$(post admin/applications/assign "{\"op\": \"assign\", \"app_id\": ${FG:-0}, \"targets\": [{\"instance_id\": $PGF, \"database\": \"f2\"}]}"); pa=$(asg imp-pg f2)
 m0=$(appmd5); x=$(imp "$WORK/f4.csv" "dry=0&digest=$D4"); xd=$(js "print(d.get('detail', d.get('error', '')))"); m1=$(appmd5)
@@ -275,7 +275,7 @@ m0=$(appmd5); x=$(imp "$WORK/f4.csv" "dry=0&digest=$D4"); xd=$(js "print(d.get('
 imp "$WORK/f4.csv" "dry=1" >/dev/null; D5=$(dig); i5=$(item 2)
 seen() { q "select coalesce(a.engine_db_id::text, '-') || '|' || coalesce(a.last_seen::text, '-') from pgvigil.app_assignments a join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and a.database_name = 'f2'"; }
 s0=$(seen)
-# review P, M-5: f2 made again on its server under a new dbid, so the list read moves both columns the digest leaves out
+# f2 made again on its server under a new dbid, so the list read moves both columns the digest leaves out
 dbs "$PGF" "[$(pgdb 5 postgres), $(pgdb 81001 f1), $(pgdb 81202 f2), $(pgdb 81003 f3), $(pgdb 81004 f4), $(pgdb 81006 '=x'), $(pgdb 81007 '-name'), $(pgdb 81008 no)]"
 s1=$(seen)
 x=$(imp "$WORK/f4.csv" "dry=0&digest=$D5&force=t2"); xo=$(js "print(d.get('outcome'))")
@@ -298,9 +298,9 @@ stored=$(q "select description from pgvigil.app_applications where name = 'F Gam
 p=$(imp "$WORK/inv3.csv" "dry=1"); pc="$(cnt applications_changed)/$(cnt targets_changed)"
 [[ $stored == "=SUM(1)" && $g7 -ge 1 && $pc == 0/0 && $(q "select description from pgvigil.app_applications where name = 'F Beta'") == "'=x" ]] \
   && ok "F7 '=SUM(1)' and \"'=x\" as descriptions: stored as typed, written with one more ', read back with no change" || bad "F7 stored '$stored'; guarded cells $g7; re-import $pc"
-# F26 (review P, P-6; kept as built, for the lead's eye): f3's own F Alpha was the import's (F2), so F7's re-assign to
+# F26 (kept as built): f3's own F Alpha was the import's (F2), so F7's re-assign to
 # F Gamma under imp-pg's ENTERED F Alpha is a change, not a conflict: the person entered the server's application and f3
-# did not inherit it (a database that inherits it would be the m3 conflict, F setup / M4)
+# did not inherit it (a database that inherits it would be a conflict, F setup / M4)
 [[ $i7 == change:* && $(asg imp-pg f3) == "F Gamma|import:proof" ]] && ok "F26 an import's re-assign of its own row (f3) under a person's server application: a change ('${i7:0:60}')" || bad "F26 line 2 '$i7'; f3 $(asg imp-pg f3)"
 
 # F8 (R8, the API half): contacts shown on the page are in no export; an imported email column makes no contact
@@ -322,7 +322,7 @@ c3=$(curl -s -o /dev/null -w '%{http_code}' "$U/api/applications/inventory.csv")
 [[ $c1 == 401 && $c2 == 403 && $c3 == 401 && $(appmd5) == "$m0" ]] && ok "F9 the import without a login 401, without the header 403, the CSV without a login 401; nothing written" || bad "F9 $c1 $c2 $c3"
 
 # F10 (R10, R20): an .xlsx with shared strings, a blank cell left out mid-row, 'no' as a boolean cell, 2024 as a number
-# (review P, P-4: F Year's description 2024 on lines no refusal touches; the database 'no' line counted if unmatched)
+# (F Year's description 2024 on lines no refusal touches; the database 'no' line counted if unmatched)
 q "insert into pgvigil.mssql_database_option (instance_id, database_name, database_id, is_system, snapshot_at) values ($MSF, 's10', 10, false, now())" >/dev/null
 FY=$(field "$(wp application '{"op": "add", "name": "F Year", "description": "2024"}')" app_id)
 wp assign "{\"op\": \"assign\", \"app_id\": ${FY:-0}, \"targets\": [{\"instance_id\": $MSF, \"database\": \"s10\"}]}" >/dev/null
@@ -332,7 +332,7 @@ import csv, io, re, sys, zipfile
 from xml.sax.saxutils import escape
 rows = list(csv.reader(io.StringIO(open(sys.argv[1], encoding="utf-8-sig").read())))
 # the CSV's guard undone as the server undoes it (q_app_import.go csvGuardUndo ^'+[=+\-@\t\r]: one ' off), an .xlsx has
-# none; t-im-g3: a one-quote undo left F Beta's "''=x" whole
+# none; a test import: a one-quote undo left F Beta's "''=x" whole
 rows = [[c[1:] if re.match(r"'+[=+\-@\t\r]", c) else c for c in r] for r in rows]
 rows.append(["database", "imp-pg", "", "f3", "F Gamma", "", "", "2024"] + [""] * (len(rows[0]) - 8))
 ss = []; idx = {}
@@ -383,7 +383,7 @@ CSV
 p=$(imp "$WORK/f11.csv" "dry=1"); D11=$(dig); u11="$(cnt unknown_databases)/$(cnt refused)"
 r11="$(item 2 | cut -c1-8)/$(item 3 | cut -c1-8)/$(item 4 | cut -c1-8)/$(item 5 | cut -c1-8)/$(item 6 | cut -c1-8)/$(item 7 | cut -c1-8)/$(item 8 | cut -c1-8)/$(item 9 | cut -c1-7)"
 w11="$(item 3)|$(item 6)|$(item 7)"
-# review P, M-10: the rest applied (f1's environment), the refused lines and the unticked conflict not
+# the rest applied (f1's environment), the refused lines and the unticked conflict not
 x=$(imp "$WORK/f11.csv" "dry=0&digest=$D11")
 e11="$(q "select coalesce(a.environment, '-') from pgvigil.app_assignments a join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and a.database_name = 'f1'")|$(q "select count(*) from pgvigil.app_not_application m join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and m.database_name = 'f4'")"
 [[ $p == 200 && $r11 == "refused:/refused:/refused:/refused:/refused:/conflict/refused:/change:" && $w11 == *environment*"not an active server"*"marked by hand"* && $u11 == 0/6 && $x == 200 && $e11 == "test|1" ]] \
@@ -424,8 +424,8 @@ sleep 1; c=$(imp "$WORK/f4.csv" "dry=1"); w=$(js "print(d.get('detail', ''))"); 
 [[ $c == 409 && $w == *"another import is running"* ]] && ok "F18 an import while another holds its lock: refused at once ('${w:0:60}')" || bad "F18 $c '$w'"
 
 # F19 (R19): a credential-shaped cell: its line refused, its text in no answer and no audit row
-# (review A M1 / P P-1, A m3: the secret in the application, the server, the engine; an Azure key, a PEM block, a bearer
-# token; the preview's own answer read - it is the one that lists the items)
+# (the secret in the application, the server, the engine; an Azure key, a PEM block, a bearer token; the preview's own
+# answer read - it is the one that lists the items)
 S19=hunter2x$SUF
 cat > "$WORK/f19.csv" <<CSV
 instance,engine,database,application,description
@@ -442,7 +442,7 @@ w=$(for l in 2 3 4 5 6 7 8; do item $l | cut -c1-30; done | sort -u | tr '\n' '|
 imp "$WORK/f19.csv" "dry=0&digest=$D19" > /dev/null
 hits=$(( $(cat "$WORK/f19p.json" "$WORK/ans.json" | grep -c "$S19") + $(q "select count(*) from pgvigil.admin_audit where detail like '%$S19%' or target like '%$S19%'") ))
 [[ $p == 200 && $w == "refused:a cell looks like a cr|" && $hits == 0 ]] && ok "F19 a credential-shaped cell in the description, the application, the server, the engine (a password, a URL's, a token, an Azure key, a PEM block, a bearer token): each line refused, the text in no answer (the preview's items included) and no audit row" || bad "F19 $p lines 2-8 '$w'; hits $hits; $(head -c 300 "$WORK/f19p.json")"
-# F19b (review A, m3): each cell checked alone - an application 'Payment Token' beside a description '=SUM(1)' is no credential
+# F19b: each cell checked alone - an application 'Payment Token' beside a description '=SUM(1)' is no credential
 printf 'instance,database,application,description\nimp-ms,s2,Payment Token,=SUM(1)\n' > "$WORK/f19b.csv"
 p=$(imp "$WORK/f19b.csv" "dry=1"); w=$(item 2)
 [[ $p == 200 && $w != refused:* ]] && ok "F19b two cells read alone: 'Payment Token' and '=SUM(1)' make no credential ('${w:0:50}')" || bad "F19b $p '$w'"
@@ -456,7 +456,7 @@ x=$(imp "$WORK/f21.csv" "dry=0&digest=$D21&force=t3")
    && $(asg imp-ms s1) == none && $(asg imp-pg f5) == none && $(asg imp-pg -name) == none ]] \
   && ok "F21 '(none)' on f5 (it inherits F Alpha): nothing, the preview says so; on s1 (a person's): a conflict, removed when ticked; '(None)' on -name (the import's): a change, removed unticked" || bad "F21 $p line 2 $i2 / line 3 '$i3' / line 4 '$i4'; apply $x; s1 $(asg imp-ms s1); -name $(asg imp-pg -name); $(head -c 300 "$WORK/ans.json")"
 
-# F22 (review A, M2): a ticked application conflict writes every field its words name - and they name every one
+# F22: a ticked application conflict writes every field its words name - and they name every one
 FT=$(field "$(wp application '{"op": "add", "name": "F Tick", "tier": 2}')" app_id)
 wi application "{\"op\": \"edit\", \"app_id\": ${FT:-0}, \"version\": 1, \"description\": \"old\"}" >/dev/null
 printf 'instance,database,application,tier,description\nimp-ms,s2,F Tick,3,new\n' > "$WORK/f22.csv"
@@ -466,14 +466,14 @@ x=$(imp "$WORK/f22.csv" "dry=0&digest=$D22&force=${a22%%:*}")
 v22=$(q "select tier || '|' || description from pgvigil.app_applications where app_id = ${FT:-0}")
 [[ $p == 200 && $a22 == *:conflict:*tier*description* && $x == 200 && $v22 == "3|new" ]] && ok "F22 a ticked application conflict (tier entered, description the import's): its words name both ('${a22:0:110}'), both written" || bad "F22 $p '$a22'; apply $x; tier|description '$v22'"
 
-# F23 (review A, M3): a line refused later (an absent database) adds no application and refuses none
+# F23: a line refused later (an absent database) adds no application and refuses none
 printf 'instance,database,application,tier\nimp-pg,fgone,F New,3\nimp-ms,s2,F Gamma,3\nimp-ms,sgone,F Gamma,4\n' > "$WORK/f23.csv"
 p=$(imp "$WORK/f23.csv" "dry=1")
 a23=$(js "print('|'.join(i['application'] + ':' + i['outcome'] for i in d.get('items', []) if i['kind'] == 'application'))")
 [[ $p == 200 && $(cnt applications_added) == 0 && $a23 != *refused* && $a23 != *"F New"* && $(item 2) == refused:*absent* && $(item 4) == refused:*absent* ]] \
   && ok "F23 lines refused on an absent database: F New not added, F Gamma's item not refused by the absent line's tier ('$a23')" || bad "F23 $p added $(cnt applications_added); items '$a23'; line 2 '$(item 2)'; line 4 '$(item 4)'"
 
-# F24 (review A, M4): an .xlsx whose row numbers repeat is refused in words (every line keyed on its number)
+# F24: an .xlsx whose row numbers repeat is refused in words (every line keyed on its number)
 python3 -I - "$WORK/f24.xlsx" <<'PY'
 import sys, zipfile
 z = zipfile.ZipFile(sys.argv[1], "w")
@@ -489,7 +489,7 @@ PY
 p=$(imp "$WORK/f24.xlsx" "dry=1"); w=$(js "print(d.get('error', d.get('detail', '')))")
 [[ $p == 400 && $w == *"row 2"* ]] && ok "F24 an .xlsx with row 2 twice: refused in words ('${w:0:70}')" || bad "F24 $p '$w'; $(head -c 200 "$WORK/ans.json")"
 
-# F25 (review P, M-14): a server-level line applied; the preview counts the server whose application tag moves
+# F25: a server-level line applied; the preview counts the server whose application tag moves
 SRV=$(newinst imp-srv); dbs "$SRV" "[$(pgdb 5 postgres), $(pgdb 91001 v1)]"
 printf 'level,instance,application\nserver,imp-srv,F Gamma\n' > "$WORK/f25.csv"
 p=$(imp "$WORK/f25.csv" "dry=1"); D25=$(dig); c25="$(cnt targets_changed)/$(cnt servers_whose_tag_moves)"
@@ -501,13 +501,13 @@ fi
 #  P1 (R22, R10, R8's page half) the Inventory grid filtered to one server, an application's contacts shown, the
 #     inventory's own export: its .xlsx holds every line (read back through the import: as many lines as the API's
 #     inventory, nothing to change), and no contact, user name or client address
-#     (review C 2 / B M5: a two-line description, 'Yes' and '1.50' entered on the page read back unchanged; C 6: the
-#     workbook says every line whatever the filter; P M-9: the lines drawn are imp-ms's alone, the button says it too)
-#  P2 a file chosen, its source name typed (the field's pattern compiles: C 5), previewed (two conflicts, one ticked:
-#     C 7) and applied by a double click (one apply: C 4): the store holds the change and the ticked one, the unticked
-#     kept; focus on the import's result (C 9)
-#  P3 (R23) axe-core 4.14.0 on the page with the preview shown, light and dark (dark set on the page: P P-2): 0 nodes
-#  P4 (review C 1) a preview of over 200 items: a conflict ticked, the grid's Copy all (which draws every row again),
+#     (a two-line description, 'Yes' and '1.50' entered on the page read back unchanged; the workbook says every line
+#     whatever the filter; the lines drawn are imp-ms's alone, the button says it too)
+#  P2 a file chosen, its source name typed (the field's pattern compiles), previewed (two conflicts, one ticked) and
+#     applied by a double click (one apply): the store holds the change and the ticked one, the unticked kept; focus on
+#     the import's result
+#  P3 (R23) axe-core 4.14.0 on the page with the preview shown, light and dark (dark set on the page): 0 nodes
+#  P4 a preview of over 200 items: a conflict ticked, the grid's Copy all (which draws every row again),
 #     the tick taken off on screen, applied: the conflict kept
 # Excel's own save of the workbook is NOT PROVEN (no Excel on the box), nor a LibreOffice re-save (no LibreOffice on
 # the box): F10 reads a workbook with shared strings the proof writes.
@@ -525,7 +525,7 @@ for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2
 printf 'instance,database,application,not_an_application\nimp-ms,s1,F Gamma,\nimp-pg,f4,,no\nimp-pg,=x,F Gamma,\n' > "$WORK/p2.csv"
 # P4's file: =x's conflict on line 2, then 205 unknown databases (each an item: over the grid's 200 drawn rows)
 python3 -I -c 'import sys; open(sys.argv[1], "w").write("instance,database,application\nimp-pg,=x,F Gamma\n" + "".join("imp-pg,u%03d,F Gamma\n" % i for i in range(205)))' "$WORK/p4.csv"
-# P1's values the page takes and a typed export would not give back (review C 2, B M5): a two-line description with
+# P1's values the page takes and a typed export would not give back: a two-line description with
 # two spaces, the word Yes, a number-like text - each an application a person entered, on a server of their own
 PSV=$(newinst imp-p); dbs "$PSV" "[$(pgdb 5 postgres), $(pgdb 92001 p1), $(pgdb 92002 p2), $(pgdb 92003 p3)]"
 for x in "P Multi|line one\\nline  two|p1" "Yes|Yes|p2" "1.50|1.50|p3"; do
@@ -552,7 +552,7 @@ ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has
 const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
 const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 300)); return d.result?.result?.value; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-// the import's own status line (the one after its form; the Inventory grid has a status line of its own: t-im-g3)
+// the import's own status line (the one after its form; the Inventory grid has a status line of its own: a test import)
 const fileStatus = () => ev(`document.querySelector('main section.app-file form + p[role=status]')?.textContent ?? ''`);
 const ready = async () => { for (let i = 0; i < 150; i++) { if (await ev(`!!document.querySelector('main section.app-file table.grid')`)) { await sleep(400); return true; } await sleep(200); } return false; };
 const settle = async () => { let t = ''; for (let i = 0; i < 400; i++) { await sleep(150); t = await fileStatus(); if (t && !/^Working/.test(t)) break; } await sleep(300); return t; };
@@ -564,7 +564,7 @@ const axe = async () => {
   return await ev(`axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] }, resultTypes: ['violations'] }).then(r => r.violations.reduce((n, v) => n + v.nodes.length, 0) + ' ' + r.violations.map(v => v.id + ':' + v.nodes.map(n => n.target.join(' ')).join(',')).join(';').slice(0, 600))`, true);
 };
 // the theme set as the page sets it at load (main.ts: data-theme on the root), so a page already drawn changes too
-// (review P, P-2: the media emulation alone left data-theme="light" in force)
+// (the media emulation alone left data-theme="light" in force)
 const theme = async t => { await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(t)}); document.documentElement.setAttribute('data-theme', ${JSON.stringify(t)}); 'ok'`); await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: t }] }); };
 const bg = () => ev(`getComputedStyle(document.body).backgroundColor`);
 const fileIn = async f => { const doc = await cmd('DOM.getDocument', { depth: 1 }); const node = await cmd('DOM.querySelector', { nodeId: doc.result.root.nodeId, selector: '#app-import-file' });
@@ -597,7 +597,7 @@ try {
   // P2: the file chosen, its source name typed, previewed, its conflict ticked, applied
   out('P2.ready', await go('#/admin_applications'));
   out('P2.source', await ev(`(() => { const s = document.querySelector('#app-import-source'); if (!s) return 'no field'; s.value = 'proof'; s.dispatchEvent(new Event('input', { bubbles: true })); return s.value; })()`));
-  // C 5: the field's pattern compiles as the browser compiles it (the v flag) and refuses a name with a space
+  // the field's pattern compiles as the browser compiles it (the v flag) and refuses a name with a space
   out('P2.pattern', await ev(`(() => { const s = document.querySelector('#app-import-source'); try { new RegExp('^(?:' + s.pattern + ')$', 'v'); } catch (e) { return 'invalid'; } s.value = 'A B'; const bad = s.validity.patternMismatch; s.value = 'proof'; return bad ? 'ok' : 'no mismatch'; })()`));
   out('P2.set', await fileIn(p2file));
   out('P2.preview', await submit());
@@ -607,10 +607,10 @@ try {
   out('P3.light', await axe()); out('P3.bglight', await bg());
   await theme('dark'); await sleep(400); out('P3.bgdark', await bg()); out('P3.dark', await axe()); await theme('light'); await sleep(200);
   out('P2.tick', await press("Take line 3's change"));
-  out('P2.apply', await applyBtn(2));   // a double click: one apply (C 4)
+  out('P2.apply', await applyBtn(2));   // a double click: one apply
   out('P2.applied', await settle()); await sleep(1500); out('P2.after', await fileStatus());
   out('P2.focus', await ev(`document.activeElement?.closest('section.app-file') ? 'in' : (document.activeElement?.tagName ?? 'none') + ' ' + (document.activeElement?.textContent ?? '').slice(0, 40)`));
-  // P4 (C 1): a tick kept by the item, never by the checkbox a redraw replaced
+  // P4: a tick kept by the item, never by the checkbox a redraw replaced
   out('P4.ready', await go('#/admin_applications'));
   out('P4.set', await fileIn(p4file)); out('P4.preview', await submit()); out('P4.previewed', await settle());
   out('P4.tick', await press("Take line 2's change"));
@@ -625,7 +625,7 @@ try {
 process.exit(0);
 JS
 if [[ $P_OK == 1 ]]; then
-  # phase 1 (P1's export), its read back, then phase 2 (P2's apply): the read back before P2 changes the store (t-im-g3:
+  # phase 1 (P1's export), its read back, then phase 2 (P2's apply): the read back before P2 changes the store (a test import:
   # P2's unmark of f4 made P1's workbook, read after it, one mark to make)
   P_USR=$USR P_UPW=$UPW P_FIONA="fiona.$SUF@example.com" timeout 300 node "$WORK/p.mjs" "$CDP" "$U/" "$DL" "$AXE" "$WORK/p2.csv" 1 "$WORK/p4.csv" > "$WORK/p.out" 2> "$WORK/p.err"
   pv() { sed -n "s/^$1=//p" "$WORK/p.out" | head -1; }
@@ -682,7 +682,7 @@ nb=$(q "select count(*) from pgvigil.app_assignments a join pgvigil.app_applicat
   && ok "F13 6 MB refused ('${w1:0:40}'), 20001 lines refused ('${w2:0:40}'); 20000 lines previewed in $((t1 - t0)) s and applied in $((t2 - t1)) s (20000 assignments)" \
   || bad "F13 5 MB: $c1 '$w1'; 20001: $c2 '$w2'; 20000: preview $p ($((t1 - t0)) s), apply $x '$xo' ($((t2 - t1)) s), assigned $nb; $(head -c 300 "$WORK/ans.json")"
 
-# F27 (review P, P-5): F Big's 20000 targets moved to F Big2 by an apply in the background; while it holds the write
+# F27: F Big's 20000 targets moved to F Big2 by an apply in the background; while it holds the write
 # lock, (i) the collector's list read of imp-big050 in a loop (its own login, no lock_timeout, as its repository pool)
 # and (ii) a page assign of imp-big050 b000 (the audit pool, lock_timeout 2 s): every read ends rc 0 or 40P01 (the
 # collector's ImportCounted retries one), the page answers 409 in words or 200, never 500 or a SQLSTATE; the apply ends
@@ -692,7 +692,7 @@ IB=$(q "select instance_id from pgvigil.instances where name = 'imp-big050'"); F
 p27=$(imp "$WORK/b20k2.csv" "dry=1"); D27=$(dig); c27=$(cnt targets_changed)
 # held: the apply's backend holds the applications' write lock (a bigint key: classid its high half, objid its low,
 # objsubid 1). The key is made bigint inside the SQL: a literal pasted in is an int4, and an int4 shifted by 32 is not
-# the high half (t-im-r6 / g8: 'lock seen 0')
+# the high half (a test import: 'lock seen 0')
 held() { q "select count(*) from pg_locks l join pg_stat_activity s using (pid), (select hashtext('pgvigil.app_writes')::bigint k) w
   where s.pid <> pg_backend_pid() and l.locktype = 'advisory' and l.granted and l.objsubid = 1
   and l.classid::bigint = ((w.k >> 32) & 4294967295) and l.objid::bigint = (w.k & 4294967295) and s.query like '%import_app_file%'"; }

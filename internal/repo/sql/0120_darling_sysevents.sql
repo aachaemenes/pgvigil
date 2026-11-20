@@ -30,7 +30,7 @@
 --   OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 --   WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --
--- For the join (0190): the arm in pgvigil.findings
+-- For the release migration (0190): the arm in pgvigil.findings
 --     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_sysevents', at
 --       FROM pgvigil.mssql_sysevents_findings
 --   nothing for purge() (the rows live in mssql_health_components, already a monthly parent).

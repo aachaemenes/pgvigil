@@ -34,6 +34,11 @@ import (
 // tab's), aggregates, and PostgreSQL 18's NOT NULL constraints (the column's own definition carries NOT NULL).
 // A function's body is read as text and hashed here (SHA-256, Go's crypto: no md5() on a FIPS server): the
 // definition holds the signature, language, volatility, security and settings, then "body sha256:<16 hex>".
+// A PostgreSQL 14+ SQL-standard body (BEGIN ATOMIC ... END, RETURN expr) has an empty prosrc (the pg_proc page:
+// 'typically an empty string'): it is read with pg_get_function_sqlbody (task A26-PG; see schemaObjectsFor), the server's own
+// decompiled text. Deparsing a body takes an AccessShareLock on every table it reads until the read's transaction ends,
+// as pg_get_viewdef does for a view: an ACCESS EXCLUSIVE lock held on such a table past lock_timeout fails the
+// database's read for that run (its stored snapshot stays).
 //
 // Every read is pg_monitor's: the catalogs and pg_get_*def are readable by every role.
 //
@@ -77,8 +82,9 @@ const schemaDBSQL = `
 SELECT 'db' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
        current_database()::text AS datname, now() AS read_at`
 
-// schemaObjectsSQL: every object of the database's own schemas, one row each; $1 is the cap plus one.
-const schemaObjectsSQL = `
+// schemaObjectsTmpl: every object of the database's own schemas, one row each; $1 is the cap plus one. The function
+// arm's body, body_prev and lateral read are filled by schemaObjectsFor.
+const schemaObjectsTmpl = `
 WITH ext AS (SELECT classid, objid FROM pg_depend WHERE deptype = 'e'),
 ns AS (
   SELECT n.oid, n.nspname, n.nspowner, n.nspacl FROM pg_namespace n
@@ -94,7 +100,7 @@ rel AS (
 obj AS (
   SELECT 'schema' AS okind, (pg_identify_object('pg_namespace'::regclass, n.oid, 0)).identity AS identity,
          n.nspname::text AS schema_name, n.nspname::text AS object_name, NULL::text AS parent,
-         'schema'::text AS definition, pg_get_userbyid(n.nspowner)::text AS owner, n.nspacl::text AS acl, NULL::text AS body
+         'schema'::text AS definition, pg_get_userbyid(n.nspowner)::text AS owner, n.nspacl::text AS acl, NULL::text AS body, NULL::text AS body_prev
     FROM ns n
   UNION ALL
   SELECT 'table', c.ident, c.nspname, c.relname, NULL,
@@ -106,7 +112,7 @@ obj AS (
            CASE WHEN c.reloptions IS NOT NULL THEN 'with (' || array_to_string(c.reloptions, ', ') || ')' END,
            CASE WHEN c.reltablespace <> 0 THEN 'tablespace ' || (SELECT t.spcname FROM pg_tablespace t WHERE t.oid = c.reltablespace) END,
            CASE WHEN c.relrowsecurity THEN 'row level security' END),
-         pg_get_userbyid(c.relowner), c.relacl::text, NULL
+         pg_get_userbyid(c.relowner), c.relacl::text, NULL, NULL
     FROM rel c WHERE c.relkind IN ('r', 'p', 'f')
   UNION ALL
   SELECT 'column', (pg_identify_object('pg_class'::regclass, c.oid, a.attnum)).identity, c.nspname, a.attname, c.ident,
@@ -118,25 +124,25 @@ obj AS (
            CASE WHEN a.attgenerated = 's' THEN 'generated always as (' || pg_get_expr(d.adbin, d.adrelid) || ') stored'
                 WHEN a.attgenerated = 'v' THEN 'generated always as (' || pg_get_expr(d.adbin, d.adrelid) || ') virtual'
                 WHEN d.adbin IS NOT NULL THEN 'default ' || pg_get_expr(d.adbin, d.adrelid) END),
-         NULL, a.attacl::text, NULL
+         NULL, a.attacl::text, NULL, NULL
     FROM rel c
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
     LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
    WHERE c.relkind IN ('r', 'p', 'f')
   UNION ALL
   SELECT 'index', c.ident, c.nspname, c.relname, t.ident,
-         pg_get_indexdef(c.oid) || CASE WHEN NOT i.indisvalid THEN ' (INVALID)' ELSE '' END, NULL, NULL, NULL
+         pg_get_indexdef(c.oid) || CASE WHEN NOT i.indisvalid THEN ' (INVALID)' ELSE '' END, NULL, NULL, NULL, NULL
     FROM rel c JOIN pg_index i ON i.indexrelid = c.oid JOIN rel t ON t.oid = i.indrelid
    WHERE c.relkind IN ('i', 'I')
   UNION ALL
   SELECT 'constraint', (pg_identify_object('pg_constraint'::regclass, k.oid, 0)).identity, c.nspname, k.conname, c.ident,
-         pg_get_constraintdef(k.oid) || CASE WHEN NOT k.convalidated THEN ' NOT VALID' ELSE '' END, NULL, NULL, NULL
+         pg_get_constraintdef(k.oid) || CASE WHEN NOT k.convalidated THEN ' NOT VALID' ELSE '' END, NULL, NULL, NULL, NULL
     FROM pg_constraint k JOIN rel c ON c.oid = k.conrelid
    WHERE k.contype <> 'n'
   UNION ALL
   SELECT 'trigger', (pg_identify_object('pg_trigger'::regclass, g.oid, 0)).identity, c.nspname, g.tgname, c.ident,
          pg_get_triggerdef(g.oid) || CASE g.tgenabled WHEN 'D' THEN ' (DISABLED)' WHEN 'R' THEN ' (REPLICA)' WHEN 'A' THEN ' (ALWAYS)' ELSE '' END,
-         NULL, NULL, NULL
+         NULL, NULL, NULL, NULL
     FROM pg_trigger g JOIN rel c ON c.oid = g.tgrelid
    WHERE NOT g.tgisinternal
   UNION ALL
@@ -154,13 +160,13 @@ obj AS (
            CASE WHEN p.prokind <> 'p' THEN 'cost ' || p.procost END,
            CASE WHEN p.proretset THEN 'rows ' || p.prorows END,
            CASE WHEN p.proconfig IS NOT NULL THEN 'set ' || array_to_string(p.proconfig, ', ') END),
-         pg_get_userbyid(p.proowner), p.proacl::text, coalesce(p.prosrc, '') || coalesce(' ' || p.probin, '')
-    FROM pg_proc p JOIN ns n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
+         pg_get_userbyid(p.proowner), p.proacl::text, {{body}}, {{body_prev}}
+    FROM pg_proc p JOIN ns n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang{{lateral}}
    WHERE p.prokind IN ('f', 'p', 'w')
      AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_proc'::regclass AND ext.objid = p.oid)
   UNION ALL
   SELECT CASE c.relkind WHEN 'm' THEN 'materialized view' ELSE 'view' END, c.ident, c.nspname, c.relname, NULL,
-         pg_get_viewdef(c.oid, true), pg_get_userbyid(c.relowner), c.relacl::text, NULL
+         pg_get_viewdef(c.oid, true), pg_get_userbyid(c.relowner), c.relacl::text, NULL, NULL
     FROM rel c WHERE c.relkind IN ('v', 'm')
   UNION ALL
   SELECT 'sequence', c.ident, c.nspname, c.relname,
@@ -174,15 +180,61 @@ obj AS (
               FROM pg_depend dp
              WHERE dp.classid = 'pg_class'::regclass AND dp.objid = c.oid AND dp.refclassid = 'pg_class'::regclass
                AND dp.deptype IN ('a', 'i') AND dp.refobjsubid > 0 LIMIT 1)),
-         pg_get_userbyid(c.relowner), c.relacl::text, NULL
+         pg_get_userbyid(c.relowner), c.relacl::text, NULL, NULL
     FROM rel c JOIN pg_sequence s ON s.seqrelid = c.oid
 )
 SELECT 'obj' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
        current_database()::text AS datname, okind AS object_kind, identity, schema_name, object_name, parent,
-       definition, owner, acl, body
+       definition, owner, acl, body, body_prev
   FROM obj
  ORDER BY okind, identity
  LIMIT $1`
+
+// schemaBodyOld is a function's body as every version reads it: prosrc, then probin for a C function.
+const schemaBodyOld = `coalesce(p.prosrc, '') || coalesce(' ' || p.probin, '')`
+
+// schemaObjectsFor fills the function arm. sqlBody false (PostgreSQL 13, or a server without pg_get_function_sqlbody):
+// the body is schemaBodyOld, as before A26-PG. sqlBody true: pg_get_function_sqlbody(p.oid), the body of an
+// SQL-standard function alone ('BEGIN ATOMIC ... END', 'RETURN ...'; NULL for a string body and for a function dropped
+// under the read, which keep schemaBodyOld; OFFSET 0 keeps the lateral a subquery, so the server deparses each body
+// once - a plain lateral is flattened into both expressions). It is pg_dump's own reader of such a body and is not in the docs' table of
+// catalog functions (Table 9.76), so schemaBodyProbeSQL asks for it on each connection and a 14+ server without it is
+// a collector error (schemaBodyChoice). No reference to prosqlbody: PostgreSQL 13 has no such column. body_prev is
+// schemaBodyOld beside an SQL-standard body only: the import's hash_prev (schemaFinishMode) is taken over it.
+func schemaObjectsFor(sqlBody bool) string {
+	r := strings.NewReplacer("{{body}}", schemaBodyOld, "{{body_prev}}", "NULL::text", "{{lateral}}", "")
+	if sqlBody {
+		r = strings.NewReplacer("{{body}}", "coalesce(sb.body, "+schemaBodyOld+")",
+			"{{body_prev}}", "CASE WHEN sb.body IS NOT NULL THEN "+schemaBodyOld+" END",
+			"{{lateral}}", "\n    CROSS JOIN LATERAL (SELECT pg_get_function_sqlbody(p.oid) AS body OFFSET 0) sb")
+	}
+	return r.Replace(schemaObjectsTmpl)
+}
+
+// schemaObjectsSQL reads bodies as before (PostgreSQL 13, or no pg_get_function_sqlbody); schemaObjectsSQLBody reads a
+// 14+ SQL-standard body's text.
+var (
+	schemaObjectsSQL     = schemaObjectsFor(false)
+	schemaObjectsSQLBody = schemaObjectsFor(true)
+)
+
+// schemaBodyProbeSQL is asked on each connection before its objects (the batch path carries no server version, and an
+// instance's DSN may route another database to another server): the version and whether the login may run
+// pg_get_function_sqlbody - present AND executable (a REVOKE EXECUTE ... FROM PUBLIC would otherwise fail every read
+// with 'permission denied'); NULL on PostgreSQL 13 (no such function), so false.
+const schemaBodyProbeSQL = `SELECT current_setting('server_version_num')::int, coalesce(has_function_privilege(to_regprocedure('pg_catalog.pg_get_function_sqlbody(oid)'), 'EXECUTE'), false)`
+
+// schemaBodyChoice: read SQL-standard bodies where the login may run the function; a server at 14 or later where it
+// may not reads them as before and says so (a collector_error row: the run is 'partial'), never silently.
+func schemaBodyChoice(version int, has bool) (sqlBody bool, note string) {
+	if has {
+		return true, ""
+	}
+	if version >= 140000 {
+		return false, fmt.Sprintf("pg_get_function_sqlbody is absent or not executable by the monitoring login on PostgreSQL %d: SQL-standard function bodies (BEGIN ATOMIC, RETURN) are read as before, so a change of one is not seen", version/10000)
+	}
+	return false, ""
+}
 
 // schemaDDLStateSQL finds the event trigger's table (any schema, public first) and its two event triggers.
 const schemaDDLStateSQL = `
@@ -295,6 +347,18 @@ type BatchRunner interface {
 	RunBatches(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, cursor CursorFunc, emit func([]Row) error) error
 }
 
+// LeadNote is a run's note led by the repository's error that set its stage to 'import' (0198), the run's own first
+// collector_error note after it: a run whose part was refused after a read had failed is not noted by the read alone.
+func LeadNote(lead, note string) string {
+	switch {
+	case lead == "":
+		return note
+	case note == "":
+		return lead
+	}
+	return lead + "; " + note
+}
+
 // runBatched is RunOnce's path for a BatchRunner: each part through the instance's text policy into the import, the
 // collection's log line from the parts' collector_error rows. A part's failed import is the collector's to report (the
 // next parts go on); an error returned by RunBatches fails the run.
@@ -302,12 +366,26 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 	conn *pgx.Conn, info platform.Info, instanceID int, start time.Time) Result {
 	n, parts := 0, 0 // n: the data rows (the last call's seen and end rows are bookkeeping)
 	status, note := "ok", ""
+	// a part whose import failed makes the run's stage 'import' (0198), whether RunBatches returned the error or turned
+	// it into a collector_error row and went on (schemaCollector's per-database parts do); the first such error leads
+	// the run's note (LeadNote), so the note and the stage tell of the same failure
+	stage, importErr := "", ""
+	// every part's write is timed (B6g-1, N27); the run is 'import failed' only when it ENDED as an error at an import
+	// - a part that was refused while the run went on leaves it 'partial' (its stage 'import' is on the error log)
+	var imp Result
+	var lastImport *ImportError // the import error last handed back to the reader: the run ended at it, or went on
 	err := br.RunBatches(ctx, conn, info, in, func(ctx context.Context, source string) (time.Time, bool, error) {
 		return r.LogCursor(ctx, instanceID, source)
 	}, func(rows []Row) error {
 		applyTextPolicy(rows, in.QueryText)
-		if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
-			return err
+		if err := imp.TimedImport(func() error { return r.Import(ctx, instanceID, name, start, rows) }); err != nil {
+			ie := &ImportError{Err: err}
+			lastImport = ie
+			stage = "import"
+			if importErr == "" {
+				importErr = "import: " + err.Error()
+			}
+			return ie
 		}
 		parts++
 		for _, row := range rows {
@@ -321,13 +399,17 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 		return nil
 	})
 	if err != nil {
-		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
-		return Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
+		_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), stage)
+		res := Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start), Import: imp.Import, Imported: imp.Imported}
+		if EndedAtImport(err, lastImport) {
+			res.Outcome = OutcomeImportFailed
+		}
+		return res
 	}
 	d := time.Since(start)
-	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
+	_ = r.LogCollectionStage(ctx, instanceID, name, start, d, status, LeadNote(importErr, note), stage)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", n, "imports", parts, "ms", d.Milliseconds())
-	return Result{Rows: n, Duration: d}
+	return Result{Rows: n, Duration: d, Outcome: partialOutcome(status), Import: imp.Import, Imported: imp.Imported}
 }
 
 // schemaMaxPayload caps one import call's payload, estimated (schemaPayloadSize), well under PostgreSQL's 256 MB jsonb
@@ -350,6 +432,9 @@ func schemaPayloadSize(rows []Row) int {
 	for _, r := range rows {
 		n += 16
 		for k, v := range r {
+			if k == schemaHashedKey { // the fall-back form never reaches the import
+				continue
+			}
 			n += len(k) + 8
 			if s, ok := v.(string); ok {
 				n += len(s)
@@ -415,7 +500,7 @@ func (schemaCollector) RunBatches(ctx context.Context, conn *pgx.Conn, _ platfor
 		var rows []Row
 		var readErr error
 		if db == cur {
-			rows, readErr = schemaRead(ctx, conn, since)
+			rows, readErr = schemaRead(ctx, conn, since, in.QueryText)
 		} else {
 			rows, readErr = schemaReadOther(ctx, in, db, since)
 		}
@@ -427,6 +512,8 @@ func (schemaCollector) RunBatches(ctx context.Context, conn *pgx.Conn, _ platfor
 			switch r["kind"] {
 			case "ddl", "ddl_cursor":
 				ddl = append(ddl, r)
+			case "collector_error":
+				final = append(final, r)
 			default:
 				objs = append(objs, r)
 			}
@@ -442,15 +529,18 @@ func (schemaCollector) RunBatches(ctx context.Context, conn *pgx.Conn, _ platfor
 				break
 			}
 		}
-		switch {
-		case readErr != nil:
+		if readErr != nil {
 			dbErr(db, readErr.Error())
 			continue
-		case schemaPayloadSize(objs) > maxPayload:
-			dbErr(db, fmt.Sprintf("about %d MB of definitions, over the %d MB one import takes: the database is not snapshotted",
-				schemaPayloadSize(objs)>>20, maxPayload>>20))
+		}
+		switch fit, note := schemaFit(objs, db, maxPayload); fit {
+		case schemaFitHashes:
+			final = append(final, note)
+		case schemaFitOver:
+			dbErr(db, note["message"].(string))
 			continue
 		}
+		schemaDropHashed(objs)
 		if err := emit(objs); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -486,11 +576,18 @@ func (c schemaCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info p
 // the moment its snapshot stands for), then the event trigger's state and rows. A failure of the trigger's read is
 // noted on the database's row and the objects still count; a failure of the objects read still returns the trigger's
 // rows, with the error.
-func schemaRead(ctx context.Context, conn *pgx.Conn, since *time.Time) ([]Row, error) {
+func schemaRead(ctx context.Context, conn *pgx.Conn, since *time.Time, mode string) ([]Row, error) {
 	if _, err := conn.Exec(ctx, `SET search_path = pg_catalog`); err != nil {
 		return nil, fmt.Errorf("search_path: %w", err)
 	}
-	db, objs, objErr := schemaObjects(ctx, conn)
+	var version int
+	var hasSQLBody bool
+	if err := conn.QueryRow(ctx, schemaBodyProbeSQL).Scan(&version, &hasSQLBody); err != nil {
+		ddl, _, _, _ := schemaDDL(ctx, conn, since) // the trigger's rows still go in, as after a failed objects read
+		return ddl, fmt.Errorf("the body probe: %w", err)
+	}
+	sqlBody, bodyNote := schemaBodyChoice(version, hasSQLBody)
+	db, objs, objErr := schemaObjects(ctx, conn, mode, sqlBody)
 	ddl, status, table, note := schemaDDL(ctx, conn, since)
 	if objErr != nil {
 		return ddl, objErr
@@ -499,14 +596,19 @@ func schemaRead(ctx context.Context, conn *pgx.Conn, since *time.Time) ([]Row, e
 	if note != "" {
 		db["ddl_log_note"] = note
 	}
-	out := make([]Row, 0, len(objs)+len(ddl)+1)
+	out := make([]Row, 0, len(objs)+len(ddl)+2)
 	out = append(out, db)
 	out = append(out, objs...)
+	if bodyNote != "" {
+		dat, _ := db["datname"].(string)
+		// never 'schema:<db>' (import_schema reads that source as a database in error): a note, the objects still count
+		out = append(out, Row{"kind": "collector_error", "source": "schema body:" + dat, "message": bodyNote})
+	}
 	return append(out, ddl...), nil
 }
 
 // schemaObjects reads the database row and its objects in one snapshot.
-func schemaObjects(ctx context.Context, conn *pgx.Conn) (Row, []Row, error) {
+func schemaObjects(ctx context.Context, conn *pgx.Conn, mode string, sqlBody bool) (Row, []Row, error) {
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin: %w", err)
@@ -523,7 +625,11 @@ func schemaObjects(ctx context.Context, conn *pgx.Conn) (Row, []Row, error) {
 	if len(dbRows) != 1 {
 		return nil, nil, fmt.Errorf("database: %d rows", len(dbRows))
 	}
-	r, err = tx.Query(ctx, schemaObjectsSQL, schemaMaxObjects+1)
+	objectsSQL := schemaObjectsSQL
+	if sqlBody {
+		objectsSQL = schemaObjectsSQLBody
+	}
+	r, err = tx.Query(ctx, objectsSQL, schemaMaxObjects+1)
 	if err != nil {
 		return nil, nil, fmt.Errorf("objects: %w", err)
 	}
@@ -534,7 +640,7 @@ func schemaObjects(ctx context.Context, conn *pgx.Conn) (Row, []Row, error) {
 	if len(objs) > schemaMaxObjects {
 		return nil, nil, fmt.Errorf("over %d objects: the database is not snapshotted (schemaMaxObjects)", schemaMaxObjects)
 	}
-	schemaFinish(objs)
+	schemaFinishMode(objs, mode)
 	dbRows[0]["objects"] = len(objs)
 	return dbRows[0], objs, nil
 }
@@ -598,30 +704,118 @@ func schemaDDLCursor(datname string, last time.Time) Row {
 	return Row{"kind": "ddl_cursor", "datname": datname, "read_to": last.Add(time.Hour - time.Microsecond)}
 }
 
-// schemaFinish turns each object row into its stored shape: a function's body becomes its hash at the end of the
-// definition, the hash of kind, definition, owner and ACL is added, and a definition over schemaMaxDef is cut (after
-// hashing, so a change past the cut still shows as a change).
-func schemaFinish(objs []Row) {
+// schemaFit is what a database's read does under the payload cap: fits as it is; over it with bodies as text, so the
+// bodies go back to their hashes (the hash is the same: no change is recorded) and a 'schema text:' collector_error
+// row says so; or over it even with the hashes: not snapshotted (the note's message says why).
+type schemaFitResult int
+
+const (
+	schemaFitAsIs schemaFitResult = iota
+	schemaFitHashes
+	schemaFitOver
+)
+
+func schemaFit(objs []Row, db string, maxPayload int) (schemaFitResult, Row) {
+	if schemaPayloadSize(objs) <= maxPayload {
+		return schemaFitAsIs, nil
+	}
+	if schemaHashesOnly(objs) && schemaPayloadSize(objs) <= maxPayload {
+		return schemaFitHashes, Row{"kind": "collector_error", "source": "schema text:" + db,
+			"message": fmt.Sprintf("bodies kept as hashes in %s: their text is over the %d MB one import takes", db, maxPayload>>20)}
+	}
+	return schemaFitOver, Row{"message": fmt.Sprintf("about %d MB of definitions, over the %d MB one import takes: the database is not snapshotted",
+		schemaPayloadSize(objs)>>20, maxPayload>>20)}
+}
+
+// schemaFinish is schemaFinishMode under 'none': a function's body as its hash only.
+func schemaFinish(objs []Row) { schemaFinishMode(objs, "none") }
+
+// schemaHashedKey holds, for a row whose definition carries its body's text, the hashed form a database over the
+// payload cap falls back to (schemaHashesOnly); it never reaches the import (schemaDropHashed).
+const schemaHashedKey = "hashed_definition"
+
+// maskBody masks what may be a password in a function's body: maskText's two rules, without the statements cap.
+func maskBody(s string) string {
+	s = maskPasswordRE.ReplaceAllString(s, "${1}'<masked>'")
+	return maskConnRE.ReplaceAllString(s, "${1}=<masked>")
+}
+
+// schemaFinishMode turns each object row into its stored shape (task A26): the hashed form is the
+// definition with its body's hash at the end ('body sha256:<16 hex>'), and the hash of kind, hashed form, owner and
+// ACL, and def_hash, are taken over it - the same bytes as before A26 under every policy, so a change of query_text
+// (or the upgrade) records no change. The definition stored is the hashed form, followed under query_text 'full' (or
+// no policy: the configuration's default) by the body's text with what may be a password masked - or, for a body the
+// DDL log's test says names a password or a secret, by SchemaBodyWithheld instead of its text. A definition over
+// schemaMaxDef is cut after hashing, so a change past the cut still shows as a change.
+func schemaFinishMode(objs []Row, mode string) {
 	for _, o := range objs {
 		def, _ := o["definition"].(string)
-		if body, ok := o["body"].(string); ok {
-			sum := sha256.Sum256([]byte(body))
-			def += " body sha256:" + hex.EncodeToString(sum[:])[:16]
-		}
+		body, hasBody := o["body"].(string)
+		prev, hasPrev := o["body_prev"].(string)
 		delete(o, "body")
+		delete(o, "body_prev")
 		owner, _ := o["owner"].(string)
 		acl, _ := o["acl"].(string)
 		kind, _ := o["object_kind"].(string)
-		h := sha256.New()
-		for _, s := range []string{kind, def, owner, acl} {
-			h.Write([]byte(s))
-			h.Write([]byte{0})
+		// task A26-PG: beside an SQL-standard body, the hash the code before it took over the same row (its body
+		// schemaBodyOld, '' for such a function): import_schema takes a stored row with that hash as the body's
+		// baseline, not a change (the upgrade's first read)
+		if hasBody && hasPrev {
+			o["hash_prev"] = schemaRowHash(kind, schemaHashedDef(def, prev), owner, acl)
 		}
-		o["hash"] = hex.EncodeToString(h.Sum(nil))
+		if hasBody {
+			def = schemaHashedDef(def, body)
+		}
+		o["hash"] = schemaRowHash(kind, def, owner, acl)
 		// the definition's own hash: a change past the cut is seen even when the owner or ACL changed with it
 		dh := sha256.Sum256([]byte(def))
 		o["def_hash"] = hex.EncodeToString(dh[:])
-		o["definition"] = schemaCut(def, schemaMaxDef)
+		stored := def
+		if hasBody && (mode == "" || mode == "full") {
+			if SchemaBodyNamesSecret(body) {
+				stored = def + "\n" + SchemaBodyWithheld
+			} else {
+				stored = def + "\n" + maskBody(body)
+			}
+			o[schemaHashedKey] = schemaCut(def, schemaMaxDef)
+		}
+		o["definition"] = schemaCut(stored, schemaMaxDef)
+	}
+}
+
+// schemaHashedDef is a definition with its body's hash at the end ('body sha256:<16 hex>').
+func schemaHashedDef(def, body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return def + " body sha256:" + hex.EncodeToString(sum[:])[:16]
+}
+
+// schemaRowHash is a row's hash: kind, hashed form, owner and ACL, each followed by a zero byte.
+func schemaRowHash(kind, def, owner, acl string) string {
+	h := sha256.New()
+	for _, s := range []string{kind, def, owner, acl} {
+		h.Write([]byte(s))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// schemaHashesOnly puts the hashed form back in every row that carries a body's text; false when none does.
+func schemaHashesOnly(objs []Row) bool {
+	found := false
+	for _, o := range objs {
+		if h, ok := o[schemaHashedKey]; ok {
+			o["definition"] = h
+			delete(o, schemaHashedKey)
+			found = true
+		}
+	}
+	return found
+}
+
+// schemaDropHashed takes the fall-back form out before the import.
+func schemaDropHashed(objs []Row) {
+	for _, o := range objs {
+		delete(o, schemaHashedKey)
 	}
 }
 
@@ -653,7 +847,7 @@ func schemaReadOther(ctx context.Context, in config.Instance, db string, since *
 		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
 	cfg.Database = db
-	conn, err := connectCounted(ctx, in.Name, cfg)
+	conn, err := connectCounted(ctx, in, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
@@ -661,5 +855,5 @@ func schemaReadOther(ctx context.Context, in config.Instance, db string, since *
 	if _, err := conn.Exec(ctx, sessionSetup); err != nil {
 		return nil, fmt.Errorf("session setup: %w", err)
 	}
-	return schemaRead(ctx, conn, since)
+	return schemaRead(ctx, conn, since, in.QueryText)
 }

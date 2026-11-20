@@ -28,27 +28,27 @@
 #     B4 no THREADPOOL finding for the instance (no task waits THREADPOOL; a THREADPOOL provocation is not proven here);
 #     B5 the WHERE clause: a session blocked inside a database named PerformanceMonitor (host pgvw_pm) waits in
 #        sys.dm_os_waiting_tasks and is in neither PerformanceMonitor's read nor pgvigil's rows (the comparison uses
-#        PerformanceMonitor's own ignore list, IgnoredWaitDefaults.All, on both sides). [added after review s177-4]
+#        PerformanceMonitor's own ignore list, IgnoredWaitDefaults.All, on both sides).
 #     B6 the ignore list: the head (host pgvw_h) waits WAITFOR, one of IgnoredWaitDefaults.All, in a hand read of
 #        sys.dm_os_waiting_tasks, and is in neither PerformanceMonitor's read nor pgvigil's rows (B1 compares only the
 #        blocked sessions, so without B6 a collector that kept the benign waits would pass); PerformanceMonitor's read
-#        before its ignore list does hold the head's WAITFOR row (its WHERE keeps the head). [added after s177-final1]
+#        before its ignore list does hold the head's WAITFOR row (its WHERE keeps the head). [added after a lab run]
 #  C. the PostgreSQL twin: in a scratch database a row is updated in an open transaction, the same row updated by a
 #     second session; after `pgvigil collect -once activity`, pg_waiting_at holds the second session with
 #     Lock:transactionid and blocking_pids = {the first session's pid}, as pg_stat_activity and pg_blocking_pids read
 #     just before the sample say.
-#  D. `pgvigil serve` built from a copy of this tree with the join's wiring (scripts/proof-darling-waiting-join.patch)
-#     and, while the join does not hold it, rel-join-w1 962c116's pages.ts fix (scripts/proof-darling-waiting-base.patch)
-#     applied (on the release join neither patch file is in the tree: the run fails unless web/src/main.ts names
+#  D. `pgvigil serve` built from a copy of this tree with the page's wiring (scripts/proof-darling-waiting-join.patch)
+#     and, while the tree does not hold it, the pages.ts fix of the Summary's counts (scripts/proof-darling-waiting-base.patch)
+#     applied (in the release neither patch file is in the tree: the run fails unless web/src/main.ts names
 #     mssqlWaitingView, and the tree is used as it is)
 #     and the web bundle rebuilt: GET /api/waiting returns 2 reads, the newest read's tasks equal to the
 #     store's rows, and the PostgreSQL waiter.
 #  E. the pages in a headless Chromium signed in as a UI user: #/mssql_waiting?i=<id> shows the tiles of the newest read
 #     as the store holds them (tasks, sessions, blocked by another session, THREADPOOL 0) and as many grid rows as the
-#     read [s177-proof1 counted a parallel task blocked by its own session as blocked; the tile no longer does]; a wait type in
+#     read [a lab run counted a parallel task blocked by its own session as blocked; the tile no longer does]; a wait type in
 #     the grid lands on wt=<it> with only its rows; 'show every wait' lands back; Earlier lands on the first read and
-#     Later on the second, each at= the read's exact time as the API gives it and the 'Read at' line naming another read
-#     [the exact-time check added after review s177-4]; a wait type of 'Wait types over the range' lands filtered on the
+#     Later on the second, each at= the read's exact time as the API gives it and the 'Read at' line naming another read;
+#     a wait type of 'Wait types over the range' lands filtered on the
 #     read where it was last seen, with rows; the Waits tab's wait type
 #     (#/mssql_waits) lands on #/mssql_waiting with wt; #/waiting?i=<pg id> shows the waiter and its wait link lands
 #     filtered. Both pages shot in the light and the dark theme.
@@ -246,8 +246,8 @@ GSRC=$TMPD/src; mkdir -p "$GSRC"
 tar -C . --exclude=./web/node_modules --exclude=./.lab --exclude=./.git -cf - . | tar -C "$GSRC" -xf -
 for p in scripts/proof-darling-waiting-base.patch scripts/proof-darling-waiting-join.patch; do
   if [ ! -f "$GSRC/$p" ]; then
-    grep -q mssqlWaitingView "$GSRC/web/src/main.ts" || fail "D: no $p and the tree lacks the join's wiring (web/src/main.ts has no mssqlWaitingView)"
-    echo "D: no $p in the tree: the release join carries it (the tree is used as it is)"
+    grep -q mssqlWaitingView "$GSRC/web/src/main.ts" || fail "D: no $p and the tree lacks the page's wiring (web/src/main.ts has no mssqlWaitingView)"
+    echo "D: no $p in the tree: the release carries it (the tree is used as it is)"
   elif (cd "$GSRC" && git apply --check -R "$p" 2>/dev/null); then echo "D: $p is already in this tree"
   elif (cd "$GSRC" && git apply "$p" 2>"$TMPD/apply.err"); then echo "D: $p applied to the run's copy"
   else fail "D: $p neither applies nor is applied: $(cat "$TMPD/apply.err")"; fi
@@ -261,8 +261,8 @@ for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && b
 kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve.log" >&2; fail "D: serve exited"; }
 printf '{"username":"%s","password":"%s"}' "$USR" "$UPW" > "$TMPD/login.json"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "D: the UI login"
-curl -s -b "$TMPD/cj" "$U/api/waiting?instance=$SB" > "$TMPD/api.json"
-curl -s -b "$TMPD/cj" "$U/api/waiting?instance=$PGI" > "$TMPD/apipg.json"
+curl -s -b "$TMPD/cj" "$U/api/waiting?instance=$SB&own=1" > "$TMPD/api.json"
+curl -s -b "$TMPD/cj" "$U/api/waiting?instance=$PGI&own=1" > "$TMPD/apipg.json"
 api=$(python3 - "$TMPD/api.json" "$TMPD/apipg.json" "$WP" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1])); g = json.load(open(sys.argv[2]))

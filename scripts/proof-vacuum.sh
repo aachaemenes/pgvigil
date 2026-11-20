@@ -32,10 +32,10 @@
 #       'table over vacuum threshold' | warning; a fourth read at T+18h still over -> critical (25 h); a fifth read
 #       not over -> over_since NULL and the check gone; db.s.cold over only at T -> no check (under 6 h)
 #     - wraparound rows with freeze_max_age 200,000,000: xid ages 50 M (nothing), 150 M (warning), 1.2 B (critical)
-#       [review 1 fold, expected before the rerun: the warning moves from 50 % to past 100 % of the freeze max age
+#       [expected before the rerun: the warning moves from 50 % to past 100 % of the freeze max age
 #        (a healthy database's age cycles up to it): 150 M now raises nothing, a fourth database at 250 M is the warning]
 #     - vacuum_findings has as many rows as vacuum_checks for the scratch instance, setting = check_name
-#  C2. [review 1 fold, expected before the rerun] the fold's fixtures on the same scratch instance:
+#  C2. [expected before the rerun] more fixtures on the same scratch instance:
 #     - one VACUUM statement (pid 301, one query_start) over s.a then s.b -> two runs (one per relid), s.a with its own
 #       heap_blks_scanned 90000 and s.b with 100
 #     - a VACUUM ANALYZE (pid 302) seen in its vacuum phase, then its analyze phase -> one run, kind vacuum
@@ -179,7 +179,7 @@ imp vacuum_tables "$(at '19 hours')" "[$SET,$WRAP,$DBR,$HOTOK,$COLD]"
 [[ $(q "select count(*) from pgvigil.vacuum_findings f where instance_id=$SID and setting not in (select check_name from pgvigil.vacuum_checks where instance_id=$SID)") == 0 ]] || fail "findings setting"
 echo "C: OK ($(q "select count(*) from pgvigil.vacuum_checks where instance_id=$SID") checks on the scratch instance after the release read)"
 
-echo "--- C2. the review fold's fixtures"
+echo "--- C2. more fixtures"
 S2=$(q "select pgvigil.ensure_instance('vacuum-fold-$SUF', 'onprem', 'proof', 160004, false, '{proof}')")
 imp2() { q "select pgvigil.import_$1($S2, '$2'::timestamptz, \$j\$$3\$j\$::jsonb)" >/dev/null; }
 SUM2='{"kind":"summary","autovacuum":"on","track_counts":"on","max_workers":3,"workers_running":1}'

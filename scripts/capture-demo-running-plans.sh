@@ -6,7 +6,7 @@
 # made and removed by this run. Needs docker and base64.
 #   MSSQL_IMAGE        the SQL Server image (default mcr.microsoft.com/mssql/server:2022-latest)
 #   PGVIGIL_CAPTURE_OUT a folder to write <name>.sqlplan into; unset = each plan printed base64 between
-#                      'BEGIN PLAN <name>' and 'END PLAN' (a box job's folder is removed after the run)
+#                      'BEGIN PLAN <name>' and 'END PLAN' (a lab run's folder is removed after the run)
 set -euo pipefail
 IMG=${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n'); SQL=pgvdrp-sql-$SUF

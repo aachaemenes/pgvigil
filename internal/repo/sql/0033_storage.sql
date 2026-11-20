@@ -10,7 +10,7 @@
 --   table_growth()    the fastest-growing tables over 7 days (table_sizes).
 -- A growth figure needs history: the 7-day line at least a day of points, the 30-day line at least 7 days; less
 -- = NULL, never a guess. storage_checks feeds the overview (check group 'storage': the Summary column Storage) and
--- storage_findings carries its forecast rule in the findings columns (the join adds it to pgvigil.findings; the
+-- storage_findings carries its forecast rule in the findings columns (a later migration adds it to pgvigil.findings; the
 -- free-% finding is host_findings', one per volume).
 
 CREATE TABLE IF NOT EXISTS pgvigil.storage_state (
@@ -202,7 +202,7 @@ SELECT f.instance_id, CASE WHEN f.headroom_pct < 5 THEN 'critical' ELSE 'warning
   FROM f
  WHERE f.headroom_pct < 10;
 
--- The forecast rule in the findings columns; the join UNION ALLs this into pgvigil.findings. The free-% rule is
+-- The forecast rule in the findings columns; a later migration UNION ALLs this into pgvigil.findings. The free-% rule is
 -- not repeated here: host_findings (0021) already carries a volume under 10 % free, one finding per volume.
 CREATE OR REPLACE VIEW pgvigil.storage_findings AS
 SELECT c.instance_id, c.severity, c.check_name AS setting, c.object || ': ' || c.detail AS value, true AS is_set,

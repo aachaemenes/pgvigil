@@ -5,7 +5,7 @@
 #
 #   PGVIGIL_REPO_DSN   a superuser connection to the sandbox; the proof makes its own repository database, a monitored
 #                      database and a pg_monitor login, all with a random suffix, and drops them at the end.
-#   PGVIGIL_BIN        the binary (default bin/pgvigil); it must carry the join's wiring (loadConfig calls
+#   PGVIGIL_BIN        the binary (default bin/pgvigil); it must carry the wiring (loadConfig calls
 #                      collect.LoadCustomChecks): without it collect -once custom exits 0 with "skipped", registers no
 #                      instance, and step A stops on "A: no instance registered".
 #
@@ -26,23 +26,23 @@
 #  D. the chart's series (custom_series over the last hour, 60 s steps, what /api/custom serves): value_n's points sum to
 #     3 runs and the largest is 6 (compare >); the raw runs of value_n in order: 0,3,6. The report (custom_report, the
 #     root's /api/custom): 5 rows, the first critical; tag_dev on b only.
-#  E. [review 2 fold] value_n's runs moved 90 s back (one and a half cadences): not overdue. Then
+#  E. value_n's runs moved 90 s back (one and a half cadences): not overdue. Then
 #     not run in two cadences: value_n's runs moved 3 minutes back (its cadence is 1m) while its last listing stays now
 #     (the collection still visits): custom_status overdue true for value_n only; custom_findings of a holds 'custom check
-#     value_n' '(not run)'. [review fold, expected before the rerun] E2: a collection that stops visiting (switched off,
+#     value_n' '(not run)'. [expected before the rerun] E2: a collection that stops visiting (switched off,
 #     disabled on the instance, failing to connect) lists nothing: value_n's last listing set back to its last run (3
 #     minutes ago): overdue false, no '(not run)' finding (the old rule, measured from now(), fired here forever).
 #  F. rows_n taken off the list, collect a: custom_checks rows_n is_present false, no finding of rows_n, the report has 4
 #     rows; then custom: [] and a collect of each: every check of a and b gone, the report empty, no custom finding.
-#  F2. [join review fold, expected before the run] the checks back on the list, a collect: a's error findings are back;
+#  F2. [expected before the run] the checks back on the list, a collect: a's error findings are back;
 #     then the custom: key removed (the collection off, nothing listed): the findings stay while the latest listing is
 #     within two cadences (at least 5 minutes), and with the listings set 11 minutes back (past two 5-minute cadences, the default) every custom finding of a and b
 #     is gone (0), the threshold and error arms included.
-#  H. [join review fold, expected before the run] an instance whose DSN is a superuser, with a check on it: collect -once
+#  H. [expected before the run] an instance whose DSN is a superuser, with a check on it: collect -once
 #     custom on it fails (non-zero) naming 'superuser', and no custom result is stored for it.
 #  G. the catalogue: every check of docs/custom.md (18) on instance a, one collect: 18 results; not one error; cluster_id
 #     critical (the placeholder id is not the sandbox's).
-#     [review 2 fold, expected before the rerun] the monitored database first gets rows for the checks that returned
+#     [expected before the rerun] the monitored database first gets rows for the checks that returned
 #     none: a sequence over the whole bigint range (the sequence check overflowed on it) and one at 95 of 100 (both
 #     readable by the login), a disabled trigger, a table of 40000 rows with 30000 deleted (autovacuum off on it), a
 #     session idle in transaction holding a lock and a second session waiting on it. Then: sequence critical 94.95,
@@ -217,7 +217,8 @@ echo "findings: listed $NF1; key removed $NF2; listings 11 minutes old $NF3"
 
 echo "--- G. the catalogue of docs/custom.md"
 head_cfg; echo "custom:" >> "$CFG"
-awk '/^```yaml$/ {on = 1; next} /^```$/ {on = 0} on' docs/custom.md | awk '/^  - name: idle_in_transaction/ {skip = 1} /^  - name: / && !/idle_in_transaction/ {skip = 0} !skip' \
+# the catalogue's own section only: another section's example (SQL Server checks, ST6) is no catalogue entry
+sed -n '/^## The catalogue/,$p' docs/custom.md | awk '/^```yaml$/ {on = 1; next} /^```$/ {on = 0} on' | awk '/^  - name: idle_in_transaction/ {skip = 1} /^  - name: / && !/idle_in_transaction/ {skip = 0} !skip' \
   | grep -v '^custom:$' | sed "s/^  - name: \(.*\)$/  - name: \1\n    instances: [$A]/" >> "$CFG"
 n=$(sed -n '/^custom:$/,$p' "$CFG" | grep -c '^  - name: ')
 echo "catalogue checks: $n"; [[ $n == 18 ]] || fail "G: the catalogue has $n checks"

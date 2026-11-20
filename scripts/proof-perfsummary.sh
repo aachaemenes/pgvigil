@@ -38,7 +38,7 @@
 #     steps as a hand read of the table, cpu_max equal, cpu_avg, sql_avg and other_avg equal rounded half up to 0.1.
 #  D. EXPLAIN (ANALYZE) of each fleet statement (1 h and 24 h): the execution time printed; every history table is
 #     read through an index (no Seq Scan node on a *_2026* partition); the 1 h PostgreSQL statement under 500 ms here.
-#  [review fold, expected before the rerun:]
+#  [added later, expected before the rerun:]
 #  A2. commits/s of every PostgreSQL row with dbstats over an explicit last hour is within 2 % of an independent
 #     average: the sum of dbstats_rate()'s commit deltas over the sum of its distinct reads' seconds.
 #  F. a scratch untagged instance fx-reset, 60 one-minute imports through pgvigil.import_dbstats over a window two
@@ -46,7 +46,7 @@
 #     before, 120 after) and a pg_stat_io row whose stats_reset moves at minute 30 (12,800 reads a minute of 8 kB, read
 #     time 0.5 ms each); plus a pgms_wait_sampling Lock row a minute with no time (wait_secs NULL). Over that window:
 #     commits_s 1.50 and tps 1.50 (5,220 commits over the 3,480 s the two segments cover), read_ms 0.50, mb_s 1.67
-#     (before the fold: 3.33, the two segments' bytes over one segment's seconds), wait_source NULL and lock_ms_s NULL
+#     (before the fix: 3.33, the two segments' bytes over one segment's seconds), wait_source NULL and lock_ms_s NULL
 #     (before: 'wait_sample' and 0.00); tag=untagged then lists exactly fx-reset.
 #  D (fold). The Seq Scan check names the tables (any partition year, and the two plain tables); each statement is
 #     measured as the endpoint runs it (SET jit = off; the endpoint's own transaction) and once with the server's JIT

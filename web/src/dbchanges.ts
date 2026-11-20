@@ -32,7 +32,7 @@ export async function dbChangesView(ctx: Ctx, keep?: (r: Row) => boolean): Promi
     const goneAt = (r: Row) => dropped.some(x => x.instance_id === r.instance_id && x.datname === r.datname && Date.parse(String(x.at)) >= Date.parse(String(r.at)));
     const newCols: Col[] = [...inst,
       { key: 'datname', label: 'database', fmt: (v, r) => goneAt(r)
-        ? el('span', {}, String(v ?? ''), ' ', badge('dropped since', 'warn')) : String(v ?? '') },
+        ? el('span', {}, String(v ?? ''), ' ', badge('dropped since', 'warn')) : String(v ?? ''), cls: (v, r) => goneAt(r) || v == null || v === '' ? '' : 'status ok' },
       { key: 'at', label: 'created', fmt: (_v, r) => r.created_at != null ? fmtTime(r.created_at)
         : el('span', { title: 'PostgreSQL keeps no creation time: created between these two reads' },
           `${r.created_after ? fmtTime(r.created_after) : 'before'} to ${fmtTime(r.first_seen)}`) },

@@ -26,7 +26,7 @@ import (
 // first (at most 200), and the group's count.
 //
 // Slow statements, auto_explain plans, checkpoint lines and temp files are not grouped here: the Slow queries page,
-// the plans, the IO page's checkpoints and the temp file list above carry them. The routes are the lead's lines in
+// the plans, the IO page's checkpoints and the temp file list above carry them. The routes are lines in
 // web.go.
 
 // logGroupMessageKinds are the kinds whose stored detail starts with the server's own message: a row of such a kind
@@ -64,7 +64,7 @@ g AS (
 )`
 
 const sqlLogGroups = sqlLogGroupBase + `
-SELECT g.group_key, g.kind, g.lvl AS level, g.msg AS message, bool_and(g.stored) AS stored, count(*) AS events,
+SELECT g.group_key, g.kind, g.lvl AS level, g.msg AS "message@logmsg", bool_and(g.stored) AS stored, count(*) AS events,
        min(g.snapshot_at) AS first_at, max(g.snapshot_at) AS last_at,
        left(string_agg(DISTINCT g.datname, ', '), 200) AS databases, left(string_agg(DISTINCT g.usename, ', '), 200) AS users
   FROM g
@@ -85,8 +85,8 @@ SELECT coalesce(g.lvl, 'unknown') AS level, count(*) AS events
 
 // $6 the group's key
 const sqlLogGroupRows = sqlLogGroupBase + `
-SELECT g.snapshot_at AS at, g.kind, g.lvl AS level, g.pid, g.datname, g.usename, g.client, g.duration_ms,
-       left(g.detail, 2000) AS detail, left(g.statement, 2000) AS statement, g.source
+SELECT g.snapshot_at AS at, g.kind AS "kind@logkind", g.lvl AS level, g.pid, g.datname, g.usename, g.client, g.duration_ms,
+       left(g.detail, 2000) AS "detail@logdetail", left(g.statement, 2000) AS "statement@stmt", g.source
   FROM g
  WHERE g.group_key = $6
  ORDER BY g.snapshot_at DESC
@@ -101,7 +101,7 @@ const sqlLogTempFiles = `
 SELECT * FROM (
   SELECT e.snapshot_at AS at, (substring(e.detail FROM 'size (\d+)'))::bigint AS size_bytes,
          substring(e.detail FROM 'path "([^"]+)"') AS path, e.datname, e.usename, e.client, e.pid,
-         left(e.statement, 2000) AS statement
+         left(e.statement, 2000) AS "statement@stmt"
     FROM pgvigil.log_events e
    WHERE e.instance_id = $1 AND e.snapshot_at > $2 AND e.snapshot_at <= $3 AND e.kind = 'temp_file') t
  ORDER BY t.size_bytes DESC NULLS LAST, t.at DESC

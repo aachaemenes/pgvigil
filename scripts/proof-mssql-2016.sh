@@ -78,7 +78,7 @@
 #     session count asked). The go test exit code is the verdict.
 #  R. every proof of the list exits 0 (PASS), except a group proof on a server without Always On: not run, 'NOT
 #     PROVEN: one node'. A proof that fails is the finding (its log names the statement and the column); never rerun
-#     into green here. Expected FAIL on the tree of the first run (rel-145 at 0ce7ca8), each a proof's OWN statement,
+#     into green here. Expected FAIL on the tree of the first run (0ce7ca8), each a proof's OWN statement,
 #     not the collector's: actions (spids() reads STRING_AGG, 2017+), perf (part A reads sys.dm_os_host_info, 2017+),
 #     reads (part A's hand reads of sys.dm_os_host_info), xe (parts I and K read the slow session's event files by the
 #     Linux path /var/opt/mssql/log/ in their own T-SQL). Each stays FAIL until the proof is changed; the changes are

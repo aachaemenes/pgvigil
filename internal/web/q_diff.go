@@ -17,13 +17,14 @@ import (
 // Three modes, by what the two sides are:
 //
 //	instances  a <> b: two instances as last read (at_a and at_b are refused: the stores hold one instance's past,
-//	           not two instances at one past moment worth comparing). Settings, jobs and, on PostgreSQL, schema
-//	           objects; db_a with db_b picks one pair of databases instead of pairing them by name.
+//	           not two instances at one past moment worth comparing). Settings, jobs and schema objects; db_a with
+//	           db_b picks one pair of databases instead of pairing them by name.
 //	snapshots  a = b with at_a (at_b: default the newest read; at_a before at_b): one instance at two times, from
 //	           the change histories. db_a narrows the schema part to one database.
 //	databases  a = b without at_a, db_a and db_b two different databases: their schema objects as last read.
 //
-// Both sides are one engine (400 otherwise); db_a and db_b on SQL Server are refused (no schema objects are held).
+// Both sides are one engine (400 otherwise). Schema objects compare on both engines (SQL Server's since task A26,
+// the collection mssql_schema; an instance it has not read says so in the coverage).
 // A section one side has no read for is not compared, and coverage says why. The reply: sides (pgvigil.diff_sides: each side's instance, as-of time
 // and how far back each store reaches), meta (mode, engine, all, the schema cap), databases (each side's databases
 // with a schema snapshot, for the page's pickers), coverage (per section: compared or not, and why), and per
@@ -46,7 +47,7 @@ SELECT x.* FROM (%s) x
  WHERE $5::boolean OR x.status <> 'same'
  ORDER BY (x.status = 'same'), coalesce(x.datname_a, x.datname_b),
           array_position(ARRAY['database', 'schema', 'table', 'column', 'index', 'constraint', 'trigger', 'sequence', 'view',
-                               'materialized view', 'function', 'procedure'], x.kind) NULLS LAST, x.identity
+                               'materialized view', 'function', 'procedure', 'synonym', 'type'], x.kind) NULLS LAST, x.identity
  LIMIT ` + "%d"
 
 const sqlDiffSchemaCounts = `
@@ -164,11 +165,6 @@ func (s *Server) Diff(w http.ResponseWriter, r *http.Request) {
 	}
 	engine := engines[a]
 	pg := engine == "postgres"
-	// the schema parts exist on PostgreSQL alone: a request that names them on SQL Server would compare nothing
-	if !pg && (mode == "databases" || dbA != "" || dbB != "") {
-		bad("db_a and db_b pick schema databases, which the repository holds for PostgreSQL only: nothing to compare on SQL Server")
-		return
-	}
 
 	// the two sides first: a store one side has never been read into is not compared (its rows would all read
 	// 'only in' the other side, a difference that is not one)
@@ -206,10 +202,11 @@ func (s *Server) Diff(w http.ResponseWriter, r *http.Request) {
 			cov.note("jobs", "; "+why+" (a server without a scheduler has none, and so has one whose jobs collection has not run)")
 		}
 	}
-	if pg {
-		if why := unread("schema_read", "schema read"); why != "" {
-			cov.set("schema", false, why)
+	if why := unread("schema_read", "schema read"); why != "" {
+		if !pg {
+			why += " (SQL Server: the collection mssql_schema reads only an instance whose mssql_schema.databases names its databases)"
 		}
+		cov.set("schema", false, why)
 	}
 
 	parts := []part{
@@ -327,8 +324,8 @@ func diffCoverage(mode, engine string) *coverage {
 		}
 	}
 	switch {
-	case !pg:
-		c.add("schema", false, "the repository holds no schema objects of a SQL Server instance: nothing to compare")
+	case mode == "snapshots" && !pg:
+		c.add("schema", true, "the schema collection's change history between the two times (mssql_schema's passes: a database read again on the default trace's DDL and once a day); a database is compared when its snapshot covers both times, else it is one row; older changes end at the repository's retention")
 	case mode == "snapshots":
 		c.add("schema", true, "the schema collection's change history between the two times (hourly reads); a database is compared when its snapshot covers both times, else it is one row; older changes end at the repository's retention")
 	default:

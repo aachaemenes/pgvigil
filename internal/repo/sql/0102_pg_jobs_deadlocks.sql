@@ -21,8 +21,8 @@
 --   5. pgvigil.pg_jobs_running(instance): the runs the newest read still saw running, with how long they have run,
 --      the job's average over its successful runs of 30 days and the estimated end from it, and pgAgent's current step.
 --
--- Retention: job_step_runs is kept as job_runs is: purge() deletes it by start_time through the line the join adds to
--- 0110's purge() (the lead's file; until then the table is not purged);
+-- Retention: job_step_runs is kept as job_runs is: purge() deletes it by start_time through the line 0110 adds to
+-- its purge() (0110_join_release.sql; until then the table is not purged);
 -- job_exclusions holds a row per change and goes with its instance.
 -- Lock footprint: the views job_report_checks and job_failures and the function job_status replaced; new tables;
 -- actions_log's action CHECK dropped and added again (ACCESS EXCLUSIVE for the validation scan of a small table), last,

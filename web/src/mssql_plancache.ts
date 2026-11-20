@@ -11,6 +11,7 @@ import { queryHistory } from './mssql_queries';
 import { compareSection, everywherePanel, planStatsPanel, statementSearch } from './mssql_querystore';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, offControl, tile } from './ui';
+import { markNeed, needControl } from './needs';
 
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlPlanCacheTab = 'mssqlplancache';
@@ -20,7 +21,8 @@ const LIMIT = 1000;
 const num3 = (v: unknown) => v == null ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
 const secs = (v: unknown) => v == null ? '' : num3(Math.round(Number(v)) / 1000);
 const pct = (v: unknown) => v == null ? '' : `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} %`;
-const level = (v: unknown, warn: number, info: number) => Number(v) > warn ? 'warn' : Number(v) > info ? 'info' : '';
+// over warn a warning; over info a note (N/A, as every info level); under it judged and fine (OK)
+const level = (v: unknown, warn: number, info: number) => v == null || v === '' ? '' : Number(v) > warn ? 'warn' : Number(v) > info ? 'status none' : 'status ok';
 // a statement's text, its first characters shown and the whole kept for the copy and the export
 const text = (v: unknown) => {
   const s = String(v ?? '');
@@ -66,7 +68,7 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
     for (const st of rowsOf(d.state)) if (st.status !== 'ok') out.push(el('p', { class: 'meta' }, `The ${String(st.collection)} collection's last run: ${String(st.status)}${st.note ? ' (' + String(st.note) + ')' : ''}.`));
     const findings = rowsOf(d.findings);
     if (findings.length) out.push(el('h3', {}, 'Findings'), grid(findings, [
-      { key: 'severity', fmt: v => badge(String(v), v === 'warning' ? 'warn' : 'info') },
+      { key: 'severity', fmt: v => badge(String(v), v === 'warning' ? 'warn' : 'none') },
       { key: 'check_name', label: 'check' }, { key: 'object', label: 'database' }, { key: 'detail', wide: true }, { key: 'at', label: 'read', fmt: fmtTime }]));
 
     out.push(el('h3', {}, 'Statements over the range'));
@@ -113,7 +115,7 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'physical_reads', label: 'physical reads', num: true },
         { key: 'logical_writes', label: 'writes', num: true },
         { key: 'row_count', label: 'rows', num: true },
-        { key: 'spills', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0' },
+        { key: 'spills', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0', cls: v => Number(v) > 0 ? '' : 'status ok' },
         { key: 'max_grant_kb', label: 'max grant (KB)', num: true },
         { key: 'grant_used_pct', label: 'grant used', num: true, fmt: pct },
         { key: 'max_dop', label: 'max DOP', num: true },
@@ -235,14 +237,16 @@ async function cachedPlans(ctx: Ctx, row: Row, box: HTMLElement) {
     if (evictOff) {
       b.style.opacity = '.55';
       b.style.cursor = 'not-allowed';
-      return offControl(b, evictOff, evictNote) as HTMLButtonElement;
+      // the button stays, drawn off and named by the note (B3 offControl); offControl returns the note, not the button
+      offControl(b, evictOff, evictNote);
+      return b;
     }
     b.addEventListener('click', () => { void evictDialog(ctx, String(e.plan_handle), b, () => { void cachedPlans(ctx, row, box); }); });
-    return b;
+    return needControl(b, 'mssql/actions/run');   // the role (B24f): a plan's eviction needs operator
   };
   const act = (e: Row, label: string, batch: boolean, open: boolean) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: ${String(e.plan_handle)} at ${String(e.stmt_start)}` }, label) as HTMLButtonElement;
-    if (d.fetch_off) return offControl(b, d.fetch_off, fetchOffNote) as HTMLButtonElement;
+    if (d.fetch_off) { offControl(b, d.fetch_off, fetchOffNote); return b; }
     b.addEventListener('click', async () => {
       status.textContent = 'Reading the plan on demand ...';
       try {
@@ -390,7 +394,7 @@ async function evictDialog(ctx: Ctx, handle: string, back: HTMLElement, after: (
     : t.plan_batch ? `the batch '${t.plan_batch.replace(/\s+/g, ' ').trim().slice(0, 60)}'` : (pv.what ?? 'this batch');
   const reason = el('textarea', { rows: '2', cols: '60', minlength: '5', maxlength: '500', 'aria-label': 'Reason (kept in the actions log)' }) as HTMLTextAreaElement;
   const confirm = el('input', { type: 'text', size: '10', autocomplete: 'off', 'aria-label': `Type ${code} to evict the plan of ${words} (handle ${t.plan_handle ?? handle})` }) as HTMLInputElement;
-  const run = el('button', { type: 'button' }, 'Evict the plan');
+  const run = markNeed(el('button', { type: 'button' }, 'Evict the plan'), 'mssql/actions/run');
   const res = el('p', { role: 'status', 'aria-live': 'polite' });
   run.addEventListener('click', async () => {
     res.textContent = 'Sending ...';
@@ -463,7 +467,7 @@ async function planSources(ctx: Ctx, db: string, qh: string, ph: string, box: HT
   const btn = (label: string, r: Row, open: boolean) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: the ${String(r.source)} plan` }, label) as HTMLButtonElement;
     const off = r.source === 'plan cache' ? d.fetch_off : r.source === 'running' ? d.running_off : '';
-    if (off) return offControl(b, off, offNote);
+    if (off) { offControl(b, off, offNote); return b; }
     b.addEventListener('click', () => { void show(b, r, open); });
     return b;
   };

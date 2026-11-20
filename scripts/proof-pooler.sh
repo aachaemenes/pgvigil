@@ -17,7 +17,7 @@
 # Expected (written before the first run):
 #  A. PgBouncer 1.26.1 in transaction mode, pool_size 3, in front of the monitored database. A holder (application
 #     pgvpool_h_<n>) opens a transaction through the pooler, updates row 1 and stays idle in it: it keeps one server.
-#     [review fold] One more client (application pgvpool_i_<n>) connects through the pooler, runs SELECT 1 and stays
+#     [added later] One more client (application pgvpool_i_<n>) connects through the pooler, runs SELECT 1 and stays
 #     connected outside a transaction: idle, counted and not stored.
 #     Then 19 clients (application pgvpool_w_<n>) each update row 1 through the pooler: two get the other two servers
 #     and wait on the holder's lock (one on its transactionid, one on the tuple behind the first), 17 wait in the
@@ -30,7 +30,7 @@
 #     - pooler_conns: the holder's server has role 'head', backend_state 'idle in transaction', paired_application
 #       pgvpool_h_<n>; the other two servers role 'blocked', backend_wait_type Lock, head_pid = the holder's pid (from
 #       pg_stat_activity by its application); head_via_pooler true and head_client_application pgvpool_h_<n> on both;
-#       [review fold] backend_match 'matched' on all three; the clients' connect_time within 5 minutes of now (the
+#       [added later] backend_match 'matched' on all three; the clients' connect_time within 5 minutes of now (the
 #       pooler's local time placed by its own clock);
 #       the 3 active clients carry a backend_pid, the 17 waiting none. [first run, 2026-11-10: the holder's
 #       backend_wait_type read 'Client' where this line expected none: PostgreSQL shows an idle-in-transaction session

@@ -20,14 +20,14 @@ import (
 //            events, failed, mean and longest duration, rows and mean CPU per interval (pgvigil.slow_trend)
 //   meta     the interval in seconds and which source answered
 //
-// The interval is the window over about 72 points, a whole minute, at least one minute. The route is the lead's
+// The interval is the window over about 72 points, a whole minute, at least one minute. The route is a
 // line in web.go.
 //
 // GET /api/stmtlag?instance=<id>&[from=&to=]&queryid=<n>[&db=<name>]&(lag=<secs> | at=<RFC3339>) (Server.StmtLag,
 // parity3 task 125; pgwatch's Time Lag Comparison): one statement over the window, the same window one day earlier
 // (the day-over-day row) and the window moved back by the chosen lag (1 h, 1 d, 7 d as 3600 / 86400 / 604800, or any
 // lag up to 400 days) or to start at a chosen time (at: the lag is from - at). Each row carries the snapshots it read,
-// so "no data" is told apart from "no calls" (pgvigil.stmt_lag). The route is the lead's line in web.go.
+// so "no data" is told apart from "no calls" (pgvigil.stmt_lag). The route is a line in web.go.
 
 // a shape key: md5 hex on PostgreSQL (0025), 16 hex digits of a SHA-256 on SQL Server (the XE shredder's hash16)
 var trendShapeRE = regexp.MustCompile(`^(?:[0-9a-f]{16}|[0-9a-f]{32})$`)

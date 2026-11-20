@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proof of task 406 (B12): Query Store and plans. One SQL Server container per run (MSSQL_IMAGE; the box job runs it
+# Proof of task 406 (B12): Query Store and plans. One SQL Server container per run (MSSQL_IMAGE; the lab runs it
 # once per version: 2017, 2019, 2022, 2025), a repository database of its own, pgvigil built from this tree.
 # Needs: docker, go, psql, curl, python3, and:
 #   ADMIN_DSN            a superuser connection to a PostgreSQL sandbox in KEYWORD form (default 'host=127.0.0.1
@@ -9,7 +9,7 @@
 #   PGVIGIL_PLAN_EXTRACT the plan plugin's extract.py (default .lab/extract.py, git-ignored; never fetched): the
 #                        .sqlplan check of part B
 #   PGVIGIL_PARTS        the parts to run (default every part this file has)
-#   PGVIGIL_WIRING       1 (default) applies scripts/proof-mssql-qs-plans-wiring.patch (web.go: the lead's file) to
+#   PGVIGIL_WIRING       1 (default) applies scripts/proof-mssql-qs-plans-wiring.patch (web.go) to
 #                        this copy when the tree has the handlers and web.go lacks their routes; 0 = the tree as it is.
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch. Every
 # password is made at run time and reaches the tools through environment files or the environment.
@@ -39,13 +39,14 @@
 #     B9 a handle of odd length, one of 65 bytes, a bad key, an end before the start: 400 each;
 #     B10 after the reads no session of the read login named pgvigil-plan stays open (each read closes its connection).
 #     B11 every read above wrote its custom_report_log row first (op plan_read, done, the UI user, door file, the handle;
-#        no row holds a plan); sqlsa (the read login is sa, a sysadmin) gets the plan (ok) and its row (task 406's FOLD);
+#        no row holds a plan); sqlsa (the read login is sa, a sysadmin) gets the plan (ok) and its row (a departure
+#        from task 406's design);
 #     B12 a serve with -no-login (no audit door): the read answers off, 'needs a signed-in user', no plan; the server's
 #        Logins/sec count moves by the hand read's own login only, no plan_read row added; B12b signed in, the config's
 #        repository login a reader (the actions log not writable: the audit off) and B12c a collector the audit function
 #        import_custom_report_run was taken from: the read off with the words, the entries' fetch_off the same, nothing
 #        sent, no row (NOT PROVEN when the cluster has no pgvigil roles).
-#     Red on f8e89d2: the two routes do not exist (B1 is not a JSON reply with entries).
+#     Red before the change: the two routes do not exist (B1 is not a JSON reply with entries).
 #  C. the plans of running queries (rows N55 and SQLWATCH COL#27's capture, F6, F7, F18 P1); instances rpon (schedules:
 #     mssql_running_plans and mssql_live_plans 1m), rpoff (no schedules), rpnone (query_text none, schedules on):
 #     C1 one case per threshold, each alone, read by 'collect -once mssql_running_plans -instance rpon' while it runs:
@@ -61,7 +62,7 @@
 #     C5 live plan: on a build LivePlanBuildOK passes and SQL Server 2019 or later, a CPU-bound statement read past 61 s
 #        of CPU by 'collect -once mssql_live_plans': one mssql_live_plan row whose XML holds RunTimeCountersPerThread; on
 #        2017 (CU26 or later) with trace flag 7412 off: no row and mssql_live_read's note names trace flag 7412;
-#     C6 the switch under 'pgvigil run' with the wiring applied (review B2, the lead 17:5x): rppage added on Admin >
+#     C6 the switch under 'pgvigil run' with the wiring applied: rppage added on Admin >
 #        Instances, then the upgrade (running_plans dropped, 0157 run again): its box false (R1); rppage2 and rppage3 added
 #        after: false (R2); the box on rpon (a file instance) refused naming pgvigil.yaml; rppage3 ticked (an admin_audit
 #        row): under pgvigil run rpon and rppage3 store the blocked statement's plan, rppage, rppage2 and rpoff run no
@@ -72,11 +73,11 @@
 #        case (pgvqs, its query hash and plan hash) lists its running capture (has_plan) and its plan cache entry after a
 #        plan cache read, and the running capture's plan reads as ShowPlanXML; a plan hash no plan has lists none.
 #     C8 rpon's query_text full -> none, then its read: no plan or live plan kept (plan_state policy); serve again: the
-#        running and live plan reads answer none with the policy's words, no plan (review B1).
+#        running and live plan reads answer none with the policy's words, no plan.
 #     C9 purge(30) (0190's line in the wiring): a running plan, a live capture, a plan statistic and a forced-plan failure
 #        aged 40 days (an aged row inserted where the table has none) gone, the rest kept; pgvigil_reader may not EXECUTE
-#        mssql_qs_plans_purge or mssql_plans_policy_drop (NOT PROVEN without the role) (review finding 6).
-#     Red on f8e89d2: no such collection (collect -once refuses mssql_running_plans).
+#        mssql_qs_plans_purge or mssql_plans_policy_drop (NOT PROVEN without the role).
+#     Red before the change: no such collection (collect -once refuses mssql_running_plans).
 #  D. the statistics a plan was compiled with (PerformanceMonitor 3.13 Added 1, F10, P5), database pgvqs2 with Query Store
 #     on: four tables of 20,000 rows, each with a statistic on v made WITH FULLSCAN, 30 % of rows changed, then one query
 #     each read through mssql_querystore (and mssql_indexes for the rows):
@@ -87,7 +88,7 @@
 #     rows 20,000, the auto-update line min(4,500, sqrt(1000 x 20,000)) = 4,472; the finding 'a plan compiled on stale
 #     statistics' names D1-D3's plans and not D0's; GET /api/mssql/planstats answers D1's rows.
 #     On a server whose plans carry no OptimizerStatsUsage (before 2017 / 2016 SP2) D is NOT PROVEN, said so.
-#     Red on f8e89d2: no mssql_plan_stat table.
+#     Red before the change: no mssql_plan_stat table.
 #  E. a forced plan's failures (PerformanceMonitor 3.13 Changed 15, F9, P6), in pgvqs2: a query (OPTION (RECOMPILE)) whose
 #     plan seeks ix_f is forced, ix_f dropped, then each run is one failure; mssql_querystore read after each step:
 #     E1 one failure in one read: the finding 'a forced plan fails' is info, its detail 'Held: it failed once';
@@ -97,7 +98,7 @@
 #     E5 every row before E4's failure moved 25 h back in the repository (the reset too, so E3's failure stays in the
 #        window): two failure reads, not paged, info 'Held: no two of its 2 failures ... (read <E4's read> UTC)';
 #     GET /api/mssql/forcefail lists the plan with its reads.
-#     Red on f8e89d2: no mssql_qs_force_fail table; 'a forced plan fails' is a warning at E1.
+#     Red before the change: no mssql_qs_force_fail table; 'a forced plan fails' is a warning at E1.
 #  F. one statement on every instance, statements by their text (PerformanceMonitor 3.13 Added 14, 15, 16; F13, F14,
 #     P7, P8), a second container (instance f2) beside the first (sqlfull):
 #     F1 a statement run 3 times on the first (in pgvqs, and twice in pgvqs2 under Query Store) and 5 on the second
@@ -113,18 +114,30 @@
 #        finds the statement;
 #     F4 no note while the repository holds no PostgreSQL instance; after one is registered the replies carry the
 #        'PostgreSQL instances are not compared or searched here' note.
-#     F5 the policy NOW (j15's fix review finding 4): sqlfull's query_text set full -> none and serve again, its stored
+#     F5 the policy NOW: sqlfull's query_text set full -> none and serve again, its stored
 #        texts still in the repository (a policy change clears neither the plan cache's texts nor the Query Store's: a
 #        text goes only when its key is sent again): the search returns no row of sqlfull from either source, names
 #        sqlfull under no_text, and instance=sqlfull returns no row; f2's rows still come. Set back to full after.
-#        Red on 92fc66cd: sqlfull's stored rows come back while no_text names it.
-#     Red on f8e89d2: the routes do not exist.
+#        Red before the fix: sqlfull's stored rows come back while no_text names it.
+#     F6 (TEXT-NOW-L row 3; written before its first run) the search under 'normalized' matches the text it shows:
+#        sqlfull's query_text set full -> normalized and serve again: q=marker%_x (the marker stands only inside the
+#        statement's literal 'pgvf_marker%_x', which the normalized text replaces) returns no row of sqlfull, f2's rows
+#        still come; q=t1.pad (outside the literals) returns sqlfull's rows, each statement shown normalized (no
+#        'pgvf_marker' in it); sqlfull is named under normalized. Set back to full after. Red at the row-first commit:
+#        q=marker%_x returns sqlfull's rows (shown normalized, matched on the stored literal).
+#     F7 (written before its first run) a normalized instance is matched on its whole stored
+#        text, then cut to the 400 characters shown: a statement of about 680 characters (run 3 times on sqlfull, with
+#        the alias pgvf_tail_col past character 550 and the literal 'pgvf_long_x'), sqlfull still read as normalized:
+#        q=pgvf_tail_col returns sqlfull's row(s), each statement at most 400 characters and shown normalized (no
+#        'pgvf_long_x'); q=pgvf_long_x (only inside its literal) returns no row of sqlfull. Red at the row-first
+#        commit: q=pgvf_tail_col returns no row of sqlfull (the function's left(.., 400) is matched, the alias cut off).
+#     Red before the change: the routes do not exist.
 #  G. the STATISTICS IO / TIME reader (DBA Dash N62-N67, F11, P9): web/src/mssql_statsio.ts compiled by esbuild; its unit
 #     tests (web/src/mssql_statsio.test.mjs: sqlcmd, SSMS and Azure Data Studio shapes, a German text, the
 #     DBADash-Compare runs, temporary tables, the save round trip) all ok; then a messages file captured on the box
 #     (sqlcmd, SET STATISTICS IO, TIME ON, NOCOUNT OFF, two statements at MAXDOP 1): the reader's logical reads and
 #     rows per statement equal the server's last_logical_reads and last_rows (sys.dm_exec_query_stats).
-#     Red on f8e89d2: no web/src/mssql_statsio.ts.
+#     Red before the change: no web/src/mssql_statsio.ts.
 #  H. evict one plan through the actions door (Opserver O4b.13, F2-F5, F16, F17, P4); actions logins: one with
 #     EXECUTE on the certificate-signed master.dbo.pgvigil_evict_plan (docs/sqlserver-actions.md's script, as is), one
 #     with ALTER SERVER STATE, one with nothing, one sysadmin; instances ev_signed, ev_off (plan_evict not on its list),
@@ -140,13 +153,13 @@
 #        code = the first 8 hex digits of SHA-256 over the handle (computed here); the run with that code (lower case):
 #        done, 'gone from the cache'; the plan absent by hand, the other plan of p_two still cached; its actions_log row
 #        (plan_evict, done, target 'Proc dbo.p_two in pgvqs', target_id the handle); H9 the same handle again: refused;
-#     H11 the route is the actions login's own right (review 20261114-183110 finding 1): ev_direct (ALTER SERVER STATE, no
+#     H11 the route is the actions login's own right: ev_direct (ALTER SERVER STATE, no
 #        EXECUTE) while the procedure exists: preview 'direct', DBCC FREEPROCCACHE itself, done, gone; H13 ev_rd, whose
 #        read login lacks VIEW ANY DEFINITION (it cannot see the procedure): preview 'signed procedure', the EXEC, done;
 #        H11b the procedure dropped: ev_signed's preview 'direct', ev_direct done again;
 #     H12 GET actions/state: ev_signed's actions login may EXECUTE the procedure and holds neither VIEW nor ALTER SERVER
 #        STATE; ev_direct's holds both.
-#     Red on f8e89d2: the gate refuses the action (400 'action must be one of kill, job_start, job_stop').
+#     Red before the change: the gate refuses the action (400 'action must be one of kill, job_start, job_stop').
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
@@ -627,7 +640,7 @@ LN=$(pq "SELECT coalesce(r.note, '') FROM pgvigil.mssql_live_read r JOIN pgvigil
 if (( MAJ >= 15 )); then [[ "$LV" -ge 1 ]] || fail "C5: no live plan with operator counters on $VER (note: $LN)"; echo "ok   C5: a live plan with RunTimeCountersPerThread on $VER"
 else [[ "$LV" == 0 && "$LN" == *7412* ]] || fail "C5: on $VER want no live plan and the trace flag 7412 note (live plans $LV, note '$LN')"; echo "ok   C5: on $VER no live plan, the note: $LN"; fi
 
-# C8 the policy leaves full (review 20261114-173221 B1): rpon's next read drops every plan and live plan it kept, and the
+# C8 the policy leaves full: rpon's next read drops every plan and live plan it kept, and the
 # plan reads answer none with the policy's words (serve reads the policy again when it starts)
 RK=$(pq "SELECT p.query_hash || ' ' || p.plan_hash || ' ' || p.stmt_start || ' ' || p.stmt_end FROM pgvigil.mssql_running_plan p JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'rpon' AND p.plan_xml IS NOT NULL LIMIT 1")
 [[ -n "$RK" ]] || fail "C8: rpon keeps no plan before its policy changes"
@@ -649,7 +662,7 @@ done
 set_qt rpon full
 echo "ok   C8: rpon's policy full -> none: its next read dropped every kept plan and live plan (plan_state policy); the plan and live reads answer none with the policy's words"
 
-# C6 the switch under pgvigil run (review B2, the lead 17:5x): the running plans box of Admin > Instances is off for every
+# C6 the switch under pgvigil run: the running plans box of Admin > Instances is off for every
 # page instance (present at the upgrade or added after) until an admin ticks it; cleared, the reads stop; the file's
 # global schedules: mssql_running_plans: 0 stops a ticked one; a file instance keeps its own schedules:
 COL=pgv_qcol_$SUF; COL_PW=$(pw)
@@ -713,7 +726,7 @@ kill "$RUNPID" 2>/dev/null || true; wait "$RUNPID" 2>/dev/null || true; RUNPID=
 CODE=$(box rppage3 false)
 echo "ok   C6: the box is off for every page instance (rppage present at the upgrade, rppage2 added after: no read); ticked, rppage3 reads (audited); cleared, it stops within the list's read; the global 0 stops a ticked one, not a file instance's own schedules:; rpoff ran none; the box refused on a file instance"
 
-# C9 purge() with the wiring's 0190 line (review finding 6): a running plan, a live capture and a plan statistic aged 40
+# C9 purge() with the wiring's 0190 line: a running plan, a live capture and a plan statistic aged 40
 # days are gone after purge(30), the rest kept; the reader may not call mssql_qs_plans_purge
 AGE="interval '40 days'"
 pq "UPDATE pgvigil.mssql_running_plan SET first_seen = first_seen - $AGE, last_seen = last_seen - $AGE WHERE (instance_id, query_hash, plan_hash, stmt_start, stmt_end) IN
@@ -875,7 +888,7 @@ export PGV_Q_MON2="sqlserver://$MON:$(urlq "$MON_PW")@127.0.0.1:$PORT2?database=
 printf '  - name: f2\n    engine: sqlserver\n    dsn: env:PGV_Q_MON2\n    query_text: full\n' >> "$TMPD/m.yaml"
 col sqlfull mssql_plancache; col f2 mssql_instance mssql_plancache
 STF="SELECT COUNT(*) FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.a > 4990 AND t1.pad <> 'pgvf_marker%_x';"
-sqok "F: three runs" "$STF $STF $STF" pgvqs; sqok "F: two runs under Query Store" "$STF $STF EXEC sys.sp_query_store_flush_db;" pgvqs2
+sqok "F: three runs" "$STF $STF $STF" pgvqs; STL="SELECT $(printf 't1.a AS c, %.0s' {1..50})t1.id AS pgvf_tail_col FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.a > 4995 AND t2.pad <> 'pgvf_long_x';"; sqok "F7: the long statement, three runs" "$STL $STL $STL" pgvqs; sqok "F: two runs under Query Store" "$STF $STF EXEC sys.sp_query_store_flush_db;" pgvqs2
 sq2 "$STF $STF $STF $STF $STF" pgvqs >/dev/null || fail "F: five runs on f2"
 col sqlfull mssql_plancache mssql_querystore; col f2 mssql_plancache
 HAND1=$(sq "SELECT CONVERT(varchar(40), qs.query_hash, 1) + '|' + CAST(qs.execution_count AS varchar(20)) + '|' + CAST(qs.total_worker_time AS varchar(20)) + '|' + ISNULL(CAST(t.dbid AS varchar(10)), '0')
@@ -950,7 +963,7 @@ STORED=$(pq "SELECT (SELECT count(*) FROM pgvigil.mssql_pc_text WHERE instance_i
 [[ "$STORED" -ge 1 ]] || fail "F5: sqlfull holds no stored text with the marker to begin with"
 set_qt sqlfull none; serve_restart f5
 CODE=$(api "mssql/search?q=marker%25_x" "$TMPD/f5a.json"); CODE2=$(api "mssql/search?q=marker%25_x&instance=$IF" "$TMPD/f5b.json")
-python3 - "$TMPD/f5a.json" "$TMPD/f5b.json" <<'PYEND' || fail "F5: see above (red on 92fc66cd: sqlfull's stored texts come back)"
+python3 - "$TMPD/f5a.json" "$TMPD/f5b.json" <<'PYEND' || fail "F5: see above (red before the fix: sqlfull's stored texts come back)"
 import json, sys
 a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
 rows = lambda d: [dict(zip(x['rows']['columns'], r)) for x in d.get('sources', []) if x.get('rows') for r in x['rows']['rows']]
@@ -965,7 +978,48 @@ sys.exit(1 if bad else 0)
 PYEND
 echo "ok   F5: sqlfull's policy set to none: none of its $STORED stored text(s) is returned (every instance, or it alone), it is named under no_text, f2's rows still come"
 set_qt sqlfull full; serve_restart f5back
-echo "ok   F: one statement's executions per instance and source equal the servers' own; the search finds it on both, % and _ as they are, the policies named; the trigram index's state; the PostgreSQL note; the policy now (F5)"
+# F6: under normalized the search matches the text the page shows, never a literal of the stored full text
+set_qt sqlfull normalized; serve_restart f6
+CODE=$(api "mssql/search?q=marker%25_x" "$TMPD/f6a.json"); CODE2=$(api "mssql/search?q=t1.pad" "$TMPD/f6b.json")
+python3 - "$TMPD/f6a.json" "$TMPD/f6b.json" <<'PYEND' || fail "F6: see above (red at the row-first commit: sqlfull's rows come back for a literal it does not show)"
+import json, sys
+a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
+rows = lambda d: [dict(zip(x['rows']['columns'], r)) for x in d.get('sources', []) if x.get('rows') for r in x['rows']['rows']]
+bad = []
+lit = [x for x in rows(a) if x['instance'] == 'sqlfull']
+if lit: bad.append(f"q=marker%_x: {len(lit)} row(s) of sqlfull (normalized: the marker is only in a literal it does not show): {[(x['source'], (x['statement'] or '')[:60]) for x in lit][:3]}")
+if not [x for x in rows(a) if x['instance'] == 'f2']: bad.append("q=marker%_x: f2's rows (full) are gone too")
+shown = [x for x in rows(b) if x['instance'] == 'sqlfull']
+if not shown: bad.append("q=t1.pad: no row of sqlfull (outside the literals: it must still be found)")
+if [x for x in shown if 'pgvf_marker' in (x['statement'] or '')]: bad.append("q=t1.pad: a sqlfull statement shown with its literal")
+if 'sqlfull' not in (a.get('normalized') or []): bad.append(f"normalized {a.get('normalized')}")
+for x in bad: print('DIFF F6', x)
+print(f"F6 counts: q=marker%_x sqlfull {len(lit)} f2 {len([x for x in rows(a) if x['instance'] == 'f2'])}; q=t1.pad sqlfull {len(shown)}")
+sys.exit(1 if bad else 0)
+PYEND
+echo "ok   F6: sqlfull read as normalized: q=marker%_x (inside its literal) returns none of its rows, q=t1.pad returns them normalized; f2's rows still come"
+# F7: a normalized instance matched on its whole stored text, then cut to the 400 characters shown
+CODE=$(api "mssql/search?q=pgvf_tail_col" "$TMPD/f7a.json"); CODE2=$(api "mssql/search?q=pgvf_long_x" "$TMPD/f7b.json")
+python3 - "$TMPD/f7a.json" "$TMPD/f7b.json" <<'PYEND' || fail "F7: see above (red at the row-first commit: no row of sqlfull for an alias past character 400)"
+import json, sys
+a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
+rows = lambda d: [dict(zip(x['rows']['columns'], r)) for x in d.get('sources', []) if x.get('rows') for r in x['rows']['rows']]
+bad = []
+tail = [x for x in rows(a) if x['instance'] == 'sqlfull']
+if not tail: bad.append("q=pgvf_tail_col: no row of sqlfull (outside the literals, past character 400: it must be found)")
+for x in tail:
+    st = x['statement'] or ''
+    if len(st) > 400: bad.append(f"q=pgvf_tail_col: a statement of {len(st)} characters shown (at most 400)")
+    if 'pgvf_long_x' in st: bad.append("q=pgvf_tail_col: a sqlfull statement shown with its literal")
+lit = [x for x in rows(b) if x['instance'] == 'sqlfull']
+if lit: bad.append(f"q=pgvf_long_x: {len(lit)} row(s) of sqlfull (only inside its literal)")
+for x in bad: print('DIFF F7', x)
+print(f"F7 counts: q=pgvf_tail_col sqlfull {len(tail)} (lengths {[len(x['statement'] or '') for x in tail]}); q=pgvf_long_x sqlfull {len(lit)}")
+sys.exit(1 if bad else 0)
+PYEND
+echo "ok   F7: sqlfull read as normalized: q=pgvf_tail_col (past character 400, outside the literals) returns its rows cut to 400 and normalized; q=pgvf_long_x (inside its literal) none"
+set_qt sqlfull full; serve_restart f6back
+echo "ok   F: one statement's executions per instance and source equal the servers' own; the search finds it on both, % and _ as they are, the policies named; the trigram index's state; the PostgreSQL note; the policy now (F5); the shown text under normalized (F6); the whole text matched, then cut (F7)"
 fi
 
 if part G; then
@@ -1032,7 +1086,7 @@ plan2() { sq "SET ARITHABORT ON; EXEC dbo.p_two;" pgvqs >/dev/null; sq "SET ARIT
   sq "SELECT CONVERT(varchar(140), cp.plan_handle, 1) + '|' + CONVERT(varchar(140), MIN(qs.sql_handle), 1) FROM sys.dm_exec_cached_plans cp CROSS APPLY sys.dm_exec_sql_text(cp.plan_handle) t
        JOIN sys.dm_exec_query_stats qs ON qs.plan_handle = cp.plan_handle WHERE t.objectid = OBJECT_ID('pgvqs.dbo.p_two') AND t.dbid = DB_ID('pgvqs') GROUP BY cp.plan_handle ORDER BY cp.plan_handle"; }
 up0x() { local h="0x${1:2}"; h=${h^^}; echo "0x${h:2}"; }
-# code: the plan's code as the lead wrote it (the first 8 hex digits of SHA-256 over the handle's bytes), computed here
+# code: the plan's code as written (the first 8 hex digits of SHA-256 over the handle's bytes), computed here
 code() { python3 -c 'import hashlib, sys; print(hashlib.sha256(bytes.fromhex(sys.argv[1][2:])).hexdigest()[:8].upper())' "$1"; }
 HH=$(plan2); L1=$(sed -n 1p <<<"$HH"); L2=$(sed -n 2p <<<"$HH"); PH=$(up0x "${L1%%|*}"); SH=${L1##*|}; PH2=$(up0x "${L2%%|*}")
 [[ ${#PH} -gt 10 && ${#PH2} -gt 10 && "$PH" != "$PH2" ]] || fail "H0: want two plans of dbo.p_two in the cache (ARITHABORT ON and OFF): $HH"

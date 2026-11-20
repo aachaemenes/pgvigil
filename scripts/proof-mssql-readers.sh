@@ -9,12 +9,12 @@
 #   PGVIGIL_SKIP_PG13=1      leaves part M out (it starts and removes a postgres:13 container of its own).
 #   PGVIGIL_NO_MSSQL=1       the parts that need no SQL Server only (M, G, X): the last line says so and is NOT the
 #                            proof's PASS.
-# The binary must carry the routes /api/mssql/errorlog, /defaulttrace and /syshealth (the lead's wiring in web.go):
+# The binary must carry the routes /api/mssql/errorlog, /defaulttrace and /syshealth (the wiring in web.go):
 # part A stops at its first read when it does not.
 # The proof makes, and removes on every exit path (the end, a failed check, INT, TERM): its own SQL Server container
 # (mcr.microsoft.com/mssql/server:2022-latest unless MSSQL_IMAGE names another; its clock set to America/Los_Angeles
 # so the server's local time is not UTC; a throwaway sa password made here, never printed), its own repository
-# database pgvigil_s149_readers_<n> and, for M, a postgres:13 container. Inside its own container it makes logins, a
+# database pgvigil_readers_<n> and, for M, a postgres:13 container. Inside its own container it makes logins, a
 # database, error-log lines, trace events and memory pressure; nothing outside it.
 #
 # Expected (written before the first run):
@@ -53,8 +53,8 @@
 #     up to 120 s late). (Measured on the box
 #     in two experiments before this was written: such a starved interval gave a QUERY_PROCESSING result in WARNING,
 #     35 pending tasks, the oldest waiting 289 s; a memory eater in the container never gave a RESOURCE warning.)
-#     sa reads at least one QUERY_PROCESSING result not CLEAN dated after the sessions began. (Restated with the
-#     review fold, before any run that reached H2: the waits for the file's late writes.) FULL's next read stores it exactly once, its event_at
+#     sa reads at least one QUERY_PROCESSING result not CLEAN dated after the sessions began. (Restated
+#     before any run that reached H2: the waits for the file's late writes.) FULL's next read stores it exactly once, its event_at
 #     equal to sa's timestamp_utc to the millisecond, its state and pending tasks equal; the findings hold
 #     'system_health: a component is not clean' for QUERY_PROCESSING (warning for WARNING, critical for ERROR).
 #     3. A second read stores no more of them: H2's result is still one row, and the results equal sa's count again.
@@ -81,8 +81,8 @@
 #        memory|RESOURCE; warning|a SQL Server reader could not read its source|defaulttrace; info|a SQL Server
 #        reader's source is switched off|syshealth; info|a SQL Server reader lacks its right|errorlog.
 #        Not in it: a line 30 hours old, a growth of 900 ms, a FREEPROCCACHE with a plan handle, an older SYSTEM result
-#        with non-yielding tasks, a state read 40 minutes ago, a figure that is no number. (Restated with the review
-#        fold, before any run that had it: the out-of-memory count is the counter's growth inside the window, so the
+#        with non-yielding tasks, a state read 40 minutes ago, a figure that is no number. (Restated
+#        before any run that had it: the out-of-memory count is the counter's growth inside the window, so the
 #        rows hold a RESOURCE result 20 minutes old with 0 exceptions before the one with 1.)
 #     3. mssql_errorlog_search_set: four strings with two duplicates (one by its spaces, one by its case) give 2, the
 #        first spelling kept, and the cursor row holds them with offset 1;
@@ -93,7 +93,7 @@
 #  The last line is "proof-mssql-readers: PASS (...)" and the exit code 0 only when every part holds; anything else
 #  is a FAIL line naming the check, exit 1.
 #  NOT PROVEN HERE: a Windows SQL Server (backslash paths: unit-tested), SQL Server 2017 and 2019 (the version proof
-#  of task 145 runs this file on them when the lead adds it), Amazon RDS (rds_read_error_log), Azure SQL Managed
+#  of task 145 runs this file on them once it is added), Amazon RDS (rds_read_error_log), Azure SQL Managed
 #  Instance, a slow growth over 1 s, the corruption, IO and scheduler components of a real server in trouble, the
 #  pages in a browser (proof-a11y).
 set -euo pipefail
@@ -106,10 +106,10 @@ fi
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SUF=$RANDOM
 WORK=$(mktemp -d); CFG=$WORK/cfg.yaml; OUT=$WORK/out
-REPO_DB=pgvigil_s149_readers_$SUF
-CT=pgv-s149-mssql-$SUF; PG13=pgv-s149-pg13-$SUF
+REPO_DB=pgvigil_readers_$SUF
+CT=pgv-readers-mssql-$SUF; PG13=pgv-readers-pg13-$SUF
 LF=pgv149full_$SUF; LC=pgv149cur_$SUF; LB=pgv149bare_$SUF
-NF=s149-full-$SUF; NC=s149-current-$SUF; NB=s149-bare-$SUF
+NF=readers-full-$SUF; NC=readers-current-$SUF; NB=readers-bare-$SUF
 DB=pgv149db_$SUF
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 PF=$(pw); PC=$(pw); PB=$(pw)
@@ -207,13 +207,13 @@ else
   p13() { PGPASSWORD="$PG13PW" psql "host=127.0.0.1 port=$P13 user=postgres dbname=${2:-postgres}" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
   for _ in $(seq 1 60); do p13 "select 1" >/dev/null 2>&1 && break; sleep 1; done
   sleep 2; p13 "select 1" >/dev/null || fail "M: PostgreSQL 13 does not answer"
-  p13 "create database pgvigil_s149_pg13" >/dev/null
-  export PG13_DSN="host=127.0.0.1 port=$P13 user=postgres password=$PG13PW dbname=pgvigil_s149_pg13"
+  p13 "create database pgvigil_readers_pg13" >/dev/null
+  export PG13_DSN="host=127.0.0.1 port=$P13 user=postgres password=$PG13PW dbname=pgvigil_readers_pg13"
   sed 's/env:PGVIGIL_REPO_DSN/env:PG13_DSN/' "$CFG" > "$WORK/pg13.yaml"
   "$BIN" migrate -config "$WORK/pg13.yaml" > "$WORK/pg13.out" 2>&1 || { tail -20 "$WORK/pg13.out" >&2; fail "M: migrate on PostgreSQL 13"; }
-  V13=$(p13 "select current_setting('server_version_num')::int / 10000 || '|' || (select max(version) from pgvigil.schema_version)" pgvigil_s149_pg13)
+  V13=$(p13 "select current_setting('server_version_num')::int / 10000 || '|' || (select max(version) from pgvigil.schema_version)" pgvigil_readers_pg13)
   eq "M: PostgreSQL major|schema version" "$V13" "13|$(q "select max(version) from pgvigil.schema_version")"
-  F13=$(p13 "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname in ('import_mssql_readers', 'import_mssql_errorlog', 'import_mssql_defaulttrace', 'import_mssql_syshealth', 'mssql_errorlog_search_set', 'mssql_health_num', 'mssql_event_partition')" pgvigil_s149_pg13)
+  F13=$(p13 "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname in ('import_mssql_readers', 'import_mssql_errorlog', 'import_mssql_defaulttrace', 'import_mssql_syshealth', 'mssql_errorlog_search_set', 'mssql_health_num', 'mssql_event_partition')" pgvigil_readers_pg13)
   eq "M: 0091's functions on PostgreSQL 13" "$F13" 7
   docker rm -f -v "$PG13" >/dev/null 2>&1 && MADE_PG13=
   echo "M: OK"; M_NOTE="M"
@@ -366,7 +366,7 @@ U=http://127.0.0.1:$PORT/api
 for _ in $(seq 1 40); do curl -fs "$U/health" >/dev/null 2>&1 && break; sleep 0.25; done
 curl -fs "$U/health" >/dev/null || { cat "$WORK/serve.log" >&2; fail "the UI did not serve"; }
 for r in errorlog defaulttrace syshealth; do
-  [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/$r?instance=$IF")" != 404 ] || fail "the binary has no route /api/mssql/$r (the lead's wiring in web.go)"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/$r?instance=$IF")" != 404 ] || fail "the binary has no route /api/mssql/$r (the wiring in web.go)"
 done
 W="from=$(date -u -d '-2 hours' +%FT%TZ)&to=$(date -u -d '+1 minute' +%FT%TZ)"
 enc() { jq -rn --arg s "$1" '$s|@uri'; }
@@ -390,14 +390,14 @@ kill "$SRV_PID" 2>/dev/null || true; SRV_PID=
 fi
 
 echo "--- G. the import functions refuse a PostgreSQL instance"
-PGI=$(q "select pgvigil.ensure_instance('s149-pg-$SUF', 'postgres', 'x', 160000, false, '{}'::text[])")
+PGI=$(q "select pgvigil.ensure_instance('readers-pg-$SUF', 'postgres', 'x', 160000, false, '{}'::text[])")
 for f in import_mssql_errorlog import_mssql_defaulttrace import_mssql_syshealth; do
   if q "select pgvigil.$f($PGI, now(), '[]'::jsonb)" >/dev/null 2>&1; then fail "G: $f took a PostgreSQL instance"; fi
 done
 echo "G: OK"
 
 echo "--- X. imported rows"
-XI=$(q "select pgvigil.ensure_instance('s149-x-$SUF', 'sqlserver', 'x', 160000, false, '{}'::text[], 'sqlserver')")
+XI=$(q "select pgvigil.ensure_instance('readers-x-$SUF', 'sqlserver', 'x', 160000, false, '{}'::text[], 'sqlserver')")
 imp() { q "select pgvigil.import_mssql_readers($XI, now(), '$1'::jsonb)" >/dev/null; }
 # 1. the same line or event under three instants; a component twice
 L='{"kind":"line","line_key":"k1-0","logged_local":"2026-11-01T12:00:00","message":"x","severity":17,"log_at":'
@@ -444,7 +444,7 @@ GOT=$(q "select severity || '|' || check_name || '|' || object from pgvigil.mssq
 [ "$GOT" = "$WANT" ] || { diff <(echo "$WANT") <(echo "$GOT") >&2 || true; fail "X2: the findings differ (< want, > got)"; }
 echo "X2: OK (19 findings, none from the rows the windows leave out)"
 # 3. the instance's own search strings
-XN="s149-x-$SUF"
+XN="readers-x-$SUF"
 eq "X3: four strings with two duplicates" "$(q "select pgvigil.mssql_errorlog_search_set('$XN', array['a', 'b', ' a ', 'A'], true)")" 2
 eq "X3: the cursor row" "$(q "select file_name || '|' || file_offset from pgvigil.mssql_cursor where instance_id = $XI and source = 'errorlog:search'")" '["a", "b"]|1'
 for bad in "array(select 's' || g from generate_series(1, 51) g)" "array[repeat('x', 201)]"; do

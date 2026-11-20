@@ -35,11 +35,13 @@ SELECT j.name, j.enabled, j.category, j.owner, j.schedule_names, j.schedules, j.
 
 // sqlMSSQLJobsRunning: the jobs running at the read with the average and the 95th percentile of their good runs (the
 // job outcome rows, step 0, of the last 31 days) and the run so far as a percentage of the average (task 177 D14,
-// PerformanceMonitor's Running Jobs: PERCENTILE_CONT(0.95) over the job's successful outcome rows, percent of average)
+// PerformanceMonitor's Running Jobs: PERCENTILE_CONT(0.95) over the job's successful outcome rows, percent of average);
+// the percentage is cast to numeric before round: PostgreSQL 13's extract() is double precision, and 13 has no
+// round(double precision, integer)
 const sqlMSSQLJobsRunning = `
 SELECT j.name, j.running_since, extract(epoch FROM j.snapshot_at - j.running_since)::bigint AS running_s, j.running_after_step,
        g.avg_duration_s, g.p95_duration_s, g.good_runs,
-       round(100.0 * extract(epoch FROM j.snapshot_at - j.running_since) / nullif(g.avg_duration_s, 0), 1) AS pct_of_avg,
+       round((100.0 * extract(epoch FROM j.snapshot_at - j.running_since) / nullif(g.avg_duration_s, 0))::numeric, 1) AS pct_of_avg,
        j.snapshot_at
   FROM pgvigil.mssql_jobs j
   LEFT JOIN LATERAL (SELECT round(avg(r.duration_s)) AS avg_duration_s,

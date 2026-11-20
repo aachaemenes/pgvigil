@@ -23,11 +23,26 @@ import (
 //
 // Both read only this slice's tables (0084), mssql_wait_sample, mssql_sched_sample and collection_dates.
 
+// sqlMSSQLProperties: the stored properties, and beside the default backup path (task 301b, Instance#14) whether the
+// SQL Server service account sees it - mssql_backup_checks' read (mssql_backup_path_cells, 0191), never a stored
+// property: its value yes / no, its words the note, its read time the row's. A check of another path than the one stored
+// (the path changed since mssql_backup_checks last read) says so and judges nothing.
 const sqlMSSQLProperties = `
 SELECT p.name, p.grp, p.label, p.value, p.note, p.ord, p.snapshot_at, p.since
   FROM pgvigil.mssql_property p
  WHERE p.instance_id = $1
- ORDER BY p.ord, p.name`
+UNION ALL
+SELECT 'default_backup_path_reachable', p.grp, 'Default backup path reachable',
+       CASE WHEN c.default_backup_path IS NOT DISTINCT FROM p.value THEN c.reachable END,
+       CASE WHEN c.instance_id IS NULL THEN 'not read: mssql_backup_checks has not run on this server yet (hourly)'
+            WHEN c.default_backup_path IS DISTINCT FROM p.value
+              THEN 'not read yet: the path changed since mssql_backup_checks last read it (hourly)'
+            ELSE c.default_backup_path_state END,
+       p.ord + 1, coalesce(c.read_at, p.snapshot_at), NULL::timestamptz
+  FROM pgvigil.mssql_property p
+  LEFT JOIN pgvigil.mssql_backup_path_cells c ON c.instance_id = p.instance_id
+ WHERE p.instance_id = $1 AND p.name = 'default_backup_path'
+ ORDER BY 6, 1`
 
 const sqlMSSQLPropertyChanges = `
 SELECT c.changed_at, c.name, c.label, c.old_value, c.new_value

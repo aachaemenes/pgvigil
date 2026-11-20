@@ -5,7 +5,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtTime, grid } from './ui';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const yes = (v: unknown) => v ? 'yes' : '';
 
 interface ExtInstance { available: Table | null; installed: Table | null; preloaded: Table | null; history: Table | null; findings: Table | null }
@@ -42,7 +42,7 @@ export async function extensionsView(instance: number): Promise<HTMLElement> {
   }
   sec.append(el('h3', {}, 'Installed per database'), grid(inst, [
     { key: 'datname', label: 'database' }, { key: 'name', label: 'extension' },
-    { key: 'version', label: 'version', fmt: (v, r) => r.outdated ? badge(String(v ?? ''), 'warn') : String(v ?? '') },
+    { key: 'version', label: 'version', fmt: (v, r) => r.outdated ? badge(String(v ?? ''), 'warn') : String(v ?? ''), cls: (v, r) => r.outdated || v == null || v === '' ? '' : 'status ok' },
     { key: 'default_version', label: 'server offers' }, { key: 'schema_name', label: 'schema' },
   ], 'No extension installed in any database read.'));
 

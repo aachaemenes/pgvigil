@@ -7,29 +7,29 @@
 # containers of its own - mcr.microsoft.com/mssql/server:2022-latest (a throwaway sa password made here, never
 # printed) and postgres:16 (pg_stat_statements loaded, the log collector on, a throwaway superuser password) - and uses
 # the PostgreSQL one as both the repository (database pgvigil_repo) and the monitored server (database postgres).
-# The routes and the tabs are the lead's files (web.go, router.ts, main.ts): a tree without /api/reports is built
+# The routes and the tabs are shared files (web.go, router.ts, main.ts): a tree without /api/reports is built
 # with the patch named in PGVIGIL_REPORTS_WIRING applied to a scratch copy. PGVIGIL_REPORTS_SHOTS names a folder for
 # the page shots (each report, light and dark); not set, none are kept. PGVIGIL_REPORTS_KEEP=1 leaves both containers
 # (the repository database with them) and the scratch folder in place at the end, pass or fail, and prints their names,
 # ports and the repository's DSN without its password, for a probe in place; serve and Chromium are stopped either way.
 # The names never take an existing container's: a kept pair stays out of a later run's way.
 #
-# Expected (written before the first run; the review fold of run 1 changed B to E as marked [fold]):
+# Expected (written before the first run; the rows of B to E changed after run 1 are marked [changed]):
 #  A. migrate applies 0105; its eight tables exist; pgvigil_collector may execute import_mssql_reports and
 #     import_reports and may not select mssql_sql_logins; pgvigil_reader may select every 0105 table and may not
 #     execute the imports. import_mssql_reports refuses a PostgreSQL instance ("is not a SQL Server instance"),
 #     import_reports a SQL Server one ("is not a PostgreSQL instance").
-#  B. mssql_reports as sa on SQL Server 2022, the container's clock in America/Los_Angeles [fold] (no "partial"): the
+#  B. mssql_reports as sa on SQL Server 2022, the container's clock in America/Los_Angeles [changed] (no "partial"): the
 #     role members stored equal sa's count of sys.server_role_members and its sysadmin list; the SQL logins equal
 #     sys.sql_logins (no ##...## login); rp_old's password_set_at falls between the shell's UTC clock read just before
-#     and just after its CREATE LOGIN (to the second) [fold: an independent clock, not the code's own conversion]; the
+#     and just after its CREATE LOGIN (to the second) [changed: an independent clock, not the code's own conversion]; the
 #     database properties equal sys.extended_properties class 0 summed over every database (rp169 carries two of its
 #     own); rp169.dbo.rp_big's row count is 5,000 and its reserved KB equals sys.dm_db_partition_stats'; mssql_service_ext
 #     holds one row per sys.dm_server_services row; every report_read_state part, failed_logins too, says 'read'.
 #  C. rp-ms-vss read once as sa (its DSN swapped), then as a login with VIEW SERVER STATE only: "partial";
 #     role_members, sql_logins, extended_properties and table_sizes say 'no right' naming VIEW ANY DEFINITION
-#     [fold: table sizes need it too], services 'read'; the role members, logins and properties the sa read stored for
-#     rp-ms-vss are kept, every one still present [fold: a check that can fail].
+#     [changed: table sizes need it too], services 'read'; the role members, logins and properties the sa read stored for
+#     rp-ms-vss are kept, every one still present [changed: a check that can fail].
 #  D. reports on PostgreSQL 16: as the superuser, the comment of database postgres is stored as property 'comment';
 #     the methods of rp_md5 / rp_scram / rp_nopw are md5 / scram-sha-256 / none (equal to a hand read of pg_authid);
 #     rp-pg-low read once as the superuser (its DSN swapped), then as a pg_monitor login that is no superuser:
@@ -39,14 +39,14 @@
 #     pg_database without templates, without and with 'postgres'; a search 'rp16' finds rp169 alone); deadlocks (two
 #     SQL Server deadlocks of the same two statements, the second session the victim each time (DEADLOCK_PRIORITY
 #     LOW); two PostgreSQL ones, the second session the victim each time (its deadlock_timeout 100 ms, the first's 10 s,
-#     started once the first sleeps) [fold]); failed (rp_old's three wrong passwords on SQL Server = sa's count in the
-#     error log, read by mssql_reports [fold: the error log reader passes these lines over]; rp_app's two on
+#     started once the first sleeps) [changed]); failed (rp_old's three wrong passwords on SQL Server = sa's count in the
+#     error log, read by mssql_reports [changed: the error log reader passes these lines over]; rp_app's two on
 #     PostgreSQL = the server log's count; the server summary for rp-ms says 'read' and counts every 'Login failed'
 #     line of the current log [run 4: a fourth such line, not rp_old's], bounded by sa's count up to the collection's start
 #     and up to a time after its end, and the Detail as many rows; a line not rp_old's after the server answered fails,
-#     with its time [fold]); flushed (the default trace's rows
+#     with its time [changed]); flushed (the default trace's rows
 #     = its count of DBCC FREEPROCCACHE; the error log's 'cachestore flush' rows = xp_readerrorlog's count in the
-#     current and the first archived log [fold]); killed (2) and actions (3) for the three seeded actions_log rows;
+#     current and the first archived log [changed]); killed (2) and actions (3) for the three seeded actions_log rows;
 #     roles (sysadmin = sa's list; superuser = pg_roles' rolsuper list; pg_monitor = its members); pwage (the enabled
 #     SQL logins, then with the disabled one; PostgreSQL rp_exp expired with scram-sha-256); services (=
 #     sys.dm_server_services, each with its file name); tables (rp_big 5,000 rows, its reserved KB); querystats (the
@@ -57,13 +57,13 @@
 #  F. every report page at the root and the Reports folder of each instance: the page renders its h2 (the report's
 #     name), no exception, no error box, its grids named by their h3s (a heading's own text, not its chart menu's; a
 #     chart's heading names no grid [run 7]); at the root the rows of the grids that are one
-#     API part each equal that part's rows [fold: props, finder, the five failed-login grids, flushed, killed, actions,
+#     API part each equal that part's rows [changed: props, finder, the five failed-login grids, flushed, killed, actions,
 #     services, recycle, new and deleted databases (rp169gone, a PostgreSQL database dropped between two reads [run 7:
 #     none dropped left the page with no grid to export]), the role members of sysadmin / superuser]; the Deadlocks page shows
 #     2 signatures with 2 occurrences each, 4 deadlocks and 8 participants, and a Graph draws 2 processes; the Deadlock
-#     Charts page draws 6 rings, the five with data (all but Procedure) not empty [fold] (Procedure draws one slice,
+#     Charts page draws 6 rings, the five with data (all but Procedure) not empty [changed] (Procedure draws one slice,
 #     '(none)': the deadlocks run no procedure); the Reports strip lists 17
-#     pages at the root, 12 on a SQL Server instance and 10 on a PostgreSQL one [fold: the group's own strip].
+#     pages at the root, 12 on a SQL Server instance and 10 on a PostgreSQL one [changed: the group's own strip].
 #     [169b] The tree (tree.ts): the root's Reports folder lists the 17 stock pages in DBA Dash's order, then Custom
 #     reports and Community tools; Custom reports holds the three seeded reports as DBA Dash's Reports folder holds
 #     its own (sub folders first by name, then the reports by name: Ops > Daily > rp169 tree pg, Ops > rp169 tree
@@ -74,8 +74,8 @@
 #     and an inner one of radius 27, a whole slice a circle of radius 40.5 stroked 27 wide: DBA Dash's InnerRadius 0.5); the PostgreSQL instance's Databases by size stays a pie (each wedge from the centre).
 #  G. each page's Export .xlsx (16: every page with a grid) gives a workbook that opens (openpyxl where the box has
 #     it, else the zip's workbook.xml) with a grid sheet (every sheet but a last 'About') for every grid heading of its page that
-#     holds rows [fold: all 16; run 8: an empty grid (pgaudit's, not in the image) shows a note, not a table, and the
-#     shell's export takes tables]; every grid F wants holds rows on this seed [fold]. [169b] An empty grid is a sheet
+#     holds rows [changed: all 16; run 8: an empty grid (pgaudit's, not in the image) shows a note, not a table, and the
+#     shell's export takes tables]; every grid F wants holds rows on this seed [changed]. [169b] An empty grid is a sheet
 #     too, its header row alone with as many cells as the grid's columns, as DBA Dash exports one (CommonShared.cs
 #     SaveDataGridViewsToXLSX); at least one such sheet (pgaudit's grid on User Actions).
 #  H. NOT PROVEN HERE: SQL Server 2016-2019 and 2025 (the reads use no column newer than 2012 but LOGINPROPERTY's
@@ -117,7 +117,7 @@ if grep -q '/api/reports' internal/web/web.go; then echo "binary: wired in this 
 else
   : "${PGVIGIL_REPORTS_WIRING:?the tree lacks /api/reports: name the wiring patch in PGVIGIL_REPORTS_WIRING}"
   (cd "$WORK/src" && git apply "$(realpath "$PGVIGIL_REPORTS_WIRING")") || fail "the wiring patch does not apply"
-  echo "binary: wired in a scratch build (the join applies the same patch)"
+  echo "binary: wired in a scratch build (the release wiring applies the same patch)"
 fi
 (cd "$WORK/src/web" && npm ci --silent >/dev/null 2>&1 && npm run --silent build >/dev/null 2>&1) || fail "the bundle did not build"
 (cd "$WORK/src" && CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil) || fail "the binary did not build"

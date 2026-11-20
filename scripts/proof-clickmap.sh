@@ -12,7 +12,7 @@
 #        under 10 %); host_checks' disk rows are exactly the PostgreSQL drives the old rule raises (read in the last
 #        hour), mssql_storage_findings' volume rows exactly the SQL Server volumes it raises (read in the last three
 #        hours); each detail names 'warning under 10 %, critical under 5 % (the default)'.
-#        [review fold, before the rerun: each engine's old rule exactly - PostgreSQL judged disk_report's rounded
+#        [added before the rerun: each engine's old rule exactly - PostgreSQL judged disk_report's rounded
 #        free_pct, SQL Server the exact ratio; a fixture at the edges, a scratch instance of each engine with a drive at
 #        9.96 % and one at 4.96 % free (SQL Server volumes X: and Y:): PostgreSQL ok and warning (10.0 and 5.0 rounded),
 #        SQL Server warning and critical; removed at T8]
@@ -31,7 +31,7 @@
 #     at least, minutes=5 answers with one point at most and 'newest' = the drive's 5 newest reads (the newest one's
 #     used bytes = host_disk_history's), days=90 still taken, minutes=7 and days=45 400. /api/dbspace: one row per active instance
 #     with databases (15); a SQL Server row's used is the files' used summed where every file's was read and none
-#     where one was not (the demo's database the login cannot enter) [fixed after s176-c2: it said 'each with used read'];
+#     where one was not (the demo's database the login cannot enter) [fixed after a lab run: it said 'each with used read'];
 #     instance=<sql01>: databases 1+ and history 2+ points.
 #     /api/dbfiles?instance=<sql01>: 1+ files, every status ok, warning or critical; root counts.files = the files of
 #     mssql_files present plus the WAL and tablespace rows. /api/driveperf?instance=<sql01>: 1+ steps, every drive one
@@ -43,7 +43,7 @@
 #     Corruption; the test grid's Disk and Storage open Drives, Backups Backups, Jobs Jobs; a test without a page of its
 #     own keeps the address on the Summary; the tree's Storage node opens Drives at the root and the tag folder; every
 #     tab of the Storage strip at the four scopes draws its page with no error box.
-#     [after s176-c4, before the rerun: a SQL Server instance's Disk cell (the SQL Server summary's own 'disk' key: the
+#     [after a lab run, before the rerun: a SQL Server instance's Disk cell (the SQL Server summary's own 'disk' key: the
 #     volume finding, DBA Dash's Drive Space) lands on Drives too; under an instance the tree's Storage node is checked
 #     once the instance's node is opened (not shown, not a FAIL, when the node sits in a closed folder)]
 # Expected, task 176b (written before its first run):
@@ -57,7 +57,7 @@
 #     sql01, its start time, the level 'instance' and those two values; the SQL Server summary's uptime cell is then
 #     critical with a detail naming 'set on the instance'; inherit ends it and the detail says 'the default' again.
 #  R adds: /api/dbfiles?drive=<sql01's E:\> gives only E:\ files, as many as mssql_files has there; ?drive=<erp01's
-#     data volume> holds erp01's pg_wal (a row without a location lives in the data directory) [review fold, before
+#     data volume> holds erp01's pg_wal (a row without a location lives in the data directory) [added before
 #     the run: the separate data-directory row is gone, it counted pg_default's bytes twice]; /api/collectiondates: one row per active instance and collection, each status critical, warning,
 #     ok or disabled, critical exactly where the last run failed; ?instance=<sql01> its own rows only.
 #  C adds: Collection opens Collection dates on both engines; Database state opens Database options (PostgreSQL
@@ -77,7 +77,7 @@
 #     (import_pg_threshold, the Memory Dump Thresholds dialog's write) makes it critical. sql01's uptime set to warn
 #     under 87600 h at the instance and acknowledged until it changes (import_ack, seen_state 'since <start in ms>',
 #     what the Summary's Clear Alert / Acknowledge Uptime write).
-#     [review fold 20261111-205600, before the rerun: mssql_checks and mssql_identity logged as run now (else every
+#     [added before the rerun: mssql_checks and mssql_identity logged as run now (else every
 #     area reads 'never'); the state checked; whole-hour seeds, the CHECKDB day at 9 UTC midnights; CLICK_EXPECT merged per
 #     instance and every (instance, column) pair of it required in the click map; identity '42.5|120', shown '42.5% / 3 months']
 #  C adds (click-check.mjs, CLICK_EXPECT): the instance grid's columns are DBA Dash's in its order, then pgvigil's;
@@ -85,13 +85,14 @@
 #     corruption / the Checks page's Database options; SQL Agent Alerts: the Checks page's Agent alerts; Backup FULL /
 #     DIFF / LOG: backups / mssqlbackups; Log Shipping, Mirroring, Availability Groups: replication or pgbackups /
 #     availability; Log Space and File Space: dbfiles; Identity Columns: the Identity columns view; Snapshot Age:
-#     Collection dates; Collection Errors (24hrs): Collection dates, a difference argued: DBA Dash's ErrorLog page is
-#     P13's); Memory Dump, Is Agent Running and DB Mail are text, no link; the cell texts T10 seeded read 'Never',
+#     Collection dates; Collection Health (4.25.0's name; 4.24.1's Collection Errors (24hrs)): the Collection Health tab
+#     (B6.2; 4.24.1's ErrorLog landing is P13's)); Memory Dump, Is Agent Running and DB Mail are text, no link; the cell texts T10 seeded read 'Never',
 #     '9 days', '5hrs', 'Never', '3 days', '42.5% / 3 months', 'View', the dump instance's Memory Dump '3 days', sql01's
 #     Instance Uptime 'ack: ...'; the test grid's headers are 'Test', 'Instance Count OK', 'Instance Count Warning',
 #     'Instance Count Critical', 'Instance Count N/A', 'Instance Count Acknowledged', its tests sorted by name, each
-#     name cell filled with its worst count, Instance Uptime acknowledged 1 or more; the toolbar holds Refresh, View,
-#     Options, Clear Filter and 'Refresh Time: ' with its icon; Options opens Memory Dumps, Instance Uptime and Test
+#     name cell filled with its worst count, Instance Uptime acknowledged 1 or more; the toolbar holds Refresh, the
+#     View control (views.ts viewControl, found by data-view-control: its label 'View: <a name or None>', its menu Focused
+#     View, Show Test Summary ticked, then {None} and Save - D16), Options, Clear Filter and 'Refresh Time: ' with its icon; Options opens Memory Dumps, Instance Uptime and Test
 #     Summary Max Height % (10% ... 90%, 70% ticked; 40% sets the test pane to 40vh); Memory Dumps > Configure
 #     Thresholds opens 'Memory Dump Thresholds' with Critical 100 and Warning 200 (the root row T10 set), its words in
 #     DBA Dash's order (Warning, Critical, Acknowledge, Clear, Cancel, Update), the warning check box right of its
@@ -330,7 +331,7 @@ VOLS=$(q "select string_agg(volume, '|') from pgvigil.mssql_volumes where instan
 ok "R: drives, history ($H points; a year $HY; 5 minutes '$H5'; a window off the list refused), dbspace ($NI instances), dbfiles (sql01 on $EVOL, erp01's pg_wal on $DATA), driveperf, collectiondates answer as the repository says; the write door refuses without the header and the login"
 
 # a repository-wide alert standing (no instance: 0190's alert_findings names it 'pgvigil', its instance_id NULL), so
-# click-check's tag row can prove such an alert stays listed under a tag folder as at the root (the TAGTREE review A #1)
+# click-check's tag row can prove such an alert stays listed under a tag folder as at the root
 q "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_name, source, setting, value, severity, first_sent_at, last_sent_at)
    values ('demo-spool', 'fx-repo-wide', NULL, 'pgvigil', 'pgvigil collector', 'collector or network', 'collector not seen (fixture)', 'critical', now() - interval '30 minutes', now() - interval '30 minutes')" >/dev/null
 [[ $(q "select count(*) from pgvigil.instances where name = 'pgvigil'") == 0 ]] || fail "the demo has an instance named pgvigil: the repository-wide alert row cannot be told apart"
@@ -340,6 +341,15 @@ chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chro
 CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
+# the HA/DR collections the demo's seed holds rows of (0066's mssql_hadr_reads: each SQL Server instance's last read of a
+# collection and its row count, written by the import the seed goes through): click-check calls an HA/DR folder page with
+# no Instance link 'not proven' only for a kind the seed holds no row of, a FAIL for every other
+SEEDED=$(q "select coalesce(string_agg(collection, ' ' order by collection), '') from (select distinct r.collection from pgvigil.mssql_hadr_reads r join pgvigil.instances i using (instance_id) where i.is_active and i.engine = 'sqlserver' and r.row_count > 0) x") || fail "the demo's HA/DR reads could not be read"
+# the demo seeds an availability group (mssql_demo.go: sql01 / sql02): without its rows every HA/DR folder would read
+# 'not proven' and the drill would prove nothing
+[[ " $SEEDED " == *" mssql_ag "* ]] || fail "the demo's seed holds no mssql_ag row ($SEEDED): the HA/DR folders' drill proves nothing"
+export CLICK_SEEDED="$SEEDED"
+echo "the demo's seed holds rows of: ${SEEDED:-no HA/DR collection}"
 node scripts/click-check.mjs "$CDP" "$U/" "${PGVIGIL_CLICK_OUT:-$WORK/click.json}" | tee "$WORK/click.txt" || fail "the click map has a FAIL (above)"
 grep -q '^links: .*; 0 FAIL$' "$WORK/click.txt" || fail "click-check.mjs did not end with 0 FAIL"
 # the check found what it was to check (a check that collected nothing passes nothing)
@@ -352,7 +362,7 @@ pg_name = {'Memory Dump': 'Crash restarts', 'Last Good Check DB': 'Last amcheck'
 for c, engines in (('Drive Space', ('postgres', 'sqlserver')), ('Backup FULL', ('postgres', 'sqlserver')), ('Agent Jobs', ('postgres', 'sqlserver')),
                    ('Last Good Check DB', ('postgres', 'sqlserver')), ('SQL Agent Alerts', ('sqlserver',)), ('Corruption', ('sqlserver',)),
                    ('Identity Columns', ('sqlserver',)), ('Log Space', ('sqlserver',)), ('Availability Groups', ('postgres', 'sqlserver')),
-                   ('Snapshot Age', ('postgres', 'sqlserver')), ('Collection Errors (24hrs)', ('postgres', 'sqlserver'))):
+                   ('Snapshot Age', ('postgres', 'sqlserver')), ('Collection Health', ('postgres', 'sqlserver'))):
     for e in engines:
         # a PostgreSQL row's cell carries PostgreSQL's name where DBA Dash's is SQL Server's (B7 DONE-3: fleet.ts labelOf)
         n = pg_name.get(c, c) if e == 'postgres' else c
@@ -390,7 +400,7 @@ for e, n in (('sqlserver', d['ms']), ('postgres', d['pg'])):
 print('the click map covered: ' + ('every kind asked' if not bad else '; '.join(bad)))
 sys.exit(1 if bad else 0)
 PY
-# N: the '(no env)' folder (TAGTREE: the pass's #6, the review B #4) - the demo puts an env on every instance, so one
+# N: the '(no env)' folder - the demo puts an env on every instance, so one
 # instance with no tag is added now; under the demo's group_by [env] it is in '(no env)' (?tag=env:)
 q "insert into pgvigil.instances (name, platform, engine) values ('fx-noenv-pg', 'onprem', 'postgres')" >/dev/null
 PGVIGIL_CLICK_ONLY=noenv node scripts/click-check.mjs "$CDP" "$U/" "$WORK/click-noenv.json" | tee "$WORK/click-noenv.txt" || fail "the '(no env)' rows have a FAIL (above)"

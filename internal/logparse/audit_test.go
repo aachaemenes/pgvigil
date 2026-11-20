@@ -137,7 +137,7 @@ func TestScanAudit(t *testing.T) {
 	}
 }
 
-// The lines pgaudit 18.0 wrote on PostgreSQL 18.6 for the statements the proof runs (box job s157-rawlog, 2026-11-11),
+// The lines pgaudit 18.0 wrote on PostgreSQL 18.6 for the statements the proof runs (a lab run),
 // under the on-prem reader's rewrite. What they settle: a SET and a RESET carry the class MISC though pgaudit.log
 // named misc_set and not misc; a GRANT on a table names the object type and no object; a role's password is cut
 // with everything after it; a DROP TABLE writes one entry per dropped object, all under one statement id.
@@ -276,7 +276,7 @@ func TestAuditTarget(t *testing.T) {
 	}
 }
 
-// pgaudit 16.1 writes the whole text of a multi-statement string on each entry of it (box job s157-proof3: pgvigil's
+// pgaudit 16.1 writes the whole text of a multi-statement string on each entry of it (a lab run: pgvigil's
 // own four session SETs all carried the text that starts with the first). The statement an entry is has to match
 // its command tag; where several do, each is a result and AuditTarget names none unless they agree.
 func TestAuditTargetsMultiStatement(t *testing.T) {

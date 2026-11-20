@@ -63,10 +63,11 @@ const storeIDSQL = `SELECT pg_postmaster_start_time(), d.oid FROM pg_database d 
 // ui_users, EXECUTE on any ui_* function). Then serve's repository's two facts, compared with storeIDSQL's. Every
 // object is found through the catalogs, never by a qualified name: a name in pgvigil (to_regclass('pgvigil.x'))
 // raises 'permission denied for schema pgvigil' for a login without USAGE - the logins this check exists to refuse
-// with words (reportrole-g1: noinh, none).
+// with words (reportrole-g1: noinh, none). $1 is the roles the login may be a member of beside itself: pgvigil_reader
+// for the reports login; pgvigil_reader and pgvigil_investigator for the agent door's (AgentStoreRefusal).
 const storeCheckSQL = `SELECT session_user::text, r.rolsuper OR r.rolbypassrls,
        coalesce((SELECT string_agg(m.rolname::text, ', ' ORDER BY m.rolname) FROM pg_roles m
-                  WHERE m.rolname <> session_user AND m.rolname <> 'pgvigil_reader'
+                  WHERE m.rolname <> session_user AND NOT (m.rolname = ANY ($1::text[]))
                     AND pg_has_role(session_user, m.oid, 'MEMBER')), ''),
        coalesce(has_schema_privilege(session_user, to_regnamespace('pgvigil')::oid, 'USAGE'), false),
        coalesce(has_table_privilege(session_user, (SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -102,15 +103,14 @@ func (s *Server) newReportsDoor(_ context.Context, rc *ReportsConfig) *reportsDo
 }
 
 // refusal is runPG's check for a store run, asked inside the run's own transaction.
-func (d *reportsDoor) refusal(ctx context.Context, tx pgx.Tx) (string, error) {
-	var user, member string
-	var super, usage, hashes bool
-	var start time.Time
-	var oid uint32
-	if err := tx.QueryRow(ctx, storeCheckSQL).Scan(&user, &super, &member, &usage, &hashes, &start, &oid); err != nil {
-		return "", fmt.Errorf("reading the reports login's rights: %w", err)
+// storeRights reads the SESSION user's rights through storeCheckSQL, allow being the roles it may be a member of beside
+// itself, and says why they reach past a read (none = may go on) and whether it may read the schema at all.
+func storeRights(ctx context.Context, tx pgx.Tx, allow []string) (user string, why []string, usage bool, start time.Time, oid uint32, err error) {
+	var member string
+	var super, hashes bool
+	if err = tx.QueryRow(ctx, storeCheckSQL, allow).Scan(&user, &super, &member, &usage, &hashes, &start, &oid); err != nil {
+		return
 	}
-	var why []string
 	switch {
 	case super: // a superuser counts as a member of every role: the one reason, not the server's every role
 		why = append(why, "is a superuser (or bypasses row security)")
@@ -119,6 +119,36 @@ func (d *reportsDoor) refusal(ctx context.Context, tx pgx.Tx) (string, error) {
 	}
 	if hashes && member == "" && !super {
 		why = append(why, "may read the UI's password hashes")
+	}
+	return
+}
+
+// agentRule is the agent door's rule (pgvigil mcp on a login holding pgvigil_investigator; docs/agents.md quotes it).
+const agentRule = "the agent door runs as a login IN ROLE pgvigil_reader, pgvigil_investigator and nothing else ('pgvigil roles' prints it)"
+
+// AgentStoreRefusal is the store rule for the agent door's login, asked on its SESSION user at pgvigil mcp's start and
+// again inside the transaction of every run_select (a role set at connect - options=-c role= - or in the run is undone
+// by the run, so the check reads the session user): a superuser, a member of any role but pgvigil_reader and
+// pgvigil_investigator (pg_read_all_data, pg_read_server_files, pgvigil_alerter, the owner among them), or a login that may read
+// the UI's password hashes is refused with words; "" = it may run.
+func AgentStoreRefusal(ctx context.Context, tx pgx.Tx) (string, error) {
+	user, why, usage, _, _, err := storeRights(ctx, tx, []string{"pgvigil_reader", "pgvigil_investigator"})
+	if err != nil {
+		return "", fmt.Errorf("reading the agent login's rights: %w", err)
+	}
+	if len(why) > 0 {
+		return fmt.Sprintf("the login %s %s: %s", user, strings.Join(why, ", "), agentRule), nil
+	}
+	if !usage {
+		return fmt.Sprintf("the login %s may not read the repository: as its owner run GRANT pgvigil_reader TO %s", user, user), nil
+	}
+	return "", nil
+}
+
+func (d *reportsDoor) refusal(ctx context.Context, tx pgx.Tx) (string, error) {
+	user, why, usage, start, oid, err := storeRights(ctx, tx, []string{"pgvigil_reader"})
+	if err != nil {
+		return "", fmt.Errorf("reading the reports login's rights: %w", err)
 	}
 	if len(why) > 0 {
 		return fmt.Sprintf("reports_dsn's login %s %s: %s", user, strings.Join(why, ", "), storeRule), nil

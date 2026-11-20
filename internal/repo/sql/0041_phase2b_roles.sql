@@ -1,10 +1,10 @@
--- 0041: the wave B join for the roles collection (0020: roles, memberships, the ACLs per database, the hba rules
+-- 0041: wires in the roles collection (0020: roles, memberships, the ACLs per database, the hba rules
 -- where readable, the change history). The findings view gains the role rules (a superuser beyond the platform's
 -- own, CREATEROLE or BYPASSRLS on an application role, the monitoring login without pg_monitor, a role granted on
 -- every database, a login without a way in); purge() gains the is_present deletes of the collection's current
 -- tables (role_history, role_state and role_member_closure stay whole: one row per real change, one row per
 -- instance, rebuilt by every import). Both bodies are 0040's with the additions (a frozen file is never edited;
--- a later join re-creates them again with its own).
+-- a later migration re-creates them again with its own).
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (

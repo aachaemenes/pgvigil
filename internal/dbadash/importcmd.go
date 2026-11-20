@@ -66,6 +66,7 @@ func ImportCommand(ctx context.Context, log *slog.Logger, out io.Writer, args []
 		return fmt.Errorf("no DBA Dash repository named %q in the configuration's dbadash: list", *repo)
 	}
 	opt.Repository = src.Name
+	opt.QueryText = ConfigTextMode(cfg)
 	opt.By = "cli"
 	if u, err := user.Current(); err == nil && u.Username != "" {
 		opt.By = "cli:" + u.Username
@@ -82,6 +83,9 @@ func ImportCommand(ctx context.Context, log *slog.Logger, out io.Writer, args []
 		if c.Skipped != "" {
 			line += "  skipped: " + c.Skipped
 		}
+		if c.Retries > 0 {
+			line += fmt.Sprintf("  retried %d time(s) after a deadlock (stored once)", c.Retries)
+		}
 		_, _ = fmt.Fprintln(out, line)
 	}
 	mode := "imported"
@@ -90,6 +94,22 @@ func ImportCommand(ctx context.Context, log *slog.Logger, out io.Writer, args []
 	}
 	_, _ = fmt.Fprintf(out, "total: %d DBA Dash row(s), %d inserted (%s)\n", source, inserted, mode)
 	return err
+}
+
+// ConfigTextMode is the query_text mode of a pgvigil instance by its name under a configuration: the instance's own
+// where instances: names it, else the file's (config.Load fills an instance's empty value from the file's).
+func ConfigTextMode(cfg *config.Config) func(name string) string {
+	modes := make(map[string]string, len(cfg.Instances))
+	for _, in := range cfg.Instances {
+		modes[in.Name] = in.QueryText
+	}
+	file := cfg.QueryText
+	return func(name string) string {
+		if m := modes[name]; m != "" {
+			return m
+		}
+		return file
+	}
 }
 
 // importFlags turns the command's flag values into ImportOptions.

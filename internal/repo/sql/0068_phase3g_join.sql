@@ -1,4 +1,4 @@
--- 0068: the join of phase 3 wave G, the SQL Server engine's first wave (running queries, blocking and waits 96,
+-- 0068: wires in phase 3 wave G, the SQL Server engine's first wave (running queries, blocking and waits 96,
 -- Extended Events 97, HA/DR, jobs and backups 98, storage, the version store and the actions door 99), built from
 -- 0062's definitions (never edited by hand): pgvigil.findings re-created with the arms of the merged slices
 -- (mssql_running_findings from 0064, mssql_xe_findings from 0065, mssql_hadr_findings and mssql_jobs_findings from
@@ -146,7 +146,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the corruption column (0023): checksums off, ignore_checksum_failure on, a corruption event in 24 h, amcheck damage
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.corruption_findings WHERE setting <> 'zero_damaged_pages'
     UNION ALL
-    -- the plans slice (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
+    -- the plan findings (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.plan_findings
     UNION ALL
     -- the indexes collection (0030): invalid and duplicate indexes (warning), redundant and unused ones (info)

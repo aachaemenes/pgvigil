@@ -76,7 +76,7 @@ func TestDbSettingBase(t *testing.T) {
 		{"search_path", `"$user", public`, "string", "", nil, `"$user", public`, false},
 		{"app.tenant", "x", "", "", nil, "x", false},
 		{"", "<masked>", "integer", "kB", nil, "<masked>", false},
-		// the review's cases (guc.c convert_to_base_unit: a fraction rounded to the next smaller unit first)
+		// fractions (guc.c convert_to_base_unit: a fraction rounded to the next smaller unit first)
 		{"work_mem", "1.3GB", "integer", "kB", nil, "1362944", true},
 		{"effective_cache_size", "1.3GB", "integer", "8kB", nil, "170368", true},
 		{"statement_timeout", "0.1d", "integer", "ms", nil, "7200000", true},

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -58,34 +59,43 @@ func TestExpectedIntervalsGated(t *testing.T) {
 }
 
 // `pgvigil user` takes the name before or after -config (Go's flag parsing stops at the first positional
-// argument; the README writes the name first), lower-cases it, and refuses a missing or a second name.
+// argument; the README writes the name first), lower-cases it, and refuses a missing or a second name; add takes
+// -role, role takes <name> <role>, and a role outside the three is refused before the repository (B24f).
 func TestUserArgs(t *testing.T) {
 	for _, c := range []struct {
-		args             []string
-		verb, name, path string
-		bad              bool
+		args                   []string
+		verb, name, role, path string
+		bad                    bool
 	}{
-		{[]string{"add", "Admin", "-config", "x.yaml"}, "add", "admin", "x.yaml", false},
-		{[]string{"add", "-config", "x.yaml", "admin"}, "add", "admin", "x.yaml", false},
-		{[]string{"list", "-config", "x.yaml"}, "list", "", "x.yaml", false},
-		{[]string{"passwd", "bob"}, "passwd", "bob", "pgvigil.yaml", false},
-		{[]string{"add"}, "", "", "", true},
-		{[]string{"add", "a", "b"}, "", "", "", true},
-		{[]string{"list", "a"}, "", "", "", true},
-		{[]string{"drop", "a"}, "", "", "", true},
-		{[]string{"add", "bad name"}, "", "", "", true},
-		{[]string{"-config", "x"}, "", "", "", true},
+		{[]string{"add", "Admin", "-config", "x.yaml"}, "add", "admin", "", "x.yaml", false},
+		{[]string{"add", "-config", "x.yaml", "admin"}, "add", "admin", "", "x.yaml", false},
+		{[]string{"add", "-role", "Operator", "bob"}, "add", "bob", "operator", "pgvigil.yaml", false},
+		{[]string{"add", "bob", "-role", "viewer", "-config", "x.yaml"}, "add", "bob", "viewer", "x.yaml", false},
+		{[]string{"add", "-role", "boss", "bob"}, "", "", "", "", true},
+		{[]string{"role", "bob", "admin"}, "role", "bob", "admin", "pgvigil.yaml", false},
+		{[]string{"role", "-config", "x.yaml", "bob", "viewer"}, "role", "bob", "viewer", "x.yaml", false},
+		{[]string{"role", "bob"}, "", "", "", "", true},
+		{[]string{"role", "bob", "root"}, "", "", "", "", true},
+		{[]string{"passwd", "-role", "admin", "bob"}, "", "", "", "", true},
+		{[]string{"list", "-config", "x.yaml"}, "list", "", "", "x.yaml", false},
+		{[]string{"passwd", "bob"}, "passwd", "bob", "", "pgvigil.yaml", false},
+		{[]string{"add"}, "", "", "", "", true},
+		{[]string{"add", "a", "b"}, "", "", "", "", true},
+		{[]string{"list", "a"}, "", "", "", "", true},
+		{[]string{"drop", "a"}, "", "", "", "", true},
+		{[]string{"add", "bad name"}, "", "", "", "", true},
+		{[]string{"-config", "x"}, "", "", "", "", true},
 	} {
-		verb, name, path, err := userArgs(c.args)
-		if (err != nil) != c.bad || verb != c.verb || name != c.name || path != c.path {
-			t.Errorf("%v: got %q %q %q err=%v; want %q %q %q bad=%v", c.args, verb, name, path, err, c.verb, c.name, c.path, c.bad)
+		verb, name, role, path, err := userArgs(c.args)
+		if (err != nil) != c.bad || verb != c.verb || name != c.name || role != c.role || path != c.path {
+			t.Errorf("%v: got %q %q %q %q err=%v; want %q %q %q %q bad=%v", c.args, verb, name, role, path, err, c.verb, c.name, c.role, c.path, c.bad)
 		}
 	}
 }
 
 // run on the installer's template with its env variable unset ends as a configuration error, exit 3, which the unit
 // (RestartPreventExitStatus=3) and the Windows service leave stopped: a host rebooted before the env file is filled
-// in never loops (the join review of 204, finding 2).
+// in never loops.
 func TestRunEmptyRepositoryDSNIsExit3(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "pgvigil.yaml")
 	if err := os.WriteFile(p, []byte(configTemplate("env:PGVIGIL_REPO_DSN")), 0o600); err != nil {
@@ -99,7 +109,7 @@ func TestRunEmptyRepositoryDSNIsExit3(t *testing.T) {
 	}
 }
 
-// A custom: check loads over a file with no instance (the page may hold the instances it names; finding 1).
+// A custom: check loads over a file with no instance (the page may hold the instances it names).
 func TestCustomChecksOverNoFileInstance(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "c.yaml")
 	y := "repository:\n  dsn: x\ninstances: []\ncustom:\n  - name: idle\n    sql: SELECT 1\n  - name: one\n    sql: SELECT 1\n    instances: [sql07]\n"
@@ -108,5 +118,17 @@ func TestCustomChecksOverNoFileInstance(t *testing.T) {
 	}
 	if _, _, err := loadConfig([]string{"-config", p}, false); err != nil {
 		t.Fatalf("custom checks over no file instance: %v", err)
+	}
+}
+
+// TestRunSaysItSends (B6.2 part c #3): pgvigil run's heartbeat is told whether the run sends - its alerts: list names a
+// channel (alerts.Run sends nothing without one)
+func TestRunSaysItSends(t *testing.T) {
+	b, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`collect\.StartHeartbeat\([^\n]*HeartbeatInfo\{[^}]*SendsAlerts: len\(ast\.Channels\) > 0`).Match(b) {
+		t.Errorf("main.go's StartHeartbeat call does not pass SendsAlerts: len(ast.Channels) > 0")
 	}
 }

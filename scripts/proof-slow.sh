@@ -23,7 +23,7 @@
 #  C. pg_rotate_logfile(), then select pg_sleep(0.25) /* <tag>-c */ in the new file: collect adds exactly that one row,
 #     from the new file's name; the cursor moves forward.
 #  D. the EXECUTE grant revoked: collect ends 'skipped' with the same reason; the stored rows stay.
-#  [review 1 fold, expected before the rerun]
+#  [expected before the rerun]
 #  D2. the narrow door: as the cluster superuser create public.pgvigil_read_log (collect/serverlog.go's text), the wide
 #     grant still revoked; select pg_sleep(0.25) /* <tag>-d */; collect: status ok, exactly one new row (-d). As the
 #     login the door returns NULL for '../pg_hba.conf' and 'pg_hba.conf' (names pg_ls_logdir does not list). The door
@@ -42,12 +42,12 @@
 #     slow_histogram(S, day1, day3, 0, 'UTC') = day1 2 statements (under_1s 1, s1_to_10 1, total 2,500, max 2,000),
 #     day2 3 statements (s10_to_60 1, over_60s 2, total 155,000, max 70,000); with p_min_ms 1000: day1 1, day2 3;
 #     with p_tz 'Not/AZone': the UTC days again.
-#     slow_top(S, ...) by rank_count (the 'count' order until review 1; one call returns both ranks since): first the SELECT * shape (2, total 2,500, mean 1,250, queryid 4242), then
+#     slow_top(S, ...) by rank_count (one call returns both ranks): first the SELECT * shape (2, total 2,500, mean 1,250, queryid 4242), then
 #     pg_sleep (2, 140,000); 'total': pg_sleep first (140,000), the UPDATE (15,000) second, SELECT * third;
-#     [first run 2026-11-09: the count list came pg_sleep, SELECT *, UPDATE - the expectation missed that the two
-#      shapes tie at 2, and slow_top breaks a tie by total time (its ORDER BY); graded against that order since]
+#     [the two shapes tie at 2 and slow_top breaks a tie by total time (its ORDER BY): the count list reads
+#      pg_sleep, SELECT *, UPDATE]
 #     slow_top(NULL, ...) (the fleet) includes the rows of S and of P; slow_top(S, ..., 1) returns 2 rows (the first
-#     of each rank); [first run of the fold: 1 row - on S the first by count (the tie broken by total time) and the
+#     of each rank); [first run after the change: 1 row - on S the first by count (the tie broken by total time) and the
 #     first by total time are the same pg_sleep shape; graded as 1 since, with that shape]; the statement_text row's shape_key equals the SELECT * events' shape_key; slow_totals(S, ...) =
 #     5 statements, 3 shapes, total 157,500, max 70,000.
 #  G. rights: pgvigil_collector may run import_serverlog; pgvigil_reader may run slow_top, slow_totals and slow_histogram

@@ -22,6 +22,40 @@ export interface Ctx {
   db?: string;
   app?: string;
   ms?: number;           // slow queries: the threshold in milliseconds
+  own?: boolean;         // B24 OWN: pgvigil's own sessions shown (own=1) on the pages that hide them by default
+}
+
+// ownTabs: the pages that hide pgvigil's own sessions unless own=1; own rides every link between them on one instance
+export const ownTabs = new Set(['activity', 'mssql_running', 'waiting', 'mssql_waiting', 'mssqlqueries']);
+// viewPageKeys: the pages that take a saved view (views.ts), by page key ('root:<tab>' | 'instance:<tab>'), and each
+// page's own address keys a view stores. They are read from the address when a link is built (never
+// from a Ctx parsed earlier: a page writes them with noteAddress, so a link drawn before that would carry old values),
+// and view= with them; a tab change drops them all.
+export const viewPageKeys: Record<string, string[]> = {
+  'root:summary': ['focus', 'tests', 'tmax', 'sort'],
+  'root:perfsummary': [],
+  'root:slowqueries': ['ms', 'g', 'gdb', 'top', 'ev', 'fit'],
+  'instance:slowqueries': ['ms', 'g', 'gdb', 'top', 'ev', 'fit'],
+  'instance:mssql_slow': ['g', 'gdb', 'top', 'ev', 'fit'],
+};
+export const pageKeyOf = (c: { tab: string; instance?: number }): string => `${c.instance ? 'instance' : 'root'}:${c.tab}`;
+// hashKeys: the current address's parameters (a page's own keys, read where it is drawn)
+export const hashKeys = (): URLSearchParams => new URLSearchParams(location.hash.split('?')[1] ?? '');
+// noteAddress: a page writes its own keys into the address without a navigation (a toggle, a pick in a panel); keys
+// set to undefined or '' leave it. The shell is told (main.ts: the next refresh is the same page, no 'Loading...'),
+// and the View control reads it ('pgvigil:address').
+let noted: ((h: string) => void) | null = null;
+export function onAddressNoted(f: (h: string) => void) { noted = f; }
+export function noteAddress(keys: Record<string, string | undefined>) {
+  // an address with no hash (the server's own '/', the landing after a login) is the page parse() reads there: the keys
+  // go into its hash, never into the query string before it
+  const [path] = (location.hash || '#/' + parse().tab).split('?');
+  const q = hashKeys();
+  for (const [k, v] of Object.entries(keys)) { if (v === undefined || v === '') q.delete(k); else q.set(k, v); }
+  const h = `${path}?${q}`;
+  history.replaceState(null, '', location.pathname + location.search + h);
+  noted?.(h);
+  window.dispatchEvent(new CustomEvent('pgvigil:address'));
 }
 
 function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
@@ -58,7 +92,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
 }
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', azuresummary: 'Azure Summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin: 'Overview' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', investigations: 'Investigations', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', azuresummary: 'Azure Summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', collectionhealth: 'Collection Health', collectionperf: 'Collection Performance', mssqlerrors: 'SQL Server errors', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin_counters: 'Counters (admin)', admin_backupages: 'Backup ages (admin)', admin: 'Overview' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Table Size', vacuum: 'Vacuum',
   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
@@ -66,7 +100,7 @@ export const instanceTabs: Record<string, string> = {
   // the instance's Reports folder (reports.ts)
   rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
   customreports: 'Custom reports', community: 'Community tools',
-  drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', pgtemp: 'Temp',
+  drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', collectionhealth: 'Collection Health', collectionperf: 'Collection Performance', pgtemp: 'Temp',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
 
@@ -75,14 +109,14 @@ const legacy: Record<string, string> = { overview: 'checks' };
 // rootTabs and instanceTabs still name every page; a group only says which pages share a strip.
 export interface TabGroup { key: string; name: string; tabs: string[] }
 export const rootGroups: TabGroup[] = [
-  { key: 'main', name: '', tabs: ['summary', 'alerts', 'alertrules', 'perfsummary', 'azuresummary', 'slowqueries', 'running', 'findings', 'instances'] },
+  { key: 'main', name: '', tabs: ['summary', 'alerts', 'alertrules', 'perfsummary', 'azuresummary', 'slowqueries', 'running', 'findings', 'investigations', 'instances'] },
   { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles', 'diff', 'mssqlrisks', 'pgrisks', 'pgthresholds', 'retention'] },
-  { key: 'checks', name: 'Checks', tabs: ['checks', 'collectiondates', 'collector', 'corruption', 'custom'] },
-  { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'pgreplication', 'dms'] },
+  { key: 'checks', name: 'Checks', tabs: ['checks', 'collectiondates', 'collectionhealth', 'collectorerrors', 'collector', 'mssqlerrors', 'corruption', 'custom'] },
+  { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'pgreplication', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'tablesize', 'disks', 'storage', 'growth', 'dbchanges', 'indexes'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
-  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_applications', 'admin'] },
+  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_applications', 'admin_counters', 'admin_backupages', 'admin'] },
   // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
 ];
@@ -90,17 +124,23 @@ export const rootGroups: TabGroup[] = [
 // community tools and Recycle Bin at the root only (CustomReports.cs L19-23, Main.cs L210), pgvigil does not. Each page
 // opened under ?tag= narrows what it lists or picks to the tag's instances; what a page holds as one setting or one list
 // for the whole repository it says so in one line under a tag (fleet.ts fleetWideNote) and shows as the root does.
-// pageEngine: the fleet pages that hold one engine alone, by their DATA (the TAGTREE review A #2, a read of every root
-// page's handler and SQL on 11-14): a SQL filter on the engine (versions 0063 L200, corruption 0063 L216, tablesize
-// 0086 L211), tables only one engine's collections write (internal/engines Specs: collect.All for PostgreSQL - host
-// disks, storage, backups, roles, indexes, jobs, custom, DMS, database sizes -, mssql.All for SQL Server's mssql_*), or
-// the page's own words (reports.ts L430 / L577, the options pages). A tag folder whose instances are all of the other
-// engine leaves them out, as a strip should; every other page holds both engines.
+// pageEngine: the fleet pages that hold one engine alone, by their DATA (a read of every root page's handler and SQL):
+// a SQL filter on the engine (versions 0063 L200, corruption 0063 L216, tablesize 0086 L211 - its note only counts
+// the SQL Server instances it leaves out), tables only one engine's collections write
+// (internal/engines Specs: collect.All for PostgreSQL - host disks (disk_report, import_host), storage (volume_forecast:
+// host_disks, aurora_volume), roles (import_roles), indexes (index_state / index_inventory, import_indexes), DMS
+// (import_dms), extensions (import_extensions), database and table sizes (growth: import_databases, import_tables) -,
+// mssql.All for SQL Server's mssql_*), or the page's own words (reports.ts L430 / L577, the options pages). Pages that
+// list both engines' rows are not here: custom (ST6: mssql_custom writes the same tables), jobs (the fleet Job status
+// grid, every scheduler: jobs_fleet_status.ts L2) and backups (the root page appends mssqlBackupsFleetSection under a
+// scope with SQL Server: main.ts rootPages). A tag folder whose instances are all of the other engine leaves a page here
+// out, as a strip should (TAGALL: every other root page under every tag folder).
 export const pageEngine: Record<string, 'sqlserver' | 'postgres'> = {
-  mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver', azuresummary: 'sqlserver',
+  mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver', azuresummary: 'sqlserver', mssqlerrors: 'sqlserver',
+  mssqllogshipping: 'sqlserver', mssqlmirroring: 'sqlserver', mssqlag: 'sqlserver',
   pgrisks: 'postgres', pgreplication: 'postgres', extensions: 'postgres', corruption: 'postgres', versions: 'postgres',
-  tablesize: 'postgres', backups: 'postgres', roles: 'postgres', dms: 'postgres', custom: 'postgres', disks: 'postgres',
-  storage: 'postgres', growth: 'postgres', indexes: 'postgres', jobs: 'postgres',
+  tablesize: 'postgres', roles: 'postgres', dms: 'postgres', disks: 'postgres',
+  storage: 'postgres', growth: 'postgres', indexes: 'postgres',
   // the Imported servers page (Doors) holds SQL Server instances alone (dbadash.ts): a PostgreSQL-only folder has no Doors folder
   dbadash: 'sqlserver',
 };
@@ -111,7 +151,7 @@ export function tagPages(g: TabGroup, engines: Set<string>): string[] {
 export const instanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'waiting', 'pg_deadlocks', 'memory', 'findings', 'logs'] },
   { key: 'conf', name: 'Configuration', tabs: ['config', 'pgdboptions', 'extensions', 'versions', 'roles', 'audit', 'schema', 'actions'] },
-  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'corruption', 'vacuum', 'indexes', 'custom', 'pgstate'] },
+  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectionhealth', 'collectorerrors', 'corruption', 'vacuum', 'indexes', 'custom', 'pgstate'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['replication', 'backups', 'pgbackups', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'pgtemp', 'tables', 'driveperf', 'storage', 'dbinfo', 'dbchanges'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobsreport', 'jobstimeline'] },
@@ -122,26 +162,27 @@ export const instanceGroups: TabGroup[] = [
 // never offered for it, and the other way round). Summary and Findings are shared: both read by instance.
 export const mssqlInstanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_waiting: 'Waiting tasks', mssql_deadlocks: 'Deadlocks',
-  mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqlrestore: 'Restore chain', mssqljobs: 'Jobs',
+  mssql_blocked: 'Blocked reports', mssql_xewaits: 'Waits over the threshold', mssql_xewarnings: 'Query warnings', mssql_xemodules: 'Procedure runs', mssql_xecaptures: 'XE captures', findings: 'Findings', availability: 'Availability', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', mssqlbackups: 'Backups', mssqlrestore: 'Restore chain', mssqljobs: 'Jobs', mssqlmaintenance: 'Maintenance',
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlazure: 'Azure', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
-  mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
-  mssqlqueries: 'Queries',
-  mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health',
+  mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlsecurity: 'Security', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
+  schema: 'Schema',
+  mssqlqueries: 'Queries', custom: 'Custom',
+  mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health', mssqlerrors: 'SQL Server errors',
   // the instance's Reports folder (reports.ts)
   rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
   customreports: 'Custom reports', community: 'Community tools',
-  drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates',
+  drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', collectionhealth: 'Collection Health', collectionperf: 'Collection Performance',
 };
 export const mssqlInstanceGroups: TabGroup[] = [
-  { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
-  { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },
-  { key: 'checks', name: 'Checks', tabs: ['collectiondates'] },
-  { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups', 'mssqlrestore'] },
+  { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'mssql_xewaits', 'mssql_xewarnings', 'mssql_xemodules', 'mssql_xecaptures', 'findings'] },
+  { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlsecurity', 'mssqlactions', 'schema'] },
+  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectionhealth', 'collectorerrors', 'custom'] },
+  { key: 'hadr', name: 'HA/DR', tabs: ['mssqlbackups', 'mssqlrestore', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'availability'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
-  { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
+  { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'mssqlmaintenance', 'jobstimeline'] },
   { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool', 'mssqlazure'] },
-  { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
+  { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqlerrors', 'mssqltrace', 'mssqlhealth'] },
   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'customreports', 'community'] },
 ];
 export const isMssql = (engine: unknown) => engine === 'sqlserver';
@@ -156,7 +197,7 @@ export function groupOf(groups: TabGroup[], tab: string): TabGroup {
 // the drill-down pages of one instance (drill.ts): reached by links, not shown in the tab strip
 export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index', compare: 'Compare' };
 // the tab a drill page belongs to: marked in the strip, and where the tree's link to another instance lands
-export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements' };
+export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements', collectionperf: 'collectionhealth' };
 
 export function parse(): Ctx {
   const h = location.hash.replace(/^#\/?/, '');
@@ -187,6 +228,7 @@ export function parse(): Ctx {
     db: name === 'activity' ? q.get('db')?.slice(0, 64) || undefined : undefined,
     app: name === 'activity' ? q.get('app')?.slice(0, 64) || undefined : undefined,
     ms: q.has('ms') && Number.isFinite(Number(q.get('ms'))) ? Math.min(86400000, Math.max(0, Math.trunc(Number(q.get('ms'))))) : undefined,
+    own: ownTabs.has(name) && q.get('own') === '1' ? true : undefined,
   };
 }
 
@@ -204,10 +246,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     if (v !== undefined && v !== '') q.set(name, String(v));
   };
   if (c.tab === 'counters') page('kind', 'kind');
-  // the Metrics page's database cut stays on its own links: a range change keeps the database in view
+  // the Metrics page's database and collection cuts stay on its own links: a range change keeps them in view (the
+  // collection's too)
   if (keep && c.tab === 'counters') {
-    const v = new URLSearchParams(location.hash.split('?')[1] ?? '').get('mdb');
-    if (v) q.set('mdb', v);
+    const u = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    for (const k of ['mdb', 'mcol']) { const v = u.get(k); if (v) q.set(k, v); }
   }
   if (c.tab === 'logs') page('logKind', 'lk');
   if (c.tab === 'activity') { page('at', 'at'); page('minSecs', 'min'); page('st', 'st'); page('user', 'user'); page('db', 'db'); page('app', 'app'); }
@@ -219,6 +262,17 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     for (const k of ['sg', 'sdb', 'suser', 'scl']) for (const v of cur.getAll(k)) q.append(k, v);
   }
   if (c.tab === 'slowqueries') page('ms', 'ms');
+  // pgvigil's own sessions shown (B24 OWN) ride the links between the pages that hide them, on one instance
+  if (ownTabs.has(c.tab)) {
+    const v = 'own' in over ? over.own : c.instance === ctx.instance && ownTabs.has(ctx.tab) ? ctx.own : undefined;
+    if (v) q.set('own', '1');
+  }
+  // a view page's own keys and its view stay on its own links: read from the address now (noteAddress)
+  const vk = viewPageKeys[pageKeyOf(c)];
+  if (keep && vk) {
+    const cur = hashKeys();
+    for (const k of [...vk.filter(x => x !== 'ms'), 'view']) { const v = cur.get(k); if (v) q.set(k, v); }
+  }
   // the Query Store page's view, sort and database (mssql_querystore.ts) stay on its own links
   if (keep && c.tab === 'mssqlqs') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
@@ -229,6 +283,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   if (keep && (drillTabs[c.tab] || c.tab === 'dbinfo')) {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['db', 'rel', 'scheduler', 'job', 'idx']) { const v = cur.get(k); if (v) q.set(k, v); }
+  }
+  // the Collector errors and SQL Server errors pages' filters stay on their own links: a range change keeps them
+  if (keep && (c.tab === 'collectorerrors' || c.tab === 'mssqlerrors')) {
+    const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    for (const k of ['view', 'coll', 'type', 'stage', 'q', 'skipped', 'service', 'n', 'noise']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
   // the Checks page's view and risk filter (mssql_checks.ts) stay on its own links
   if (keep && c.tab === 'pgdboptions') { const cur = new URLSearchParams(location.hash.split('?')[1] ?? ''); const v = cur.get('risk'); if (v) q.set('risk', v); }
@@ -254,6 +313,12 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   if (keep && c.tab === 'alert') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['k', 't', 'v']) { const v = cur.get(k); if (v) q.set(k, v); }
+  }
+  // B6g-3: the Collection Performance report's collection stays on a range change or a chart's drag (else the
+  // report reads every collection after one)
+  if (keep && c.tab === 'collectionperf') {
+    const v = new URLSearchParams(location.hash.split('?')[1] ?? '').get('collection');
+    if (v) q.set('collection', v);
   }
   // the Diff page's picks (diff.ts: mode, the two sides, their databases and times, identical rows) stay on a range change
   if (keep && c.tab === 'diff') {

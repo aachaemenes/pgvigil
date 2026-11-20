@@ -39,7 +39,7 @@
 #     middle leads only a loop that lacks its own report), checked only when the chain has its middle (2 head statements).
 #  D. pgvigil's blocked session dropped (the chain still held, the threshold 5 again): within about 6.5 minutes a read
 #     of mssql_syshealth stores system_health's QUERY_PROCESSING blockingTasks as reports of source system_health
-#     (the syshealth wiring is the release join's, internal/mssql/syshealth.go; a tree that still carries
+#     (the syshealth wiring is in internal/mssql/syshealth.go; a tree that still carries
 #     scripts/proof-darling-blockhistory-join.patch gets it applied to the run's copy) and the component row's detail
 #     no longer carries them.
 #  E. go test ./internal/mssql ./internal/web ./internal/repo and golangci-lint (0 issues) at the root and in app/, on
@@ -103,7 +103,7 @@ tar -C . --exclude=./web/node_modules --exclude=./.lab --exclude=./.git --exclud
 P=scripts/proof-darling-blockhistory-join.patch
 if [ ! -f "$GSRC/$P" ]; then
   grep -q BlockingTasksKey "$GSRC/internal/mssql/syshealth.go" || fail "build: no $P and syshealth.go does not hand over blockingTasks"
-  echo "build: no $P in the tree: the release join carries it (the tree is used as it is)"
+  echo "build: no $P in the tree: syshealth.go carries it (the tree is used as it is)"
 elif (cd "$GSRC" && git apply --check -R "$P" 2>/dev/null); then echo "build: $P is already in this tree"
 elif (cd "$GSRC" && git apply "$P" 2>"$TMPD/apply.err"); then echo "build: $P applied to the run's copy"
 else fail "build: $P neither applies nor is applied: $(cat "$TMPD/apply.err")"; fi

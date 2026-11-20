@@ -17,7 +17,7 @@
 # a stand-in pgagent schema with the columns the collector reads (pgAgent 4's pgagent.sql), read by the real
 # collector.
 #
-# The route GET /api/jobs/history is the lead's line in web.go: where the tree lacks it the proof builds a scratch
+# The route GET /api/jobs/history is a line in web.go: where the tree lacks it the proof builds a scratch
 # copy with exactly that line and says so.
 #
 # Expected (written before the first run):
@@ -47,10 +47,10 @@
 #     message), counts succeeded 0 failed 1, 3 versions newest first. engine=pg: job 1 with changes 1; its runs over
 #     seeded durations 10,10,10,10,50 s (succeeded) and one failed: counts succeeded 5, failed 1, running_long 1
 #     (50 > 2 x median 10), median 10.0. engine=x answers 400; scheduler without job answers 400.
-#     [review fold, written before the rerun] With 1,005 more succeeded runs of job 1 (10 s each, written straight into
+#     With 1,005 more succeeded runs of job 1 (10 s each, written straight into
 #     job_runs): the runs part lists 1,000 rows, the counts cover every run: succeeded 1010, failed 1, running_long 1,
 #     median 10.0; the grid's runs for job 1 = 1011 and its avg_s 10.0, max_s 50.0.
-#  H. [review fold] the masking of every password form a job's text is known to carry (go test TestMaskJobText).
+#  H. the masking of every password form a job's text is known to carry (go test TestMaskJobText).
 #
 # Not proven here: a real pg_cron or pgAgent (neither installed on this sandbox); a SQL Server job with an operator
 # notification (no operator is made); the pages in a browser (the shots are the slice's report).
@@ -87,7 +87,7 @@ trap cleanup EXIT
 command -v go >/dev/null 2>&1 && [ -f go.mod ] || fail "run from the repository root with a go toolchain"
 [[ "$ADMIN_DSN" != *password=* ]] || fail "PGVIGIL_ADMIN_DSN carries a password: keep it in ~/.pgpass (the DSN is on a command line)"
 
-# ---- the binary: the given one where the tree is wired, else a scratch build with the lead's line
+# ---- the binary: the given one where the tree is wired, else a scratch build with that line
 if grep -q '/api/jobs/history' internal/web/web.go; then
   [ -x "$BIN" ] || go build -o "$BIN" ./cmd/pgvigil
   WIRED="wired in this tree"
@@ -104,7 +104,7 @@ io.open(p, "w", encoding="utf-8").write(s.replace(old, old + '\tapi.HandleFunc("
 PY
   (cd "$SCRATCH" && CGO_ENABLED=0 go build -o "$SCRATCH/pgvigil-wired" ./cmd/pgvigil) || fail "the scratch build with the wiring"
   BIN=$SCRATCH/pgvigil-wired
-  WIRED="wired in a scratch build (the join applies the same line)"
+  WIRED="wired in a scratch build (the release wiring applies the same line)"
 fi
 echo "binary: $WIRED"
 

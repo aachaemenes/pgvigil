@@ -6,7 +6,7 @@
 # Needs go, psql, chromium, node, npm (web/node_modules installed), curl and python3, and a PostgreSQL for the database:
 #   PGVIGIL_ADMIN_DSN   keyword-form connection to a cluster as a login that may create a database
 #   PGVIGIL_DEMO_WAIT_S the seconds to wait for the seeded demo to serve (default 900)
-# The wiring: a tree whose main.ts already names mssqlBackupsFleetSection (the join, or a copy a killed run left wired:
+# The wiring: a tree whose main.ts already names mssqlBackupsFleetSection (the release, or a copy a killed run left wired:
 # either way the wired product) has its bundle built from its source for the run; a tree whose mssql_backups.ts exports
 # it gets scripts/fleet-mssql-wiring.patch applied and the bundle built; both put back on exit (a patch that does not
 # come off is a FAIL and exit 1); a tree without it (the base) runs unwired and its rows fail.
@@ -15,7 +15,7 @@
 # rows are asked for again after the browser check (a FAIL there is the proof's, not the product's).
 # Not proven here (said, not hidden): Acknowledge on a Job status row with acks on and off, the status part timing out
 # alone with the PostgreSQL grid still drawn, a pg_cron job's click to #/job?; the Summary's other cells.
-# Expected (written before the first run, 2026-11-14 05:5x PST; red on d263c82, whose /api/mssql/backups needs an
+# Expected (written before the first run; red on the code before it, whose /api/mssql/backups needs an
 # instance and whose Backups page has no SQL Server section):
 #   B1 api       GET /api/mssql/backups with no instance: 200; by_instance one row per ACTIVE SQL Server instance (the
 #                demo's three: demo-azure-sql03, which the demo gives no backups, has its row with no read); each row's
@@ -39,7 +39,7 @@
 #                (sql01, sql02): PostgreSQL's part says 'No PostgreSQL instance in this view.' and draws no Base backups
 #                or Standbys section (F1), the SQL Server grid 2 rows;
 #                tag ledger (sql03 alone, one instance): the filter on All, one instance row that has not run, no database
-# DONE-2 Jobs (written before the rows' first run, 2026-11-14 06:0x PST; red on d263c82: no 'status' / 'stats' part, the
+# DONE-2 Jobs (written before the rows' first run; red on the code before it: no 'status' / 'stats' part, the
 # Summary's Agent Jobs cell judged by the finding 'a job failed', the PostgreSQL 'jobs' check one row per failed run):
 #   S1 seed      the pass's case on both engines, made here: SQL Agent job 'fleet proof failed then succeeded' on sql01
 #                and pg_cron job 'fleet-proof-failed-then-succeeded' on erp01, each failed 120 minutes ago and succeeded
@@ -67,6 +67,30 @@
 #   J3 stats     4 s after the grid: the 'succeeded 7 days' column there, every cell a number, both seeded jobs' '1'
 #   J4 history   a click on the SQL Agent seeded job's name opens '<instance> | <job>' under the grid with its runs (2); its
 #                'Open the job on its instance' link is #/mssqljobs?i=<sql01>&job=<name> and lands with that job's history open (SF4)
+#   (B9b, expected written before any run;
+#   red on the code before B9, which has none of it). The S1 seed adds for B9b: the SQL Agent seeded job runs now
+#   (its mssql_jobs row's running_since 5 minutes ago), and on erp01 the pg_cron job RJ 'fleet-proof-two-of-three-failed'
+#   (failed 200 and 180 minutes ago, succeeded 170 minutes ago) and NJ 'fleet-proof-no-run' (no run at all).
+#   J8 cards     sql01's tab on a FIXED range of whole hours (to = an hour before the current hour, from 23 hours before;
+#                no import lands in it while the row reads): 'Runs, <range> (the whole hours ...)' above the grid with
+#                the tiles 'failed or cancelled' (1 or more: the seeded failure), 'succeeded', 'retries attempted' whose
+#                numbers equal /api/jobs/history?part=cards (parity) over the range the page sent (data-from / data-to)
+#                and the HAND COUNT from the RAW runs (mssql_job_runs: step 0 failed (0, 3) and succeeded (1), step rows
+#                with run_status 2, every whole UTC hour the range touches); 'Longest 5', 'Most frequent 5', 'Most failed
+#                5' each a grid
+#   J8p cards    the same on erp01's PostgreSQL Jobs tab: failed (1 or more) and succeeded equal the API and the raw
+#                job_runs with an end by hand; 'retries attempted' reads 'none', the API's retries NULL
+#   J5 counts    #/jobs: 'Jobs by instance' above 'Job status', one row per instance with a job (its row count = the
+#                status part's distinct instances); sql01's 'last run succeeded' a button (both seeded jobs succeeded
+#                last); its click sets Show 'Last run succeeded' and the instance (the line says 'on demo-onprem-sql01'),
+#                every row then sql01's, the seeded SQL Agent job there
+#   J6 rate      4 s after the grid the 'failure rate 7 days' column holds no '0' for a rate not read: every cell a
+#                percent or 'no finished run' or 'being built'; the seeded SJ and PJ '50 %' (one failure, one success),
+#                RJ '66.7 %', NJ 'no finished run'; Show 'Failure rate over 50 % (7 days)' lists exactly JRATE jobs (the
+#                HAND COUNT from the hours, present jobs of active instances, failed over finished > 0.5; 1 or more:
+#                RJ), RJ among them, SJ not
+#   J7 running   Show 'Running now' lists exactly the status part's rows with running_since (parity with the API), 1 or
+#                more, the seeded SQL Agent job among them
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -94,7 +118,7 @@ for p in $PORT $CDP; do ss -ltnH "( sport = :$p )" | grep -q . && fail "port $p 
 if grep -q 'mssqlBackupsFleetSection' web/src/main.ts; then
   cp internal/web/dist/app.js "$WORK/app.js.kept"
   (cd web && npm run build > "$WORK/build.txt" 2>&1) || { tail -30 "$WORK/build.txt"; fail "the wired tree's bundle did not build"; }
-  echo "wiring: main.ts wired in this tree (the join's, or left wired by a killed run), bundle built from it: $(wc -c < internal/web/dist/app.js) bytes"
+  echo "wiring: main.ts wired in this tree (the release's, or left wired by a killed run), bundle built from it: $(wc -c < internal/web/dist/app.js) bytes"
 elif grep -qE 'export (async )?(function|const) mssqlBackupsFleetSection\b' web/src/mssql_backups.ts; then
   cp internal/web/dist/app.js "$WORK/app.js.kept"
   git apply scripts/fleet-mssql-wiring.patch || fail "the wiring patch does not apply"
@@ -202,18 +226,24 @@ INSTS=$(Q "select count(*) || '|' || count(*) filter (where engine = 'sqlserver'
 echo "== S1 / J1: the job judge"; b0=$bad
 ERP=$(Q "select instance_id from pgvigil.instances where name = 'demo-onprem-erp01'")
 SJ='fleet proof failed then succeeded'; PJ='fleet-proof-failed-then-succeeded'
-Q "insert into pgvigil.mssql_jobs (instance_id, job_id, snapshot_at, name, enabled, category, last_outcome, last_run_at)
-   values ($S1, 'FLEETPROOF-0001', now(), '$SJ', true, 'proof', 1, now() - interval '60 minutes');
+RJ='fleet-proof-two-of-three-failed'; NJ='fleet-proof-no-run'   # B9b J6: a rate over 50 %, a job with no run
+Q "insert into pgvigil.mssql_jobs (instance_id, job_id, snapshot_at, name, enabled, category, last_outcome, last_run_at, running_since)
+   values ($S1, 'FLEETPROOF-0001', now(), '$SJ', true, 'proof', 1, now() - interval '60 minutes', now() - interval '5 minutes');
    insert into pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, step_name, run_status, duration_s)
    values ($S1, now() - interval '120 minutes', 990000001, 'FLEETPROOF-0001', '$SJ', 0, '(Job outcome)', 0, 5),
           ($S1, now() - interval '120 minutes' + interval '1 second', 990000000, 'FLEETPROOF-0001', '$SJ', 1, 'one', 0, 4),
           ($S1, now() - interval '60 minutes', 990000003, 'FLEETPROOF-0001', '$SJ', 0, '(Job outcome)', 1, 5),
           ($S1, now() - interval '60 minutes' + interval '1 second', 990000002, 'FLEETPROOF-0001', '$SJ', 1, 'one', 1, 4);
    insert into pgvigil.jobs (instance_id, scheduler, job_id, snapshot_at, job_name, schedule, command, active, first_seen, is_present)
-   values ($ERP, 'pg_cron', 990001, now(), '$PJ', '0 * * * *', 'SELECT 1', true, now() - interval '3 days', true);
+   values ($ERP, 'pg_cron', 990001, now(), '$PJ', '0 * * * *', 'SELECT 1', true, now() - interval '3 days', true),
+          ($ERP, 'pg_cron', 990002, now(), '$RJ', '0 * * * *', 'SELECT 1', true, now() - interval '3 days', true),
+          ($ERP, 'pg_cron', 990003, now(), '$NJ', '0 3 * * *', 'SELECT 1', true, now() - interval '3 days', true);
    insert into pgvigil.job_runs (instance_id, scheduler, job_id, run_id, status, start_time, end_time, duration_secs, snapshot_at)
    values ($ERP, 'pg_cron', 990001, 990001, 'failed', now() - interval '120 minutes', now() - interval '119 minutes', 60, now()),
-          ($ERP, 'pg_cron', 990001, 990002, 'succeeded', now() - interval '60 minutes', now() - interval '59 minutes', 60, now())" >/dev/null
+          ($ERP, 'pg_cron', 990001, 990002, 'succeeded', now() - interval '60 minutes', now() - interval '59 minutes', 60, now()),
+          ($ERP, 'pg_cron', 990002, 990003, 'failed', now() - interval '200 minutes', now() - interval '199 minutes', 60, now()),
+          ($ERP, 'pg_cron', 990002, 990004, 'failed', now() - interval '180 minutes', now() - interval '179 minutes', 60, now()),
+          ($ERP, 'pg_cron', 990002, 990005, 'succeeded', now() - interval '170 minutes', now() - interval '169 minutes', 60, now())" >/dev/null
 # the demo's live mssql_jobs import (every 5 minutes) would replace sql01's jobs and drop the seeded one: its stored read
 # an hour ahead makes mssql_hadr_read refuse the import as older
 [[ "$(Q "update pgvigil.mssql_hadr_reads set snapshot_at = now() + interval '1 hour' where instance_id = $S1 and collection = 'mssql_jobs' returning 1")" == 1 ]] \
@@ -247,6 +277,14 @@ Q "select coalesce(json_agg(json_build_object('k', i.instance_id || '|' || s.sch
 JALL=$(Q "select (select count(*) from pgvigil.mssql_jobs m join pgvigil.instances i using (instance_id) where i.is_active)
             + (select count(*) from pgvigil.jobs g join pgvigil.instances i using (instance_id) where i.is_active and g.is_present)")
 JPROB=$(Q "select count(*) from pgvigil.instances i cross join lateral pgvigil.job_status(i.instance_id) s where i.is_active and s.status in ('crit', 'warn')")
+# B9b J6: the jobs whose hours of the last 7 days failed more than half their finished runs (present jobs, active instances)
+JRATE=$(Q "select count(*) from (select h.instance_id, h.scheduler, h.job_id, sum(h.failed) f, sum(h.succeeded) s
+             from pgvigil.job_stats_hourly h join pgvigil.instances i using (instance_id)
+            where i.is_active and h.step_id = 0 and h.snapshot_at >= now() - interval '168 hours'
+              and (exists (select 1 from pgvigil.mssql_jobs m where h.scheduler = 'sqlagent' and m.instance_id = h.instance_id and m.job_id = h.job_id)
+                   or exists (select 1 from pgvigil.jobs g where h.scheduler <> 'sqlagent' and g.instance_id = h.instance_id
+                                 and g.scheduler = h.scheduler and g.job_id::text = h.job_id and g.is_present))
+            group by 1, 2, 3) x where f + s > 0 and f::numeric / (f + s) > 0.5")
 JACK=$(Q "select count(*) from pgvigil.acks where kind = 'job' and ended_at is null" 2>/dev/null || echo 0)
 for u in "jobsreport" "jobsreport?part=status" "jobsreport?part=status&ids=$S1" "jobsreport?part=stats" "jobsreport?part=status&ids=abc" "mssql/summary" "overview"; do
   f="$WORK/j-$(printf %s "$u" | tr -c 'a-z0-9' _).json"; echo "$(curl -s -o "$f" -w '%{http_code}' "${BASE}api/$u") $f"; done > "$WORK/jcodes.txt"
@@ -341,7 +379,7 @@ CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
 set +e
-FM_S1=$S1 FM_S3=$S3 FM_NULDB="$NULDB" FM_PROBLEMS=$PROBLEMS FM_ALL=$ALL FM_INSTS="$INSTS" FM_SJ="$SJ" FM_PJ="$PJ" FM_JALL=$JALL FM_JPROB=$((JPROB + JACK)) node scripts/fleet-mssql-check.mjs "$CDP" "$BASE" | tee "$WORK/check.txt"
+FM_S1=$S1 FM_S3=$S3 FM_NULDB="$NULDB" FM_PROBLEMS=$PROBLEMS FM_ALL=$ALL FM_INSTS="$INSTS" FM_SJ="$SJ" FM_PJ="$PJ" FM_JALL=$JALL FM_JPROB=$((JPROB + JACK)) FM_JRATE=$JRATE FM_RJ="$RJ" FM_NJ="$NJ" FM_ERP=$ERP FM_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB" node scripts/fleet-mssql-check.mjs "$CDP" "$BASE" | tee "$WORK/check.txt"
 rc=${PIPESTATUS[0]}; set -e
 if [[ $rc -ne 0 ]]; then
   last=$(tail -n 1 "$WORK/check.txt" 2>/dev/null || true)

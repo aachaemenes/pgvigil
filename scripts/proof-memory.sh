@@ -23,13 +23,13 @@
 #     4242: after temp_files the hour row has log_files 1 and log_max_file_bytes = that size, and memory_findings for
 #     the instance holds 'temp-file spills' twice: info (queryid 4242, over 1 GB in an hour) and warning (the hour
 #     over 10 % of the data).
-#     [review fold] A late import_temp_files (three hours back) leaves the hour rows from its own hour onward as they
+#     A late import_temp_files (three hours back) leaves the hour rows from its own hour onward as they
 #     were and adds the 3 older hours its window reaches.
 #  C. the pooler: PgBouncer with pool_size 2 in session mode in front of the first database; four clients of the
 #     application role each hold a session (pg_sleep), so two wait. After about 7 s, collect -once pgbouncer through
 #     the stats_users login: pooler_state 'ok' with the version 'PgBouncer 1.24.1'; one pool row with cl_waiting 2,
 #     sv_active 2, pool_size 2 from the database (pool_size_from 'database': the proof's pgbouncer.ini has no [users]
-#     section) and maxwait_ms >= 5000; [join fold] the ini keeps PgBouncer's default ignore_startup_parameters, so the
+#     section) and maxwait_ms >= 5000; the ini keeps PgBouncer's default ignore_startup_parameters, so the
 #     collector's connection is proven against a stock console; a 'stats' row for the database; pooler_state.databases names
 #     the pool with pool_size 2 and config holds max_client_conn. memory_findings: 'clients waiting on the pooler'
 #     critical (maxwait over 5 s). The 5-minute rules need five minutes of reads: the real read's pool row is copied
@@ -39,7 +39,7 @@
 #  D. the second instance has no pgbouncer: DSN: collect -once pgbouncer for it says skipped and stores no
 #     pooler_state row. A synthetic buffercache read for it (one relation at 60 % of 1000 buffers) gives 'one relation
 #     holds over half of shared_buffers' info.
-#  E. the API (the routes are the join's: a scratch build with the wiring block's two lines when this build has no
+#  E. the API (the routes are web.go's: a scratch build with the wiring block's two lines when this build has no
 #     /api/memory): /api/memory for the first instance: buffer_state ok, pgv_mem_hot in buffer_rels, the spill's
 #     queryid in temp_statements, at least one temp_hours row, findings 2 (the pooler's left to the Pooler tab);
 #     /api/pooler: state ok, one pool with cl_waiting 2, findings 3; /api/pooler?part=state for the second instance: 0
@@ -108,7 +108,7 @@ T2=$(q "select status || '|' || reason from pgvigil.buffercache_sample where ins
 echo "second instance: $T2"; [[ $T2 == "not available|pg_buffercache is not installed"* ]] || fail "A: the second instance's state"
 
 echo "--- B. temp spills"
-# [join fold] the log event is stamped now and temp_files rolls up seconds later: in the last 30 s of an hour the
+# the log event is stamped now and temp_files rolls up seconds later: in the last 30 s of an hour the
 # newest hour row could be the next hour's, with no log line; wait the hour out first
 S=$((10#$(date -u +%M) * 60 + 10#$(date -u +%S)))
 if [ "$S" -ge 3570 ]; then echo "(waiting $((3602 - S)) s for the hour to turn)"; sleep $((3602 - S)); fi
@@ -141,7 +141,7 @@ echo "hour: $L (size $SIZE)"; [[ $L == "1|$SIZE" ]] || fail "B: the hour's log f
 F=$(q "select string_agg(severity || '|' || setting, ',' order by severity) from pgvigil.memory_findings where instance_id = $I")
 echo "findings: $F"; [[ $F == "info|temp-file spills,warning|temp-file spills" ]] || fail "B: the temp findings"
 q "select detail from pgvigil.memory_findings where instance_id = $I and severity = 'info'" | grep -q 'statement 4242 ' || fail "B: the info finding names queryid 4242"
-# [review fold, expected before the run] a late read (stamped three hours back) rebuilds its own six hours only: the
+# a late read (stamped three hours back) rebuilds its own six hours only: the
 # hour rows from its own hour onward stay as they were. [first run: the count went 7 -> 10 - the late read's window
 # reaches three hours further back and adds those hours, which is right; the newer rows were unchanged. Expected now:
 # the rows from the late read's hour onward identical, exactly 3 rows added.]
@@ -221,7 +221,7 @@ if [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/api/memory?instance=$I")" = 4
   grep -q 'api.HandleFunc("GET /api/sessionsets", s.SessionSets)' "$SCRATCH/internal/web/web.go" || fail "the anchor line of the wiring is gone from web.go"
   sed -i 's|^\(\t*\)api.HandleFunc("GET /api/sessionsets", s.SessionSets)$|&\n\1api.HandleFunc("GET /api/memory", s.Memory)\n\1api.HandleFunc("GET /api/pooler", s.Pooler)|' "$SCRATCH/internal/web/web.go"
   (cd "$SCRATCH" && CGO_ENABLED=0 go build -o "$SCRATCH/pgvigil-wired" ./cmd/pgvigil) || fail "the scratch build with the routes"
-  SERVER="routed in a scratch build (the join wires them)"
+  SERVER="routed in a scratch build (web.go wires them)"
   start_serve "$SCRATCH/pgvigil-wired"
 fi
 echo "server: $SERVER"

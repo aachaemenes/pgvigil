@@ -32,7 +32,7 @@ EOF
   sleep 1
   "$BIN" collect -config "$CFG" -once activity >/dev/null || fail "collect activity ($MODE)"
   iid=$(q "select instance_id from pgvigil.instances where name='qt-$MODE-$TAG'")
-  # full and normalized key their text by a hash; none keeps no hash at all (review 14: a raw-text hash is a fingerprint)
+  # full and normalized key their text by a hash; none keeps no hash at all (a raw-text hash is a fingerprint)
   if [[ $MODE == none ]]; then S=$(q "select count(*) from pgvigil.activity_sample where instance_id=$iid and query_hash is null")
   else S=$(q "select count(*) from pgvigil.activity_sample where instance_id=$iid and query_hash is not null"); fi
   [[ "$S" -ge 1 ]] || fail "$MODE: no activity_sample row with the expected hash state (none = NULL, else a hash)"

@@ -21,6 +21,9 @@
 #       -no-login serve writable false with the reason naming -no-login, and its POST 403. (A -no-login serve answers
 #       the part to any caller, with a kept row's addresses, channel and user: the exposure its schedules part has
 #       there already, not a new one; this row checks writable and the reason only.)
+#   K5b a viewer of its own (KVUSER, added '-role viewer' with a fresh jar: part S's U2USER is an admin and disabled by
+#       part K) reads the part writable false with 'needs the admin role' in its reason; its daily_keep 403 with the admin
+#       role's words; nothing kept (B24f).
 #   K6  the page's keep through the door (op daily_keep as the signed-in user): a row kept_by page, drawn as that user,
 #       next send the next 07:00 UTC; the Report mail door's end of it 409 with the setting's words.
 #   K7  the control on the Daily checks page (a headless Chromium): the line says 'Mail daily: on, next send ...,
@@ -151,6 +154,13 @@ kget() { code -b "${2:-$JAR}" "$1/api/reportmail?part=daily"; }
 c=$(code -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["page@pgvigil.test"],"channel":"mail"}' "$U2/api/reportmail")
 [[ $c == 403 && $(nlive) == 0 ]] || fail "K5: the -no-login serve's daily_keep answered $c"
 ok "K5: the page's state: owner page, off and writable when signed in; read only with its reason on a serve with -no-login (its POST 403)"
+KVUSER=proofkview; KVPW=$(openssl rand -hex 12); KVJAR=$WORK/jarkv
+PGVIGIL_PASSWORD=$KVPW "$BIN" user add -config "$CFG" -role viewer $KVUSER >/dev/null 2>&1 || fail "K5b: user add -role viewer"
+login "$KVJAR" "$KVUSER" "$KVPW"
+[[ $(kget "$U" "$KVJAR") == 200 && $(jget "d['daily']['writable']") == False && $(jget "d['daily']['reason']") == *"needs the admin role"* ]] || fail "K5b: a viewer's state: $(cat "$WORK/body")"
+c=$(code -b "$KVJAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["page@pgvigil.test"],"channel":"mail"}' "$U/api/reportmail")
+[[ $c == 403 && $(jget "d['error']") == *"needs the admin role"* && $(nlive) == 0 ]] || fail "K5b: a viewer's daily_keep answered $c: $(cat "$WORK/body"), live $(nlive)"
+ok "K5b: a viewer ($KVUSER) reads the Daily checks mail read only with the admin role's words; its daily_keep 403 with the admin role's words, nothing kept"
 c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["page@pgvigil.test"],"channel":"mail"}')
 [[ $c == 200 && $(jget "d['outcome']") == done && $(klive kept_by) == page && $(klive created_by) == "$UIUSER" && $(klive cron) == "0 7 * * *" ]] || fail "K6: daily_keep: $c $(cat "$WORK/body")"
 [[ $(klive "next_at = (date_trunc('day', now() at time zone 'UTC') + interval '7 hours' + case when (now() at time zone 'UTC')::time >= time '07:00' then interval '1 day' else interval '0' end) at time zone 'UTC'") == true ]] || fail "K6: next_at $(klive next_at) is not the next 07:00 UTC"

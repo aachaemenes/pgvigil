@@ -22,6 +22,7 @@ import (
 // runCert writes a self-signed certificate and key for `pgvigil serve -tls-cert -tls-key`:
 //
 //	pgvigil cert [-hosts name1,name2,10.0.0.5] [-out dir] [-days 730]
+//	pgvigil cert -grant-key-access <thumbprint> -account <DOMAIN\user> [-store LocalMachine\My]   (Windows, elevated; task B24n)
 //
 // ECDSA P-256, the hosts as subject alternative names (default: this machine's name, localhost,
 // 127.0.0.1). A browser warns about a self-signed certificate; a certificate from the organisation's
@@ -31,8 +32,18 @@ func runCert(args []string) error {
 	hosts := fs.String("hosts", "", "comma-separated DNS names and IP addresses the certificate is for (default: hostname, localhost, 127.0.0.1)")
 	out := fs.String("out", ".", "directory for pgvigil.crt and pgvigil.key")
 	days := fs.Int("days", 730, "validity in days")
+	grant := fs.String("grant-key-access", "", "Windows, elevated: give -account Read on the private key of the certificate of this thumbprint (task B24n)")
+	account := fs.String("account", "", "with -grant-key-access: the one account serve runs as")
+	store := fs.String("store", `LocalMachine\My`, "with -grant-key-access: the certificate store")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if fs.NArg() > 0 {
+		// an account name with a space, unquoted, leaves a word behind: refused, never a grant to the wrong account
+		return fmt.Errorf("unexpected argument %q: quote a value that holds a space (-account \"NT SERVICE\\pgvigil\")", fs.Arg(0))
+	}
+	if *grant != "" {
+		return grantKeyAccess(*store, *grant, *account, os.Stdout, os.Stderr)
 	}
 	if *days < 1 || *days > 3650 {
 		return errors.New("-days must be 1..3650")

@@ -4,7 +4,7 @@
 // instance's whole total (/api/stmtgroups).
 //
 // The ticks and the grouping ride the page's hash (sg=<group>, sdb / suser / scl repeated), so a link keeps them;
-// the router keeps them on the Statements tab's own links (a sort, a range change) through the lead's wiring in router.ts.
+// the router keeps them on the Statements tab's own links (a sort, a range change) through the shell's wiring in router.ts.
 import { Row, rowsOf, Table } from './api';
 import { LoginRequired } from './api';
 import { Ctx, window_ } from './router';

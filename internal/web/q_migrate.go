@@ -1,7 +1,7 @@
 package web
 
 // Move from DBA Dash (task 206, Admin > Instances): servers a DBA Dash repository collects, moved to pgvigil one by one.
-// The join wires the routes in Handler:
+// The routes are wired in Handler:
 //   GET  /api/admin/dbadash_moves                -> the configured repositories (name, import switch) and the Windows
 //                                                   sign-in's state
 //   GET  /api/admin/dbadash_moves?repo=<name>    -> that repository's servers (0134's dbadash_move_list: one row per
@@ -927,6 +927,9 @@ func jobOutcome(got []dbadash.ImportCount, err error) (string, []string) {
 			notes = append(notes, "DBA Dash InstanceID "+strconv.Itoa(c.DBADashID)+": "+c.Skipped)
 		case c.Skipped != "" && outcome == "ok":
 			outcome = "partial: " + c.Mapping + ": " + c.Skipped
+		}
+		if c.Retries > 0 { // N4: batches PostgreSQL ended as a deadlock's victim, taken again and stored once
+			notes = append(notes, c.Instance+" "+c.Mapping+": retried "+strconv.Itoa(c.Retries)+" time(s) after a deadlock (stored once)")
 		}
 	}
 	if err != nil {

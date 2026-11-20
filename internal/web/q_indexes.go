@@ -110,8 +110,8 @@ func (s *Server) Indexes(w http.ResponseWriter, r *http.Request) {
 		{"indexes", sqlIndexesList, []any{id}},
 		{"findings", sqlIndexesFindings, []any{id}},
 	}
-	// the inventory one database at a time (db=<dbid>): the 2,000 largest and the database's total (review 71: 10,000 rows
-	// were 5.5 MB of JSON)
+	// the inventory one database at a time (db=<dbid>): the 2,000 largest and the database's total (10,000 rows were 5.5 MB
+	// of JSON)
 	if q.Get("db") != "" {
 		db, err := strconv.ParseInt(q.Get("db"), 10, 64)
 		if err != nil || db <= 0 {
@@ -179,7 +179,7 @@ func (s *Server) IndexAdvisor(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, fmt.Errorf("instance %s is not in this server's configuration", name))
 		return
 	}
-	rep, err := runAdvisor(ctx, door.Monitor, in.Database, advisor.Options{})
+	rep, err := runAdvisor(ctx, door.Monitor, door.Secret, in.Database, advisor.Options{}) // its password_secret too
 	s.log.Info("index advisor", "instance", name, "database", in.Database, "user", user, "suggestions", len(rep.Suggestions),
 		"skipped", rep.Skipped, "err", err)
 	if err != nil {

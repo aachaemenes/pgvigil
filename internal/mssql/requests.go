@@ -3,6 +3,7 @@ package mssql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
+	mssqldb "github.com/microsoft/go-mssqldb"
 )
 
 // requestsCollector is mssql_requests: what runs on the server now, every minute. One row per session that runs a
@@ -115,6 +117,10 @@ SELECT
   CAST(s.login_name AS nvarchar(128)) AS login_name,
   CAST(s.host_name AS nvarchar(128)) AS host_name,
   CAST(s.program_name AS nvarchar(128)) AS program_name,
+  -- pgvigil's own session (B24 OWN, 0265): decided here, on the server, by the program and the login together - never
+  -- the actions door's (it runs a customer's statement)
+  CAST(CASE WHEN (s.program_name = PROGRAM_NAME() OR s.program_name LIKE N'pgvigil%') AND s.login_name = SUSER_SNAME()
+            AND s.program_name NOT LIKE N'pgvigil-actions%' THEN 1 ELSE 0 END AS bit) AS is_own,
   CAST(DB_NAME(ISNULL(r.database_id, s.database_id)) AS nvarchar(128)) AS database_name,
   ISNULL(r.sql_handle, c.most_recent_sql_handle) AS sql_handle,
   CAST(CASE WHEN r.sql_handle IS NOT NULL THEN r.statement_start_offset ELSE -1 END AS int) AS stmt_start,
@@ -236,9 +242,10 @@ const (
   ) sp ON sp.spid = r.session_id AND sp.request_id = r.request_id`
 )
 
-// whoIsActiveArgs are the documented parameters of the call: the transaction's start and log use, the batch
-// around the statement, the block leaders, and plain values instead of formatted text.
-const whoIsActiveArgs = "@get_transaction_info = 1, @get_outer_command = 1, @find_block_leaders = 1, @format_output = 0"
+// WhoIsActiveArgs are the documented parameters of the call: the transaction's start and log use, the batch
+// around the statement, the block leaders, and plain values instead of formatted text. Exported for KITWATCH: its
+// collector entry runs sp_WhoIsActive with exactly these, so the stored shape is the one this collector reads.
+const WhoIsActiveArgs = "@get_transaction_info = 1, @get_outer_command = 1, @find_block_leaders = 1, @format_output = 0"
 
 // requestsSQL builds the snapshot's statement for a source ("dmv" or "sp_whoisactive") on a kind of server.
 func requestsSQL(source string, kind Kind) string {
@@ -271,9 +278,9 @@ func whoIsActiveSQL(db string, kind Kind) string {
 	if kind == KindAzureDB {
 		proc = "dbo.sp_WhoIsActive"
 	}
-	inner := "\nEXEC " + proc + " " + whoIsActiveArgs + ", @destination_table = N'#pgvigil_wia';\n" + requestsSQL(sourceWIA, kind)
+	inner := "\nEXEC " + proc + " " + WhoIsActiveArgs + ", @destination_table = N'#pgvigil_wia';\n" + requestsSQL(sourceWIA, kind)
 	return "DECLARE @schema nvarchar(max), @sql nvarchar(max);\n" +
-		"EXEC " + proc + " " + whoIsActiveArgs + ", @return_schema = 1, @schema = @schema OUTPUT;\n" +
+		"EXEC " + proc + " " + WhoIsActiveArgs + ", @return_schema = 1, @schema = @schema OUTPUT;\n" +
 		"IF @schema IS NULL OR CHARINDEX(N'<table_name>', @schema) = 0\n" +
 		"  THROW 50000, N'sp_WhoIsActive returned no schema for its output (@return_schema)', 1;\n" +
 		"SET @sql = REPLACE(@schema, N'<table_name>', N'#pgvigil_wia') + N';" + strings.ReplaceAll(inner, "'", "''") + "';\n" +
@@ -314,7 +321,14 @@ func (requestsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]
 			// the call failed (an old version without a parameter, a right it needs): the DMV read is the fallback,
 			// and the run says so
 			note = "sp_WhoIsActive in " + db + " failed, the DMV read ran instead"
-			extra = append(extra, collect.Row{"kind": "collector_error", "source": "sp_WhoIsActive", "message": err.Error() + "; the DMV read ran instead"})
+			// the server's error number in the message: KITWATCH K4.2's finding tells a changed shape (207, 8144, 8145,
+			// 213, 2812) from a passing fault (a deadlock victim, a lock timeout) by it
+			msg := err.Error()
+			var me mssqldb.Error
+			if errors.As(err, &me) && me.Number != 0 {
+				msg += fmt.Sprintf(" (error %d)", me.Number)
+			}
+			extra = append(extra, collect.Row{"kind": "collector_error", "source": "sp_WhoIsActive", "message": msg + "; the DMV read ran instead"})
 		}
 	}
 	if source == sourceDMV {

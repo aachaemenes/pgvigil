@@ -166,7 +166,7 @@ func TestPoolMinutePurgedOnAStore(t *testing.T) {
 	}
 }
 
-// TestPoolImportReadsMinuteRowsOnly (the wire review's blocker 1): on a migrated store (PGVIGIL_REPO_TEST_DSN, skipped
+// TestPoolImportReadsMinuteRowsOnly: on a migrated store (PGVIGIL_REPO_TEST_DSN, skipped
 // without it) import_mssql_pool stores the minutes of a read that also carries the collector's note row (a stale pool
 // tag) and stores nothing, without an error, for a read that carries the note alone.
 func TestPoolImportReadsMinuteRowsOnly(t *testing.T) {

@@ -110,9 +110,21 @@ the page does not run it when it opens, and a mailed report carries the same wor
 start and starts anyway. Behind PgBouncer, the reports login's startup settings are the UI login's (the README's
 `track_extra_parameters` line).
 
+A report on the repository is the admin's own door to the stored statement text: its SQL reads the text as it was
+kept, whatever an instance's `query_text` setting is now. The pages, the exports, the report mails, the alerts and the
+MCP door apply the setting as it stands when they read; a report's own SQL cannot. While any instance's setting is not
+`full`, the Custom reports page says so: 'A store report reads stored statement text whatever an instance's query_text
+policy is now: its SQL reads the repository's tables as the reports login (an admin's grant), not through the pages'
+rule (docs/security.html).'
+
 SQL Server has no read-only session. What keeps a report from writing there is the read login's rights:
-[the login](sqlserver.md#the-login) (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`, `CONNECT ANY DATABASE`) and no
-more, never sysadmin: a run on a login that is a member of sysadmin is refused before anything is sent. The rollback
+[the login](sqlserver.md#the-login) (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`, `CONNECT ANY DATABASE`, `ALTER
+TRACE`) and no more. Before anything is sent, a run reads the login's rights and is refused, naming each one, when the
+login holds a right outside that list on the server, may impersonate another login, or holds a right that writes in
+any database it can open (a database-wide right, or a grant on a schema or an object, but the read ones and `EXECUTE`
+on one procedure; a database-wide `EXECUTE` is refused) - the same fence as the [SQL Server custom
+checks](custom.md#sql-server-checks) (a sysadmin is refused first). Community tools keep their own fence (a sysadmin is refused, nothing more): they run named procedures
+pgvigil knows, and some need rights a read-only list would refuse. The rollback
 undoes what a write-capable login did inside the transaction; it does not undo a `COMMIT` the report itself sends,
 which is why the rights are the guard. A report that reads a table needs `SELECT` on it (`db_datareader` in that
 database, or a grant); a procedure report needs `EXECUTE` on the procedure.
@@ -138,6 +150,21 @@ says where to get it.
 | First Responder Kit | sp_Blitz, sp_BlitzFirst, sp_BlitzCache, sp_BlitzIndex, sp_BlitzLock, sp_BlitzWho | <https://github.com/BrentOzarULTD/SQL-Server-First-Responder-Kit> |
 | Darling Data | sp_PressureDetector, sp_QuickieStore, sp_HumanEventsBlockViewer, sp_HealthParser, sp_LogHunter, sp_IndexCleanup | <https://github.com/erikdarlingdata/DarlingData> |
 | Glenn Berry | SQL Server Diagnostic Queries | <https://glennsqlperformance.com/resources/> |
+
+**Installed community tools** (SQL Server; DBA Dash's Check Versions): each procedure found in the database, its version
+and date as its own text says them (read from the definition around its version line: `@Version = '8.34'`,
+`@version = '3.11'`, `Who Is Active? v2200.20260409`; the procedure is never run), the procedure's own version in
+the release pgvigil was tested with, and a word: the tested version, older than tested, newer than tested (not tested by
+pgvigil), version not read, not installed. A kit whose procedures come from different releases (their dates) is said once
+above the grid. Tested: the First Responder Kit 8.34 (2026-07-02; every procedure 8.34), Darling Data's release of
+2026-11-01 (each procedure its own version: sp_PressureDetector and sp_QuickieStore 6.11, sp_HumanEventsBlockViewer 5.11,
+sp_HealthParser and sp_LogHunter 3.11, sp_IndexCleanup 2.11), sp_WhoIsActive 2200.20260409 (2026-04-09).
+
+**Print the install script** gives a PowerShell script for the server's DBA: dbatools' `Install-DbaFirstResponderKit`,
+`Install-DbaDarlingData` and `Install-DbaWhoIsActive` for each kit with a procedure missing, older than tested or of no
+readable version, into the database the page looks in (a newer one is left as it is). dbatools fetches each kit's newest
+release where it runs; to install the tested ones, download their release files and add `-LocalFile`. pgvigil runs none of
+it: nothing is deployed from pgvigil, and the server sends nothing anywhere.
 
 Opening a procedure reads its parameters from `sys.parameters` of the installed copy (so the form follows the
 version you installed) and runs its `@help = 1` (audited, like any run) for the descriptions, matched to the
@@ -288,6 +315,55 @@ report (read-only, refused for a superuser), each in the database you name (empt
 
 They are pgvigil's own SQL, written after the ideas of postgres_dba's lock trees and index reads (BSD-3, Nikolay
 Samokhvalov) and pghero's sequence and index checks (MIT, Andrew Kane); no text of theirs is copied.
+
+### The kits pgvigil was checked against
+
+The community tools change upstream without asking pgvigil, so pgvigil watches them:
+
+- **The versions it was checked against**: First Responder Kit 8.34 (2026-07-02), DarlingData of 2026-11-01
+  (sp_PressureDetector and sp_QuickieStore 6.11, sp_HumanEventsBlockViewer 5.11, sp_HealthParser and sp_LogHunter 3.11,
+  sp_IndexCleanup 2.11), sp_WhoIsActive v2200.20260409, on SQL Server 2022 CU28 (16.0.4325.4). The stored shapes are
+  `internal/community/kits/shapes.json`; the blocks pgvigil's code ports from the kits are listed with their anchors
+  in `ports.json`.
+- **Each server's own versions** (`mssql_kits`, once a day): read from each procedure's definition in `master` and the
+  connection's database - nothing of the kits is executed. A login without VIEW DEFINITION on a procedure reads 'not
+  readable' (never an error). The Community tools page shows the installed version beside the checked one, and says
+  when it is newer; `pgvigil.kit_versions_fleet` counts the fleet's instances per procedure and version.
+- **The collector's own call**: `mssql_requests` reads 14 of sp_WhoIsActive's columns by name. When the call fails the
+  DMV read runs instead and the run is partial; after 5 such reads in a row (each read's own summary row, so a good
+  read between two fallbacks ends the streak) over at least 5 minutes with an error that
+  means a changed shape (207 a column, 8144 / 8145 a parameter, 213 the column count, 2812 no such procedure, or 50000
+  about the schema) the finding 'sp_WhoIsActive unusable' (warning) is raised, with the server's own error; another
+  repeated error (a deadlock victim, a lock timeout) is 'sp_WhoIsActive failing' (info). The next read that is not
+  the fallback clears it at once. The view is `pgvigil.kit_findings`.
+- **Every week** (`.github/workflows/kitwatch.yml`, Monday): the pinned kits and the newest (the First Responder Kit's
+  and sp_WhoIsActive's latest release, DarlingData's default branch) are installed on one SQL Server container and
+  every tool is run through pgvigil itself - the form, the Run path with every preset, the collector's call, the
+  siblings each tool cannot run without, the refusals pgvigil words as 'declined' - and compared. A **BREAK** line (a
+  column pgvigil reads by name, a coarse type, a set or column removed, a preset's parameter, the help's descriptions,
+  a new form parameter pgvigil's write filter does not take out, a new sibling, a run that stops succeeding, a version
+  the daily `mssql_kits` read cannot read) turns the run red with its lines in the run's summary; a **DRIFT** line (a
+  column or set added, an exact type inside one coarse type, nullability, order, a ported block or list that moved, a
+  ported file gone from the kit) is a warning on a green run. A preset is checked for every parameter the page can
+  preset on any server (sp_HumanEventsBlockViewer's `@session_name` too, which the test server's own session never
+  needs), and the siblings are searched only after the tool ran with every grant: a run that did not finish leaves its
+  siblings 'unknown' (an info line), never a new sibling. A section that had
+  no rows in one of the two runs (sp_HealthParser's one-column 'finding' set, sp_PressureDetector's 'THREADPOOL') is an
+  info line, its columns not compared that week: its shape follows the server's data, not the kit. The pinned pass is
+  also compared with `shapes.json`, so a change of pgvigil's own code, its driver or the runner is told apart from a
+  kit's. A run that could not run (a fetch, docker, a state the tools need not reached) is red and says why.
+- **Taking a change**: accommodate the code, then run the workflow by hand with its baseline input (or
+  `bash scripts/kitwatch.sh -baseline` with a PostgreSQL superuser in `PGVIGIL_ADMIN_DSN`) and commit the new
+  `shapes.json` and `ports.json` with the code change, so the stored shapes are always the ones the code was proven
+  against. The run keeps two artifacts: `kitwatch-report` (its report: each kit's fetched file with its address and
+  sha256, the lines, then every entry of the newest pass by name with its outcome, so a tool the run skipped shows by
+  its absence, and every ported block of the manifest, 'same' when the compare found no change) and, when the run
+  wrote them,
+  `kitwatch-baseline` (shapes.json and ports.json: result shapes, parameter names and the ported blocks' anchors, no
+  kit code). No kit file is stored or committed (sp_WhoIsActive is GPL-3.0); the pinned kit files are checked against
+  the sha256 shapes.json holds (a moved tag stops the run).
+- **Keeping it running**: GitHub turns a scheduled workflow off after 60 days without repository activity; before a
+  release `gh workflow view kitwatch` must say it is enabled (`gh workflow enable kitwatch` if not).
 
 ## The API
 

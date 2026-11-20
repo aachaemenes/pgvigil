@@ -21,6 +21,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -43,7 +44,11 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/discover"
+	"github.com/aachaemenes/pgvigil/internal/engines"
+	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
+	"github.com/aachaemenes/pgvigil/internal/platform"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // InstancesAdmin is what serve hands the page: where the config lives (the credential files go beside it), the
@@ -228,15 +233,19 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 		}
 		file.Rows = append(file.Rows, []any{in.Name, in.Engine, plat, strings.Join(in.Tags, " "), "from the file"})
 	}
-	out := map[string]any{"file": file, "secret_dir": a.secretDir(), "dbadash": keys(a.DBADash), "writable": s.instancesOff() == "", "why_not": s.instancesOff()}
+	out := map[string]any{"file": file, "secret_dir": a.secretDir(), "dbadash": keys(a.DBADash), "writable": s.instancesOff() == "", "why_not": s.instancesOff(),
+		"can": s.roleCan(r)} // can: the session's role (B24f): every write of this page needs admin
 	parts := []struct{ k, q string }{
 		{"page", `SELECT a.name, a.engine, a.platform, a.auth, a.host, a.port, a.dbname, a.login, a.options, array_to_string(a.tags, ' ') AS tags,
 		        a.disabled, a.running_plans, a.source, a.dsn_ref IS NOT NULL AS has_credential, a.created_at, a.created_by, a.updated_at, a.updated_by,
 		        a.tested_at, a.tested_ok, a.tested_detail, i.instance_id, i.last_seen,
 		        (SELECT max(c.snapshot_at) FROM pgvigil.collection_dates c WHERE c.instance_id = i.instance_id AND c.status = 'ok') AS last_collected,
 		        -- task 205's design pass: an approved server its source no longer lists
-		        g.source AS gone_source, g.gone_at AS gone_since
+		        g.source AS gone_source, g.gone_at AS gone_since,
+		        -- B24p: the row's cloud blocks (the Cloud fieldset prefilled from them)
+		        c.aws, c.azure
 		   FROM pgvigil.admin_instances a LEFT JOIN pgvigil.instances i ON i.name = a.name
+		   LEFT JOIN pgvigil.admin_instance_cloud c ON c.name = a.name
 		   LEFT JOIN LATERAL (SELECT p.source, p.gone_at FROM pgvigil.admin_proposals p
 		                       WHERE p.instance_name = a.name AND p.state = 'approved' AND p.gone ORDER BY p.gone_at DESC LIMIT 1) g ON true
 		  ORDER BY a.name`},
@@ -258,13 +267,153 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 		}
 		out[p.k] = t
 	}
+	// ST1 (Check all): every instance's last test, last collection and failing collection (q_instances_checks.go)
+	if err := s.instanceChecks(ctx, a, out); err != nil {
+		s.reply(w, r, nil, fmt.Errorf("checks: %w", err))
+		return
+	}
+	// ST5a (Settings): each page instance's own schedules and query_text, the catalogue and the floor
+	s.instanceSettingsView(ctx, out)
 	var gen int64
 	if err := s.pool.QueryRow(ctx, `SELECT pgvigil.admin_inventory_generation()`).Scan(&gen); err != nil {
 		s.reply(w, r, nil, err)
 		return
 	}
 	out["generation"] = gen
+	// B24p: whether page blocks are used on this install, and why a row's block is not (the collector's own rule)
+	notes, err := s.cloudNotes(ctx)
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("cloud: %w", err))
+		return
+	}
+	out["cloud_blocks"] = map[string]any{"on": config.PageCloudOn(),
+		"off_words": config.PageCloudBlocksOff, "notes": notes}
 	s.reply(w, r, out, nil)
+}
+
+// cloudNotes: each page row whose cloud block the collector will not use, and why (config.PageCloudRefusal)
+func (s *Server) cloudNotes(ctx context.Context) (map[string]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT a.name, a.engine, a.platform, a.host, c.aws, c.azure
+	                                  FROM pgvigil.admin_instance_cloud c JOIN pgvigil.admin_instances a ON a.name = c.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	notes := map[string]string{}
+	for rows.Next() {
+		var p config.PageInstance
+		var aws, azure []byte
+		if err := rows.Scan(&p.Name, &p.Engine, &p.Platform, &p.Host, &aws, &azure); err != nil {
+			return nil, err
+		}
+		if len(aws) > 0 {
+			p.AWS = &config.PageAWS{}
+			_ = json.Unmarshal(aws, p.AWS)
+		}
+		if len(azure) > 0 {
+			p.Azure = &config.PageAzure{}
+			_ = json.Unmarshal(azure, p.Azure)
+		}
+		if why := config.PageCloudRefusal(p); why != "" {
+			notes[p.Name] = why
+		}
+	}
+	return notes, rows.Err()
+}
+
+// cloudPart is the request's optional Cloud fieldset {aws, azure} (sent only when it changed; nil = not sent): the
+// page's keys only, no profile (a page block reads with the collector host's default chain)
+func cloudPart(in map[string]any) (*config.PageAWS, *config.PageAzure, bool, error) {
+	v, ok := in["cloud"]
+	if !ok || v == nil {
+		return nil, nil, false, nil
+	}
+	b, _ := json.Marshal(v)
+	var c struct {
+		AWS   *config.PageAWS   `json:"aws"`
+		Azure *config.PageAzure `json:"azure"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
+		return nil, nil, true, fmt.Errorf("the cloud part is {aws: {region, cluster, db_instance}, azure: {subscription, resource_group, server, cloud}}: %v", err)
+	}
+	switch {
+	case c.AWS == nil && c.Azure == nil:
+		return nil, nil, true, errors.New("an empty Cloud fieldset clears nothing: its Clear control removes the blocks")
+	case c.AWS != nil && c.AWS.Profile != "":
+		return nil, nil, true, errors.New("a page block takes no AWS profile: it reads with the collector host's default chain (a profile only from a discovery source pgvigil.yaml lists)")
+	}
+	return c.AWS, c.Azure, true, nil
+}
+
+// approveWrite runs the decision and the proposal's block in ONE transaction on the audit login (never an approved
+// proposal with its block lost); a block the store refuses is audited and the proposal approved WITHOUT it ('a
+// proposal without them gets none', never the whole approve refused) - note
+// says so, "" when the block was written.
+func (s *Server) approveWrite(ctx context.Context, pay, cloudPay map[string]any) (importAnswer, json.RawMessage, string, error) {
+	ans, raw, err := s.writeImportsWith(ctx, "import_admin_decision", pay, cloudPay)
+	if err != nil || !ans.cloudRefused {
+		return ans, raw, "", err
+	}
+	note := "approved without its cloud block: " + strings.TrimPrefix(ans.Detail, "the instance was not written: its cloud blocks were refused: ")
+	ans, raw, err = s.callImport(ctx, "import_admin_decision", pay)
+	return ans, raw, note, err
+}
+
+// writeWithCloud runs the instance's import and its cloud set in ONE transaction on the audit login: a cloud
+// refusal rolls the add or edit back and keeps its own audit row; the first call's refusal is committed as it is
+// (its audit row with it)
+func (s *Server) writeWithCloud(ctx context.Context, pay, cloud map[string]any) (importAnswer, json.RawMessage, error) {
+	return s.writeImportsWith(ctx, "import_admin_instance", pay, cloud)
+}
+
+// writeImportsWith runs fn (import_admin_instance or import_admin_decision) and the cloud set in one transaction
+func (s *Server) writeImportsWith(ctx context.Context, fn string, pay, cloud map[string]any) (importAnswer, json.RawMessage, error) {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	tx, err := s.actions.audit.Begin(wctx)
+	if err != nil {
+		return importAnswer{}, nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	call := func(fn string, p map[string]any) (importAnswer, json.RawMessage, error) {
+		b, _ := json.Marshal(p)
+		var out []byte
+		if err := tx.QueryRow(wctx, fmt.Sprintf(`SELECT pgvigil.%s($1, $2::jsonb)::text`, fn), time.Now(), string(b)).Scan(&out); err != nil {
+			return importAnswer{}, nil, err
+		}
+		var a importAnswer
+		if err := json.Unmarshal(out, &a); err != nil {
+			return importAnswer{}, nil, fmt.Errorf("%s answered %q", fn, out)
+		}
+		return a, out, nil
+	}
+	ans, raw, err := call(fn, pay)
+	if err != nil {
+		return ans, raw, err
+	}
+	if ans.Outcome != "done" {
+		return ans, raw, tx.Commit(wctx)
+	}
+	cans, craw, err := call("import_admin_instance_cloud", cloud)
+	if err != nil {
+		return cans, craw, err
+	}
+	if cans.Outcome != "done" {
+		_ = tx.Rollback(wctx)
+		why := "the instance was not written: its cloud blocks were refused: " + cans.Detail
+		// the refusal's own audit row went with the rollback: written again on its own, through the import_ door the
+		// audit login (IN ROLE pgvigil_collector) may call (admin_log is not its)
+		b, _ := json.Marshal(map[string]any{"ui_user": cloud["ui_user"], "client": cloud["client"], "name": cloud["name"], "detail": why})
+		if _, err := s.actions.audit.Exec(wctx, `SELECT pgvigil.import_admin_cloud_refused($1, $2::jsonb)`, time.Now(), string(b)); err != nil {
+			s.log.Warn("admin instances: the cloud refusal was not audited", "instance", cloud["name"], "err", err)
+		}
+		cans.Detail = why
+		cans.cloudRefused = true
+		return cans, craw, nil
+	}
+	return ans, raw, tx.Commit(wctx)
 }
 
 func keys(m map[string]string) []string {
@@ -277,8 +426,11 @@ func keys(m map[string]string) []string {
 
 // instancesOff says why the page cannot add or change instances (or read its sources) on this server, "" when it
 // can, in the page's own words: its writes ride the actions door's audit login and the UI login, as acknowledgements
-// do (ackOff), but an acknowledgement's wording would be wrong here (the join's w9c: proof-upgrade, proof-darling-alerts C).
+// do (ackOff), but an acknowledgement's wording would be wrong here.
 func (s *Server) instancesOff() string {
+	if s.queue() != nil { // queue mode (q_requests.go): the credential files live on the collector's host
+		return queueNotYet
+	}
 	switch {
 	case s.demo != nil:
 		return "adding and changing instances writes connection secrets and connects to servers: it needs pgvigil serve with a signed-in user (this is pgvigil demo -serve)"
@@ -365,6 +517,8 @@ func tagsOf(in map[string]any) []string {
 type importAnswer struct {
 	Outcome string `json:"outcome"`
 	Detail  string `json:"detail"`
+	// cloudRefused: writeImportsWith rolled the write back because the store refused its cloud blocks (B24p)
+	cloudRefused bool
 }
 
 // callImport runs one import_admin_* function on the audit login and answers its outcome.
@@ -405,14 +559,27 @@ type pageRow struct {
 	Port                              *int
 	DBName, Login, Options            *string
 	Tags                              []string
+	RunningPlans                      bool              // the running plans box (task 406): the Test's list reads it as the scheduler does
+	AWS                               *config.PageAWS   // B24p: the row's cloud blocks (0193), for the Test's list
+	Azure                             *config.PageAzure // the azure: block of the same row
 }
 
 func (s *Server) pageInstance(ctx context.Context, name string) (*pageRow, error) {
 	var p pageRow
-	err := s.pool.QueryRow(ctx, `SELECT engine, platform, dsn_ref, auth, host, port, dbname, login, options, tags FROM pgvigil.admin_instances WHERE name = $1`, name).
-		Scan(&p.Engine, &p.Platform, &p.Ref, &p.Auth, &p.Host, &p.Port, &p.DBName, &p.Login, &p.Options, &p.Tags)
+	var aws, azure []byte
+	err := s.pool.QueryRow(ctx, `SELECT a.engine, a.platform, a.dsn_ref, a.auth, a.host, a.port, a.dbname, a.login, a.options, a.tags, a.running_plans, c.aws, c.azure
+	                               FROM pgvigil.admin_instances a LEFT JOIN pgvigil.admin_instance_cloud c ON c.name = a.name WHERE a.name = $1`, name).
+		Scan(&p.Engine, &p.Platform, &p.Ref, &p.Auth, &p.Host, &p.Port, &p.DBName, &p.Login, &p.Options, &p.Tags, &p.RunningPlans, &aws, &azure)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
+	}
+	if len(aws) > 0 {
+		p.AWS = &config.PageAWS{}
+		_ = json.Unmarshal(aws, p.AWS)
+	}
+	if len(azure) > 0 {
+		p.Azure = &config.PageAzure{}
+		_ = json.Unmarshal(azure, p.Azure)
 	}
 	return &p, err
 }
@@ -430,12 +597,45 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.instancesWrite(w, r, user, in)
+}
+
+// instancesWrite is InstancesAdminWrite past its checks of the request and the session (a store test calls it)
+func (s *Server) instancesWrite(w http.ResponseWriter, r *http.Request, user string, in map[string]any) {
 	a := s.instAdmin()
 	ctx := r.Context()
 	op, name := str(in, "op"), str(in, "name")
 	pay := map[string]any{"op": op, "ui_user": user, "client": clientIP(r), "name": name, "file_names": a.fileNames()}
+	if op == "rights" {
+		// ST2: which of the rights pgvigil needs the instance's monitoring login holds, and the script of the
+		// missing ones, printed (q_instances_rights.go)
+		s.instanceRights(w, r, user, in)
+		return
+	}
+	if op == "settings" {
+		// ST5a: an instance added here gets its own schedules and query_text (q_instances_settings.go)
+		s.instanceSettings(w, r, user, in, pay)
+		return
+	}
 	if op == "test" {
+		// ST1 (Check all): an instance of pgvigil.yaml is tested as the file's own dsn (q_instances_checks.go)
+		if s.fileInstanceTest(w, r, user, in) {
+			return
+		}
 		s.instanceTest(w, r, user, in)
+		return
+	}
+	// B24p: the Cloud fieldset's own Clear (an empty fieldset never clears); allowed with the switch off too
+	if op == "cloud_clear" {
+		pay["op"] = "clear"
+		ans, raw, err := s.callImport(ctx, "import_admin_instance_cloud", pay)
+		if err != nil {
+			s.log.Error("admin instance: not written", "user", user, "op", op, "name", name, "err", err)
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
+			return
+		}
+		s.log.Info("admin instance", "op", op, "name", name, "user", user, "outcome", ans.Outcome, "detail", ans.Detail)
+		s.answer(w, ans, raw, nil)
 		return
 	}
 	// task 406: the running plans box of a SQL Server instance added here (0157: off for every instance until ticked)
@@ -467,6 +667,34 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var written, previous string // this attempt's credential file; the one the row named before (removed once replaced)
+	// B24p: the Cloud fieldset beside an add or edit, checked before anything is written (the switch, the shape, the
+	// name match against the host the form gives: the collector's own rule, config.PageCloudRefusal)
+	cAWS, cAzure, cloudSent, cerr := cloudPart(in)
+	if cerr != nil {
+		writeErr(w, http.StatusBadRequest, cerr)
+		return
+	}
+	if cloudSent && op != "add" && op != "edit" {
+		writeErr(w, http.StatusBadRequest, errors.New("the cloud part rides on an add or an edit"))
+		return
+	}
+	var cloudPay map[string]any
+	if cloudSent {
+		engine, platform := str(in, "engine"), str(in, "platform")
+		if op == "edit" && have != nil {
+			engine = have.Engine
+		}
+		if platform == "" {
+			platform = "auto"
+		}
+		p := config.PageInstance{Name: name, Engine: engine, Platform: platform, Host: str(in, "host"), AWS: cAWS, Azure: cAzure}
+		if why := config.PageCloudRefusal(p); why != "" {
+			s.log.Info("admin instance: cloud refused", "op", op, "name", name, "user", user, "why", why)
+			writeErr(w, http.StatusConflict, errors.New(why))
+			return
+		}
+		cloudPay = map[string]any{"op": "set", "ui_user": user, "client": clientIP(r), "name": name, "file_names": a.fileNames(), "aws": cAWS, "azure": cAzure}
+	}
 	switch op {
 	case "add", "edit":
 		port := 0
@@ -519,10 +747,16 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 			previous = have.Ref
 		}
 	default:
-		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans or test"))
+		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans, settings, rights, cloud_clear or test"))
 		return
 	}
-	ans, raw, err := s.callImport(ctx, "import_admin_instance", pay)
+	var ans importAnswer
+	var raw json.RawMessage
+	if cloudPay != nil {
+		ans, raw, err = s.writeWithCloud(ctx, pay, cloudPay)
+	} else {
+		ans, raw, err = s.callImport(ctx, "import_admin_instance", pay)
+	}
 	switch {
 	case err != nil || ans.Outcome != "done":
 		// this attempt's own file only: a concurrent write of the same name owns another
@@ -569,6 +803,18 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 		return
 	}
 	stored := have != nil && rawStr(in, "password") == "" && str(in, "host") == ""
+	// a configuration-file instance by name - its own read login (and password_secret), resolved here and
+	// never sent to the page; nothing is kept on a row (it has none)
+	if have == nil && rawStr(in, "password") == "" && str(in, "host") == "" && name != "" {
+		if t, ok := s.testConfigured(ctx, name); ok {
+			out := map[string]any{"ok": t.ok, "detail": t.detail}
+			if t.ok {
+				out["not_running"], out["collections"], out["list_note"] = t.notRun, t.collections, t.listNote
+			}
+			s.reply(w, r, out, nil)
+			return
+		}
+	}
 	if stored {
 		engine = have.Engine
 		if dsn, err = resolveRef(have.Ref); err != nil {
@@ -585,8 +831,22 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 			return
 		}
 	}
-	okc, detail := testConnection(ctx, engine, dsn)
+	// the list as the scheduler would build this instance - serve's loaded configuration (its global
+	// schedules:) and, for a stored page instance, the row as the inventory makes it (Merge: its PageDefaults)
+	tin := config.Instance{Name: name, Engine: engine}
+	if stored {
+		// with the row's cloud blocks and host, so an instance with its aws: block lists no 'no aws' line
+		if all, _ := config.Merge(nil, []config.PageInstance{{Name: name, Engine: have.Engine, Platform: have.Platform, DSNRef: have.Ref, RunningPlans: have.RunningPlans,
+			Host: have.Host, AWS: have.AWS, Azure: have.Azure}}, "", config.CounterEdits{}); len(all) == 1 {
+			tin = all[0]
+		}
+	}
+	t := testConnectionList(ctx, engine, dsn, nil, tin, s.schedConfig())
+	okc, detail := t.ok, t.detail
 	out := map[string]any{"ok": okc, "detail": detail}
+	if okc {
+		out["not_running"], out["collections"], out["list_note"] = t.notRun, t.collections, t.listNote
+	}
 	if stored {
 		ans, _, err := s.callImport(ctx, "import_admin_instance", map[string]any{"op": "tested", "ui_user": user, "client": clientIP(r), "name": name, "ok": okc, "detail": detail})
 		if err != nil || ans.Outcome != "done" {
@@ -598,33 +858,102 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 
 // testConnection opens one connection (10 s) and reads who answered.
 func testConnection(ctx context.Context, engine, dsn string) (bool, string) {
+	t := testConnectionList(ctx, engine, dsn, nil, config.Instance{Engine: engine}, nil)
+	return t.ok, t.detail
+}
+
+// schedConfig is serve's loaded configuration (WatchDoors keeps it); nil = the defaults (demo, mcp, a test)
+func (s *Server) schedConfig() *config.Config {
+	if v, ok := schedCfg.Load(s.self()); ok {
+		return v.(*config.Config)
+	}
+	return nil
+}
+
+// testResult is a connection test's answer and, N59, the collections that will not run on that server and why
+type testResult struct {
+	ok          bool
+	detail      string
+	notRun      []engines.NotRun
+	collections int
+	listNote    string // why the list is missing or partial ("" = read)
+}
+
+// testConnectionList opens one connection (10 s in all, the secret's read inside it), reads who answered, then on the
+// same connection the engine's detect and the collections that will not run there - engines.NotRunning on cfg and in
+// as the scheduler builds them (the file's schedules: and disabled:, the aws: block's gates, a page
+// instance's PageDefaults; cfg nil = the defaults) and each engine's Applies on what the detect read. sec is the read
+// login's password_secret (B24e; nil = none), set on the parsed string. A detect cut off by the 10 s says so.
+func testConnectionList(ctx context.Context, engine, dsn string, sec *secrets.Ref, in config.Instance, cfg *config.Config) testResult {
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	in.Engine = engine
 	switch engine {
 	case config.EngineSQLServer:
-		db, err := mssqlopen.Open(mssqlApp(dsn, "pgvigil-admin-test"))
+		db, err := mssql.OpenRead(cctx, mssqlApp(dsn, "pgvigil-admin-test"), sec)
 		if err != nil {
-			return false, "the connection string: " + err.Error()
+			var se *secrets.ReadError
+			if errors.As(err, &se) {
+				return testResult{detail: err.Error()}
+			}
+			return testResult{detail: "the connection string: " + err.Error()}
 		}
 		defer func() { _ = db.Close() }()
-		var srv, ver, login string
-		if err := db.QueryRowContext(cctx, `SELECT CAST(@@SERVERNAME AS nvarchar(256)), CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), SUSER_SNAME()`).Scan(&srv, &ver, &login); err != nil {
-			return false, err.Error()
-		}
-		return true, fmt.Sprintf("connected: %s, SQL Server %s, as %s", srv, ver, login)
-	case config.EnginePostgres:
-		conn, err := pgx.Connect(cctx, dsn)
+		db.SetMaxOpenConns(1)
+		conn, err := db.Conn(cctx)
 		if err != nil {
-			return false, err.Error()
+			return testResult{detail: err.Error()}
+		}
+		defer func() { _ = conn.Close() }()
+		var srv, ver, login string
+		if err := conn.QueryRowContext(cctx, `SELECT CAST(@@SERVERNAME AS nvarchar(256)), CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), SUSER_SNAME()`).Scan(&srv, &ver, &login); err != nil {
+			return testResult{detail: err.Error()}
+		}
+		t := testResult{ok: true, detail: fmt.Sprintf("connected: %s, SQL Server %s, as %s", srv, ver, login)}
+		info, err := mssql.Detect(cctx, conn, "")
+		if err != nil {
+			t.listNote = listNoteFor(cctx, err)
+			t.notRun, t.collections = engines.NotRunning(cfg, in, nil, nil)
+			return t
+		}
+		t.notRun, t.collections = engines.NotRunning(cfg, in, nil, &info)
+		return t
+	case config.EnginePostgres:
+		pcfg, err := pgx.ParseConfig(dsn)
+		if err != nil {
+			return testResult{detail: err.Error()}
+		}
+		if err := secrets.FillPG(cctx, pcfg, dsn, sec); err != nil {
+			return testResult{detail: err.Error()}
+		}
+		conn, err := pgx.ConnectConfig(cctx, pcfg)
+		if err != nil {
+			return testResult{detail: err.Error()}
 		}
 		defer func() { _ = conn.Close(context.Background()) }()
 		var ver, login string
 		if err := conn.QueryRow(cctx, `SELECT current_setting('server_version'), current_user`).Scan(&ver, &login); err != nil {
-			return false, err.Error()
+			return testResult{detail: err.Error()}
 		}
-		return true, fmt.Sprintf("connected: PostgreSQL %s, as %s", ver, login)
+		t := testResult{ok: true, detail: fmt.Sprintf("connected: PostgreSQL %s, as %s", ver, login)}
+		info, err := platform.Detect(cctx, conn, "")
+		if err != nil {
+			t.listNote = listNoteFor(cctx, err)
+			t.notRun, t.collections = engines.NotRunning(cfg, in, nil, nil)
+			return t
+		}
+		t.notRun, t.collections = engines.NotRunning(cfg, in, &info, nil)
+		return t
 	}
-	return false, "unknown engine " + engine
+	return testResult{detail: "unknown engine " + engine}
+}
+
+// listNoteFor: why the list of collections is only the configuration's
+func listNoteFor(ctx context.Context, err error) string {
+	if ctx.Err() != nil {
+		return "the list was not read within 10 s: only the configuration's reasons are shown"
+	}
+	return "the server's detect failed (" + err.Error() + "): only the configuration's reasons are shown"
 }
 
 // sourceCred is a source's credential file's content: what an approved server connects with.
@@ -823,7 +1152,7 @@ type sourceRow struct {
 	// taken in, the Azure subscriptions of the last complete read
 	Regions, TagKeys, Scopes []string
 	// Silent: the kept AWS regions whose note says they did not answer within the last 7 days (task 205 D5: left out
-	// until the next sweep; the review's part b: a note older than a week is asked again by the hourly read, so a
+	// until the next sweep; a note older than a week is asked again by the hourly read, so a
 	// source never swept does not leave a region out for good)
 	Silent []string
 }
@@ -1160,7 +1489,7 @@ func (s *Server) syncSource(ctx context.Context, name string, limit time.Duratio
 		_, _ = s.actions.audit.Exec(rctx, `SELECT pgvigil.import_admin_source_release($1, $2)`, name, holder)
 	}
 	// the source as it is under the claim (a read applied between the first look and the claim may have kept other
-	// regions: the review's part b)
+	// regions)
 	src, err := s.sourceByName(ctx, name)
 	if err != nil {
 		release()
@@ -1254,13 +1583,13 @@ func noteItems(notes, asked []string) []map[string]string {
 const weeklySweep = 7 * 24 * time.Hour
 
 // dueSourcesSQL lists the sources the loop reads now, each with whether the read is the weekly sweep: an AWS source
-// swept once whose regions and last sweep tried are both older than $1 seconds (the review's part b: a sweep that
-// failed is not tried again at every tick; sweep_tried_at is set by every sweep, whatever its outcome).
+// swept once whose regions and last sweep tried are both older than $1 seconds (a sweep that failed is not
+// tried again at every tick; sweep_tried_at is set by every sweep, whatever its outcome).
 const dueSourcesSQL = `SELECT name, kind = 'aws' AND regions_read_at IS NOT NULL AND greatest(regions_read_at, sweep_tried_at) <= now() - $1 * interval '1 second'
    FROM pgvigil.admin_sources WHERE enabled AND (last_run IS NULL OR last_run + every_s * interval '1 second' <= now()) ORDER BY name`
 
 // sweepStart is the region a sweep starts from on a host with no configured region (STS is asked there too): the
-// first kept region not silent, else the first kept (the review's part b).
+// first kept region not silent, else the first kept.
 func sweepStart(regions, silent []string) string {
 	for _, r := range regions {
 		if !slices.Contains(silent, r) {
@@ -1338,18 +1667,18 @@ func nameFor(server string) string {
 // approveLogin: the authentication, login and password an approved (or tested) proposal's server is read with, or
 // the words of why not. A login typed at the approve is used with its password; else the source's, else the
 // proposal's own. The source's authentication unless one is picked (the panel sends a pick, a login typed or not:
-// never a silent drop, the join's review 3c), mapped to the engine's: SQL Server never takes password / pgpass, and a
+// never a silent drop), mapped to the engine's: SQL Server never takes password / pgpass, and a
 // cloud source's one SQL login is a password login on its PostgreSQL servers.
 //   - PostgreSQL: pgvigil signs in with a password login only (no Entra token sign-in), so a source that signs in to
-//     Azure as an Entra application or identity holds no PostgreSQL login - its secret never becomes one (the join's
-//     review 3a): such a proposal is approved only with a PostgreSQL login typed.
+//     Azure as an Entra application or identity holds no PostgreSQL login - its secret never becomes one: such a
+//     proposal is approved only with a PostgreSQL login typed.
 //   - entra-identity (this host's managed identity, CLOUDSQL C1): no secret, and the login is a user-assigned
 //     identity's client id - typed, or the source's own when the source signs in that way; never a SQL login of the
 //     source or the proposal (a typed password reaches BuildDSN, which refuses it in its own words).
 //   - a picked authentication with no login typed takes the source's own login only when it is that kind (the
 //     source's kind read in the engine's words); .pgpass takes the login alone; else the words name what is missing.
 //   - a login typed on SQL Server with no pick, the source signing in as an Entra application, is refused: it would
-//     become the application's id (the review wire2 3).
+//     become the application's id.
 func approveLogin(engine, srcAuth, typedAuth, typedLogin, typedPassword string, cred sourceCred, proposalLogin, server string) (auth, login, password string, err error) {
 	typed := typedLogin != ""
 	if typed {
@@ -1424,7 +1753,7 @@ func approveLogin(engine, srcAuth, typedAuth, typedLogin, typedPassword string, 
 
 // pgServiceDSN is a pg_service source's sign-in: the service file itself, its password (or the service account's
 // .pgpass) staying where it is, with the source's login and password, or the ones typed at the approve. A source that
-// signs in as an Entra application or identity never puts its secret into a PostgreSQL DSN (the join's review 3a):
+// signs in as an Entra application or identity never puts its secret into a PostgreSQL DSN:
 // with nothing typed it is refused in the words approveLogin uses.
 func pgServiceDSN(server, ref, srcAuth string, typed bool, cred sourceCred) (string, error) {
 	if !typed && (srcAuth == "entra" || srcAuth == "entra-identity") {
@@ -1451,12 +1780,14 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 	op, id := str(in, "op"), str(in, "proposal_id")
 	pay := map[string]any{"op": op, "ui_user": user, "client": clientIP(r), "proposal_id": id, "file_names": a.fileNames()}
 	var restore func()
+	var cloudPay map[string]any // B24p task 6: the approved instance's cloud block, from the proposal's own identity
 	if op == "approve" || op == "test" {
 		var src, server, engine, host string
 		var port *int
-		var db, login *string
-		err := s.pool.QueryRow(ctx, `SELECT source, server, engine, host, port, dbname, login FROM pgvigil.admin_proposals WHERE proposal_id::text = $1`, id).
-			Scan(&src, &server, &engine, &host, &port, &db, &login)
+		var db, login, platform *string
+		var ptags []string
+		err := s.pool.QueryRow(ctx, `SELECT source, server, engine, host, port, dbname, login, platform, tags FROM pgvigil.admin_proposals WHERE proposal_id::text = $1`, id).
+			Scan(&src, &server, &engine, &host, &port, &db, &login, &platform, &ptags)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeErr(w, http.StatusConflict, fmt.Errorf("no proposal %s", id))
 			return
@@ -1530,6 +1861,12 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 			s.reply(w, r, map[string]any{"ok": okc, "detail": detail}, nil)
 			return
 		}
+		if aws, az, note := proposalCloud(sr, server, engine, orZero(platform), ptags); aws != nil || az != nil {
+			cloudPay = map[string]any{"op": "set", "ui_user": user, "client": clientIP(r), "name": name, "file_names": a.fileNames(), "aws": aws, "azure": az}
+			if note != "" {
+				s.log.Info("admin proposal: the source's profile is not copied", "proposal", id, "why", note)
+			}
+		}
 		for _, k := range []string{"confirm_master", "confirm_autopause", "confirm_duplicate"} {
 			if v, ok := in[k].(bool); ok && v {
 				pay[k] = true
@@ -1547,7 +1884,18 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 			restore = func() { _ = config.RemoveSecret(a.secretDir(), ref) } // this attempt's own file only
 		}
 	}
-	ans, raw, err := s.callImport(ctx, "import_admin_decision", pay)
+	var ans importAnswer
+	var raw json.RawMessage
+	var err error
+	cloudNote := ""
+	if cloudPay != nil {
+		ans, raw, cloudNote, err = s.approveWrite(ctx, pay, cloudPay)
+		if cloudNote != "" {
+			s.log.Warn("admin proposal: approved without its cloud block", "proposal", id, "why", cloudNote)
+		}
+	} else {
+		ans, raw, err = s.callImport(ctx, "import_admin_decision", pay)
+	}
 	if err != nil {
 		if restore != nil {
 			restore()
@@ -1559,5 +1907,98 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 		restore()
 	}
 	s.log.Info("admin proposal", "op", op, "proposal", id, "user", user, "outcome", ans.Outcome, "detail", ans.Detail)
-	s.answer(w, ans, raw, nil)
+	var extra map[string]any
+	if cloudNote != "" && ans.Outcome == "done" {
+		extra = map[string]any{"detail": ans.Detail + " - " + cloudNote, "cloud_note": cloudNote} // the page's words carry it
+	}
+	s.answer(w, ans, raw, extra)
+}
+
+// testConfigured tests a configuration-file instance by name with its own door: its read login and its
+// password_secret, resolved here and never sent to the page, and the list on serve's loaded configuration and the
+// instance as the file has it; ok false = no such configured instance on this server
+func (s *Server) testConfigured(ctx context.Context, name string) (testResult, bool) {
+	ds := s.doorsNow()
+	if ds == nil {
+		return testResult{}, false
+	}
+	engine, dsn := "", ""
+	var sec *secrets.Ref
+	if d, ok := ds.MS[name]; ok && !d.Page {
+		engine, dsn, sec = config.EngineSQLServer, d.Monitor, d.Secret
+	} else if d, ok := ds.PG[name]; ok && !d.Page {
+		engine, dsn, sec = config.EnginePostgres, d.Monitor, d.Secret
+	} else {
+		return testResult{}, false
+	}
+	if dsn == "" {
+		return testResult{detail: "instance " + name + ": its read login's dsn resolved to an empty string on this server"}, true
+	}
+	cfg := s.schedConfig()
+	in := config.Instance{Name: name}
+	if cfg != nil {
+		for _, c := range cfg.Instances {
+			if c.Name == name {
+				in = c
+			}
+		}
+	}
+	return testConnectionList(ctx, engine, dsn, sec, in, cfg), true
+}
+
+// proposalCloud is an approved proposal's cloud block from its own identity (B24p task 6, fold 8): aws only for a
+// PostgreSQL proposal of an AWS source - its region and DB instance from the proposal's server key
+// (aws:<account>:<region>:instance:<id>), its cluster from its cluster: tag (an Aurora member reads the cluster's log
+// group); azure only for an azuresqldb proposal of an Azure source - the subscription and resource group from its tags,
+// the logical server from its key (azure:<sub>:sql:<server>/<db>), the source's cloud. The source's AWS profile is
+// copied only while doors.page_cloud_blocks is on AND doors.page_aws_profiles lists it; note says why
+// it was not. The block's target is the proposal's own host (the provider's endpoint), so the name match holds.
+func proposalCloud(sr *sourceRow, server, engine, platform string, tags []string) (*config.PageAWS, *config.PageAzure, string) {
+	tag := func(k string) string {
+		for _, t := range tags {
+			if v, ok := strings.CutPrefix(t, k+":"); ok {
+				return v
+			}
+		}
+		return ""
+	}
+	settings := func() cloudSettings {
+		var cs cloudSettings
+		if v, err := resolveRef(sr.Ref); err == nil {
+			_ = json.Unmarshal([]byte(v), &cs)
+		}
+		return cs
+	}
+	switch {
+	case sr.Kind == "aws" && engine == config.EnginePostgres && strings.HasPrefix(server, "aws:"):
+		p := strings.SplitN(server, ":", 5)
+		if len(p) != 5 || p[3] != "instance" {
+			return nil, nil, ""
+		}
+		a := &config.PageAWS{Region: p[2], DBInstance: p[4], Cluster: tag("cluster")}
+		note := ""
+		if prof := settings().Profile; prof != "" {
+			switch {
+			case !config.PageCloudOn():
+				note = "the source's profile " + prof + " is not copied: " + config.PageCloudBlocksOff
+			case !config.PageAWSProfileListed(prof):
+				note = "the source's profile " + prof + " is not copied: doors.page_aws_profiles in pgvigil.yaml does not list it"
+			default:
+				a.Profile = prof
+			}
+		}
+		return a, nil, note
+	case sr.Kind == "azure" && engine == config.EngineSQLServer && platform == "azuresqldb" && strings.HasPrefix(server, "azure:"):
+		_, rest, ok := strings.Cut(server, ":sql:")
+		srv, _, _ := strings.Cut(rest, "/")
+		if !ok || srv == "" || tag("subscription") == "" || tag("resource-group") == "" {
+			return nil, nil, ""
+		}
+		cloud := settings().Cloud
+		if cloud == "public" {
+			cloud = ""
+		}
+		return nil, &config.PageAzure{Subscription: tag("subscription"), ResourceGroup: tag("resource-group"), Server: srv, Cloud: cloud}, ""
+	}
+	return nil, nil, ""
 }

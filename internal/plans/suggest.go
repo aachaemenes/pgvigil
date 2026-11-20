@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // NotChecked is the label of a suggestion the planner has not checked.
@@ -400,7 +402,7 @@ var ddlRE = regexp.MustCompile(`^CREATE INDEX CONCURRENTLY ON ((?:[a-z_][a-z0-9_
 // before and with the hypothetical index, and whether the plan uses it. The statement is planned, never run (its
 // generic plan when it has $n parameters). check, when set, is asked inside the read-only transaction before anything
 // is planned, as Explain asks it (serve passes its pgRefusal: a stored statement may predate the check).
-func Hypo(ctx context.Context, dsn, datname, query, ddl string, check func(context.Context, pgx.Tx) (string, error)) (HypoResult, error) {
+func Hypo(ctx context.Context, dsn string, sec *secrets.Ref, datname, query, ddl string, check func(context.Context, pgx.Tx) (string, error)) (HypoResult, error) {
 	m := ddlRE.FindStringSubmatch(ddl)
 	if m == nil {
 		return HypoResult{}, errors.New("not a suggested index's text")
@@ -415,7 +417,7 @@ func Hypo(ctx context.Context, dsn, datname, query, ddl string, check func(conte
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*ExplainTimeout+10*time.Second)
 	defer cancel()
-	conn, err := Connect(ctx, dsn, datname, "pgvigil-hypo", ExplainTimeout)
+	conn, err := Connect(ctx, dsn, sec, datname, "pgvigil-hypo", ExplainTimeout)
 	if err != nil {
 		return HypoResult{}, fmt.Errorf("the monitoring login could not connect to %s: %w", orDefault(datname), err)
 	}

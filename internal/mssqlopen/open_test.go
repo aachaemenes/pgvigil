@@ -212,9 +212,9 @@ func TestOneSQLServerOpener(t *testing.T) {
 				found = append(found, strings.TrimPrefix(p, root+string(filepath.Separator)))
 			}
 		}
-		// a go-mssqldb connector built elsewhere skips fedauth the same way (the join of 201 DONE-2, 11-14: its
+		// a go-mssqldb connector built elsewhere skips fedauth the same way (task 201 DONE-2: its
 		// collector connect built one to set a dialer - OpenDialer is that door)
-		// - only in a file that imports go-mssqldb (another driver's NewConnector is not this one; join review 4)
+		// - only in a file that imports go-mssqldb (another driver's NewConnector is not this one)
 		ctors := []string{".NewConnector(", ".NewConnectorConfig(", ".NewActiveDirectoryTokenConnector(", ".NewConnectorWithAccessTokenProvider(",
 			".NewSecurityTokenConnector(", ".NewConnectorWithProcessQueryText(", ".OpenConnector("}
 		if !strings.Contains(string(b), `"github.com/microsoft/go-mssqldb`) {
@@ -351,7 +351,7 @@ func (noDial) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, errors.New("no dial")
 }
 
-// OpenDialer keeps the connector Open chooses (the join of 201 DONE-2, 11-14): the federated one carries the dialer
+// OpenDialer keeps the connector Open chooses (task 201 DONE-2): the federated one carries the dialer
 // for an Entra string, the driver's own for any other; before, the collector built its own connector and an Entra
 // string signed in as a SQL login.
 func TestOpenDialerKeepsTheSignIn(t *testing.T) {
@@ -379,7 +379,7 @@ func TestOpenDialerKeepsTheSignIn(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		// an old auth windows string (no login, no password, no authenticator): its Kerberos connector carries
 		// authenticator=krb5 in the parsed config only, so a dialer on a connector rebuilt from the string would sign
-		// in with NTLM and an empty SQL login (join review 3)
+		// in with NTLM and an empty SQL login
 		rows = append(rows, row{"Kerberos by default", "sqlserver://sql01?encrypt=true", true})
 	}
 	for _, c := range rows {
@@ -428,7 +428,7 @@ func (c holdCred) GetToken(context.Context, policy.TokenRequestOptions) (azcore.
 	return azcore.AccessToken{Token: "tok", ExpiresOn: time.Now().Add(time.Hour)}, nil
 }
 
-// TestProviderHoldsTheDeadline (join review 2): the token provider holds the dialer's deadline while it fetches the
+// TestProviderHoldsTheDeadline: the token provider holds the dialer's deadline while it fetches the
 // token and releases it after, on success and on a refusal; a nil holder (Open's) holds nothing.
 func TestProviderHoldsTheDeadline(t *testing.T) {
 	resetCredentials(t)
@@ -460,7 +460,7 @@ func TestProviderHoldsTheDeadline(t *testing.T) {
 	}
 }
 
-// TestGMSARefusal (reviews 206d 1 / 206e 3): with gmsa: set, a string that signs in as the process's own Windows
+// TestGMSARefusal: with gmsa: set, a string that signs in as the process's own Windows
 // account opens on Windows only when the process runs as that gMSA; every other string, OS or unset gmsa: as before.
 func TestGMSARefusal(t *testing.T) {
 	was := processAccount

@@ -49,7 +49,7 @@ func TestParseSessionSet(t *testing.T) {
 		{"RESET ROLE", false, sessionSet{}},
 		{"RESET SESSION AUTHORIZATION", false, sessionSet{}},
 		{"SELECT set_config($1, $2, $3)", false, sessionSet{}},
-		// the 58 review's texts: a trailing comment, a $n inside a list, DEFAULT, an empty literal, a leading -- comment
+		// a trailing comment, a $n inside a list, DEFAULT, an empty literal, a leading -- comment
 		{"SET enable_hashjoin = $1 -- c", true, sessionSet{Command: "SET", Setting: "enable_hashjoin", Hidden: true, Planner: true}},
 		{"SET enable_hashjoin = off /*traceparent='00-ab'*/", true, sessionSet{Command: "SET", Setting: "enable_hashjoin", Value: "off", Planner: true}},
 		{"SET search_path = $1, public", true, sessionSet{Command: "SET", Setting: "search_path", Hidden: true}},
@@ -59,7 +59,7 @@ func TestParseSessionSet(t *testing.T) {
 		{"SET application_name = ''", true, sessionSet{Command: "SET", Setting: "application_name", Value: ""}},
 		{"-- hint\nSET enable_hashjoin = off", true, sessionSet{Command: "SET", Setting: "enable_hashjoin", Value: "off", Planner: true}},
 		{"settle_up()", false, sessionSet{}},
-		// the join review's texts: a comment marker inside a quoted value or name is text; a nested block comment
+		// a comment marker inside a quoted value or name is text; a nested block comment
 		{"SET x.y = 'a -- b'", true, sessionSet{Command: "SET", Setting: "x.y", Value: "a -- b"}},
 		{"SET app.note = 'x /* y */ z'", true, sessionSet{Command: "SET", Setting: "app.note", Value: "x /* y */ z"}},
 		{"SET app.note = 'it''s -- fine' -- really", true, sessionSet{Command: "SET", Setting: "app.note", Value: "it's -- fine"}},
@@ -78,7 +78,7 @@ func TestParseSessionSet(t *testing.T) {
 // TestMonitorSetupSettings: the four settings of collect.go's session setup, read from its text, the index read's
 // search_path and the Explain's plan_cache_mode, and nothing else; then every SET statement in the module's own Go
 // sources (a string literal that is not an UPDATE ... SET; the demo's seed texts and the tests aside) names one of
-// them, so a new SET of the tool's own cannot reach the findings as the application's (the fold review's blocker).
+// them, so a new SET of the tool's own cannot reach the findings as the application's.
 func TestMonitorSetupSettings(t *testing.T) {
 	want := map[string]bool{"default_transaction_read_only": true, "statement_timeout": true, "lock_timeout": true, "application_name": true,
 		"search_path": true, "plan_cache_mode": true}
@@ -95,6 +95,39 @@ func TestMonitorSetupSettings(t *testing.T) {
 	}
 	// the SQL keyword in capitals, as every statement literal of the tree writes it (prose such as "set it to" is not one)
 	setStmt := regexp.MustCompile(`\b(?:SET|RESET)\s+(?:LOCAL\s+|SESSION\s+)?([a-z_][a-z0-9_.]*)\s*(?:=|\bTO\b)`)
+	// instanceSets: the SET statements of one source line that reach a monitored instance (n counted, bad = the names
+	// outside monitorSetupSettings)
+	instanceSets := func(path, line string) (n int, bad []string) {
+		p := filepath.ToSlash(path)
+		if strings.Contains(strings.ToUpper(line), "UPDATE ") || strings.HasPrefix(strings.TrimSpace(line), "//") {
+			return 0, nil
+		}
+		// an Extended Events target's option list, ADD TARGET ...(SET filename = ...), is part of a CREATE EVENT
+		// SESSION text a DBA runs on SQL Server: not a session setting, and never a PostgreSQL one
+		if strings.Contains(line, "ADD TARGET ") && strings.Contains(p, "internal/mssql/") {
+			return 0, nil
+		}
+		// package repo dials pgvigil's own REPOSITORY only - its pool, the migrate connection, and migrate_print's
+		// script, which psql runs as the repository's owner (its SET client_encoding, its ALTER DATABASE ... SET jit):
+		// no statement of it reaches a monitored instance
+		if strings.Contains(p, "/internal/repo/") {
+			return 0, nil
+		}
+		for _, m := range setStmt.FindAllStringSubmatch(line, -1) {
+			n++
+			if !monitorSetupSettings[strings.ToLower(m[1])] {
+				bad = append(bad, m[1])
+			}
+		}
+		return n, bad
+	}
+	// the rule's own rows: a planted instance SET outside package repo still fails, the repository's does not
+	if _, bad := instanceSets("../../internal/collect/planted.go", "\t_, err := c.Exec(ctx, `SET enable_seqscan = off`)"); len(bad) != 1 || bad[0] != "enable_seqscan" {
+		t.Errorf("a planted instance SET in internal/collect: %v, want [enable_seqscan]", bad)
+	}
+	if _, bad := instanceSets("../../internal/repo/planted.go", "\ts.WriteString(\"SET client_encoding = 'UTF8';\\n\")"); len(bad) != 0 {
+		t.Errorf("the repository's own SET in internal/repo: %v, want none", bad)
+	}
 	seen := 0
 	for _, root := range []string{"../../internal", "../../cmd"} {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -115,24 +148,10 @@ func TestMonitorSetupSettings(t *testing.T) {
 				return err
 			}
 			for _, line := range strings.Split(string(src), "\n") {
-				if strings.Contains(strings.ToUpper(line), "UPDATE ") || strings.HasPrefix(strings.TrimSpace(line), "//") {
-					continue
-				}
-				// an Extended Events target's option list, ADD TARGET ...(SET filename = ...), is part of a CREATE EVENT
-				// SESSION text a DBA runs on SQL Server: not a session setting, and never a PostgreSQL one
-				if strings.Contains(line, "ADD TARGET ") && strings.Contains(filepath.ToSlash(path), "internal/mssql/") {
-					continue
-				}
-				// the repository's own ALTER DATABASE ... SET (internal/repo's migrate preamble: jit = off) stores a default
-				// on pgvigil's repository database: never a session setting, and never on a monitored instance
-				if strings.Contains(line, "ALTER DATABASE ") && strings.Contains(filepath.ToSlash(path), "internal/repo/") {
-					continue
-				}
-				for _, m := range setStmt.FindAllStringSubmatch(line, -1) {
-					seen++
-					if !monitorSetupSettings[strings.ToLower(m[1])] {
-						t.Errorf("%s: the tool SETs %s on an instance; it is not in monitorSetupSettings", path, m[1])
-					}
+				n, bad := instanceSets(path, line)
+				seen += n
+				for _, s := range bad {
+					t.Errorf("%s: the tool SETs %s on an instance; it is not in monitorSetupSettings", path, s)
 				}
 			}
 			return nil

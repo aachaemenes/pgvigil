@@ -125,7 +125,7 @@ func (r *routeSender) send(ctx context.Context, m Message) error {
 		return nil
 	}
 	// a relay's reply is its own words, which may name the recipient in any form (rewritten, the local part alone):
-	// only its code and its enhanced status code are kept (review B, m2)
+	// only its code and its enhanced status code are kept
 	var tpe *textproto.Error
 	if errors.As(err, &tpe) {
 		code := strconv.Itoa(tpe.Code)
@@ -164,7 +164,7 @@ func routeNotes(ctx context.Context, conn *pgxpool.Conn, now time.Time, ds []der
 			continue
 		}
 		var last string
-		// the last row that is not a close: closeGone's 'cleared' row of the same pass ties on snapshot_at (review B, m3)
+		// the last row that is not a close: closeGone's 'cleared' row of the same pass ties on snapshot_at
 		err := conn.QueryRow(ctx, `SELECT coalesce((SELECT l.error FROM pgvigil.alert_log l WHERE l.channel = $1
 		  AND l.outcome <> 'cleared' ORDER BY l.snapshot_at DESC LIMIT 1), '')`, d.ch.Name).Scan(&last)
 		if err != nil {

@@ -37,27 +37,43 @@ SELECT s.snapshot_at, s.server_utc, s.source, s.source_note, s.sessions, s.reque
  ORDER BY s.snapshot_at DESC
  LIMIT 1500`
 
-// sqlMssqlRunningRows: one snapshot, the newest at or before $2. A chain's rows come together, the head first.
-const sqlMssqlRunningRows = `
+// sqlMssqlRunningInner: one snapshot, the newest at or before $2, each row with is_own (the collector's flag, 0265: the
+// program and the login together, decided on the server) and hide - own and none of the reasons to show it
+// (own_shown_mssql: blocked, in a chain, a request over 60 s, a transaction idle over 60 s, a grant or tempdb over
+// 100 MB; or another row names it as its blocker). is_own NULL (read before 0265) is never hidden.
+const sqlMssqlRunningInner = `
 SELECT q.snapshot_at, q.server_utc, q.source, q.session_id, q.request_id, q.status, q.command, q.wait_type, q.wait_ms, q.wait_resource,
        q.wait_is_benign, q.blocking_session_id, q.open_tran, q.transaction_id, q.tran_start, q.tran_age_ms, q.tran_log_bytes,
        q.is_implicit_tran, q.isolation_level, q.cpu_ms, q.reads, q.writes, q.logical_reads, q.granted_memory_kb, q.tempdb_alloc_kb,
        q.tempdb_current_kb, q.dop, q.task_count, q.tasks_cpu_ms, q.tasks_physical_io, q.percent_complete, q.elapsed_ms, q.start_time,
        q.last_request_start, q.last_request_end, q.login_time, q.login_name, q.host_name, q.program_name, q.database_name,
-       q.sql_handle, q.stmt_start, q.stmt_end, left(q.statement, 4000) AS statement, q.full_chars, q.plan_handle, q.query_hash,
+       q.sql_handle, q.stmt_start, q.stmt_end, left(q.statement, 4000) AS "statement@stmt", q.full_chars, q.plan_handle, q.query_hash,
        q.query_plan_hash, q.session_waits::text AS session_waits, q.is_user_process, q.head_session_id, q.chain_depth, q.victims,
-       q.longest_victim_wait_ms, q.in_cycle, q.chain_note
-  FROM pgvigil.mssql_requests_v q
+       q.longest_victim_wait_ms, q.in_cycle, q.chain_note, o.is_own,
+       ` + ownHideMssql + ` AS hide
+  FROM pgvigil.mssql_requests_v q` + ownLateralMssql + `
  WHERE q.instance_id = $1
-   AND q.snapshot_at = (SELECT max(s.snapshot_at) FROM pgvigil.mssql_requests_summary s WHERE s.instance_id = $1 AND s.snapshot_at <= $2)
- ORDER BY q.head_session_id NULLS LAST, q.chain_depth, q.session_id, q.request_id NULLS FIRST
+   AND q.snapshot_at = (SELECT max(s.snapshot_at) FROM pgvigil.mssql_requests_summary s WHERE s.instance_id = $1 AND s.snapshot_at <= $2)`
+
+// sqlMssqlRunningRows: the snapshot's rows, pgvigil's own hidden unless $3 (own=1) or a reason shows them. A chain's rows
+// come together, the head first.
+const sqlMssqlRunningRows = `SELECT x.* FROM (` + sqlMssqlRunningInner + `) x
+ WHERE $3::boolean OR NOT x.hide
+ ORDER BY x.head_session_id NULLS LAST, x.chain_depth, x.session_id, x.request_id NULLS FIRST
  LIMIT 5000`
+
+// sqlMssqlRunningOwnHidden: how many of the snapshot's rows, and of its sessions, the default hid (0 with own=1), counted
+// before any LIMIT; the read's own sessions in all (the status line's 'includes n of pgvigil's own'); since (ownSince)
+const sqlMssqlRunningOwnHidden = `SELECT count(*) FILTER (WHERE x.hide AND NOT $3::boolean) AS rows,
+       count(DISTINCT x.session_id) FILTER (WHERE x.hide AND NOT $3::boolean) AS sessions,
+       count(DISTINCT x.session_id) FILTER (WHERE x.is_own) AS own_sessions, ` + ownSince + ` AS since
+  FROM (` + sqlMssqlRunningInner + `) x`
 
 // sqlMssqlBlocking: the heads of that snapshot, the one with the longest wait behind it first.
 const sqlMssqlBlocking = `
 SELECT b.snapshot_at, b.head_session_id, b.victims, b.longest_wait_ms, b.in_snapshot, b.head_status, b.head_wait_type, b.head_open_tran,
        b.head_tran_start, b.head_tran_age_ms, b.head_login, b.head_host, b.head_program, b.head_database,
-       left(t.statement, 4000) AS head_statement, b.note
+       left(t.statement, 4000) AS "head_statement@stmt", b.note
   FROM pgvigil.mssql_blocking b
   LEFT JOIN pgvigil.mssql_statement_text t ON t.text_id = b.head_text_id
  WHERE b.instance_id = $1
@@ -66,7 +82,7 @@ SELECT b.snapshot_at, b.head_session_id, b.victims, b.longest_wait_ms, b.in_snap
 
 // sqlMssqlHeadShare: the window's head statements, the largest blocked wait first (0114).
 const sqlMssqlHeadShare = `
-SELECT h.head_key, h.head_text_id, h.statement, h.full_chars, h.head_sessions, h.victims, h.blocked_wait_ms, h.range_blocked_wait_ms,
+SELECT h.head_key, h.head_text_id, h.statement AS "statement@stmt", h.full_chars, h.head_sessions, h.victims, h.blocked_wait_ms, h.range_blocked_wait_ms,
        h.heads, h.share_pct, h.lead, h.snapshots, h.first_seen, h.last_seen, h.head_login, h.head_program, h.head_host, h.head_database, h.implicit
   FROM pgvigil.mssql_head_share($1, $2, $3) h`
 
@@ -84,10 +100,12 @@ func (s *Server) MssqlRunning(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	own := r.URL.Query().Get("own") == "1" // pgvigil's own sessions shown (B24 OWN; hidden by default)
 	parts := []part{
 		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_requests"}}},
 		{"snapshots", sqlMssqlSnapshots, []any{id, from, to}},
-		{"rows", sqlMssqlRunningRows, []any{id, at}},
+		{"rows", sqlMssqlRunningRows, []any{id, at, own}},
+		{"own_hidden", sqlMssqlRunningOwnHidden, []any{id, at, own}},
 		{"blocking", sqlMssqlBlocking, []any{id, at}},
 	}
 	if r.URL.Query().Get("part") == "headshare" {

@@ -17,14 +17,16 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, isLive, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
+import { waitDocs } from './doclinks';
 import { foldedGrid } from './running';
 import { firstChars, sqlCell, whatIsThis } from './sqlview';
 import { mssqlBlockingTrend } from './blocking_history';
 import { mssqlKillCol } from './mssql_actions';
 import { planSourcesCol } from './mssql_plancache';
 import { timeStrip } from './timestrip';
+import { ownBar, ownOf, ownParam, withMark } from './own';
 
-interface RunningData { state: Table | null; snapshots: Table | null; rows: Table | null; blocking: Table | null; headshare?: Table | null }
+interface RunningData { state: Table | null; snapshots: Table | null; rows: Table | null; blocking: Table | null; headshare?: Table | null; own_hidden?: Table | null }
 
 // the three notes that were paragraphs on the page: each is the title of a 'what is this' link now
 const chainsNote = 'A head blocks others and waits behind no session: the cause of its chain is its transaction and its last statement, not the object '
@@ -50,7 +52,7 @@ const coord = (v: unknown, r: Row) => v == null ? '' : parallel(r)
   ? el('span', { title: 'A parallel request: this counter is its coordinator task\'s alone. The sums over its tasks are in the columns "tasks CPU" and "tasks IO".' }, fmtNum(v) + ' (coordinator)')
   : fmtNum(v);
 const waitCell = (_v: unknown, r: Row) => r.wait_type == null ? ''
-  : el('span', {}, String(r.wait_type).startsWith('LCK_') ? badge(String(r.wait_type), 'warn') : String(r.wait_type), ' ' + ms(r.wait_ms));
+  : el('span', {}, String(r.wait_type).startsWith('LCK_') ? badge(String(r.wait_type), 'warn') : String(r.wait_type), ' ' + ms(r.wait_ms), waitDocs(r.wait_type));
 const sessionWaits = (v: unknown) => {
   if (typeof v !== 'string' || !v) return '';
   try {
@@ -76,14 +78,16 @@ const headCell = (r: Row) => r.chain_note == null ? badge('head', 'crit')
   : el('span', {}, badge('head', 'warn'), ' ' + String(r.chain_note) + ': not the holder, nothing to kill here');
 
 const cols: Col[] = [
-  { key: 'session_id', label: 'session', num: true, fmt: v => String(v) },
-  { key: 'status', fmt: statusCell },
+  { key: 'session_id', label: 'session', num: true, fmt: (v, r) => withMark(String(v), r) },
+  { key: 'status', fmt: statusCell, cls: (v, r) => v == null || v === '' || (v === 'sleeping' && Number(r.open_tran) > 0) ? '' : 'status ok' },
   { key: 'is_implicit_tran', label: 'implicit transaction', fmt: implicitCell },
   { key: 'command' },
-  { key: 'wait_type', label: 'waiting on', fmt: waitCell },
+  { key: 'wait_type', label: 'waiting on', fmt: waitCell, cls: (_v, r) => r.wait_type == null || String(r.wait_type).startsWith('LCK_') ? '' : 'status ok' },
   { key: 'wait_resource', label: 'wait resource', fmt: clip(60) },
   { key: 'blocking_session_id', label: 'blocked by', num: true, fmt: v => Number(v) ? String(v) : '' },
-  { key: 'head_session_id', label: 'chain head', num: true, fmt: (v, r) => v == null ? String(r.chain_note ?? '') : Number(r.chain_depth) === 0 ? headCell(r) : String(v) },
+  // a deeper row's head id and a chain note are not judged by the head check (N/A); the head's own row is its badge
+  { key: 'head_session_id', label: 'chain head', num: true, fmt: (v, r) => v == null ? String(r.chain_note ?? '') : Number(r.chain_depth) === 0 ? headCell(r) : String(v),
+    cls: (v, r) => (v != null && Number(r.chain_depth) !== 0) || (v == null && r.chain_note) ? 'status none' : '' },
   { key: 'victims', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '' },
   { key: 'elapsed_ms', label: 'running for', num: true, fmt: ms },
   { key: 'tran_age_ms', label: 'transaction open for', num: true, fmt: ms },
@@ -117,13 +121,13 @@ const headOnly = (f: (v: unknown) => string) => (v: unknown, r: Row) => r.tree_r
 // killable: a head row the tree can offer Kill on (its own row is in the read, and it is the holder)
 const killable = (r: Row) => r.tree_role === 'head' && r.chain_note == null && r.status !== 'not in the read';
 const treeCols = (kill: Col | null): Col[] => [
-  { key: 'session_id', label: 'session', fmt: (v, r) => el('span', { style: `padding-left:${Number(r.tree_depth) * 1.2}em` }, (Number(r.tree_depth) > 0 ? '└ ' : '') + String(v)) },
-  { key: 'tree_role', label: 'role', fmt: (v, r) => v === 'head' ? headCell(r) : String(v ?? '') },
+  { key: 'session_id', label: 'session', fmt: (v, r) => el('span', { style: `padding-left:${Number(r.tree_depth) * 1.2}em` }, withMark((Number(r.tree_depth) > 0 ? '└ ' : '') + String(v), r)) },
+  { key: 'tree_role', label: 'role', fmt: (v, r) => v === 'head' ? headCell(r) : String(v ?? ''), cls: v => v == null || v === '' || v === 'head' ? '' : 'status none' },
   ...(kill ? [{ key: '_kill', label: 'kill this head', fmt: (v: unknown, r: Row) => killable(r) && kill.fmt ? kill.fmt(v, r) : '' }] : []),
   { key: 'victims', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '' },
-  { key: 'status', fmt: statusCell },
+  { key: 'status', fmt: statusCell, cls: (v, r) => v == null || v === '' || (v === 'sleeping' && Number(r.open_tran) > 0) ? '' : 'status ok' },
   { key: 'is_implicit_tran', label: 'implicit transaction', fmt: implicitCell },
-  { key: 'wait_type', label: 'waiting on', fmt: waitCell },
+  { key: 'wait_type', label: 'waiting on', fmt: waitCell, cls: (_v, r) => r.wait_type == null || String(r.wait_type).startsWith('LCK_') ? '' : 'status ok' },
   { key: 'wait_resource', label: 'wait resource', fmt: clip(60) },
   { key: 'tran_age_ms', label: 'transaction open for', num: true, fmt: ms },
   // the head's own columns (Darling 13.5): when it logged in, when its last request ended (a sleeping head: how long
@@ -182,7 +186,8 @@ export function runningWaitLink(waitType: string, inner: Node | string): HTMLEle
   return el('a', { href: `#/mssql_running?${q}`, title: `Running queries: only the requests waiting on ${waitType}` }, inner);
 }
 
-function body(d: RunningData, instance: number | undefined, picked?: unknown, kill: Col | null = null): HTMLElement {
+// ownCtx: the page's address for pgvigil's own sessions' switch (B24 OWN), drawn from this read's own_hidden
+function body(d: RunningData, instance: number | undefined, picked?: unknown, kill: Col | null = null, ownCtx?: Ctx): HTMLElement {
   const box = el('div');
   const rows = rowsOf(d.rows), heads = rowsOf(d.blocking);
   const snaps = rowsOf(d.snapshots);
@@ -204,6 +209,17 @@ function body(d: RunningData, instance: number | undefined, picked?: unknown, ki
     el('span', { class: pending ? 'warn' : '' }, `memory grants pending ${fmtNum(pending)}`), '; ',
     el('span', { class: implicitHeads ? 'warn' : '', title: implicitNote },
       `implicit transactions open ${fmtNum(implicit.size)}` + (implicitHeads ? `, ${fmtNum(implicitHeads)} heading a chain` : ''))));
+  // pgvigil's own sessions (B24 OWN): this read's switch; sessions, requests and memory grants pending above are the
+  // server's count of every session, pgvigil's included (implicit transactions follow the switch)
+  if (ownCtx) {
+    const oh = ownOf(d.own_hidden);
+    // the snapshot on screen when the slider moved to it (no navigation): the switch keeps it; with a
+    // wait filter the count is the snapshot's, not the cut the grid shows
+    const snapRows = rowsOf(d.snapshots), newest = snapRows.length ? snapRows[snapRows.length - 1].snapshot_at : undefined;
+    const onScreen = picked != null && newest != null && String(picked) !== String(newest) ? String(picked) : undefined;
+    box.append(ownBar(ownCtx, { hidden: Number(oh.sessions ?? 0), includes: Number(oh.own_sessions ?? 0), includesWhat: 'the sessions above',
+      snapshotAt: sum.snapshot_at, since: oh.since, at: onScreen, hiddenWhere: waitOnly() ? ' in this snapshot' : undefined }).bar);
+  }
   // the snapshot's time as DBA Dash's toolbar has it, and where the read came from
   box.prepend(el('div', { class: 'picker' }, el('b', { class: 'snap-time', title: `The server's own clock: ${fmtTime(sum.server_utc)}` }, 'Snapshot ' + fmtTime(sum.snapshot_at)),
     ` read in ${fmtNum(sum.read_ms)} ms from `, src));
@@ -242,7 +258,7 @@ function body(d: RunningData, instance: number | undefined, picked?: unknown, ki
 
 const shareCols: Col[] = [
   { key: 'statement', label: 'head statement', fmt: (v, r) => v == null ? String(r.head_key ?? '') : sqlCell(v, { heading: `head statement (sessions ${sessionsOf(r.head_sessions)})` }) },
-  { key: 'share_pct', label: 'share of the blocked wait', num: true, fmt: (v, r) => v == null ? '' : r.lead === true ? badge(`${fmtNum(v)} % lead`, 'warn') : `${fmtNum(v)} %` },
+  { key: 'share_pct', label: 'share of the blocked wait', num: true, fmt: (v, r) => v == null ? '' : r.lead === true ? badge(`${fmtNum(v)} % lead`, 'warn') : `${fmtNum(v)} %`, cls: (v, r) => v == null || r.lead === true ? '' : 'status ok' },
   { key: 'blocked_wait_ms', label: 'blocked wait', num: true, fmt: ms },
   { key: 'victims', label: 'blocked requests', num: true },
   { key: 'snapshots', label: 'snapshots', num: true },
@@ -335,11 +351,11 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
   if (at && widened) win = hourUpTo(at);
   // Kill on a live window only (the newest snapshot of a range that ends now); its column reads the door's state once
   const live = isLive(ctx) && !widened;
-  let d = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at });
+  let d = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at, own: ownParam(ctx) });
   // at= older than every snapshot the range's list kept (it keeps the newest 1,500, a day of minutes): the hour up to it
   if (at && !widened && !rowsOf(d.snapshots).some(s => Date.parse(String(s.snapshot_at)) <= Date.parse(at))) {
     widened = true; win = hourUpTo(at);
-    d = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at });
+    d = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at, own: ownParam(ctx) });
   }
   const killCol = live && !widened ? await mssqlKillCol(ctx, redraw(ctx)) : null;
   const kill = killCol ? guarded(ctx, killCol) : null;
@@ -378,8 +394,9 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
       const mine = ++seq;
       try {
         const pick = snaps[Number(slider.value)].snapshot_at;
-        const one = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at: String(pick) });
-        if (mine === seq) { holder.replaceChildren(body({ ...one, snapshots: d.snapshots }, ctx.instance, pick, kill)); failed = false; say(); }
+        // own rides each read (B24 OWN): the slider reads without a navigation, so the address alone would not carry it
+        const one = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at: String(pick), own: ownParam(ctx) });
+        if (mine === seq) { holder.replaceChildren(body({ ...one, snapshots: d.snapshots }, ctx.instance, pick, kill, ctx)); failed = false; say(); }
       } catch (e) { if (mine === seq) { holder.replaceChildren(errorBox(e)); failed = true; say(); } }
     };
     const step = (by: number) => { slider.value = String(Math.min(snaps.length - 1, Math.max(0, Number(slider.value) + by))); void load(); };
@@ -394,7 +411,8 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
     // newest snapshot at or before the stretch's end
     const t0 = Date.parse(String(snaps[0].snapshot_at)), t1 = Math.max(t0 + 60000, Date.parse(String(snaps[snaps.length - 1].snapshot_at)));
     const inRange = Number(snaps[0].in_range ?? snaps.length);
-    sec.append(timeStrip('Requests per snapshot', t0, t1, snaps.map(s => Date.parse(String(s.snapshot_at))), (_a, b) => {
+    // the strip and the slider count every request of a snapshot, pgvigil's own included (their reads, not this page's switch)
+    sec.append(timeStrip('Requests per snapshot (every session, pgvigil\'s own included)', t0, t1, snaps.map(s => Date.parse(String(s.snapshot_at))), (_a, b) => {
       if (b === undefined) { slider.value = String(snaps.length - 1); void load(); return; }
       let i = 0;
       snaps.forEach((s, j) => { if (Date.parse(String(s.snapshot_at)) < b) i = j; });
@@ -405,7 +423,7 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('p', { class: 'range' }, el('label', { for: 'mssql-snap' }, `Snapshot (${snaps.length} kept in the range${isLive(ctx) && !at ? '' : ', history'}): `),
       prev, ' ', slider, ' ', next, ' ', last, ' ', newestNote, out));
   }
-  holder.append(body(d, ctx.instance, start >= 0 && snaps.length ? snaps[start].snapshot_at : at ? null : undefined, kill));   // at= before the first kept snapshot: none to show
+  holder.append(body(d, ctx.instance, start >= 0 && snaps.length ? snaps[start].snapshot_at : at ? null : undefined, kill, ctx));   // at= before the first kept snapshot: none to show
   sec.append(holder);
   // the range's lead blockers (task 177, D02): every head statement and its share of the blocked wait
   sec.append(await share);

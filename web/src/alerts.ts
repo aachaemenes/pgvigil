@@ -13,7 +13,8 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
-import { AckData, ackDialog, ackOn, addAck, doorRows, endAck, endButton, liveRows, loadAckSafe, offBeside, onDoor, writeButton } from './ack';
+import { AckData, ackDialog, ackOn, addAck, doorRows, endAck, endButton, liveRows, loadAckSafe, offBeside, onDoor, wideMute, writeButton } from './ack';
+import { needControl, roleWhy } from './needs';
 import { fleet, fleetWideNote, folderWords, inTagScope, notReadYet, tagsOf, tagWords, writtenTag } from './fleet';
 import { whatIsThis } from './sqlview';
 import { alertHref, dismissDialog } from './alert_page';
@@ -26,12 +27,24 @@ interface AlertsData {
   history?: Table | null; tests?: Table | null; dismissed?: Table | null; mutes?: Table | null; fixes?: Table | null;
 }
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 
 const outcomeBadge = (v: unknown) =>
-  v == null ? '' : badge(String(v), v === 'sent' || v === 'test' ? 'ok' : v === 'failed' || v === 'refused' || v === 'no answer' ? 'crit' : v === 'capped' || v === 'waiting' ? 'warn' : '');
+  v == null ? '' : badge(String(v), v === 'sent' || v === 'test' ? 'ok' : v === 'failed' || v === 'refused' || v === 'no answer' ? 'crit' : v === 'capped' || v === 'waiting' ? 'warn' : 'none');
 
 const list = (v: unknown): string => Array.isArray(v) && v.length ? v.join(', ') : '';
+
+// heldNote (task B24k): a channel its destination's last answer holds - Pushover's 429 until its reset, another 4xx
+// until the configuration changes or a Send test goes through. The sender writes the hold at the head of the
+// attempt's error ('held until <time>: ...', 'held until the configuration changes (<hash>): ...'); nothing is sent to
+// the channel while it stands.
+export function heldNote(lastError: unknown): HTMLElement | '' {
+  const e = String(lastError ?? '');
+  const t = /^held until (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ): /.exec(e);
+  if (t) return Date.parse(t[1]) > Date.now() ? badge(`held until ${fmtTime(t[1])}`, 'warn') : '';
+  if (/^held until the configuration changes \([0-9a-f]{12}\): /.test(e)) return badge('held: change its configuration, or Send test', 'warn');
+  return '';
+}
 
 // scopeText: what a channel covers, in words
 export function scopeText(r: Row): string {
@@ -58,7 +71,7 @@ function testCell(ad: AckData, r: Row, redraw: () => void): HTMLElement {
       said.textContent = ' ' + res.detail;
       window.setTimeout(redraw, 2000);
     } catch (e) { said.textContent = ' not asked: ' + (e instanceof Error ? e.message : String(e)); b.disabled = false; }
-  }, { why: ad.door ? 'Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here' : undefined });
+  }, { why: ad.door ? 'Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here' : undefined, route: 'alerts/test' });
   // a channel the configuration no longer names: off with that reason in words where the button was on (a button
   // already off keeps the reason it has); never the disabled attribute, which takes it out of the tab order
   if (!r.is_configured && b.getAttribute('aria-disabled') !== 'true') offBeside(b, 'the configuration no longer names this channel');
@@ -78,7 +91,7 @@ const channelCols = (ad: AckData, redraw: () => void): Col[] => [
   { key: 'open_alerts', label: 'open alerts', num: true, fmt: v => fmtNum(v) },
   { key: 'last_sent_at', label: 'last sent', fmt: fmtTime },
   { key: 'last_attempt_at', label: 'last attempt', fmt: fmtTime },
-  { key: 'last_outcome', label: 'outcome', fmt: outcomeBadge },
+  { key: 'last_outcome', label: 'outcome', fmt: (v, r) => { const h = heldNote(r.last_error); return h ? el('span', {}, outcomeBadge(v), ' ', h) : outcomeBadge(v); } },
   { key: 'last_error', label: 'error', wide: true },
   { key: 'max_per_hour', label: 'send cap', fmt: (_v, r) => capText(r) },
   { key: 'templates', fmt: v => v ? String(v) : 'built in' },
@@ -194,6 +207,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
     missing.tests ? notRead('tests') : grid(rowsOf(d.tests), testCols, 'No test was asked in the time range.'));
   sec.append(el('h3', {}, `Held sends ${rangeLabel(ctx)} `, whatIsThis('What a mute, a silence or a blackout kept from a channel: the alert, the channel, the first and last pass of the sender that held it, and how many passes.', 'Held sends')),
     grid(rowsOf(ad.suppressed).filter(inFolder), heldCols, 'Nothing held in the time range.'));
+  sec.append(await whyHeldView(ctx, inLog));
   sec.append(el('h3', {}, `Send log ${rangeLabel(ctx)}`),
     grid(log, logCols, 'No send attempt in the time range.'));
   sec.append(el('h3', {}, `Acknowledge log ${rangeLabel(ctx)}`),
@@ -218,7 +232,7 @@ function historyView(ctx: Ctx, rows: Row[]): HTMLElement {
   const cols: Col[] = [
     { key: 'fired_at', label: 'fired', fmt: fmtTime },
     { key: 'cleared_at', label: 'cleared', fmt: (v, r) => v == null ? (r.missing_since != null ? `gone since ${fmtTime(r.missing_since)}` : '') : fmtTime(v) },
-    { key: 'status', fmt: v => badge(String(v ?? ''), v === 'open' ? 'crit' : v === 'resolved' ? 'ok' : '') },
+    { key: 'status', fmt: v => badge(String(v ?? ''), v === 'open' ? 'crit' : v === 'resolved' ? 'ok' : 'none') },
     { key: 'severity', fmt: sevBadge },
     { key: 'instance' },
     { key: 'setting', label: 'alert', fmt: (v, r) => el('a', { href: alertHref(r.finding_key, r.fired_at, ctx) }, [r.source, v].filter(x => x != null && x !== '').map(String).join(': ')) },
@@ -273,16 +287,16 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
     : undefined;
   // an action takes the ticked rows still drawn: a row hidden since by a filter or a Show toggle is left alone
   const pickedRows = () => { const on = drawnKeys(); return all.filter(r => picked.has(String(r.finding_key)) && on.has(String(r.finding_key))); };
-  const act = (label: string, run: () => void) => writeButton(ad, label, label + ' (the ticked alerts)', () => {
+  const act = (label: string, run: () => void, route: 'ack' | 'ack/end' | 'alerts/dismiss' = 'ack') => writeButton(ad, label, label + ' (the ticked alerts)', () => {
     if (!pickedRows().length) { said.textContent = 'Tick one or more alerts first.'; return; }
     run();
-  }, { instance: 'any' });
+  }, { instance: 'any', route });
   const ackSel = act('Acknowledge alerts', () => ackDialog({
     title: `Acknowledge ${picked.size} alert(s)`,
     what: 'An acknowledged alert is not sent again on its repeat interval; a rise in its severity is still sent. Who and when are kept.',
     body: pickedRows().filter(r => r.ack_id == null).map(r => ({ kind: 'alert_ack', instance_id: Number(r.instance_id) || undefined, finding_key: String(r.finding_key) })),
     expiry: true, after: redraw }));
-  const clearSel = act('Clear acknowledgement', () => endMany(pickedRows().filter(r => r.ack_id != null).map(r => Number(r.ack_id)), said, redraw));
+  const clearSel = act('Clear acknowledgement', () => endMany(pickedRows().filter(r => r.ack_id != null).map(r => Number(r.ack_id)), said, redraw), 'ack/end');
   const noteSel = act('Add notes to selected alerts', () => ackDialog({
     title: `A note on ${picked.size} alert(s)`, what: 'The note is kept on each alert with who and when.',
     body: pickedRows().map(r => ({ kind: 'note', instance_id: Number(r.instance_id) || undefined, finding_key: String(r.finding_key) })),
@@ -297,7 +311,7 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
     const keys = pickedRows().map(r => String(r.finding_key)).filter(k => !dismissed.has(k));
     if (!keys.length) { said.textContent = 'Every ticked alert is already dismissed.'; return; }
     dismissDialog(keys, redraw);
-  });
+  }, 'alerts/dismiss');
   const closedBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, 'Show closed');
   const dismissedBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, `Show dismissed (${all.filter(r => dismissed.has(String(r.finding_key))).length})`);
   // tick all: every row the grid draws now (its filters and the Show toggles respected; nothing redrawn)
@@ -351,7 +365,7 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
         ' · ',
         writeButton(ad, 'Mute similar', `Mute similar: ${String(r.setting ?? r.source ?? '')} on every instance`, () => ackDialog({
           title: 'Mute similar alerts', what: 'Every alert matching the fields below is held while the rule stands (every instance unless one is named), and logged under Held sends.',
-          body: { kind: 'mute', check_key: String(r.setting ?? r.source ?? '') }, expiry: true, matchFields: true, noteField: 'optional', after: redraw }), { note: muteOff })) },
+          body: { kind: 'mute', check_key: String(r.setting ?? r.source ?? '') }, expiry: true, matchFields: true, noteField: 'optional', after: redraw }), { note: muteOff, ...wideMute })) },
     ];
     wrap.replaceChildren(...(muteOff ? [muteOff] : []), grid(rows, cols, all.length ? 'Every open alert is closed or dismissed: Show closed and Show dismissed list them.' : 'No open alert: nothing sent is still standing.'));
     syncAll();
@@ -436,7 +450,7 @@ function rulesView(ad: AckData, kind: 'mute' | 'noise', redraw: () => void): HTM
     what: kind === 'mute' ? 'Alerts matching every field filled are held while the rule stands; the held sends are logged.' : 'Alerts matching every field filled carry the label; nothing is held.',
     // its dialog has no instance field: on a demo serve every rule it makes would be one on every instance, which the
     // door refuses - off there, in ackWhy's words
-    body: { kind }, expiry: true, matchFields: true, noteField: kind === 'noise' ? 'label' : 'optional', after: redraw }), { instance: onDoor(ad) ? null : 'any' });
+    body: { kind }, expiry: true, matchFields: true, noteField: kind === 'noise' ? 'label' : 'optional', after: redraw }), { instance: onDoor(ad) ? null : 'any', ...(kind === 'mute' ? wideMute : {}) });
   const cols: Col[] = [
     { key: 'check_key', label: 'check' },
     { key: 'instance' },
@@ -474,7 +488,7 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
   const draw = () => {
     const vis = rows.filter(r => showEnded || r.state !== 'ended' && r.state !== 'expired');
     const cols: Col[] = [
-      { key: 'state', fmt: (v, r) => badge(String(v ?? '') + (v === 'paused' ? ` by ${String(r.paused_by ?? '')}` : ''), v === 'in force' ? 'ok' : v === 'upcoming' || v === 'paused' ? 'warn' : '') },
+      { key: 'state', fmt: (v, r) => badge(String(v ?? '') + (v === 'paused' ? ` by ${String(r.paused_by ?? '')}` : ''), v === 'in force' ? 'ok' : v === 'upcoming' || v === 'paused' ? 'warn' : 'none') },
       { key: 'check_key', label: 'check' },
       { key: 'instance' },
       { key: 'tag' },
@@ -487,10 +501,10 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
       ...(kind === 'mute' ? [{ key: 'held_alerts', label: 'alerts held', num: true }, { key: 'held_last', label: 'last held', fmt: fmtTime }] as Col[] : []),
       { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` + (r.replaced_by != null ? ` (edited: rule ${String(r.replaced_by)})` : '') },
       { key: '_act', label: '', fmt: (_v, r) => r.state === 'ended' || r.state === 'expired' || !ackOn(ad, Number(r.instance_id) || null) ? '' : el('span', { style: 'white-space:nowrap' },
-        writeButton(ad, 'Edit', `Edit the ${word} ${String(r.ack_id)}`, () => muteDialog({ kind, insts: dlgInsts, door, rule: r, after: redraw }), { instance: Number(r.instance_id) || null }), ' \u00b7 ',
+        writeButton(ad, 'Edit', `Edit the ${word} ${String(r.ack_id)}`, () => muteDialog({ kind, insts: dlgInsts, door, rule: r, after: redraw }), { instance: Number(r.instance_id) || null, route: 'alerts/mute' }), ' \u00b7 ',
         ...(kind === 'mute' ? [r.paused_at != null
-          ? writeButton(ad, 'Resume', `Resume the mute rule ${String(r.ack_id)}`, change(r, 'resume'), { instance: Number(r.instance_id) || null })
-          : writeButton(ad, 'Pause', `Pause the mute rule ${String(r.ack_id)}`, change(r, 'pause'), { instance: Number(r.instance_id) || null }), ' \u00b7 '] : []),
+          ? writeButton(ad, 'Resume', `Resume the mute rule ${String(r.ack_id)}`, change(r, 'resume'), { instance: Number(r.instance_id) || null, route: 'alerts/mute' })
+          : writeButton(ad, 'Pause', `Pause the mute rule ${String(r.ack_id)}`, change(r, 'pause'), { instance: Number(r.instance_id) || null, route: 'alerts/mute' }), ' \u00b7 '] : []),
         endButton(Number(r.ack_id), `Remove the ${word} ${String(r.ack_id)}`, redraw, 'Remove')) },
     ];
     wrap.replaceChildren(grid(vis, cols, kind === 'mute' ? 'No mute rule: a quiet send log is genuine, not muted.' : 'No known pattern.'));
@@ -503,6 +517,9 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
 // door: a demo serve's dialog - insts are the door's instances, and 'any instance' is not offered (the first one is picked)
 interface MuteDialog { kind: 'mute' | 'noise'; insts: Row[]; door?: boolean; rule?: Row; after: () => void }
 
+// CLOCK_MARGIN_MS: how far short of the server's 7-day ceiling the dialogs keep an end (ack.ts): a browser clock up to
+// 10 minutes ahead of the server's still saves
+const CLOCK_MARGIN_MS = 600e3;
 const untilHours: [string, number][] = [['no expiry', 0], ['1 hour after the start', 1], ['4 hours after the start', 4], ['1 day after the start', 24], ['7 days after the start', 168], ['a time ...', -1]];
 
 // muteDialog: a new mute rule or known pattern, or the edit of one (its successor: the server ends the old rule in the
@@ -543,7 +560,10 @@ function muteDialog(o: MuteDialog) {
     widenBox.hidden = !(r && r.instance != null && r.instance !== '' && inst.value === '');
     checkOk();
   };
-  const ok = el('button', { type: 'submit' }, r ? 'Save the edit' : 'Save'), no = el('button', { type: 'button' }, 'Back');
+  const ok = needControl(el('button', { type: 'submit' }, r ? 'Save the edit' : 'Save'), r ? 'alerts/mute' : 'ack'), no = el('button', { type: 'button' }, 'Back');
+  // a mute over every instance or a tag, or with no end, needs the admin role (the handler checks it): below admin the
+  // dialog asks for one instance and an end, with the role's words (null for an admin and with the login off)
+  const wideWhy = o.kind === 'mute' ? roleWhy(wideMute.need, wideMute.what) : null;
   const need = el('p', { class: 'meta' });
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const startAt = (): Date => startNow.checked ? new Date() : fromInput(starts.value);
@@ -551,7 +571,8 @@ function muteDialog(o: MuteDialog) {
     const h = Number(untilSel.value);
     if (h === 0) return null;
     if (h < 0) return fromInput(untilAt.value);
-    return new Date(startAt().getTime() + h * 3600e3);
+    // the 7-day choice ends 10 minutes short of 168 h: the server measures the ceiling by its own clock
+    return new Date(startAt().getTime() + h * 3600e3 - (h >= 168 ? CLOCK_MARGIN_MS : 0));
   };
   const invalid = (): string => {
     if (!check.value.trim() && !tag.value.trim() && !match.value.trim() && !inst.value && r?.finding_key == null) return 'a check, an instance, a tag or a text (a rule matching every alert is refused)';
@@ -559,6 +580,10 @@ function muteDialog(o: MuteDialog) {
     if (o.kind === 'noise' && !note.value.trim()) return 'a label';
     if (!startNow.checked && isNaN(startAt().getTime())) return 'a start time';
     const u = untilOf();
+    // one alert (a rule that names its finding) is one scope; an end more than 7 days after the start is open-ended
+    // (q_ack.go openEnded)
+    if (wideWhy && ((inst.value === '' && r?.finding_key == null) || tag.value.trim() || !u
+      || u.getTime() - Math.max(Date.now(), startAt().getTime()) > 7 * 86400e3 - CLOCK_MARGIN_MS)) return `one instance, no tag and an end within 7 days (${wideWhy})`;
     if (u && (isNaN(u.getTime()) || u.getTime() <= Math.max(Date.now(), startAt().getTime()))) return 'an end after the start and after now';
     return '';
   };
@@ -649,13 +674,14 @@ export const alertCol: Col = {
 // What this pgvigil runs with, in one place and read only: the configuration file (pgvigil.yaml) and Admin > Instances are
 // the sources of the instances; the file is the source of the channels and the action switches, and the alert rules are written on Alert rules (each tab says where a
 // change is made). The tab rides in the address (atab=). The route and the tab are the shell's (a WIRING BLOCK).
-// builtIn: PerformanceMonitor's defaults pgvigil judges as findings (migration 0118; MIT, Erik Darling, Darling Data, LLC)
+// builtIn: PerformanceMonitor's defaults pgvigil judges as findings (migration 0118; MIT, Erik Darling, Darling Data, LLC).
+// Its replay lag and AG lag defaults are not rows here: since the HA join the replication rules judge both ('standby lag'
+// for a standby, 'replay lag' for a logical slot's sender, 'a secondary would lose data in a failover') with tiers set
+// on the Thresholds page
 const builtIn: Row[] = [
   { finding: 'dead tuples piling up', engine: 'PostgreSQL', warning: '1,000,000 dead tuples in a table', critical: '10,000,000', from: 'template pg-autovacuum-dead-tuples' },
-  { finding: 'replay lag', engine: 'PostgreSQL', warning: '30 s', critical: '5 min', from: 'template pg-replication-lag' },
   { finding: 'replication slot retaining WAL', engine: 'PostgreSQL', warning: '10 GB', critical: '50 GB', from: 'template pg-replication-slot-wal' },
   { finding: 'a volume under 5 GB free', engine: 'SQL Server', warning: 'under 5 GB free, on a volume over 10 GB whose percent threshold (Drives) raises nothing', critical: '2 GB or less (the same volumes: needs a percent threshold under 20 %)', from: 'LowDiskThresholdGb, DiskCriticalFreeGb' },
-  { finding: 'AG secondary behind', engine: 'SQL Server', warning: '300 s behind the primary', critical: '', from: 'agLagAlertSeconds' },
   { finding: 'runnable queue per scheduler', engine: 'SQL Server', warning: '8 per scheduler (5 min)', critical: '16', from: 'RunnableQueueWarning / CriticalPerScheduler' },
   { finding: 'long-running requests', engine: 'SQL Server', warning: '30 min (BACKUP, RESTORE, WAITFOR, Service Broker waits and system sessions left out)', critical: '', from: 'LongRunningQueryThresholdMinutes, LongRunningQueryExcludeBackups' },
   { finding: 'server unreachable', engine: 'both', warning: '', critical: 'the newest read could not connect or log in', from: 'Server Unreachable (ConnectionAlertPolicy)' },
@@ -739,11 +765,11 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
       for (let i = 0; i < ms.length; i += 8) {      // eight at a time: a large fleet in a few round trips, the server not flooded
         const part = ms.slice(i, i + 8);
         const sts = await Promise.all(part.map(r => mssqlActionsState(Number(r.instance_id))));
-        part.forEach((r, j) => { for (const k of ['kill', 'job_start', 'job_stop'] as const) rows.push({ instance: r.name, instance_id: r.instance_id, action: k, state: sts[j].actions[k]?.enabled ? 'on' : 'off', reason: sts[j].actions[k]?.reason ?? '' }); });
+        part.forEach((r, j) => { for (const k of ['kill', 'job_start', 'job_stop', 'job_enable', 'job_disable'] as const) rows.push({ instance: r.name, instance_id: r.instance_id, action: k, state: sts[j].actions[k]?.enabled ? 'on' : 'off', reason: sts[j].actions[k]?.reason ?? '' }); });
       }
       return el('div', {}, el('p', { class: 'meta' }, 'Each SQL Server instance\'s action switches (the configuration\'s actions: allow list and the login\'s rights) and why one is off; each instance\'s Actions page does them.'),
         grid(rows, [{ key: 'instance', fmt: (v, r) => el('a', { href: href(ctx, { tab: 'mssqlactions', instance: Number(r.instance_id) }) }, String(v)) }, { key: 'action' },
-          { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : '') }, { key: 'reason', label: 'why off', wide: true }], 'No SQL Server instance.'));
+          { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : 'none') }, { key: 'reason', label: 'why off', wide: true }], 'No SQL Server instance.'));
     }],
   ];
   let cur = new URLSearchParams(location.hash.split('?')[1] ?? '').get('atab') ?? 'servers';
@@ -770,4 +796,48 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(seg, body);
   await show(cur);
   return sec;
+}
+
+// whyHeldView (task 403a, PM Added 9): every send a window, the digest carry-over or the flapping hold kept from a
+// channel, one line per alert and channel saying why (0154's alert_held_all; the acks' own holds are Held sends
+// above), and the rule series marked flapping now. A repository before 0154 shows neither.
+const holdWords: Record<string, string> = {
+  blackout: 'a blackout window', mute: 'a mute window', digest: 'held for the daily digest', flapping: 'flapping: sent once, its repeats held',
+  attached: 'attached under a standing CPU, blocking or deadlock alert',
+};
+// heldBy names what holds a row: the rule, the anchor alert (an attached hold's hold_id is its anchor's first send,
+// not an id), or the window
+const heldBy = (r: Row): string =>
+  r.hold_source === 'rule' ? `rule ${String(r.hold_id)}`
+    : r.hold_source === 'anchor' ? `under ${r.anchor != null && r.anchor !== '' ? String(r.anchor) : 'an alert no longer open'}`
+      : `window ${String(r.hold_id)}`;
+async function whyHeldView(ctx: Ctx, inLog: (r: Row) => boolean): Promise<HTMLElement> {
+  const box = el('div', {});
+  let held: Row[], flapping: Row[];
+  try {
+    held = rowsOf((await get<{ held?: Table | null }>('alertscope', { ...window_(ctx), part: 'held' })).held)
+      .filter(r => r.hold_source !== 'ack').map(r => ({ ...r, instance: r.instance_name })).filter(inLog);
+    flapping = rowsOf((await get<{ flapping?: Table | null }>('alertscope', { part: 'flapping' })).flapping);
+  } catch { return box; }
+  box.append(el('h3', {}, `Why held: windows, digest, flapping and attached ${rangeLabel(ctx)} `, whatIsThis('One line per alert and channel a window, the daily digest, the flapping hold or a standing CPU, blocking or deadlock alert kept from that channel: which hold (the window, the rule or the anchor alert), the first and last pass that held it and how many. A digest-held alert reaches its channel in the daily digest only; a flapping one was sent once, then its repeats were held until its last 12 results steady; an attached one is listed in the recovery of the alert it sits under, or fires as itself if it still stands when that alert ends.', 'Why held')),
+    grid(held, [
+      { key: 'hold_kind', label: 'why', fmt: (v, r) => `${holdWords[String(v)] ?? String(v)} (${heldBy(r)})` },
+      { key: 'instance_name', label: 'instance' },
+      { key: 'setting', label: 'alert', fmt: (v, r) => [r.source, v].filter(x => x != null && x !== '').map(String).join(': ') },
+      { key: 'severity' },
+      { key: 'channel' },
+      { key: 'first_at', label: 'first held', fmt: fmtTime },
+      { key: 'last_at', label: 'last held', fmt: fmtTime },
+      { key: 'passes', num: true },
+    ], 'Nothing held by a window, the digest, the flapping hold or an anchor alert in the time range.'),
+    el('h3', {}, 'Flapping now'),
+    grid(flapping, [
+      { key: 'flapping_since', label: 'flapping since', fmt: fmtTime },
+      { key: 'instance' },
+      { key: 'metric', fmt: (v, r) => `${String(v)}${r.database != null ? ` [${String(r.database)}]` : ''}` },
+      { key: 'rule_id', label: 'rule', num: true, fmt: (v, r) => `${String(v)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''}` },
+      { key: 'state' },
+      { key: 'results', label: 'last 12 results', fmt: v => Array.isArray(v) ? (v as unknown[]).map(String).join(' ') : '' },
+    ], 'No alert rule series is flapping.'));
+  return box;
 }

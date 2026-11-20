@@ -25,7 +25,7 @@ import (
 //
 // A SQL Server run's start is msdb's run_date and run_time as the collector converted it (mssql_job_runs.snapshot_at,
 // 0066); its end is that start plus the duration. A pg_cron or pgAgent run's start and end are its own. The route is
-// the lead's line in web.go.
+// a line in web.go.
 
 // sqlTimelineRuns: $1 instance (NULL = the fleet), $2 from, $3 to, $4 scheduler (NULL = all), $5 job id as text
 // (NULL = all). A run is in the window when it started at or before the window's end and had not ended at its

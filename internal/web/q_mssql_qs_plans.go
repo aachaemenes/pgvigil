@@ -26,10 +26,40 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+)
+
+// sqlMSSQLSearch: the statements of one source whose text holds the pattern; a 'none' instance is skipped ($4), each
+// row's statement under its instance's policy now (the marker; reply applies it)
+const sqlMSSQLSearch = `SELECT * FROM pgvigil.mssql_statement_search($1, $2, $3, 200, $4) /* text: statement=stmt, instance_id=inst */`
+
+// sqlMSSQLSearchNorm: the statements of the instances read as normalized ($3), out of sqlMSSQLSearch's limited read,
+// matched on their WHOLE stored text (up to $4 characters) and at most searchNormRead per source: MSSQLSearch keeps
+// those whose shown, normalized text holds the searched text BEFORE any cut, then cuts the statement to the 400
+// characters the function shows. The function's columns, in its order.
+const sqlMSSQLSearchNorm = `SELECT t.instance_id, i.name AS instance, 'plan cache'::text AS source, d.database_name AS database,
+       t.query_key AS statement_key, t.object_name, left(t.query, $4) AS statement, t.seen_at
+  FROM pgvigil.mssql_pc_text t JOIN pgvigil.instances i ON i.instance_id = t.instance_id
+  LEFT JOIN pgvigil.mssql_pc_database d ON d.instance_id = t.instance_id AND d.database_id = t.database_id
+ WHERE $2 = 'plan cache' AND t.instance_id = ANY($3) AND t.query ILIKE $1 ESCAPE '\'
+UNION ALL
+SELECT q.instance_id, i.name, 'Query Store', q.database_name, q.query_hash, q.object_name, left(q.query_text, $4), q.last_execution
+  FROM pgvigil.mssql_qs_query q JOIN pgvigil.instances i ON i.instance_id = q.instance_id
+ WHERE $2 = 'Query Store' AND q.instance_id = ANY($3) AND q.query_text ILIKE $1 ESCAPE '\'
+ LIMIT 2000 /* text: statement=stmt, instance_id=inst */`
+
+// the statement search's bounds: the rows a source shows, the characters of a shown statement (the function's
+// left(.., 400)), and for the instances read as normalized the characters of a stored text matched in Go (a match
+// past it is not found) - their stored matches are read up to sqlMSSQLSearchNorm's LIMIT 2000 per source, a cut
+// said nowhere (a note would say how many stored texts matched)
+const (
+	searchRows      = 200
+	searchShowChars = 400
+	searchNormChars = 8000
 )
 
 // planReadBudget bounds one read on demand: the connection, the two statements and the transfer of the XML.
@@ -144,7 +174,7 @@ func (s *Server) MSSQLPlanCacheEntries(w http.ResponseWriter, r *http.Request) {
 
 // openPlanRead opens one short connection on the read login for a read on demand. Unlike a custom report's, the
 // statements are pgvigil's own fixed reads, so a read login in sysadmin is not refused here (the collections use it;
-// task 406's FOLD records the departure from its design).
+// a departure from task 406's design).
 func openPlanRead(ctx context.Context, dsn string) (*sql.DB, *sql.Conn, error) {
 	db, err := mssqlopen.Open(mssqlApp(dsn, "pgvigil-plan"))
 	if err != nil {
@@ -235,7 +265,7 @@ func (s *Server) MSSQLPlanCachePlan(w http.ResponseWriter, r *http.Request) {
 		defer acancel()
 		return s.auditRun(actx, row)
 	}
-	// a sysadmin read login is not refused (task 406's FOLD): these are pgvigil's own fixed reads, the ones the
+	// a sysadmin read login is not refused: these are pgvigil's own fixed reads, the ones the
 	// collectors already make on that login; openMS refuses one because a custom report runs the DBA's own SQL
 	dsn, kind, _ := ds.readLogin("sqlserver", name)
 	row := (&instanceRun{Door: kind, DoorGen: ds.Gen}).audit(map[string]any{"op": "plan_read", "ui_user": user, "client": clientIP(r),
@@ -303,7 +333,7 @@ SELECT p.database_name AS database, p.query_hash, p.plan_hash, p.stmt_start, p.s
            AND l.plan_hash = p.plan_hash AND l.stmt_start = p.stmt_start AND l.stmt_end = p.stmt_end) AS live_captures,
        (SELECT max(l.live_id) FROM pgvigil.mssql_live_plan l WHERE l.instance_id = p.instance_id AND l.query_hash = p.query_hash
            AND l.plan_hash = p.plan_hash AND l.stmt_start = p.stmt_start AND l.stmt_end = p.stmt_end AND l.live_xml IS NOT NULL) AS live_newest,
-       t.object_name, left(t.query, 400) AS query
+       t.object_name, left(t.query, 400) AS "query@stmt"
   FROM pgvigil.mssql_running_plan p
   LEFT JOIN pgvigil.mssql_pc_text t ON t.instance_id = p.instance_id AND t.query_key = p.query_hash
  WHERE p.instance_id = $1 AND p.last_seen > $2 AND p.first_seen <= $3
@@ -563,10 +593,11 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	// the instances whose policy keeps no text, or only normalized text, by the policy NOW (the request's one door set):
 	// a 'none' instance is not searched and its stored texts are never returned, whatever policy they were sent under
-	// (a policy change clears no stored text: j15's fix review finding 4)
+	// (a policy change clears no stored text)
 	var noText, normalized []string
-	skip := []int{}
+	skip, normIDs, normIn := []int{}, map[int]bool{}, []int{}
 	ds := s.doorsNow()
+	r = pinDoors(r, ds) // the reply's rule reads this door set too
 	pol, err := s.pool.Query(ctx, `SELECT name, instance_id FROM pgvigil.instances WHERE engine = 'sqlserver' ORDER BY name`)
 	if err != nil {
 		s.reply(w, r, nil, err)
@@ -587,8 +618,12 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 				noText = append(noText, n)
 			}
 		case "normalized":
+			// out of the function's limited read: read apart, judged on the shown text before any cut
+			normIDs[id] = true
+			skip = append(skip, id)
 			if inst == nil || inst == id {
 				normalized = append(normalized, n)
+				normIn = append(normIn, id)
 			}
 		}
 	}
@@ -607,25 +642,19 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		_, err = tx.Exec(ctx, "SET LOCAL statement_timeout = '"+searchBudget+"'")
 		if err == nil {
-			var rows pgx.Rows
-			rows, err = tx.Query(ctx, `SELECT * FROM pgvigil.mssql_statement_search($1, $2, $3, 200, $4)`, pattern, name, inst, skip)
-			if err == nil {
-				t := &table{Rows: [][]any{}}
-				for _, f := range rows.FieldDescriptions() {
-					t.Columns = append(t.Columns, f.Name)
-				}
-				for rows.Next() {
-					v, verr := rows.Values()
-					if verr != nil {
-						err = verr
-						break
-					}
-					t.Rows = append(t.Rows, v)
-				}
-				rows.Close()
+			var t, nt *table
+			t, err = scanTable(tx.Query(ctx, sqlMSSQLSearch, pattern, name, inst, skip))
+			if err == nil && len(normIn) > 0 {
+				// TEXT-NOW-L: a normalized instance's row only where its shown text holds the searched text, judged on
+				// the whole stored text before any cut, then cut to the 400 characters shown
+				nt, err = scanTable(tx.Query(ctx, sqlMSSQLSearchNorm, pattern, name, normIn, searchNormChars))
 				if err == nil {
-					err = rows.Err()
+					keepShown(nt, text, normIDs, searchShowChars)
+					t, one.Note, err = mergeSearch(t, nt, searchRows)
 				}
+			}
+			if err == nil {
+				markText(sqlMSSQLSearch, t) // TEXT-NOW: a normalized instance's statements shown normalized (textread.go)
 				one.Rows = t
 			}
 		}
@@ -650,6 +679,125 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 		out["note"] = pgNotHere
 	}
 	s.reply(w, r, out, nil)
+}
+
+// searchShown drops from a statement search's rows those of an instance read as normalized whose shown (normalized)
+// statement does not hold the searched text, and gives the count dropped (TEXT-NOW-L row 3): the repository matches
+// the stored text, and a stored full text's literal would otherwise answer a search the page then shows normalized - a
+// side channel. Case-insensitive, as the repository's ILIKE; % and _ as they are. The count is not shown to the caller
+// (it too would say a literal matched).
+func searchShown(t *table, text string, normalized map[int]bool) int {
+	if t == nil || len(normalized) == 0 {
+		return 0
+	}
+	si, ii := -1, -1
+	for i, c := range t.Columns {
+		switch c {
+		case "statement":
+			si = i
+		case "instance_id":
+			ii = i
+		}
+	}
+	if si < 0 || ii < 0 {
+		// no statement or instance column to judge a row by while an instance is read as normalized: fails closed
+		n := len(t.Rows)
+		t.Rows = t.Rows[:0]
+		return n
+	}
+	want := strings.ToLower(text)
+	kept, n := t.Rows[:0], 0
+	for _, r := range t.Rows {
+		var id int
+		switch v := r[ii].(type) {
+		case int:
+			id = v
+		case int16:
+			id = int(v)
+		case int32:
+			id = int(v)
+		case int64:
+			id = int(v)
+		}
+		if normalized[id] {
+			if st, _ := r[si].(string); !strings.Contains(strings.ToLower(collect.NormalizeSQL(st)), want) {
+				n++
+				continue
+			}
+		}
+		kept = append(kept, r)
+	}
+	t.Rows = kept
+	return n
+}
+
+// keepShown keeps a normalized read's rows whose shown text holds the searched text, judged on the whole stored text,
+// and only then cuts each statement to the cut characters shown; the count dropped is not shown.
+func keepShown(t *table, text string, normalized map[int]bool, cut int) int {
+	n := searchShown(t, text, normalized)
+	cutStatement(t, cut)
+	return n
+}
+
+// scanTable reads a query's rows into a table, the columns by their names.
+func scanTable(rows pgx.Rows, err error) (*table, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	t := &table{Rows: [][]any{}}
+	for _, f := range rows.FieldDescriptions() {
+		t.Columns = append(t.Columns, f.Name)
+	}
+	for rows.Next() {
+		v, err := rows.Values()
+		if err != nil {
+			return nil, err
+		}
+		t.Rows = append(t.Rows, v)
+	}
+	return t, rows.Err()
+}
+
+// cutStatement cuts each row's statement to its first n characters (as the function's left(statement, 400) does).
+func cutStatement(t *table, n int) {
+	if t == nil {
+		return
+	}
+	si := -1
+	for i, c := range t.Columns {
+		if c == "statement" {
+			si = i
+		}
+	}
+	if si < 0 {
+		return
+	}
+	for _, r := range t.Rows {
+		if s, ok := r[si].(string); ok {
+			if rs := []rune(s); len(rs) > n {
+				r[si] = string(rs[:n])
+			}
+		}
+	}
+}
+
+// mergeSearch merges a source's full instances' rows (the function's read, its LIMIT over them alone) and its
+// normalized instances' kept rows (read apart, judged before any cut), full rows first, and cuts at limit with a note
+// that counts shown rows only.
+func mergeSearch(full, norm *table, limit int) (*table, string, error) {
+	if norm != nil && len(norm.Columns) > 0 && strings.Join(full.Columns, ",") != strings.Join(norm.Columns, ",") {
+		return nil, "", fmt.Errorf("the statement search's two reads differ in their columns: %v and %v", full.Columns, norm.Columns)
+	}
+	out := &table{Columns: full.Columns, Rows: append([][]any{}, full.Rows...)}
+	if norm != nil {
+		out.Rows = append(out.Rows, norm.Rows...)
+	}
+	if len(out.Rows) <= limit {
+		return out, "", nil
+	}
+	out.Rows = out.Rows[:limit]
+	return out, fmt.Sprintf("the first %d statements are shown: name an instance or search a longer text to narrow it", limit), nil
 }
 
 // ---- the plans of one statement's hashes (SQLWATCH COL#27) ----------------------------------------------------------

@@ -8,9 +8,9 @@ import { versionCell } from './versions';
 // mssql: the SQL Server instances' status cells (one row per instance and group) and their descriptions
 // mssqlFailed: the SQL Server read itself failed (its cells then say so, never 'not yet')
 // pgaudit: the PostgreSQL instances' pgaudit cells (readAuditFleet); pgauditFailed: that read failed
-// collect: every instance's collection ages and errors (Snapshot Age, Collection Errors (24hrs)); roots: the root's uptime
+// collect: every instance's collection ages and health (Snapshot Age, Collection Health); roots: the root's uptime
 // and memory dump thresholds (the Summary's Options dialogs)
-export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; collect: Row[]; roots: Row[]; mssqlFailed: boolean; pgaudit: Row[]; pgauditFailed: boolean; at: number }
+export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; collect: Row[]; roots: Row[]; mssqlFailed: boolean; pgaudit: Row[]; pgauditFailed: boolean; pgBaseNotRead: Set<number>; at: number }
 let cache: Fleet | null = null;
 let pending: Promise<Fleet> | null = null;
 // the pgaudit cells are read at most every 5 minutes, a forced refresh included (the Summary's auto refresh forces one
@@ -35,8 +35,12 @@ export async function fleet(force = false): Promise<Fleet> {
   pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {}).catch(() => ({ fleet: null })),
     get<{ cells: Table | null; servers: Table | null; pgdb: Table | null; collect: Table | null; roots: Table | null; failed?: boolean }>('mssql/summary', {})
       .catch(() => ({ cells: null, servers: null, pgdb: null, collect: null, roots: null, failed: true })),
-    auditRead()])
-    .then(([i, c, v, m, a]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), collect: rowsOf(m.collect), roots: rowsOf(m.roots), mssqlFailed: m.failed === true, pgaudit: a.rows, pgauditFailed: a.failed, at: Date.now() }))
+    auditRead(),
+    // task 302: the instances whose base backups are not read (the read_tools opt-in off): their Backup FULL cell is
+    // grey, never green; optional like the versions read (a repository before 0148: no instance is marked)
+    get<{ fleet: Table | null }>('pg/backup_dest/fleet', {}).catch(() => ({ fleet: null }))])
+    .then(([i, c, v, m, a, bd]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), collect: rowsOf(m.collect), roots: rowsOf(m.roots), mssqlFailed: m.failed === true, pgaudit: a.rows, pgauditFailed: a.failed,
+      pgBaseNotRead: new Set(rowsOf(bd.fleet).filter(r => r.base_not_read === true).map(r => Number(r.instance_id))), at: Date.now() }))
     .finally(() => { pending = null; });
   return pending;
 }
@@ -50,7 +54,7 @@ export function forget() { cache = null; }
 // name on a SQL Server page, and the view (cv) of that tab; a group without it is a PostgreSQL check.
 // dd: one of DBA Dash's Summary tests (task P08: its name, its column order, Checks/Summary.Designer.cs); the others are
 // pgvigil's own, after them. plain: DBA Dash's cell is text, not a link (Memory Dump, Is Agent Running, DB Mail).
-// both: read for either engine from the collect part (Snapshot Age, Collection Errors (24hrs)).
+// both: read for either engine from the collect part (Snapshot Age, Collection Health).
 // mssqlStatus: the status filter the SQL Server tab opens on (% Max Size: Files on its critical and warning files, the
 // ones the cell counts - never the page's stored filter, which may list every file).
 // pgLabel: the group's name in PostgreSQL's words where DBA Dash's is SQL Server's (Memory Dump on PostgreSQL's crash
@@ -61,7 +65,7 @@ export interface Group { key: string; label: string; pgLabel?: string; checks: s
 // archiver (WAL)
 const fullBackupCheck = (n: string) => n.startsWith('retention ') || n === 'no snapshot in 24 h';
 // labelOf: a group's name for a PostgreSQL row, page or scope (pg true: its pgLabel where it has one) or for SQL Server
-// or a scope that holds SQL Server (DBA Dash's name). Item 6 of the drives-range review: the Summary's column headers
+// or a scope that holds SQL Server (DBA Dash's name): the Summary's column headers
 // and tests by the scope, a row's places by its own engine, an instance's page by the instance's
 export const labelOf = (g: { label: string; pgLabel?: string }, pg: boolean): string => (pg && g.pgLabel) || g.label;
 export const groups: Group[] = [
@@ -76,9 +80,9 @@ export const groups: Group[] = [
   { key: 'disk', label: 'Drive Space', checks: ['disk', 'storage'], tab: 'drives', mssql: ['disk', 'drives', 'Drive space'], dd: true },
   { key: 'jobs', label: 'Agent Jobs', pgLabel: 'Jobs', checks: ['jobs', 'jobs report'], tab: 'jobsreport', mssql: ['jobs', 'mssqljobs'], dd: true },
   { key: 'agent', label: 'Is Agent Running', checks: [], tab: 'summary', mssql: ['agent', 'mssqljobs', 'SQL Server Agent'], mssqlOnly: true, dd: true, plain: true },
-  { key: 'logship', label: 'Log Shipping', checks: ['log shipping'], tab: 'pgbackups', mssql: ['logship', 'availability', 'Log shipping'], dd: true },
-  { key: 'mirroring', label: 'Mirroring', checks: [], tab: 'summary', mssql: ['mirroring', 'availability', 'Mirroring'], mssqlOnly: true, dd: true },
-  { key: 'replication', label: 'Availability Groups', pgLabel: 'Replication', checks: ['replication'], tab: 'replication', mssql: ['availability', 'availability', 'Availability'], dd: true },
+  { key: 'logship', label: 'Log Shipping', checks: ['log shipping'], tab: 'pgbackups', mssql: ['logship', 'mssqllogshipping', 'Log Shipping'], dd: true },
+  { key: 'mirroring', label: 'Mirroring', checks: [], tab: 'summary', mssql: ['mirroring', 'mssqlmirroring', 'Mirroring'], mssqlOnly: true, dd: true },
+  { key: 'replication', label: 'Availability Groups', pgLabel: 'Replication', checks: ['replication', 'patroni'], tab: 'replication', mssql: ['availability', 'mssqlag', 'Availability Groups'], dd: true },
   { key: 'logspace', label: 'Log Space', checks: [], tab: 'summary', mssql: ['logspace', 'dbfiles', 'Log space'], mssqlOnly: true, dd: true },
   { key: 'filespace', label: 'File Space', checks: [], tab: 'summary', mssql: ['filespace', 'dbfiles', 'File space'], mssqlOnly: true, dd: true },
   { key: 'pctmax', label: '% Max Size', checks: [], tab: 'summary', mssql: ['pctmax', 'dbfiles', 'Files at their max size'], mssqlStatus: 'critical,warning', mssqlOnly: true, dd: true },
@@ -87,8 +91,9 @@ export const groups: Group[] = [
   { key: 'elasticpool', label: 'Elastic Pool Storage', checks: [], tab: 'summary', mssql: ['elasticpool', 'mssqlpool', 'Elastic pool'], mssqlOnly: true, dd: true },
   // QS is SQL Server's Query Store alone: PostgreSQL has none, its statement store is the column pg_stat_statements below
   { key: 'qs', label: 'QS', checks: [], tab: 'summary', mssql: ['qs', 'mssqlqs', 'Query Store'], mssqlOnly: true, dd: true },
-  { key: 'custom', label: 'Custom Checks', checks: ['custom'], tab: 'custom', dd: true },
-  { key: 'errors', label: 'Collection Errors (24hrs)', checks: ['collection failing'], tab: 'collectiondates', mssql: ['errors', 'collectiondates', 'Collection errors'], dd: true, both: true },
+  // a SQL Server row's cell: mssql/summary's 'custom' (its custom findings, DBA Dash's custom check rows among them: ST6b)
+  { key: 'custom', label: 'Custom Checks', checks: ['custom'], tab: 'custom', mssql: ['custom', 'custom', 'Custom checks'], dd: true },
+  { key: 'errors', label: 'Collection Health', checks: ['collection failing'], tab: 'collectionhealth', mssql: ['errors', 'collectionhealth', 'Collection Health'], dd: true, both: true },
   { key: 'snapshot', label: 'Snapshot Age', checks: ['collection stale'], tab: 'collectiondates', mssql: ['snapshot', 'collectiondates', 'Collection'], dd: true, both: true },
   { key: 'dbmail', label: 'DB Mail', checks: [], tab: 'summary', mssql: ['dbmail', 'summary', 'Database Mail'], mssqlOnly: true, dd: true, plain: true },
   { key: 'identity', label: 'Identity Columns', checks: [], tab: 'summary', mssql: ['identity', 'mssqlchecks', 'Identity columns', 'identity'], mssqlOnly: true, dd: true },
@@ -142,20 +147,24 @@ function versionCellOf(f: Fleet, id: number): Cell {
   return { level: c.level, n: c.detail.length, detail: c.detail, none: c.none, text: c.none ? undefined : c.text };
 }
 
-// collectCell: Snapshot Age and Collection Errors (24hrs) of an instance of either engine, from the collect part:
+// collectCell: Snapshot Age and Collection Health of an instance of either engine, from the collect part:
 // Snapshot Age is a warning while a collection is stale (older than three of its intervals: the daily check
 // 'collection stale'), its text the youngest to the oldest last run (DBA Dash's 'x minutes to y minutes'); Collection
-// Errors is critical while a collection's last run failed, a warning for an error in the last 24 hours, its text that
-// count (DBA Dash's CollectionErrorStatus: retries warning, failures critical)
+// Health is the repository's own judgement (pgvigil.collection_health_summary, 0166: DBA Dash 4.25.0's rule over 24
+// hours from the next whole hour) - the worst collection but N/A, n = the collections at warning or critical; this
+// page derives no tier of its own
 function collectCell(f: Fleet, id: number, key: string): Cell {
   const x = f.collect.find(c => Number(c.instance_id) === id);
   if (!x) return f.mssqlFailed ? { level: 0, n: 0, detail: ['the read of the collection dates failed (GET /api/mssql/summary)'], none: true, text: 'read failed' }
     : { level: 0, n: 0, detail: ['no collection has run for this instance yet'], none: true, text: 'not yet' };
   const lines = Array.isArray(x.detail) ? x.detail.map(String) : [];
   if (key === 'errors') {
-    const failing = Number(x.failing ?? 0), e24 = Number(x.errors_24h ?? 0);
-    const detail = [...lines.filter(l => l.endsWith('the last run failed')), `${e24} collection error(s) in the last 24 hours`];
-    return { level: failing ? 2 : e24 ? 1 : 0, n: failing || e24, detail, value: String(e24) };
+    // a repository before 0166 judges nothing (the other cells still read); every collection N/A = N/A, as DBA Dash's
+    if (x.ch_missing === true) return { level: 0, n: 0, detail: ['the repository is before 0166 (pgvigil migrate): Collection Health is not judged yet'], none: true, text: 'n/a' };
+    if (x.ch_all_na === true) return { level: 0, n: 0, detail: ['every collection N/A over the last 24 hours (off for this instance, or skipped only)'], none: true, text: 'n/a' };
+    const level = Math.max(0, Math.min(2, Number(x.ch_level ?? 0))) as Level, n = Number(x.ch_n ?? 0);
+    const detail = x.ch_detail ? String(x.ch_detail).split(', ') : ['every collection judged OK or N/A over the last 24 hours'];
+    return { level, n, detail };
   }
   if (x.age_min_secs == null) return { level: 0, n: 0, detail: ['no collection has run for this instance yet'], none: true, text: 'not yet' };
   const stale = Number(x.stale ?? 0);
@@ -226,7 +235,7 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
   const id = Number(r.instance_id);
   const mine = f.checks.filter(c => Number(c.instance_id) === id);
   const out: Record<string, Cell> = {};
-  // Snapshot Age and Collection Errors are read alike for both engines (collectCell); on a SQL Server instance a group
+  // Snapshot Age and Collection Health are read alike for both engines (collectCell); on a SQL Server instance a group
   // with a SQL Server read takes its cell from that read (no stored read of the group yet = 'not yet', never OK); a
   // PostgreSQL-only group says so
   const otherEngine = r.engine != null && r.engine !== 'postgres';
@@ -249,7 +258,8 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
           out[g.key] = { level: crit ? 2 : 1, n: crit || warn, detail: why ? [...detail, why] : detail,
             text: m.value != null ? `${String(m.value)} ${word}${late}` : late ? `${crit || warn} ${word}${late}` : undefined };
           out[g.key].since = m.since; out[g.key].value = m.value == null ? undefined : String(m.value);
-        } else if (state === 'n/a') out[g.key] = none('n/a', 'the collections of this group do not run on this kind of server');
+        } else if (state === 'n/a') out[g.key] = none('n/a', g.key === 'custom' ? 'no custom check is listed for this instance within two of its cadences: the configuration\'s custom: list names none for it, or the collection has not visited it since (Snapshot Age says which)'
+          : 'the collections of this group do not run on this kind of server');
         else if (state === 'failed') out[g.key] = none('read failed', why);
         else if (state === 'stale') out[g.key] = none('stale', why);
         else if (!m.sampled) out[g.key] = none('not read', detail[0] ?? 'this part was not readable with the login\'s rights');
@@ -286,6 +296,11 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
     if (g.key === 'activity') { out[g.key] = activityCell(r); continue; }
     if (g.key === 'version') { out[g.key] = versionCellOf(f, id); continue; }
     const hit = mine.filter(c => g.checks.includes(String(c.check_group)) && (!g.names || g.names(String(c.check_name ?? ''), String(c.check_group))));
+    // Backup FULL on PostgreSQL with the tool read off (task 302's opt-in): no check row is no verdict - grey, never OK
+    if (g.key === 'full' && hit.length === 0 && f.pgBaseNotRead.has(id)) {
+      out[g.key] = { level: 0, n: 0, none: true, text: 'not read', detail: ['base backups not read: the backup tool read is off for this instance (pgvigil.yaml backups: read_tools: true)'] };
+      continue;
+    }
     // Host and Disk read "no sample" on an instance the host collection has never reached (no system_stats, no
     // CloudWatch door: Azure, Cloud SQL): an empty check list there is not OK
     if ((g.key === 'host' || g.key === 'disk') && r.host_at == null && hit.length === 0) {
@@ -300,6 +315,8 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
       ...(g.key === 'dumps' && hit.length ? { since: hit.map(c => String(c.at ?? '')).filter(Boolean).sort().pop() } : {}),
       detail: hit.map(c => `${checkLabel(c.check_name)}: ${c.object ?? ''} ${c.detail ?? ''}`.trim()),
     };
+    // an Aurora instance that does not hold its cluster's backups: Backup FULL says where they are read and judged
+    if (g.key === 'full' && r.cluster_backups_on != null) out[g.key].detail.push(`the cluster's backups: read on ${String(r.cluster_backups_on)}`);
   }
   return out;
 }

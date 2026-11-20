@@ -12,9 +12,9 @@ import (
 )
 
 // TestRemoveRaceHeldInactive: a page instance never read is removed while a first read of it is in flight. The
-// remove deletes its row (0122, the join's w9e finding 1); the read's ensure_instance insert waits for the remove's
-// commit and then goes in held inactive, never active under a name the page no longer lists (the fold's review,
-// finding 1: without the name's lock the insert that waited on the deleted row went in active). Needs a migrated
+// remove deletes its row (0122); the read's ensure_instance insert waits for the remove's commit and then goes in
+// held inactive, never active under a name the page no longer lists (without the name's lock the insert that waited
+// on the deleted row went in active). Needs a migrated
 // repository and its owner: PGVIGIL_REPO_TEST_DSN (skipped without it).
 func TestRemoveRaceHeldInactive(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")

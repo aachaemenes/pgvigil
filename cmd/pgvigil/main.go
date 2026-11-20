@@ -4,6 +4,7 @@
 //	pgvigil run      -config pgvigil.yaml            run every scheduled collection until stopped
 //	pgvigil collect  -config pgvigil.yaml -once instance [-instance name]
 //	pgvigil migrate  -config pgvigil.yaml            apply the repository schema
+//	pgvigil migrate  -config pgvigil.yaml -print     print the statements migrate would run (read only: nothing applied)
 //	pgvigil alerts   -config pgvigil.yaml            one pass of the alert channels (the alerts: list)
 //	pgvigil serve    -config pgvigil.yaml [-listen 127.0.0.1:8080] [-tls-cert f -tls-key f]   web UI and JSON API (read only)
 //	pgvigil user     <add|passwd|enable|disable|remove|list> -config pgvigil.yaml [name]        the UI's logins
@@ -31,10 +32,12 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/alerts"
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/cq"
 	"github.com/aachaemenes/pgvigil/internal/dbadash"
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
@@ -42,6 +45,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/repo"
 	"github.com/aachaemenes/pgvigil/internal/reportmail"
 	"github.com/aachaemenes/pgvigil/internal/sched"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -61,6 +65,7 @@ func run(args []string) int {
 		return code
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -88,6 +93,8 @@ func run(args []string) int {
 		err = runDemo(ctx, log, args[1:])
 	case "purge":
 		err = runPurge(ctx, log, args[1:])
+	case "export":
+		err = runExport(ctx, log, args[1:])
 	case "tag":
 		err = runTag(ctx, args[1:])
 	case "report":
@@ -100,6 +107,8 @@ func run(args []string) int {
 		err = runMCP(ctx, log, args[1:])
 	case "mssql-xe":
 		err = runMSSQLXE(args[1:])
+	case "mssql-agent-alerts":
+		err = runMSSQLAgentAlerts(args[1:])
 	case "import":
 		err = dbadash.ImportCommand(ctx, log, os.Stdout, args[1:])
 	default:
@@ -132,6 +141,8 @@ func runMSSQLXE(args []string) error {
 	drop := fs.Bool("drop", false, "with -print: the script that drops the sessions instead")
 	id := fs.String("install-id", "main", "the install id in the session names (pgvigil_<install id>_<capture>): 1 to 20 lower-case letters and digits")
 	form := fs.String("form", mssql.XEFormServer, "server (SQL Server), rds (Amazon RDS for SQL Server), azuresqlmi, azuresqldb or cloudsql (Google Cloud SQL)")
+	captures := fs.String("captures", "", "the optional captures instead of the four sessions (task 411): waits,warnings,warncounts,modules or all")
+	text := fs.String("text", "", "with -captures, required: the instance's query_text - full, normalized or none (none leaves the statement text action out)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -142,6 +153,23 @@ func runMSSQLXE(args []string) error {
 	if *drop {
 		script, err = mssql.XEDropScript(*id, *form)
 	}
+	if *captures != "" {
+		var list []string
+		if *captures != "all" {
+			list = strings.Split(*captures, ",")
+		}
+		switch {
+		case *drop:
+			script, err = mssql.XECapturesDropScript(*id, *form, list)
+		case *text == "":
+			return errors.New("-captures needs -text full, normalized or none: the instance's query_text (the XE captures tab prints the script with the instance's own policy and settings)")
+		default:
+			// the CLI reads no repository: the script carries the defaults and says so in its header
+			set := mssql.DefaultXECaptureSettings()
+			set.Origin = mssql.XECaptureDefaultsOrigin
+			script, err = mssql.XECapturesScript(*id, *form, *text, list, set)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -150,7 +178,7 @@ func runMSSQLXE(args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|report|install|uninstall|mcp|mssql-xe|import|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|export|tag|report|install|uninstall|mcp|mssql-xe|mssql-agent-alerts|import|version> [-config file] [-once collection] [-instance name]")
 	fmt.Fprintln(os.Stderr, "       "+dbadash.ImportUsage)
 }
 
@@ -165,16 +193,27 @@ func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet
 	if err := fs.Parse(args); err != nil {
 		return nil, nil, err
 	}
-	cfg, err := config.Load(*path)
+	cfg, err := loadConfigAt(*path, needInstance)
 	if err != nil {
-		return nil, nil, &configError{err}
+		return nil, nil, err
+	}
+	cfg.Flags.Once = *once
+	cfg.Flags.Instance = *inst
+	return cfg, fs, nil
+}
+
+// loadConfigAt reads and checks the configuration file at path (loadConfig's checks, for a command with its own flags).
+func loadConfigAt(path string, needInstance bool) (*config.Config, error) {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, &configError{err}
 	}
 	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
 	if needInstance && len(cfg.Instances) == 0 {
-		return nil, nil, &configError{fmt.Errorf("config %s: at least one instance is required", *path)}
+		return nil, &configError{fmt.Errorf("config %s: at least one instance is required", path)}
 	}
 	if err := checkCollectionNames(cfg); err != nil {
-		return nil, nil, &configError{fmt.Errorf("config %s: %w", *path, err)}
+		return nil, &configError{fmt.Errorf("config %s: %w", path, err)}
 	}
 	// mssql_thresholds: the names and values are the SQL Server engine's (config cannot import it), a sqlserver instance's only
 	for _, in := range cfg.Instances {
@@ -182,23 +221,31 @@ func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet
 			continue
 		}
 		if in.Engine != config.EngineSQLServer {
-			return nil, nil, &configError{fmt.Errorf("config %s: instance %q: mssql_thresholds belongs to an engine: sqlserver instance", *path, in.Name)}
+			return nil, &configError{fmt.Errorf("config %s: instance %q: mssql_thresholds belongs to an engine: sqlserver instance", path, in.Name)}
 		}
 		if _, err := mssql.ThresholdRows(in.MSSQLThresholds); err != nil {
-			return nil, nil, &configError{fmt.Errorf("config %s: instance %q: mssql_thresholds: %w", *path, in.Name, err)}
+			return nil, &configError{fmt.Errorf("config %s: instance %q: mssql_thresholds: %w", path, in.Name, err)}
 		}
 	}
 	// the custom: list (task 61): read from the same file, validated against the instances, the list the custom collection runs
-	if err := collect.LoadCustomChecks(*path, cfg.Instances); err != nil {
-		return nil, nil, &configError{fmt.Errorf("config %s: %w", *path, err)}
+	if err := collect.LoadCustomChecks(path, cfg.Instances); err != nil {
+		return nil, &configError{fmt.Errorf("config %s: %w", path, err)}
 	}
-	cfg.Flags.Once = *once
-	cfg.Flags.Instance = *inst
-	return cfg, fs, nil
+	return cfg, nil
 }
 
+// runMigrate applies the repository schema, or with -print (ST7, a change-controlled site) writes to stdout the
+// statements it would run on this repository and applies nothing (the repository is only read).
 func runMigrate(ctx context.Context, log *slog.Logger, args []string) error {
-	cfg, _, err := loadConfig(args, false)
+	fs := flag.NewFlagSet("pgvigil migrate", flag.ContinueOnError)
+	path := fs.String("config", "pgvigil.yaml", "path to the configuration file")
+	doPrint := fs.Bool("print", false, "print the statements migrate would run on the repository to stdout; nothing is applied")
+	fs.String("once", "", "not used by migrate (accepted as before)")
+	fs.String("instance", "", "not used by migrate (accepted as before)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := loadConfigAt(*path, false)
 	if err != nil {
 		return err
 	}
@@ -207,6 +254,13 @@ func runMigrate(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer r.Close()
+	if *doPrint {
+		if err := r.MigrateScript(ctx, os.Stdout, versionLine()); err != nil {
+			return err
+		}
+		log.Info("migrate -print: the script is on stdout; nothing was applied")
+		return nil
+	}
 	r.SetLog(log)
 	n, err := r.Migrate(ctx)
 	if err != nil {
@@ -242,6 +296,11 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer r.Close()
+	// partitions ahead (0271, N4), as the scheduler does at its start: this run's imports make no partition in the
+	// normal path
+	if res, err := r.PartitionsAhead(ctx, time.Now()); err != nil {
+		log.Warn("partitions ahead: not all made", "due", res.Due, "made", res.Made, "busy", res.Busy, "err", err)
+	}
 	failed := 0
 	for _, in := range targets {
 		res := engines.RunOnce(ctx, log, r, in, cfg.Flags.Once)
@@ -269,12 +328,12 @@ func checkCollectionNames(cfg *config.Config) error {
 	for _, in := range cfg.Instances {
 		// an instance names only its own engine's collections
 		check := func(where, n string) error {
-			e, ok := engines.EngineOf(n)
-			if !ok {
-				return fmt.Errorf("instance %q %s: unknown collection %q; known: %v", in.Name, where, n, engines.Names())
-			}
-			if e != in.Engine {
-				return fmt.Errorf("instance %q %s: %q is a %s collection and the instance's engine is %s", in.Name, where, n, e, in.Engine)
+			// the page's Settings judge a name with the same check (engines.CheckPageSettings)
+			if err := engines.CheckCollection(in.Engine, n); err != nil {
+				if _, ok := engines.EngineOf(n); !ok {
+					return fmt.Errorf("instance %q %s: %v; known: %v", in.Name, where, err, engines.Names())
+				}
+				return fmt.Errorf("instance %q %s: %v", in.Name, where, err)
 			}
 			return nil
 		}
@@ -301,6 +360,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	for _, w := range collect.CustomWarnings() {
 		log.Warn(w)
 	}
+	logSecretEndpoints(ctx, log, cfg)
 	// an empty repository dsn (a fresh install's env file not filled yet) is a config error: exit 3, which the unit's
 	// RestartPreventExitStatus=3 and the Windows service's recovery leave stopped - never a restart loop
 	if strings.TrimSpace(cfg.Repository.DSN()) == "" {
@@ -329,7 +389,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 		return fmt.Errorf("repository schema is behind this binary (needs %s): run 'pgvigil migrate' as the repository owner", latest)
 	}
 	// task 201: the heartbeat (the Collector page; many collectors may share a repository, one per host)
-	waitBeat, err := collect.StartHeartbeat(ctx, log, cfg.Repository.DSN(), collect.HeartbeatInfo{Version: version})
+	waitBeat, err := collect.StartHeartbeat(ctx, log, cfg.Repository.DSN(), collect.HeartbeatInfo{Version: version, SendsAlerts: len(ast.Channels) > 0, Probe: cfg.Probe, ProbeEveryMinute: cfg.ProbeEveryMinute})
 	if err != nil {
 		return err
 	}
@@ -339,6 +399,8 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 			log.Warn("dbadash door stopped", "err", err)
 		}
 	}()
+	// TEXT-NOW: the alert sends follow each instance's query_text policy as the file states it now
+	alerts.SetTextPolicy(alerts.PolicyOfConfig(cfg.QueryText, queryTextByName(cfg)))
 	go func() {
 		if err := alerts.Run(ctx, log, alertsDSN, ast.Channels); err != nil {
 			log.Warn("alert loop stopped", "err", err)
@@ -350,5 +412,48 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 			log.Warn("report mail loop stopped", "err", err)
 		}
 	}()
+	// task CQ: the request worker (cq.enabled; off = it returns at once): the actions and community runs serve wrote into
+	// the repository for the instances this collector holds; its stop (each run ended, the lease ended) is waited for
+	cqDone := make(chan struct{})
+	go func() {
+		defer close(cqDone)
+		if err := cq.Run(ctx, log, cfg, r); err != nil {
+			log.Warn("request queue stopped", "err", err)
+		}
+	}()
+	defer func() {
+		select {
+		case <-cqDone:
+		case <-time.After(cq.StopBudget): // its own stop's bound: each run ended, then the lease
+			log.Warn("request queue: its stop did not finish in time", "waited", cq.StopBudget)
+		}
+	}()
 	return sched.Run(ctx, log, r, cfg)
+}
+
+// logSecretEndpoints prints, at start, the endpoint each password_secret is read from as the SDK's chain resolved it
+// (a configured AWS_ENDPOINT_URL_SECRETS_MANAGER, a profile's use_fips_endpoint, the China partition): the host a
+// locked-down site opens (task B24e)
+func logSecretEndpoints(ctx context.Context, log *slog.Logger, cfg *config.Config) {
+	for _, in := range cfg.Instances {
+		ref := in.SecretRef()
+		if ref == nil {
+			continue
+		}
+		ep, err := secrets.Default.Endpoint(ctx, *ref)
+		if err != nil {
+			log.Warn("password_secret: the endpoint could not be resolved", "instance", in.Name, "secret", ref.ID, "err", err)
+			continue
+		}
+		log.Info("password_secret", "instance", in.Name, "secret", ref.ID, "region", ref.Region, "endpoint", ep)
+	}
+}
+
+// queryTextByName is the file's instances' query_text policies, by name (TEXT-NOW: the alert sends follow them).
+func queryTextByName(cfg *config.Config) map[string]string {
+	m := map[string]string{}
+	for _, in := range cfg.Instances {
+		m[in.Name] = in.QueryText
+	}
+	return m
 }

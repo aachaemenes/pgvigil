@@ -55,7 +55,10 @@ type Stats struct {
 	Replaced  int
 	Imports   int64
 	Rows      int64
-	Elapsed   time.Duration
+	// Retries counts the imports taken again after PostgreSQL ended them as a deadlock's victim (up to
+	// repo.ImportDeadlockTries each): 0 when every partition was made ahead (0271).
+	Retries int64
+	Elapsed time.Duration
 	// Anchor is the end of the seeded history: the catch-up ticks, one a minute, come after it.
 	Anchor time.Time
 }
@@ -67,6 +70,13 @@ type Fleet struct {
 	ids  []int
 	opts Options
 	last time.Time
+	// histFrom .. histTo: the seeded 24 hours of runs (B6.2: the hourly collection health and the history's errors);
+	// ticked: per instance (its index), the minutes a Tick (or the seed's own stamp) logged for it, kept 3 hours
+	// (health_demo.go known; per instance: a tick failing on one instance leaves the others'
+	// logged minutes counted); tickMu guards it (each's workers set it)
+	histFrom, histTo time.Time
+	ticked           map[int]map[time.Time]bool
+	tickMu           sync.Mutex
 }
 
 // IDs are the instance ids this fleet seeded, in its order (the demo's write door writes for these and no other).
@@ -145,6 +155,10 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 	if len(taken) > 0 {
 		return nil, st, fmt.Errorf("instance(s) %s exist without the demo tag: nothing seeded; pick another -prefix", strings.Join(taken, ", "))
 	}
+	// every partition the seed writes is made before its workers start, each make a statement of its own (0271, N4):
+	// no import of the seed makes one inside its transaction, so two workers crossing a month side by side cannot
+	// deadlock on its parent
+	seedPartitions(ctx, pool, o, grid, specs)
 	for i, s := range specs {
 		var id int
 		engine := "postgres"
@@ -160,15 +174,26 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 	}
 	st.Instances = len(f.gens)
 	done := atomic.Int64{}
+	// the seed's last runs: stamped at the anchor when the seed ticks up to now (catchUp), else when each instance's
+	// import finished (an anchor far back must not leave the overview's stale check firing until the first live tick);
+	// the 24 hours before the anchor carry their failed runs in collection_log (B6.2: the hourly rows count them)
+	anchor := o.End.UTC().Truncate(time.Minute)
+	f.histFrom, f.histTo, f.ticked = anchor.Add(-24*time.Hour), anchor.Add(-time.Minute), map[int]map[time.Time]bool{}
+	atAnchor := time.Since(o.End) <= catchUpWindow
 	err = f.each(ctx, &st, func(ctx context.Context, i int, imp *importer) error {
 		for _, t := range grid {
 			if err := imp.steps(ctx, f.ids[i], f.gens[i].Step(t)); err != nil {
 				return err
 			}
 		}
-		// stamped when this instance's import finished, not at the anchor: a long seed must not
-		// leave the overview's stale check firing until the first live tick
-		if err := imp.logCollections(ctx, f.ids[i], f.gens[i], time.Now().UTC()); err != nil {
+		if err := imp.logHistoryErrors(ctx, f.ids[i], f.gens[i], f.histFrom, f.histTo); err != nil {
+			return err
+		}
+		stamp := anchor
+		if !atAnchor {
+			stamp = time.Now().UTC()
+		}
+		if err := imp.logCollections(ctx, f.ids[i], f.gens[i], stamp); err != nil {
 			return err
 		}
 		if k := done.Add(1); k%50 == 0 || int(k) == len(f.gens) {
@@ -194,6 +219,12 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 		}
 	}
 	if err == nil {
+		// the collector's error log and the SQL Server error stream (collector_errors_demo.go, 0198), after the acks
+		if e := SeedCollectorErrors(ctx, pool, o.Prefix, o.End); e != nil {
+			err = fmt.Errorf("collector errors demo: %w", e)
+		}
+	}
+	if err == nil {
 		// alert rules on the demo fleet's metrics, judged once at the seed's end (alert_rules_demo.go, task 131)
 		if e := SeedAlertRules(ctx, pool, o.Prefix, o.End); e != nil {
 			err = fmt.Errorf("alert rules demo: %w", e)
@@ -212,11 +243,63 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 		}
 	}
 	if err == nil {
+		// the 24 hours and the stamp's minute (an anchor far back: its minutes since are not known, nothing counted)
+		if atAnchor {
+			for i := range f.gens {
+				f.markTicked(i, anchor)
+			}
+		}
+		err = f.writeHealthSpan(ctx, f.histFrom, anchor)
+	}
+	if err == nil {
 		err = f.catchUp(ctx, &st)
 	}
 	st.Elapsed = time.Since(began)
 	st.Anchor = o.End
 	return f, st, err
+}
+
+// mssqlStorageParents are the partitioned parents import_mssql_storage opens (0067's two, 0158's mssql_database_space),
+// in the import's name order: the SQL Server instances' year of storage reads before the grid (mssql_demo.go, a read a
+// day) lands in their months, made here so the import makes none. TestStorageParentsAreTheImportsOpens holds the list
+// to the import's own ensure_month_partition calls. partition_parents() names every parent with its maker, not which
+// import writes it, so it cannot give this list.
+var mssqlStorageParents = []string{"mssql_database_size", "mssql_database_space", "mssql_volume_sample"}
+
+// seedWindow is the range of the seed's partitions: the months from the grid's first minute's (a minute before it:
+// SeedPooler's first read) to the month after the anchor's, the daily parent's days to two days after the anchor -
+// the collector's window at the anchor (repo.AheadWindow), from the grid's start.
+func seedWindow(grid []time.Time, end time.Time) (from, monthsTo, daysTo time.Time) {
+	_, monthsTo, daysTo = repo.AheadWindow(end)
+	return grid[0].UTC().Add(-time.Minute), monthsTo, daysTo
+}
+
+// seedPartitions makes the seed's partitions ahead (seedWindow; for a fleet with SQL Server instances also the storage
+// year's months). A failure or a busy partition is a warning, as in a collector's pass: the imports still make a
+// missing partition themselves.
+func seedPartitions(ctx context.Context, pool *pgxpool.Pool, o Options, grid []time.Time, specs []Spec) {
+	from, monthsTo, daysTo := seedWindow(grid, o.End)
+	res, err := repo.PartitionsAhead(ctx, pool, from, monthsTo, daysTo)
+	if yearAgo := o.End.UTC().Add(-365 * 24 * time.Hour); err == nil && hasEngine(specs, EngineSQLServer) && yearAgo.Before(from) {
+		var h repo.AheadResult
+		h, err = repo.PartitionsAheadOf(ctx, pool, mssqlStorageParents, yearAgo, from)
+		res.Due, res.Made, res.Busy = res.Due+h.Due, res.Made+h.Made, res.Busy+h.Busy
+	}
+	if (err != nil && ctx.Err() == nil) || res.Busy > 0 {
+		o.Log.Warn("demo seed: partitions ahead not all made (the imports make the rest)", "due", res.Due, "made", res.Made, "busy", res.Busy, "err", err)
+		return
+	}
+	o.Log.Info("demo seed: partitions ahead", "due", res.Due, "made", res.Made)
+}
+
+// hasEngine says whether a fleet holds an instance of the engine ("" is PostgreSQL).
+func hasEngine(specs []Spec, engine string) bool {
+	for _, s := range specs {
+		if s.Engine == engine {
+			return true
+		}
+	}
+	return false
 }
 
 // catchUpWindow is how far behind now a seed's anchor may be for the seed to tick up to now: the default anchor is
@@ -239,6 +322,7 @@ func (f *Fleet) catchUp(ctx context.Context, st *Stats) error {
 		}
 		st.Imports += ts.Imports
 		st.Rows += ts.Rows
+		st.Retries += ts.Retries
 	}
 	return nil
 }
@@ -252,12 +336,24 @@ func (f *Fleet) Tick(ctx context.Context, t time.Time) (Stats, error) {
 		return st, nil
 	}
 	began := time.Now()
+	if !t.Truncate(time.Hour).Equal(f.last.UTC().Truncate(time.Hour)) {
+		// a new hour: the partitions ahead of the trickle, as a collector's hourly pass makes them (sched)
+		f.partitionsPass(ctx, t)
+	}
 	err := f.each(ctx, &st, func(ctx context.Context, i int, imp *importer) error {
 		if err := imp.steps(ctx, f.ids[i], f.gens[i].Step(t)); err != nil {
 			return err
 		}
-		return imp.logCollections(ctx, f.ids[i], f.gens[i], t)
+		if err := imp.logCollections(ctx, f.ids[i], f.gens[i], t); err != nil {
+			return err
+		}
+		// the minute is known to this instance's hourly rows once it logged it (B6f3 #10: per instance)
+		f.markTicked(i, t)
+		return nil
 	})
+	if err == nil {
+		err = f.writeHealth(ctx, t)
+	}
 	if err == nil {
 		err = SeedPooler(ctx, f.pool, f.opts.Prefix, f.last, t)
 	}
@@ -265,6 +361,14 @@ func (f *Fleet) Tick(ctx context.Context, t time.Time) (Stats, error) {
 	st.Instances = len(f.gens)
 	st.Elapsed = time.Since(began)
 	return st, err
+}
+
+// partitionsPass makes the partitions due at t (repo.AheadWindow); a failure or a busy partition is a warning.
+func (f *Fleet) partitionsPass(ctx context.Context, t time.Time) {
+	from, monthsTo, daysTo := repo.AheadWindow(t)
+	if res, err := repo.PartitionsAhead(ctx, f.pool, from, monthsTo, daysTo); (err != nil && ctx.Err() == nil) || res.Busy > 0 {
+		f.opts.Log.Warn("demo tick: partitions ahead not all made", "due", res.Due, "made", res.Made, "busy", res.Busy, "err", err)
+	}
 }
 
 // each runs fn for every instance on the worker pool; the first error stops the rest.
@@ -292,6 +396,7 @@ func (f *Fleet) each(ctx context.Context, st *Stats, fn func(context.Context, in
 			}
 			atomic.AddInt64(&st.Imports, imp.imports)
 			atomic.AddInt64(&st.Rows, imp.rows)
+			atomic.AddInt64(&st.Retries, imp.retries)
 		}()
 	}
 	for i := range f.gens {
@@ -314,6 +419,7 @@ type importer struct {
 	pool    *pgxpool.Pool
 	imports int64
 	rows    int64
+	retries int64 // imports taken again after a deadlock
 }
 
 func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
@@ -325,6 +431,9 @@ func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
 		// the collection names are this package's own constants: a fixed set, never input
 		q := `SELECT pgvigil.import_` + b.Collection + `($1, $2, $3::jsonb)`
 		for attempt := 1; ; attempt++ {
+			if attempt > 1 {
+				m.retries++ // counted when the import is taken again, not when a cancel cuts the pause before it
+			}
 			_, err = m.pool.Exec(ctx, q, id, b.At, string(payload))
 			// the seed's workers cross a month line side by side: a new month's partition and a shared query_text
 			// row can deadlock two imports, and PostgreSQL rolls the victim back whole (repo.Import's rule)
@@ -346,35 +455,58 @@ func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
 }
 
 // logCollections records each collection's last run as the collector would: ok, or the
-// statements collection's error on the instance without pg_stat_statements.
+// statements collection's error on the instance without pg_stat_statements. The minute's collections go in ONE
+// statement (the logHistoryErrors form): a sibling's cancel leaves the minute logged whole or not
+// at all, so a logged minute is always a marked one (Tick marks it after this returns)
 func (m *importer) logCollections(ctx context.Context, id int, g *Gen, at time.Time) error {
+	var cs, sts []string
+	var mss []int
+	var notes []*string // nil: NULL (no note)
 	for _, c := range g.Collections() {
-		status, note := "ok", ""
-		if why := g.mssqlSkipNote(c); why != "" {
-			status, note = "skipped", why
+		status, note := runStatus(g, c, at)
+		cs, sts, mss, notes = append(cs, c), append(sts, status), append(mss, runMs(g, c, at)), append(notes, nil)
+		if note != "" {
+			notes[len(notes)-1] = &note
 		}
-		if c == "host" && !g.hostDoor() {
-			status, note = "skipped", hostSkipNote
-		}
-		if (c == "vacuum" || c == "vacuum_tables") && g.Spec.Replica {
-			status, note = "skipped", vacuumSkipNote
-		}
-		if c == "plans" && g.idx%2 == 1 {
-			status, note = "skipped", plansSkipNote
-		}
-		if c == "serverlog" && g.Spec.Replica {
-			status, note = "skipped", serverlogSkipNote
-		}
-		if c == "statements" && g.Spec.StmtBroken {
-			status, note = "error", `statements on `+g.Spec.Name+`: ERROR: pg_stat_statements must be loaded via "shared_preload_libraries" (SQLSTATE 55000)`
-		}
-		if _, err := m.pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, $4, $5, $6)`,
-			id, c, at, 40+int(noise(g.Spec.Name+c, at)*400), status, nullIf(note)); err != nil {
-			return fmt.Errorf("log_collection %s: %w", c, err)
-		}
+	}
+	if _, err := m.pool.Exec(ctx, `SELECT count(pgvigil.log_collection($1, x.c, $2, x.ms, x.st, x.note))
+  FROM unnest($3::text[], $4::int[], $5::text[], $6::text[]) AS x(c, ms, st, note)`, id, at, cs, mss, sts, notes); err != nil {
+		return fmt.Errorf("log_collection at %s: %w", at.Format(time.RFC3339), err)
 	}
 	return nil
 }
+
+// runStatus: how the demo's run of collection c at minute at ends - skipped where it does not apply, statements failing
+// on a StmtBroken instance, onprem-hr01's activity partial 2 minutes in 10 (B6.2: a warning by rate on Collection
+// Health), else ok; the hourly collection health (health_demo.go) counts the same minutes
+func runStatus(g *Gen, c string, at time.Time) (status, note string) {
+	status, note = "ok", ""
+	if why := g.mssqlSkipNote(c); why != "" {
+		status, note = "skipped", why
+	}
+	if c == "host" && !g.hostDoor() {
+		status, note = "skipped", hostSkipNote
+	}
+	if (c == "vacuum" || c == "vacuum_tables") && g.Spec.Replica {
+		status, note = "skipped", vacuumSkipNote
+	}
+	if c == "plans" && g.idx%2 == 1 {
+		status, note = "skipped", plansSkipNote
+	}
+	if c == "serverlog" && g.Spec.Replica {
+		status, note = "skipped", serverlogSkipNote
+	}
+	if c == "statements" && g.Spec.StmtBroken {
+		status, note = "error", `statements on `+g.Spec.Name+`: ERROR: pg_stat_statements must be loaded via "shared_preload_libraries" (SQLSTATE 55000)`
+	}
+	if c == "activity" && g.is("onprem-hr01") && at.Minute()%10 < 2 {
+		status, note = "partial", "activity: the wait-event read timed out (a demo partial run: the rest of the collection was stored)"
+	}
+	return status, note
+}
+
+// runMs: the demo run's duration in ms
+func runMs(g *Gen, c string, at time.Time) int { return 40 + int(noise(g.Spec.Name+c, at)*400) }
 
 func nullIf(s string) any {
 	if s == "" {

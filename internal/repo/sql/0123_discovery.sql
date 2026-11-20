@@ -20,7 +20,7 @@ ALTER TABLE pgvigil.admin_sources ADD COLUMN IF NOT EXISTS claimed_by text;
 ALTER TABLE pgvigil.admin_sources ADD COLUMN IF NOT EXISTS last_read_start timestamptz;
 ALTER TABLE pgvigil.admin_sources ADD COLUMN IF NOT EXISTS cloud_regions text[];
 ALTER TABLE pgvigil.admin_sources ADD COLUMN IF NOT EXISTS regions_read_at timestamptz;
--- sweep_tried_at: the last sweep tried, whatever its outcome (task 205's review, part b): the loop's weekly sweep
+-- sweep_tried_at: the last sweep tried, whatever its outcome: the loop's weekly sweep
 -- waits 7 days from it too, so a sweep that fails is not tried again at every hourly tick
 ALTER TABLE pgvigil.admin_sources ADD COLUMN IF NOT EXISTS sweep_tried_at timestamptz;
 ALTER TABLE pgvigil.admin_sources ADD COLUMN IF NOT EXISTS tag_keys text[] NOT NULL DEFAULT '{}';
@@ -39,7 +39,7 @@ ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS entra_only boolean 
 ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS serverless text;
 ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS auto_pause boolean NOT NULL DEFAULT false;
 -- the cloud's own word for the server (rds, aurora, azure, cloudsql, alloydb; azuresqldb, azuresqlmi): an approved
--- proposal's instance starts with it, never 'auto' when the source knows (the join's review 3e); NULL from a list source
+-- proposal's instance starts with it, never 'auto' when the source knows; NULL from a list source
 ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS platform text;
 ALTER TABLE pgvigil.admin_proposals DROP CONSTRAINT IF EXISTS admin_proposals_source_server_key;
 CREATE UNIQUE INDEX IF NOT EXISTS admin_proposals_key ON pgvigil.admin_proposals (source, server, (coalesce(resource_id, '')));
@@ -91,7 +91,7 @@ BEGIN
   ELSIF v_op IN ('add', 'edit') AND jsonb_typeof(p_payload->'regions') = 'array'
         AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p_payload->'regions') r WHERE r !~ '^[a-z0-9]+(-[a-z0-9]+)+$' OR length(r) > 40) THEN
     -- the shape only (a host name's): which partition a region is in is the credentials' answer at the read, never a
-    -- name table here (the join's TestNoHardCodedAWSPartition scans this file too)
+    -- name table here (TestNoHardCodedAWSPartition scans this file too)
     v_why := 'a region is lower-case letters and digits in parts joined by hyphens, 40 characters at most';
   ELSIF v_op = 'edit' AND jsonb_typeof(p_payload->'tag_keys') = 'array'
         AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p_payload->'tag_keys') k
@@ -205,7 +205,7 @@ BEGIN
       'name', p_payload->>'name', 'engine', v_p.engine, 'platform', v_p.platform, 'dsn_ref', p_payload->>'dsn_ref', 'auth', coalesce(nullif(p_payload->>'auth', ''), v_s.auth), 'host', v_p.host,
       'port', v_p.port, 'dbname', v_p.dbname,
       -- a managed identity's login is the client id the approve used, or none (the host's own identity): never the
-      -- proposal's SQL login, which a later Edit would put into the identity's DSN (the wire review's blocker 2)
+      -- proposal's SQL login, which a later Edit would put into the identity's DSN
       'login', CASE WHEN coalesce(nullif(p_payload->>'auth', ''), v_s.auth) = 'entra-identity' THEN nullif(p_payload->>'login_used', '')
                     ELSE coalesce(nullif(p_payload->>'login_used', ''), v_p.login) END, 'tags', to_jsonb(v_p.tags), 'source', v_s.kind || ':' || v_s.name,
       'file_names', p_payload->'file_names'));
@@ -235,7 +235,7 @@ END $$;
 -- region it did not ask (a sweep's refused or silent region the hourly read leaves out) is kept with its times, so
 -- every read says what it could not read. An item seen again with the same text keeps its first time. last_notes is
 -- the items as text (admin_notes_text), the page's 'not seen' cell. p_started is the read's start: the notes of a read
--- older than the last one applied are not written (task 205's review, part b: a newer read's notes stand). p_sweep:
+-- older than the last one applied are not written (a newer read's notes stand). p_sweep:
 -- the read was a sweep (sweep_tried_at, whatever its outcome).
 ALTER TABLE pgvigil.admin_sources ADD COLUMN IF NOT EXISTS note_items jsonb NOT NULL DEFAULT '[]';
 
@@ -328,7 +328,7 @@ RETURNS void LANGUAGE sql AS $$
   UPDATE pgvigil.admin_sources SET claim_until = NULL, claimed_by = NULL WHERE name = p_source AND claimed_by = p_holder
 $$;
 
--- import_admin_proposals: one read of a source (0122's, with the review of 205 and its design pass). p_rows is the
+-- import_admin_proposals: one read of a source (0122's, redefined here). p_rows is the
 -- whole list the source holds now; a server not in it is marked gone (never removed), one back in it is no longer
 -- gone; a server under one of p_unseen's key prefixes (a region, a subscription, a project's API the read could not
 -- see) is kept as it is; a new resource id under an old key is a new server (the old proposal gone, a fresh one
@@ -425,4 +425,4 @@ END $$;
 
 -- A row never read is one with no server_version (every read that connects writes it through ensure_instance; a page
 -- add makes the row without one): the fleet query says 'not read yet' from this test; 0122's admin_first_read moves
--- first_seen at that first read whatever the platform (the join's fold 2).
+-- first_seen at that first read whatever the platform.

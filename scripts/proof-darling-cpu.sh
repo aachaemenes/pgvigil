@@ -34,9 +34,9 @@
 #  D. sessions: 5 sessions as host pgvc_h1 in pgvcpu, 3 as host pgvc_h2 in pgvcpu2, an idle one holding a temp table:
 #     the activity read's groups (application, host, database) equal a hand read of the same filter and
 #     PerformanceMonitor's own SessionStatsCollector read per application (its exclusion aside); the totals equal a
-#     hand read of PerformanceMonitor's summary definitions (the sessions over 50: sessions, sleeping, background, the
-#     databases); the idle session's tempdb (allocated, current, user,
-#     internal; the running tasks' part 0) equals sys.dm_db_session_space_usage read by hand.
+#     hand read of every session (task 413's rule, the Connections page's: sessions, sleeping, background = the system
+#     sessions, the databases; before 413 PerformanceMonitor's sessions over 50); the idle session's tempdb (allocated,
+#     current, user, internal; the running tasks' part 0) equals sys.dm_db_session_space_usage read by hand.
 #  E. CPU pressure: 3 CPU-bound sessions per scheduler for 100 s: pgvigil's reads during it show runnable tasks > 0
 #     and, at the requests read within 30 s, runnable requests over 10 % of 4 or more; sp_PressureDetector's logged
 #     thread row at the same moment has threads waiting for CPU > 0 and its high_runnable_percent line; after it, the
@@ -57,8 +57,8 @@
 #  G. the rules on stored rows: mssql_sched_levels on a table of cases (pgvigil's and PerformanceMonitor's levels and
 #     PerformanceMonitor's recommendation, each band's edge); 'other processes use the CPU' at 50.0 % over 10 records
 #     raises, 49.9 % or 9 records none; 'a transaction open for a long time' idle 30 min warning, 29 min none, 4 h
-#     critical, running 4 h warning (never critical), running 3 h 59 none; 'slow data file writes' at 100.1 ms over
-#     1,000 writes raises, 100 ms or 999 writes none; Running now's p95 and % of average equal a hand computation on the
+#     critical, running 4 h warning (never critical), running 3 h 59 none; 'slow data file writes' never on a user
+#     database (task 405 D1), on tempdb at 10 ms over 250 writes (9.96 ms or 249 writes none); Running now's p95 and % of average equal a hand computation on the
 #     stored job runs.
 #  H. pgvigil serve: GET /api/mssql/cpu, /connections, /counters (one series picked), /fileio, /tempdb answer every
 #     part, the counted ones equal to their functions.
@@ -161,7 +161,14 @@ instances:
     dsn: env:PGV_C_MON
 EOF
 "$TMPD/pgvigil" migrate -config "$TMPD/m.yaml" >"$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "B: migrate"; }
-col() { for c in "$@"; do timeout 120 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance sqlbox -once "$c" >"$TMPD/col-$c.out" 2>&1 || { cat "$TMPD/col-$c.out" >&2; fail "collect $c"; }; done; }
+# Since task 401 (internal/mssql/counters.go, cpu.go L30-31, activity.go L184) the counters this proof grades are
+# mssql_counters' (instance objects) and mssql_counters_db's (Databases, Database Replica), no longer mssql_cpu's and
+# mssql_activity's: a read named mssql_cpu or mssql_activity here also runs its counters' collection right after it,
+# so every read takes what one read took when this proof was written (j16d6's darlingcpu B: 'reads per scope: []').
+# COL_AS_NAMED=1 runs the names alone (F's read under the thread pool starvation: no counter is graded there).
+colset() { local c; for c in "$@"; do echo "$c"; [[ -n "${COL_AS_NAMED:-}" ]] && continue
+  case "$c" in mssql_cpu) echo mssql_counters ;; mssql_activity) echo mssql_counters_db ;; esac; done; }
+col() { local c; for c in $(colset "$@"); do timeout 120 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance sqlbox -once "$c" >"$TMPD/col-$c.out" 2>&1 || { cat "$TMPD/col-$c.out" >&2; fail "collect $c"; }; done; }
 col mssql_instance mssql_cpu mssql_activity mssql_requests mssql_waiting_tasks
 SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'sqlbox'")
 sleep 8
@@ -339,7 +346,7 @@ GROUP BY
 ORDER BY
     COUNT_BIG(*) DESC
 OPTION(RECOMPILE);" >"$TMPD/pm-sessions.out" || fail "D: PerformanceMonitor's session read"
-sq "SELECT CAST(COUNT(*) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN status = N'sleeping' THEN 1 ELSE 0 END) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN is_user_process = 0 THEN 1 ELSE 0 END) AS varchar(10)) + '|' + (SELECT STRING_AGG(CAST(x.d AS varchar(10)), ',') FROM (SELECT DISTINCT database_id AS d FROM sys.dm_exec_sessions WHERE session_id > 50 AND session_id <> @@SPID) x) FROM sys.dm_exec_sessions WHERE session_id > 50 AND session_id <> @@SPID" >"$TMPD/hand-total.out" || fail "D: the totals by hand"
+sq "SELECT CAST(COUNT(*) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN status = N'sleeping' THEN 1 ELSE 0 END) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN is_user_process = 0 THEN 1 ELSE 0 END) AS varchar(10)) + '|' + (SELECT STRING_AGG(CAST(x.d AS varchar(10)), ',') FROM (SELECT DISTINCT database_id AS d FROM sys.dm_exec_sessions WHERE session_id <> @@SPID) x) FROM sys.dm_exec_sessions WHERE session_id <> @@SPID" >"$TMPD/hand-total.out" || fail "D: the totals by hand"
 sq "SELECT CAST(u.session_id AS varchar(10)) + '|' + CAST((u.user_objects_alloc_page_count + u.internal_objects_alloc_page_count) * 8 AS varchar(20)) + '|' + CAST((u.user_objects_alloc_page_count + u.internal_objects_alloc_page_count - u.user_objects_dealloc_page_count - u.internal_objects_dealloc_page_count) * 8 AS varchar(20)) + '|' + CAST((u.user_objects_alloc_page_count - u.user_objects_dealloc_page_count) * 8 AS varchar(20))
   FROM sys.dm_db_session_space_usage u JOIN sys.dm_exec_sessions s ON s.session_id = u.session_id WHERE s.host_name = N'pgvc_tmp'" >"$TMPD/hand-tmp.out" || fail "D: the temp table by hand"
 python3 - "$PGDSN" "$SB" "$TMPD" <<'PYEND' || fail "D: see above"
@@ -371,7 +378,8 @@ for n, (c, sl) in pm.items():
 if not pm: bad.append("D PerformanceMonitor's read returned nothing")
 tot = q(f"SELECT sessions, sleeping, background, databases FROM pgvigil.mssql_session_summary WHERE instance_id = {sb} AND snapshot_at = {at}")[0]
 h = open(f"{d}/hand-total.out").read().strip().split('|')
-# PerformanceMonitor's totals are over the sessions over 50. The hand read ran after pgvigil's and leaves its own
+# The totals are over every session since task 413 (internal/mssql/activity.go activitySessionsSQL: background = the
+# system sessions; before 413 PerformanceMonitor's sessions over 50). The hand read ran after pgvigil's and leaves its own
 # session out; pgvigil's own session (running, in master) was one of pgvigil's
 hdb = set(h[3].split(',')) if len(h) > 3 and h[3] else set()
 # databases by id (a background session's database can have no name, which STRING_AGG would drop); pgvigil's own is master (1)
@@ -407,7 +415,15 @@ for _ in $(seq 1 30); do
           WHERE r.x.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int') >= 50")
   (( R > 0 )) && break; sleep 5
 done
-(( R > 0 )) || fail "E: no scheduler monitor record of 50 % or more SQL Server CPU"
+if (( R == 0 )); then
+  # what the buffer holds instead: its record with the highest SQL Server share, and the box's load - a shared machine's
+  # other jobs can keep SQL Server under 50 %; never the idle share: SQL Server on Linux writes SystemIdle as 0 in every
+  # record (internal/mssql/cpu.go's rule), so this container's idle tells nothing of the other processes
+  EMAX=$(sq "SELECT TOP (1) CAST(u AS varchar(5)) FROM (SELECT r.x.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int') AS u
+          FROM (SELECT CONVERT(xml, record) AS x FROM sys.dm_os_ring_buffers
+          WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR' AND record LIKE N'%<SystemHealth>%') r) z ORDER BY u DESC" || true)
+  fail "E: no scheduler monitor record of 50 % or more SQL Server CPU (the buffer's highest SQL Server share: ${EMAX:-none} %, the idle share not read on a Linux host; the box's load $(cut -d' ' -f1-3 /proc/loadavg) on $(nproc) CPUs)"
+fi
 col mssql_cpu
 sqok "E: sp_PressureDetector logged after the burn" "EXEC dbo.sp_PressureDetector @log_to_table = 1, @log_database_name = N'pgvc_out', @log_schema_name = N'dbo', @log_table_name_prefix = N'pde2';"
 sq "SELECT CONVERT(varchar(23), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), sample_time), 126) + '|' + CAST(sqlserver_cpu_utilization AS varchar(5)) FROM dbo.pde2_CPUEvents WHERE sqlserver_cpu_utilization >= 50" pgvc_out >"$TMPD/pd-events.out" || fail "E: the logged CPU events"
@@ -439,7 +455,7 @@ for i in $(seq 1 200); do churn pgvc_churn "$B"; done
 sleep 25
 dacq() { dac "SELECT CAST(SUM(work_queue_count) AS varchar(10)) + '|' + (SELECT CAST(COUNT(*) AS varchar(10)) FROM sys.dm_os_waiting_tasks WHERE wait_type = N'THREADPOOL') FROM sys.dm_os_schedulers WHERE status = N'VISIBLE ONLINE'"; }
 D0=$(dacq) || fail "F: the DAC read before"
-t0=$(date +%s); col mssql_cpu mssql_waiting_tasks mssql_requests; t1=$(date +%s)
+t0=$(date +%s); COL_AS_NAMED=1 col mssql_cpu mssql_waiting_tasks mssql_requests; t1=$(date +%s)
 D1=$(dacq) || fail "F: the DAC read after"
 dac "EXEC dbo.sp_PressureDetector @what_to_check = 'cpu', @skip_queries = 1, @log_to_table = 1, @log_database_name = N'pgvc_out', @log_schema_name = N'dbo', @log_table_name_prefix = N'pdf';" >"$TMPD/pdf.out" 2>&1 || true
 PDF=$(dac "SELECT TOP (1) CAST(requests_waiting_for_threads AS varchar(10)) + '|' + CAST(total_threads AS varchar(10)) FROM pgvc_out.dbo.pdf_CPU ORDER BY collection_time DESC" 2>&1 || true)
@@ -532,7 +548,7 @@ cases = [
   ((0, 4, 0, 10, 512, 4, 4), 'NORMAL', 'MEDIUM - Queued requests warning', 'Requests queued for execution - CPU or worker thread pressure'),
   ((0, 4, 0, 10, 512, 4, 3), 'NORMAL', 'NORMAL', 'Requests queued for execution - CPU or worker thread pressure'),
 ]
-# pgvigil's level on the page's rounded figures (worker use to 1 place, runnable per scheduler to 2) [review s177i-review11]
+# pgvigil's level on the page's rounded figures (worker use to 1 place, runnable per scheduler to 2)
 cases.append(((0, 4, 0, 563, 704, 4, 0), 'ELEVATED', 'NORMAL', 'No CPU scheduler pressure detected'))
 cases.append(((199, 200, 0, 10, 5000, 200, 0), 'HIGH', 'CRITICAL - High runnable task queue', 'CPU pressure detected - check for CPU-intensive queries, consider adding CPU cores'))
 # exactly 90 % of max: PerformanceMonitor's flag (>= 90 %) without its > 90 % band
@@ -567,8 +583,19 @@ wr() { pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND d
   fnd 'slow data file writes'; }
 W1=$(wr 1000 100100); W2=$(wr 1000 100000); W3=$(wr 999 999000)
 pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND database_name = 'pgvproof'" >/dev/null
-[[ "$W1/$W2/$W3" == "1/0/0" ]] || fail "G: slow data file writes: 100.1 ms x1000 $W1, 100 ms x1000 $W2, 1000 ms x999 $W3 (want 1/0/0)"
-echo "ok   G: the levels table; other processes 50 % x10 raises, 49 % or 9 records none; a long transaction idle 30 min warning, 29 min none, 4 h critical, running 4 h warning, 3 h 59 none, 30 h warning; slow data file writes 100.1 ms over 1,000 writes raises, 100 ms or 999 writes none"
+# task 405 D1 (0156, PerformanceMonitor 3.13's Changed 2): a user database's data file is never judged on its write
+# latency (was: 100.1 ms over 1,000 writes raised); tempdb's data files are, at 10 / 30 ms over 250 writes
+# (proof-pm313-rules.sh R1)
+[[ "$W1/$W2/$W3" == "0/0/0" ]] || fail "G: slow data file writes on a user database: 100.1 ms x1000 $W1, 100 ms x1000 $W2, 1000 ms x999 $W3 (want 0/0/0: D1)"
+# the rule still raises on tempdb (the zeros above pass if the arm dies): a tempdb data
+# file of its own name at 10 ms over 250 writes raises one warning; 9.96 ms or 249 writes none
+wt() { pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND file_name = 'pgvproof_tmp'" >/dev/null
+  pq "INSERT INTO pgvigil.mssql_fileio_sample (instance_id, snapshot_at, database_id, file_id, database_name, file_name, type_desc, reads, read_bytes, read_stall_ms, writes, write_bytes, write_stall_ms, interval_secs) VALUES ($SB, now() - interval '5 minutes', 2, 99, 'tempdb', 'pgvproof_tmp', 'ROWS', 0, 0, 0, $1, $1 * 8192, $2, 60)" >/dev/null
+  pq "SELECT count(*) || ':' || coalesce(max(severity), 'none') FROM pgvigil.mssql_cpu_findings WHERE instance_id = $SB AND check_name = 'slow data file writes' AND object = 'tempdb: pgvproof_tmp'"; }
+WT1=$(wt 250 2500); WT2=$(wt 250 2490); WT3=$(wt 249 2490)
+pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND file_name = 'pgvproof_tmp'" >/dev/null
+[[ "$WT1/$WT2/$WT3" == "1:warning/0:none/0:none" ]] || fail "G: slow tempdb data file writes: 10 ms x250 $WT1, 9.96 ms x250 $WT2, 10 ms x249 $WT3 (want 1:warning/0:none/0:none)"
+echo "ok   G: the levels table; other processes 50 % x10 raises, 49 % or 9 records none; a long transaction idle 30 min warning, 29 min none, 4 h critical, running 4 h warning, 3 h 59 none, 30 h warning; slow data file writes on a user database never raised, on tempdb at 10 ms over 250 writes (task 405 D1)"
 
 echo "== H. the API under pgvigil serve =="
 (cd web && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -20 "$TMPD/web.log" >&2; fail "H: the web build"; }
@@ -649,7 +676,9 @@ const state = () => ev(`(() => { const m = document.querySelector('main');
     verdict: attr('data-verdict'), pm: attr('data-pm-level'), threadpool: attr('data-threadpool'), cpuinfo: attr('data-cpuinfo'), connectfail: attr('data-connectfail'),
     runpct: attr('data-runnable-pct'), threadRows: rowsAfter('Thread usage'), tiles: m.querySelectorAll('.tile').length,
     apps: rowsAfter('Sessions by application'), hosts: rowsAfter('Sessions by host'), dbs: rowsAfter('Sessions by database'),
-    counters: m.querySelector('.mssql-counters') ? [...m.querySelectorAll('.mssql-counters tbody tr')].filter(tr => !tr.closest('.u-legend') && !tr.querySelector('.empty')).length : -1,
+    // the counter grid's own rows, each with its chart box: the box also holds the batch response histogram and the
+    // Listed but not read grid (task 401), whose rows are no counter rows
+    counters: m.querySelector('.mssql-counters') ? [...m.querySelectorAll('.mssql-counters tbody tr')].filter(tr => !tr.closest('.u-legend') && !tr.querySelector('.empty') && tr.querySelector('input[type=checkbox]')).length : -1,
     checked: [...m.querySelectorAll('.mssql-counters input[type=checkbox]')].filter(c => c.checked).length,
     counterChart: !!m.querySelector('.mssql-counters .uplot'), holders: rowsAfter('Sessions holding tempdb'),
     kb: [...m.querySelectorAll('th')].filter(th => /KB per (read|write)/.test(th.textContent)).length, logflush: rowsAfter('Log bytes flushed per database'),
@@ -683,7 +712,15 @@ for (const theme of ['light', 'dark']) {
   await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200);
   for (const [name, hash] of Object.entries(pages)) {
     if (!await go(hash)) { console.log(`FAIL render ${name} ${theme}`); continue; }
-    if (name === 'metrics') await sleep(1500);
+    if (name === 'metrics') {
+      await sleep(1500);
+      // a grid past GRID_PAGE (200) rows draws its first page with 'Show all <n>' under it (ui.ts): the box's grids are
+      // opened whole before they are counted - the default series' rows sort past the first page once a read has more
+      // rows than a page, and a count of the first page is not the newest read's
+      const opened = await ev(`(() => { const bs = [...document.querySelectorAll('.mssql-counters button')].filter(b => b.textContent.startsWith('Show all ')); bs.forEach(b => b.click()); return bs.length; })()`);
+      if (opened) await sleep(800);
+      console.log(`metrics opened ${theme} ${opened}`);
+    }
     const s = await state(); delete s.links;
     console.log(`page ${name} ${theme} ${JSON.stringify(s)}`);
     await shot(`d14-${name}-${theme}`);

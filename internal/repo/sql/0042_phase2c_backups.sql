@@ -1,9 +1,9 @@
--- 0042: the wave C join for the backups collection (0022: the WAL archiver everywhere, the retention, the latest
+-- 0042: wires in the backups collection (0022: the WAL archiver everywhere, the retention, the latest
 -- restorable time and the snapshots on RDS / Aurora). The findings view gains the backup rules (the archiver
 -- failing, the last archive older than the threshold while WAL waits, retention under 7 days, no snapshot in 24 h);
 -- purge() gains the backup_sample partitions and the is_present delete of backup_state (a snapshot AWS aged out, a
 -- cloud row of a resource the config moved away from: a row of that kind under another name). Both bodies are 0041's with the additions (a
--- frozen file is never edited; a later join re-creates them again with its own).
+-- frozen file is never edited; a later wiring migration re-creates them again with its own).
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (

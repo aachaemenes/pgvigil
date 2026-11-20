@@ -18,7 +18,7 @@
 --   7. pg_depth_findings: the findings of all of the above (a table's dead rows are 0016's table_checks 'table dead rows',
 --      over 20 % of over 1,000 rows, on the Tables page: one rule, not a second one here).
 --   depth_databases records, per collection, which databases the last read covered (a database in error keeps its rows).
--- For the lead's join (0110): pg_depth_findings is a findings arm; wal_state_sample, function_stats and slru_sample are
+-- For the release migration (0110): pg_depth_findings is a findings arm; wal_state_sample, function_stats and slru_sample are
 -- monthly partition parents for purge(); sequence_state, db_checks, index_bloat and depth_databases keep rows no longer
 -- present (is_present false) for purge()'s retention.
 

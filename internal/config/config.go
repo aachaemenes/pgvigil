@@ -6,13 +6,17 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // Config is the whole file.
@@ -31,8 +35,20 @@ type Config struct {
 	// certificate function, a private key block); a password held as an ordinary value stays under full only.
 	// An instance's own query_text overrides it.
 	QueryText string `yaml:"query_text"`
+	// VerifyTimeout bounds one verify_backup (task 301b: RESTORE VERIFYONLY of a large backup runs for hours); 0 = 2h.
+	VerifyTimeout Duration `yaml:"verify_timeout"`
+	// Probe (B24h; dbachecks Instance#3, Server#4 / #5): how the collector checks that a host answers - icmp (the
+	// default; until B24h-2 it is measured as tcp), tcp (the TCP handshake to the port the instance's last opened
+	// connection used), off. ProbeEveryMinute probes every host each minute (an admin's opt-in:
+	// a per-minute sweep can trip an IDS); by default a host is probed only after a collection of it failed.
+	Probe            string `yaml:"probe"`
+	ProbeEveryMinute bool   `yaml:"probe_every_minute"`
 	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
 	UI UI `yaml:"ui"`
+	// Web is the web: block (B6.4: serve's probes)
+	Web Web `yaml:"web"`
+	// Views: the saved views' one setting (0259; web/q_views.go): who may write shared views.
+	Views Views `yaml:"views"`
 	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
 	// Server instances and the statuses of DBADash's own Summary. Empty (the default) = the door is off. pgvigil
 	// collects nothing from SQL Server itself.
@@ -48,11 +64,27 @@ type Config struct {
 	// A later release (task 330) lists these switches on a Site settings page, one switch per door in one named place,
 	// where this file's off still wins (file off > profile > page).
 	Doors Doors `yaml:"doors"`
+	// Metrics tunes serve's Prometheus endpoint (metrics.go): token, cache_seconds, databases, max_databases,
+	// include_databases, tags; nothing while doors.prometheus_metrics is off.
+	Metrics MetricsBlock `yaml:"metrics"`
 	// ReportsDSNRaw is the login a custom report on the store (the repository) runs as: IN ROLE pgvigil_reader alone
 	// ('pgvigil roles' prints it), on the repository the repository dsn names; env:NAME or file:/path like every dsn.
 	// Serve's own repository login holds pgvigil_auth (it reads the UI's password hashes), so without this key a store
 	// report is refused with words, never run as serve's login (REPORT ROLE, internal/web/reportrole.go).
 	ReportsDSNRaw string `yaml:"reports_dsn"`
+	// MSSQLCounters adds counters to every SQL Server instance's counter list or removes them (docs/configuration.md,
+	// 'mssql_counters'); an instance's own lines are narrower and win.
+	MSSQLCounters CounterEdits `yaml:"mssql_counters"`
+	// Export is the repository's read-only export to Parquet (`pgvigil export`); absent = off (export.go).
+	Export *Export `yaml:"export"`
+	// Agents is the agents: block: the agent door on serve's pages (agents.go; off unless enabled).
+	Agents AgentsConfig `yaml:"agents"`
+	// CQ is the request queue's collector side (cq.go): cq: enabled: true lets this collector take the requests of the
+	// instances it holds. Off by default.
+	CQ CQ `yaml:"cq"`
+	// Actions is serve's side of the queue (cq.go): actions: via: queue sends every action and community run through
+	// the repository; direct (the default) runs them in serve as before.
+	Actions ActionsVia `yaml:"actions"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -94,6 +126,11 @@ type Instance struct {
 	// PageDefaults are an instance's intervals that Admin > Instances gives it (task 406: its running plans
 	// switch); never read from the file. Interval reads them after the file's schedules:, its own and the global.
 	PageDefaults map[string]Duration `yaml:"-"`
+	// PageAWSHost is the page row's host when the instance's aws: block came from Admin > Instances (task B24p); never
+	// read from the file. The collector checks such a block against the provider's own answer for that host before its
+	// first read (collect.pageAWSVerdict): the block names a resource in the collector host's account, the host was
+	// typed by a page user.
+	PageAWSHost string `yaml:"-"`
 	// Disabled lists collections that never run on this instance.
 	Disabled []string `yaml:"disabled"`
 	// QueryText overrides the file-level query_text for this instance (full | normalized | none);
@@ -101,18 +138,35 @@ type Instance struct {
 	QueryText string `yaml:"query_text"`
 	// AWS names the RDS / Aurora resource for the log reader (CloudWatch Logs); nil = no AWS door.
 	AWS *AWS `yaml:"aws"`
+	// Azure names an Azure SQL Database's logical server in Azure Resource Manager for the failover group read
+	// (mssql_failover_groups, task 390a); nil = no Azure door (no call to Resource Manager). SQL Server only.
+	Azure *Azure `yaml:"azure"`
+	// PasswordSecret reads the read login's password from AWS Secrets Manager at connect (task B24e); nil = the dsn
+	// holds the sign-in as today. Configuration-file instances only.
+	PasswordSecret *PasswordSecret `yaml:"password_secret"`
+	// GCP names a Cloud SQL for PostgreSQL instance for the provider replica read (cloud_replicas, task 390b P2); nil =
+	// no Google door (no call to Google). PostgreSQL only.
+	GCP *GCP `yaml:"gcp"`
 	// ActionsDSNRaw is the actions door: the connection string of the login pgvigil_actions (GRANT
 	// pg_signal_backend, never a superuser) the UI's Cancel and Terminate buttons use on this server.
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
 	// accepted: the password of a login that can stop sessions never sits in the file.
 	ActionsDSNRaw string `yaml:"actions_dsn"`
-	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop, plan_evict; on PostgreSQL job_stop and
-	// job_start (task 161: Stop a pg_cron / pgAgent run, pgAgent's Run now). An action not named here is off even with
+	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop, job_enable, job_disable,
+	// plan_evict, verify_backup; on PostgreSQL job_stop and job_start (task 161: Stop a pg_cron / pgAgent run, pgAgent's
+	// Run now), job_enable and job_disable (B9c: pgAgent's jobenabled, pg_cron's active). An action not named here is off even with
 	// an actions_dsn; empty (the default) = nothing. PostgreSQL's cancel and terminate need no list: its actions_dsn
 	// alone turns them on.
 	Actions []string `yaml:"actions"`
+	// CommunityAllow and JobsAllow are DBA Dash's allow-lists (ServiceConfigTool row ST4, cq.go): which community tools
+	// and which jobs this instance's doors offer - all, none or a list (jobs: also '*' and '-name' exclusions). Unset =
+	// as today for community tools; the jobs list unset = every job the actions: list's kinds allow.
+	CommunityAllow []string `yaml:"community_allow"`
+	JobsAllow      []string `yaml:"jobs_allow"`
 	// Backups tunes the backups collection's rules; nil = the defaults.
 	Backups *Backups `yaml:"backups"`
+	// Reads holds the opt-ins of reads with a side effect on the server (task 301b); nil = all off.
+	Reads *Reads `yaml:"reads"`
 	// ExplainAnalyze turns on the Plan page's EXPLAIN ANALYZE for this instance (it executes the statement: a
 	// SELECT only, through explain_dsn, in a read-only transaction rolled back); false (the default) = off.
 	ExplainAnalyze bool `yaml:"explain_analyze"`
@@ -134,6 +188,97 @@ type Instance struct {
 	PgBouncerDSNRaw string `yaml:"pgbouncer"`
 	// MSSQLThresholds sets the HA/DR, jobs and backups thresholds of a sqlserver instance (docs/sqlserver-hadr.md).
 	MSSQLThresholds map[string]any `yaml:"mssql_thresholds"`
+	// Patroni names the Patroni REST API of the instance's cluster when it is not Patroni's default
+	// http://<the dsn's host>:8008 (docs/backups-postgres.md); nil = the default, asked only while a Patroni session
+	// is connected.
+	Patroni *Patroni `yaml:"patroni"`
+	// MSSQLCounters adds counters to this SQL Server instance's counter list or removes them (docs/configuration.md).
+	MSSQLCounters CounterEdits `yaml:"mssql_counters"`
+	// MSSQLCountersRoot is the file's root mssql_counters, copied here by Validate (the runner reads one instance).
+	MSSQLCountersRoot CounterEdits `yaml:"-"`
+	// MSSQLSchema turns the SQL Server schema history on for the databases it names (docs/schema.md, task A26).
+	MSSQLSchema *MSSQLSchema `yaml:"mssql_schema"`
+	// Histogram turns on the Indexes tab's histogram of a statistic for this sqlserver instance (task 414): it shows
+	// the column's real values (each step's key), read when asked, never stored, audited and under query_text full
+	// only; false (the default) = off.
+	Histogram bool `yaml:"histogram"`
+	// StatsDSNRaw is the statistics-only login the histogram reads through (a user with SELECT on the tables whose
+	// statistics it shows, nothing else; docs/sqlserver-indexes.md): the read login keeps its rights, so custom reports
+	// and report mail stay metadata-only. env:NAME or file:/path only; empty = the read login (which then needs that
+	// SELECT itself, or the histogram says so).
+	StatsDSNRaw string `yaml:"stats_dsn"`
+	// IndexFragmentation turns on the Indexes tab's fragmentation read for this sqlserver instance (task 414): it reads
+	// every index and heap of a database (a heap's data pages in full even in LIMITED), when asked, as a job; false (the
+	// default) = off.
+	IndexFragmentation bool `yaml:"index_fragmentation"`
+}
+
+// Patroni is the patroni: block of a postgres instance: URL is http(s)://host:port (another port, or https); CAFile
+// the CA that signed the API's certificate (empty = the system's roots); CertFile and KeyFile a client certificate,
+// for a REST API with restapi.verify_client. With a URL the API is read whether or not a Patroni session is seen.
+type Patroni struct {
+	URL      string `yaml:"url"`
+	CAFile   string `yaml:"ca_file"`
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+}
+
+// CounterEdits are pgvigil.yaml's additions to and removals from the SQL Server counter list.
+type CounterEdits struct {
+	Add    []CounterRef `yaml:"add"`
+	Remove []CounterRef `yaml:"remove"`
+}
+
+// CounterRef names a counter: its object (without the instance's prefix) and name, one instance of it or every one
+// (instance empty), and for an addition its kind (” from the type read; 'count' for a 65792 counter that counts since
+// the server started).
+type CounterRef struct {
+	Object   string `yaml:"object" json:"object"`
+	Counter  string `yaml:"counter" json:"counter"`
+	Instance string `yaml:"instance" json:"inst,omitempty"`
+	Kind     string `yaml:"kind" json:"kind,omitempty"`
+}
+
+// CounterInUse says what reads a counter (” = nothing); the SQL Server collector sets it (a removal of a counter in
+// use is refused).
+var CounterInUse = func(_, _ string) string { return "" }
+
+// validateCounterEdits checks one mssql_counters block.
+func validateCounterEdits(where string, e CounterEdits) error {
+	for _, set := range []struct {
+		name string
+		refs []CounterRef
+	}{{"add", e.Add}, {"remove", e.Remove}} {
+		for i, r := range set.refs {
+			if strings.TrimSpace(r.Object) == "" || strings.TrimSpace(r.Counter) == "" {
+				return fmt.Errorf("%s.mssql_counters.%s[%d]: object and counter are required", where, set.name, i)
+			}
+			if len(r.Object) > 128 || len(r.Counter) > 128 || len(r.Instance) > 128 {
+				return fmt.Errorf("%s.mssql_counters.%s[%d]: a name is 128 characters at most", where, set.name, i)
+			}
+			switch r.Kind {
+			case "", "count", "rate", "gauge":
+			default:
+				return fmt.Errorf("%s.mssql_counters.%s[%d]: kind must be empty, count, rate or gauge (got %q)", where, set.name, i, r.Kind)
+			}
+			// a DMV column's arithmetic is pgvigil's own (the collector would ignore a kind): refused in words
+			if r.Kind != "" && strings.HasPrefix(strings.ToLower(r.Object), "sys.dm_os_") {
+				return fmt.Errorf("%s.mssql_counters.%s[%d]: %s / %s is a DMV column: its kind is fixed by pgvigil, leave kind empty", where, set.name, i, r.Object, r.Counter)
+			}
+			if set.name == "remove" {
+				if why := CounterInUse(r.Object, r.Counter); why != "" {
+					return fmt.Errorf("%s.mssql_counters.remove[%d]: %s / %s is read by %s and stays in the list", where, i, r.Object, r.Counter, why)
+				}
+			}
+			// a counter a page or a rule reads keeps the arithmetic its type gives (a gauge kind on Errors/sec stores no rate)
+			if set.name == "add" && r.Kind != "" {
+				if why := CounterInUse(r.Object, r.Counter); why != "" {
+					return fmt.Errorf("%s.mssql_counters.add[%d]: %s / %s is read by %s: its kind stays as SQL Server types it", where, i, r.Object, r.Counter, why)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // DBADashRepo is one DBADash repository of the dbadash: list.
@@ -166,6 +311,10 @@ func (c *Config) validateGMSA() error {
 
 // DefaultDBADashInterval is the read cadence of a DBADash repository.
 const DefaultDBADashInterval = 5 * time.Minute
+
+// DefaultQueryText is the statement-text policy of a file with no query_text line (Validate); the demo serve holds it
+// too, so its pages read every instance as an install with no line reads it
+const DefaultQueryText = "full"
 
 // DSN resolves the connection string; "" = an unset variable or an unreadable file.
 func (d DBADashRepo) DSN() string { return Resolve(strings.TrimSpace(d.DSNRaw)) }
@@ -251,6 +400,20 @@ func (c *Config) validateDBADash() error {
 		}
 	}
 	return nil
+}
+
+// Web is the web: block. ReadyzWithoutLogin opens serve's /readyz to a caller without a session while the UI login is
+// on (a load balancer's or an orchestrator's probe; it answers 'ok' or 'not ready: <why>' and nothing else); false by
+// default. /livez is always open; /readyz is always open with the login off.
+type Web struct {
+	ReadyzWithoutLogin bool `yaml:"readyz_without_login"`
+}
+
+// Views is the views store's setting until the per-user roles (B24f) carry a 'change shared views' right.
+type Views struct {
+	// SharedEditors: the UI users who may create, change, delete and set the default of shared views; none = nobody
+	// (every signed-in user still saves personal views and reads the shared ones).
+	SharedEditors []string `yaml:"shared_editors"`
 }
 
 // UI is the ui: block: the tree's folder levels and the order of the values in them.
@@ -341,6 +504,15 @@ func (i Instance) ExplainDSN() string {
 	return Resolve(strings.TrimSpace(i.ExplainDSNRaw))
 }
 
+// StatsDSN resolves the statistics-only login of a histogram (task 414); "" = none configured (or an unset variable /
+// unreadable file).
+func (i Instance) StatsDSN() string {
+	if strings.TrimSpace(i.StatsDSNRaw) == "" {
+		return ""
+	}
+	return Resolve(strings.TrimSpace(i.StatsDSNRaw))
+}
+
 // PgBouncerDSN resolves the pooler's admin console; "" = none configured (or an unset variable / unreadable file).
 func (i Instance) PgBouncerDSN() string {
 	if strings.TrimSpace(i.PgBouncerDSNRaw) == "" {
@@ -368,6 +540,55 @@ type AWS struct {
 	// DMS names the replication tasks whose state rides on this instance (the tasks that feed it or read
 	// from it); nil = the dms collection skips this instance.
 	DMS *DMS `yaml:"dms"`
+	// Replicas switches on the provider replica door (task 390b P1): rds:DescribeDBInstances for the DB instance's
+	// read replicas and their status, cloudwatch:GetMetricData for each replica's ReplicaLag, rds:DescribeEvents for
+	// the instance's own failover events (P3). Off by default (its own door; the io, logs and dms reads of the same block keep theirs); it needs db_instance.
+	Replicas bool `yaml:"replicas"`
+}
+
+// GCP is an instance's door to Google Cloud (task 390b P2): the Cloud SQL for PostgreSQL instance whose replicas and
+// replication metrics are read (Cloud SQL Admin instances.get, Cloud Monitoring timeSeries.list). The credential is
+// Application Default Credentials (the attached service account through the metadata server, a workload identity
+// federation file, gcloud's application-default sign-in) or the file CredentialsFile names (a service account key is a
+// stored secret: the docs say so); nothing is stored here. The identity needs cloudsql.instances.get,
+// cloudsql.instances.list (operations.list, P3: Google's table names both) and monitoring.timeSeries.list
+// (roles/cloudsql.viewer and roles/monitoring.viewer, or a custom role with the three).
+type GCP struct {
+	Project         string `yaml:"project"`
+	Instance        string `yaml:"instance"`         // the Cloud SQL instance's name (not its connection name)
+	CredentialsFile string `yaml:"credentials_file"` // optional: else Application Default Credentials
+}
+
+// ResourceID names the Cloud SQL instance as Cloud Monitoring's database_id label does: project:instance.
+func (g GCP) ResourceID() string {
+	return strings.ToLower(g.Project + ":" + g.Instance)
+}
+
+// Azure is an instance's door to Azure Resource Manager (task 390a): the logical server whose failover groups are read.
+// The token comes from the instance's own Entra identity when its dsn signs in with one (fedauth service principal,
+// with its tenant named, or a managed identity), else from azidentity's default chain (the environment, a workload
+// identity, a managed identity, the Azure CLI's sign-in); nothing is stored here. The identity needs
+// Microsoft.Sql/servers/failoverGroups/read on the server (Reader, or a custom role with that action).
+type Azure struct {
+	Subscription  string `yaml:"subscription"`
+	ResourceGroup string `yaml:"resource_group"`
+	Server        string `yaml:"server"` // the logical server's name (not its host name)
+	// Cloud is public (the default), usgov or china: its Resource Manager host and token audience
+	Cloud string `yaml:"cloud"`
+}
+
+// ServerKey names the logical server once, whichever database's instance reads it.
+func (a Azure) ServerKey() string {
+	return strings.ToLower(a.Subscription + "/" + a.ResourceGroup + "/" + a.Server)
+}
+
+// PasswordSecret is an instance's password in AWS Secrets Manager (task B24e): the reference
+// aws-secretsmanager:<name or ARN>[#key], its region (an ARN's own wins) and the profile of the SDK's chain. Its own
+// region and profile, never the aws: block's (that block turns CloudWatch reads on).
+type PasswordSecret struct {
+	Ref     string `yaml:"ref"`
+	Region  string `yaml:"region"`
+	Profile string `yaml:"profile"`
 }
 
 // DMS is the AWS DMS part of an instance's AWS door: which replication tasks to read and the latency
@@ -391,6 +612,21 @@ func (d *DMS) LatencyWarn() int {
 type Backups struct {
 	// ArchiveWarnMinutes is the age of the last archived WAL file past which a finding is raised while WAL waits; 0 = 60.
 	ArchiveWarnMinutes int `yaml:"archive_warn_minutes"`
+	// ReadTools lets the collector run the backup tool the server names (pgbackrest info, barman list-backups and
+	// show-servers, barman-cloud-backup-list) and read its configuration on the collector's host
+	// (off by default: it runs programs as the collector's account and opens files that hold a repository's keys).
+	ReadTools bool `yaml:"read_tools"`
+}
+
+// Reads holds the opt-ins of reads that have a side effect on the monitored server; nil = all off.
+type Reads struct {
+	// AutoCloseDatabases lets mssql_backup_checks read an AUTO_CLOSE database's recovery status (task 301b: the read
+	// opens a closed AUTO_CLOSE database - off by default, the database is then 'not read').
+	AutoCloseDatabases bool `yaml:"auto_close_databases"`
+	// BackupFiles lets mssql_backup_checks ask SQL Server whether the newest backups' files are still where msdb says
+	// they were written (task 301b, Database#7: off by default - the SQL Server service account then touches every
+	// backup destination once an hour).
+	BackupFiles bool `yaml:"backup_files"`
 }
 
 // ArchiveWarn returns the archive-age threshold in minutes (60 when unset).
@@ -454,6 +690,7 @@ func Load(path string) (*Config, error) {
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
+	SetPageCloud(c.Doors) // the page's cloud blocks follow this file's doors (B24p): every Merge of the process reads them
 	return &c, nil
 }
 
@@ -464,10 +701,18 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("repository.dsn is required")
 	}
 	if c.QueryText == "" {
-		c.QueryText = "full"
+		c.QueryText = DefaultQueryText
+	}
+	if err := c.validateCQ(); err != nil {
+		return err
 	}
 	if !validQueryText(c.QueryText) {
 		return fmt.Errorf("query_text must be full, normalized or none (got %q)", c.QueryText)
+	}
+	switch c.Probe {
+	case "", "icmp", "tcp", "off":
+	default:
+		return fmt.Errorf("probe must be icmp, tcp or off (got %q)", c.Probe)
 	}
 	if len(c.UI.GroupBy) > MaxGroupLevels {
 		return fmt.Errorf("ui.group_by: at most %d levels (got %d)", MaxGroupLevels, len(c.UI.GroupBy))
@@ -497,12 +742,24 @@ func (c *Config) Validate() error {
 	if err := c.validateGMSA(); err != nil {
 		return err
 	}
+	if err := validateCounterEdits("root", c.MSSQLCounters); err != nil {
+		return err
+	}
+	if c.Export != nil {
+		if err := c.Export.validate(); err != nil {
+			return err
+		}
+	}
 	seen := map[string]bool{}
 	for i := range c.Instances {
 		in := &c.Instances[i]
 		if strings.TrimSpace(in.Name) == "" {
 			return fmt.Errorf("instances[%d]: name is required", i)
 		}
+		if err := validateCounterEdits(fmt.Sprintf("instance %q", in.Name), in.MSSQLCounters); err != nil {
+			return err
+		}
+		in.MSSQLCountersRoot = c.MSSQLCounters
 		if seen[in.Name] {
 			return fmt.Errorf("instance %q is listed twice", in.Name)
 		}
@@ -534,9 +791,9 @@ func (c *Config) Validate() error {
 			seenPG := map[string]bool{}
 			for _, a := range in.Actions {
 				switch a {
-				case "job_stop", "job_start":
+				case "job_stop", "job_start", "job_enable", "job_disable":
 				default:
-					return fmt.Errorf("instance %q: unknown action %q in actions: (a PostgreSQL instance's are job_stop and job_start; its cancel and terminate are on with its actions_dsn)", in.Name, a)
+					return fmt.Errorf("instance %q: unknown action %q in actions: (a PostgreSQL instance's are job_stop, job_start, job_enable and job_disable; its cancel and terminate are on with its actions_dsn)", in.Name, a)
 				}
 				if seenPG[a] {
 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)
@@ -546,7 +803,14 @@ func (c *Config) Validate() error {
 			if len(in.Actions) > 0 && strings.TrimSpace(in.ActionsDSNRaw) == "" {
 				return fmt.Errorf("instance %q: actions: names %s but the instance has no actions_dsn", in.Name, strings.Join(in.Actions, ", "))
 			}
+			if in.Histogram || in.IndexFragmentation || strings.TrimSpace(in.StatsDSNRaw) != "" {
+				return fmt.Errorf("instance %q: histogram, stats_dsn and index_fragmentation are SQL Server's", in.Name)
+			}
 		case EngineSQLServer:
+			// task 414: the statistics login reads table data (a histogram's keys): its password never sits in the file
+			if v := strings.TrimSpace(in.StatsDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
+				return fmt.Errorf("instance %q: stats_dsn must be env:NAME or file:/path (the statistics login's password never sits in the file)", in.Name)
+			}
 			switch in.Platform {
 			case "auto", "onprem", "rds", "azuresqldb", "azuresqlmi", "cloudsql":
 			default:
@@ -563,9 +827,9 @@ func (c *Config) Validate() error {
 			seen := map[string]bool{}
 			for _, a := range in.Actions {
 				switch a {
-				case "kill", "job_start", "job_stop", "plan_evict":
+				case "kill", "job_start", "job_stop", "job_enable", "job_disable", "plan_evict", "verify_backup":
 				default:
-					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, plan_evict)", in.Name, a)
+					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, job_enable, job_disable, plan_evict, verify_backup)", in.Name, a)
 				}
 				if seen[a] {
 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)
@@ -581,18 +845,27 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("instance %q: explain_dsn, explain_analyze and hypo_index are PostgreSQL's", in.Name)
 			case strings.TrimSpace(in.PgBouncerDSNRaw) != "":
 				return fmt.Errorf("instance %q: pgbouncer is PostgreSQL's", in.Name)
-			case in.AWS != nil:
-				return fmt.Errorf("instance %q: the aws: block is not available for engine sqlserver yet", in.Name)
 			case in.Backups != nil:
 				return fmt.Errorf("instance %q: the backups: block is PostgreSQL's", in.Name)
+			case in.Patroni != nil:
+				return fmt.Errorf("instance %q: the patroni: block is PostgreSQL's", in.Name)
 			}
 		default:
 			return fmt.Errorf("instance %q: unknown engine %q (postgres or sqlserver)", in.Name, in.Engine)
+		}
+		if err := in.Patroni.validate(); err != nil {
+			return fmt.Errorf("instance %q: %w", in.Name, err)
 		}
 		for _, s := range in.Tags {
 			if _, err := ParseTag(s); err != nil {
 				return fmt.Errorf("instance %q: %w", in.Name, err)
 			}
+		}
+		if err := validateCloud(*in); err != nil {
+			return err
+		}
+		if err := validatePasswordSecret(*in); err != nil {
+			return err
 		}
 		if v := strings.TrimSpace(in.ActionsDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
 			return fmt.Errorf("instance %q: actions_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
@@ -603,15 +876,44 @@ func (c *Config) Validate() error {
 		if v := strings.TrimSpace(in.ExplainDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
 			return fmt.Errorf("instance %q: explain_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
 		}
-		if in.AWS != nil && in.AWS.DMS != nil {
-			for _, t := range in.AWS.DMS.Tasks {
-				if strings.TrimSpace(t) == "" {
-					return fmt.Errorf("instance %q: aws.dms.tasks holds an empty name", in.Name)
-				}
+	}
+	return nil
+}
+
+// validateCloud is the aws: and azure: blocks' rules, one function for pgvigil.yaml's instances (Validate) and the
+// page's (Merge, after PageCloudShape): the azure: block is SQL Server's with its three names and a
+// known cloud, the aws: block PostgreSQL's (on SQL Server only 390b's provider replica door: replicas and db_instance),
+// the gcp: block PostgreSQL's with its project and instance (390b), DMS's task names.
+func validateCloud(in Instance) error {
+	switch {
+	case in.Engine == EnginePostgres && in.Azure != nil:
+		return fmt.Errorf("instance %q: the azure: block is SQL Server's (an Azure SQL Database's failover groups)", in.Name)
+	case in.Engine == EngineSQLServer && in.AWS != nil && (strings.TrimSpace(in.AWS.Cluster) != "" || strings.TrimSpace(in.AWS.LogGroup) != "" || in.AWS.DMS != nil):
+		return fmt.Errorf("instance %q: the aws: block on engine sqlserver takes region, profile, db_instance and replicas (cluster, log_group and dms are PostgreSQL's)", in.Name)
+	case in.Engine == EngineSQLServer && in.AWS != nil && (!in.AWS.Replicas || strings.TrimSpace(in.AWS.DBInstance) == ""):
+		// its one reader on SQL Server is the provider replica door
+		return fmt.Errorf("instance %q: the aws: block on engine sqlserver is the provider replica door: it needs replicas: true and db_instance", in.Name)
+	case in.Engine == EngineSQLServer && in.GCP != nil:
+		return fmt.Errorf("instance %q: the gcp: block is PostgreSQL's (Cloud SQL for SQL Server's replicas are not read)", in.Name)
+	case in.Azure != nil && (strings.TrimSpace(in.Azure.Subscription) == "" || strings.TrimSpace(in.Azure.ResourceGroup) == "" || strings.TrimSpace(in.Azure.Server) == ""):
+		return fmt.Errorf("instance %q: the azure: block names subscription, resource_group and server", in.Name)
+	case in.Azure != nil && !validAzureCloud(in.Azure.Cloud):
+		return fmt.Errorf("instance %q: azure.cloud is public, usgov or china, not %q", in.Name, in.Azure.Cloud)
+	}
+	if in.AWS != nil && in.AWS.Replicas && strings.TrimSpace(in.AWS.DBInstance) == "" {
+		return fmt.Errorf("instance %q: aws.replicas reads an RDS DB instance's read replicas: it needs aws.db_instance (Aurora's replicas are not this door)", in.Name)
+	}
+	if in.GCP != nil && (strings.TrimSpace(in.GCP.Project) == "" || strings.TrimSpace(in.GCP.Instance) == "") {
+		return fmt.Errorf("instance %q: the gcp: block names project and instance", in.Name)
+	}
+	if in.AWS != nil && in.AWS.DMS != nil {
+		for _, t := range in.AWS.DMS.Tasks {
+			if strings.TrimSpace(t) == "" {
+				return fmt.Errorf("instance %q: aws.dms.tasks holds an empty name", in.Name)
 			}
-			if in.AWS.DMS.LatencyWarnSecs < 0 {
-				return fmt.Errorf("instance %q: aws.dms.latency_warn_secs must be 0 or more", in.Name)
-			}
+		}
+		if in.AWS.DMS.LatencyWarnSecs < 0 {
+			return fmt.Errorf("instance %q: aws.dms.latency_warn_secs must be 0 or more", in.Name)
 		}
 	}
 	return nil
@@ -642,12 +944,24 @@ func Resolve(v string) string {
 	}
 }
 
+// renamedCollections: a collection whose read moved to another (task 401: the counters of mssql_cpu and mssql_activity
+// are mssql_counters' and mssql_counters_db's): a site that disabled the old one keeps the read off.
+var renamedCollections = map[string]string{"mssql_cpu": "mssql_counters", "mssql_activity": "mssql_counters_db"}
+
+// followingCollections: a collection that reads the same source as another and is off whenever that one is (the
+// counter catalogue reads sys.dm_os_performance_counters like mssql_counters: a site that switched the counters off,
+// or mssql_cpu before them, keeps that DMV unread - F7).
+var followingCollections = map[string]string{"mssql_counter_catalog": "mssql_counters"}
+
 // Interval returns the effective interval of a collection for an instance:
 // the instance's override, then the global override, then the page's default (PageDefaults), then the
 // collection's default; zero = disabled.
 func (c *Config) Interval(in Instance, collection string, def time.Duration) time.Duration {
 	for _, d := range in.Disabled {
-		if d == collection {
+		if d == collection || renamedCollections[d] == collection {
+			return 0
+		}
+		if f := followingCollections[collection]; f != "" && (d == f || renamedCollections[d] == f) {
 			return 0
 		}
 	}
@@ -661,4 +975,120 @@ func (c *Config) Interval(in Instance, collection string, def time.Duration) tim
 		return v.Duration
 	}
 	return def
+}
+
+// validate checks a patroni: block: a url of http or https with a host and nothing but a port after it (a /cluster or
+// /patroni path is taken), cert_file and key_file together, the files only with a url, https for the TLS files.
+func (p *Patroni) validate() error {
+	if p == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(p.URL)
+	if raw == "" {
+		if p.CAFile != "" || p.CertFile != "" || p.KeyFile != "" {
+			return errors.New("patroni: ca_file, cert_file and key_file need a url")
+		}
+		return errors.New("patroni: the block needs a url (http(s)://host:port)")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("patroni.url: %v", err)
+	}
+	switch {
+	case u.Scheme != "http" && u.Scheme != "https":
+		return fmt.Errorf("patroni.url %q: the scheme must be http or https", raw)
+	case u.Hostname() == "":
+		return fmt.Errorf("patroni.url %q names no host", raw)
+	case u.User != nil || u.RawQuery != "" || u.Fragment != "":
+		return fmt.Errorf("patroni.url %q: a scheme, a host and a port only", raw)
+	}
+	switch strings.TrimRight(u.Path, "/") {
+	case "", "/cluster", "/patroni":
+	default:
+		return fmt.Errorf("patroni.url %q: a scheme, a host and a port only", raw)
+	}
+	if (p.CertFile == "") != (p.KeyFile == "") {
+		return errors.New("patroni: cert_file and key_file go together")
+	}
+	if u.Scheme == "http" && (p.CAFile != "" || p.CertFile != "") {
+		return fmt.Errorf("patroni.url %q is http: ca_file, cert_file and key_file are for https", raw)
+	}
+	return nil
+}
+
+// validAzureCloud: the clouds the Azure door knows (internal/discover's map: public, usgov, china).
+func validAzureCloud(c string) bool {
+	switch strings.ToLower(strings.TrimSpace(c)) {
+	case "", "public", "usgov", "china":
+		return true
+	}
+	return false
+}
+
+// validatePasswordSecret: the reference as secrets.ParseRef reads it (its region, an ARN's form); a dsn that carries a
+// password, or an Entra / Windows sign-in (fedauth=, authenticator=, integrated security / trusted_connection),
+// refused beside it - the dsn is read for the check as the collector reads it (env:, file:). A DOMAIN\user login is
+// refused at connect, where the string is parsed (a backslash here may be a named instance's host\instance).
+func validatePasswordSecret(in Instance) error {
+	ps := in.PasswordSecret
+	if ps == nil {
+		return nil
+	}
+	if _, err := secrets.ParseRef(ps.Ref, ps.Region, ps.Profile); err != nil {
+		var re *secrets.ReadError
+		if errors.As(err, &re) {
+			return fmt.Errorf("instance %q: password_secret.ref %s: %s", in.Name, re.Secret, re.Message)
+		}
+		return fmt.Errorf("instance %q: password_secret: %w", in.Name, err)
+	}
+	dsn := in.DSN()
+	if inlinePassword(dsn) || keywordPassword(dsn) {
+		return fmt.Errorf("instance %q: password_secret and a dsn that carries a password: the password comes from one place", in.Name)
+	}
+	l := strings.ToLower(dsn)
+	if strings.Contains(l, "fedauth=") || strings.Contains(l, "authenticator=") {
+		return fmt.Errorf("instance %q: password_secret is a SQL or PostgreSQL login's password: not with fedauth= or authenticator= in the dsn", in.Name)
+	}
+	if in.Engine == EngineSQLServer {
+		for _, k := range []string{"integrated security", "integratedsecurity", "trusted_connection", "trusted connection"} {
+			if strings.Contains(l, k) {
+				return fmt.Errorf("instance %q: password_secret is a SQL login's password: not with %s in the dsn (a Windows sign-in)", in.Name, k)
+			}
+		}
+	}
+	return nil
+}
+
+// keywordPassword: a libpq keyword/value string (host=h user=u password=p, spaces around '=' too) that sets a password
+func keywordPassword(v string) bool {
+	if strings.Contains(v, "://") {
+		return false // a URL: inlinePassword reads it (an ADO string's ';' segments too)
+	}
+	m, err := secrets.PGSettings(v)
+	if err != nil {
+		// not libpq's form: the word itself, as before
+		for _, f := range strings.Fields(v) {
+			if k, _, ok := strings.Cut(f, "="); ok && strings.EqualFold(strings.TrimSpace(k), "password") {
+				return true
+			}
+		}
+		return false
+	}
+	_, has := m["password"]
+	return has
+}
+
+// SecretRef is the instance's password_secret as the reader takes it (nil = none). Load's Validate refused a block
+// that does not parse, so an error here is a configuration built past Validate: it rides on the reference
+// (secrets.Ref.Invalid) and every read refuses it - never a connect without the password.
+func (i Instance) SecretRef() *secrets.Ref {
+	ps := i.PasswordSecret
+	if ps == nil {
+		return nil
+	}
+	r, err := secrets.ParseRef(ps.Ref, ps.Region, ps.Profile)
+	if err != nil {
+		return &secrets.Ref{ID: strings.TrimSpace(ps.Ref), Invalid: err.Error()}
+	}
+	return &r
 }

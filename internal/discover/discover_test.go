@@ -200,7 +200,7 @@ func TestAWSProposesEachInstanceByItsOwnEndpoint(t *testing.T) {
 		keys = append(keys, strings.TrimPrefix(p.Server, pre)+"|"+p.Host+"|"+strings.Join(p.Tags, ","))
 		byKey[strings.TrimPrefix(p.Server, pre)] = p
 	}
-	// the platform the approve gives the instance (the join's review 3e): Aurora's engines aurora, RDS's rds (a Multi-AZ
+	// the platform the approve gives the instance: Aurora's engines aurora, RDS's rds (a Multi-AZ
 	// DB cluster's members too, and SQL Server)
 	for id, want := range map[string]string{"pg-a-1": "aurora", "pg-a-2": "aurora", "maz-1": "rds", "sql1": "rds"} {
 		if got := byKey[id].Platform; got != want {
@@ -524,7 +524,7 @@ func TestAzureReadsResourceGraphPagesAndMapsTypes(t *testing.T) {
 		t.Fatalf("a database in no pool: %s", got)
 	}
 	// a pool name the approve's tag rule would refuse (a comma) writes no tag: the read names the pool by the
-	// database's own answer (the wire review's finding 8)
+	// database's own answer
 	if p, _ := azureProposal(azureRow{ID: "/subscriptions/" + subA + "/resourceGroups/rg1/providers/Microsoft.Sql/servers/s2/databases/d2", Name: "d2",
 		Type: "microsoft.sql/servers/databases", Location: "westus3", SubscriptionID: subA, FQDN: "s2.database.windows.net",
 		ElasticPoolID: "/subscriptions/" + subA + "/resourceGroups/rg1/providers/Microsoft.Sql/servers/s2/elasticPools/a,b"}); strings.Contains(strings.Join(p.Tags, " "), "pool:") {
@@ -537,7 +537,7 @@ func TestAzureReadsResourceGraphPagesAndMapsTypes(t *testing.T) {
 	if o2 := byKey[pre+"sql:sqlsrv/otherdb"]; o2.EntraOnly || !o2.AutoPause || !strings.Contains(o2.Serverless, "pauses after 60 min") {
 		t.Fatalf("a serverless database: %+v", o2)
 	}
-	// the platform the approve gives the instance (the join's review 3e)
+	// the platform the approve gives the instance
 	for k, want := range map[string]string{"sql:sqlsrv/appdb": "azuresqldb", "sql:sqlsrv/otherdb": "azuresqldb", "mi:mi1": "azuresqlmi", "pg:pgf": "azure"} {
 		if got := byKey[pre+k].Platform; got != want {
 			t.Errorf("%s: platform %q, want %q", k, got, want)
@@ -732,7 +732,7 @@ func TestGCPSignsAKeyListsBothAPIsAndNotesWhatItCannotSee(t *testing.T) {
 	if got := strings.Join(rd.Unseen, " "); got != "gcp:p1:alloydb: gcp:p3:alloydb: gcp:p3:sql: gcp:p4:alloydb: gcp:p5:alloydb: gcp:p5:sql: gcp:p7:alloydb: gcp:p7:sql:" {
 		t.Fatalf("unseen %q", got)
 	}
-	// the platform the approve gives the instance (the join's review 3e): Cloud SQL's both engines cloudsql, AlloyDB alloydb
+	// the platform the approve gives the instance: Cloud SQL's both engines cloudsql, AlloyDB alloydb
 	for k, want := range map[string]string{"gcp:p1:sql:ms22": "cloudsql", "gcp:p1:sql:pg16": "cloudsql", "gcp:p1:alloydb:us-central1/c1/i1": "alloydb"} {
 		if got := byKey[k].Platform; got != want {
 			t.Errorf("%s: platform %q, want %q", k, got, want)
@@ -929,7 +929,7 @@ func (f signalSources) DescribeSourceRegions(ctx context.Context, in *rds.Descri
 	return f.fakeRDS.DescribeSourceRegions(ctx, in, opts...)
 }
 
-// TestAWSRegionListFold (task 205's review, part a): the account's list is asked beside RDS's replication list, within
+// TestAWSRegionListFold: the account's list is asked beside RDS's replication list, within
 // its own shorter wait; its answer comes before Skip; the region it (and STS) is sent to is never a skipped one; a read
 // that reads no region keeps Asked (a lone silent region starts D5) and says the regions it skipped; RDS's list
 // refused with the account's list answered still sweeps.
@@ -1022,7 +1022,7 @@ func TestAWSRegionListFold(t *testing.T) {
 		t.Fatalf("a skipped region beside a refused one: %v asked %v", err, rd.Asked)
 	}
 	// the list answered and a region a policy refuses (AccessDenied): noted, not kept - only a token error in an
-	// enabled region is kept (the review's part c)
+	// enabled region is kept
 	policy := func(_ context.Context, r string) (rdsAPI, error) {
 		count(r)
 		if r == "eu-west-1" {

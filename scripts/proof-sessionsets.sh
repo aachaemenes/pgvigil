@@ -9,7 +9,7 @@
 #                      database alone (ALTER DATABASE), never for the server.
 #
 # Expected (written before the first run):
-#  [58 review fold, expected before the rerun: a first read of an instance counts nothing (its pg_stat_statements may
+#  [expected before the rerun: a first read of an instance counts nothing (its pg_stat_statements may
 #   hold months of history), so A starts with a baseline collect before the role's SETs: then the role's entries are new
 #   since an ok read and count. A's figures stay as below. New section E, before C.]
 #  A. a baseline collect; the role runs SET enable_hashjoin = off three times and SET search_path = public once (one
@@ -28,27 +28,27 @@
 #     (25 -> 29); the count is now the proof's role's alone.]
 #  E. the monitor's own role has no row for the SETs pgvigil itself runs (its session setup default_transaction_read_only,
 #     statement_timeout, lock_timeout, application_name; the Explain's SET LOCAL plan_cache_mode = force_generic_plan,
-#     which the monitor's login runs here inside a rolled-back transaction [the fold review's blocker]: 0 rows), and
-#     [join review fold] its other SETs are kept: the monitor's login runs SET enable_hashjoin = off once, and after
+#     which the monitor's login runs here inside a rolled-back transaction: 0 rows), and
+#     its other SETs are kept: the monitor's login runs SET enable_hashjoin = off once, and after
 #     the collect the monitor's role has exactly one enable_hashjoin row (a login the application shares with the
 #     monitor still shows the application's SETs);
 #     the role runs SET enable_hashjoin TO DEFAULT, collect: a row command RESET for enable_hashjoin, and the role's
 #     findings are still exactly enable_hashjoin (the SET of A and B, not the RESET); a late import_session_sets
 #     (snapshot one hour before the last read, the entry at 99 calls) adds no sample of the role (count unchanged) and
 #     leaves calls at 5.
-#  F. [join review fold, expected before the run] the value against the server's (the PG 16 shape, where the text keeps
+#  F. [expected before the run] the value against the server's (the PG 16 shape, where the text keeps
 #     the value; the sandbox is 18, so the rows come in through import_session_sets as a current read): seven rows of
 #     the role, calls 7 each, queryids 9001..9007: enable_hashjoin = on, enable_hashjoin = off, enable_hashjoin = true,
 #     jit = off, jit = on, enable_partitionwise_join = on, enable_partitionwise_join = off, with
 #     instance_state.non_default_settings holding jit = off. session_sets_window fires: 9001 false (the server's own
 #     value), 9002 true, 9003 false (true is on), 9004 false (the server's jit is off), 9005 true, 9006 true (its
-#     default is off: the fold review), 9007 false; sessionsets_findings of the role: enable_hashjoin (A's, hidden
+#     default is off), 9007 false; sessionsets_findings of the role: enable_hashjoin (A's, hidden
 #     value), enable_hashjoin (9002), enable_partitionwise_join (9006) and jit (9005), never a row at the server's value.
 #  C. ALTER DATABASE <monitored> SET pg_stat_statements.track_utility = off, collect: state 'not available', the reason
 #     starts 'pg_stat_statements.track_utility is off', track_utility 'off'; the stored rows stay (10 for the role: A's
 #     two, E's RESET row, F's seven); sessionsets_findings for the instance: 0 rows.
 #  D. track_utility back on and pg_stat_statements dropped from the monitored database, collect: state 'not available',
-#     the reason 'pg_stat_statements is not installed in the connected database'; findings 0.
+#     the reason 'pg_stat_statements is not installed in the connected database'; sessionsets_findings: 0 rows.
 set -euo pipefail
 : "${PGVIGIL_REPO_DSN:?}"
 BIN=${PGVIGIL_BIN:-bin/pgvigil}

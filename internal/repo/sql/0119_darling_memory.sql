@@ -71,7 +71,7 @@
 -- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 -- SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --
--- For the join (this file sorts after 0110 and before 0190): the arm in pgvigil.findings
+-- For the release migration 0190 (this file sorts after 0110 and before 0190): the arm in pgvigil.findings
 --     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_memory', at
 --       FROM pgvigil.mssql_memory_findings
 --   and 'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query' on purge()'s

@@ -198,7 +198,7 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 		set("fresh", "full", false, 202, -2*h, nil), file(202, 1, 0, "disk", `/var/opt/mssql/data/fresh.bak`), dbfile(202, 1, `/var/opt/mssql/data/fresh.mdf`),
 		// a name msdb remembers and the server does not list (F2 B)
 		set("ghost", "full", false, 301, -h, nil), file(301, 1, 0, "disk", `D:\data\ghost.bak`),
-		// Windows (F3, the review's 1): at a Cluster Shared Volume's root beside the data = yes; in the data's own directory, d:\
+		// Windows (F3): at a Cluster Shared Volume's root beside the data = yes; in the data's own directory, d:\
 		// against D:\ without case = yes; D:\Backup\ (no database file there: it may be a folder mounted for the backups
 		// alone, which mssql_volumes never lists) = not judged; to D:\Backup\ with the log file on the mounted folder
 		// D:\Logs\ = no (two volumes either way)
@@ -207,7 +207,7 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 		set("win", "diff", false, 403, -2*h, nil), file(403, 1, 0, "disk", `d:\data\win.dif`), dbfile(403, 1, `D:\data\win.mdf`),
 		set("wm", "log", false, 601, -h, nil), file(601, 1, 0, "disk", `D:\Backup\wm.trn`), dbfile(601, 1, `D:\Logs\wm.ldf`),
 		// Linux: in the database's own directory = yes; a sibling directory on the same filesystem = not judged; a directory
-		// below the database's (it may be a mounted folder) = not judged (F3, the review's 1)
+		// below the database's (it may be a mounted folder) = not judged (F3)
 		set("lnx", "full", false, 501, -3*h, nil), file(501, 1, 0, "disk", `/var/opt/mssql/data/lnx.bak`), dbfile(501, 1, `/var/opt/mssql/data/lnx.mdf`),
 		set("lnx", "log", false, 502, -h, nil), file(502, 1, 0, "disk", `/var/opt/mssql/backup/lnx.trn`), dbfile(502, 1, `/var/opt/mssql/data/lnx.ldf`),
 		set("lnx", "diff", false, 503, -2*h, nil), file(503, 1, 0, "disk", `/var/opt/mssql/data/bk/lnx.dif`), dbfile(503, 1, `/var/opt/mssql/data/lnx.mdf`),
@@ -253,7 +253,7 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 	if got := one(`SELECT full_to || ' | ' || diff_to || ' | ' || log_to FROM pgvigil.mssql_backup_loc_db WHERE instance_id = $1 AND database_name = 'app'`, a); got != `D:\temp\ | \\nas01\sql\app\ | \\nas01\sql\app\` {
 		t.Errorf("app's to cells: %s", got)
 	}
-	// the 'full to' cell's marks come from the stored set shown there, never from mssql_backup_state (F2, the review's 4)
+	// the 'full to' cell's marks come from the stored set shown there, never from mssql_backup_state (F2)
 	if got := one(`SELECT full_to_copy_only::text || '/' || full_to_snapshot::text FROM pgvigil.mssql_backup_loc_db WHERE instance_id = $1 AND database_name = 'app'`, a); got != "true/false" {
 		t.Errorf("app's full to marks: %s, want true/false (the copy-only full is shown)", got)
 	}
@@ -337,7 +337,7 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 	}
 
 	// ---- a database a read did not list (read 2 dropped lnx's sets) is listed again: a cursor read cannot see its sets
-	// older than the cursor, so the cursor goes back to 0 and the next read is one whole pass (the review's 3)
+	// older than the cursor, so the cursor goes back to 0 and the next read is one whole pass
 	cur := func(id int) string {
 		return one(`SELECT coalesce(last_set_id::text, '-') || '/' || coalesce(mark::text, '-') || ' ' || array_to_string(unlisted, ',') FROM pgvigil.mssql_backup_files_cursor WHERE instance_id = $1`, id)
 	}

@@ -14,7 +14,7 @@ import (
 // TestServerCopyKeepsSideMaps: report mail renders a page through a copy of the server (renderCopy: no Host list, no
 // TLS, on loopback), and six of the server's settings live in maps keyed by *Server, set by serve after Open - the door
 // set and its watcher's wake channel, the PostgreSQL job allow lists, the Plan page's configuration, the SQL Server
-// door and Admin > Instances' settings. Each one read through the copy is the server's own (uidoor-u7: a mailed custom
+// door and Admin > Instances' settings. Each one read through the copy is the server's own (a test found it: a mailed custom
 // report on a page instance was refused 'in neither pgvigil.yaml nor Admin > Instances', door ”, generation 0 - the
 // copy found no door set and fell back to pgvigil.yaml's). The rule: a map keyed by *Server keys by s.self().
 func TestServerCopyKeepsSideMaps(t *testing.T) {

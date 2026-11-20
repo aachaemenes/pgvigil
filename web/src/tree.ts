@@ -25,7 +25,6 @@ import { dbadashFolders } from './dbadash';
 import { driveNodes } from './treemenu';
 
 // the no-tag bucket's key: a sentinel no written tag can be, so a written plain tag 'untagged' is never merged into it
-// (the TAGTREE review A #10)
 const UNTAGGED = '\u0000untagged';
 
 function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
@@ -476,7 +475,7 @@ function draw() {
     // the folder holds no instance of), else lands on its Summary
     const carried = rootGroups.some(g => tagGroup(g).includes(rootTab)) || rootGroups[0].tabs.includes(rootTab);
     // the name is the page shown (on: a click only opens or closes the folder) only where the folder carries that page;
-    // elsewhere a click goes to the folder's Summary and the folder stays open (the TAGTREE review A #6)
+    // elsewhere a click goes to the folder's Summary and the folder stays open
     const nameOn = tagOn && carried;
     const label = fo.tag
       ? nameOpens(el('a', { class: 'folder-name' + (nameOn ? ' on' : ''), href: href(ctx, { tab: carried ? rootTab : 'summary', instance: undefined, tag: fo.tag }) }, text), 'f:' + fo.path, !shut, nameOn, nameFlip)
@@ -511,8 +510,8 @@ function draw() {
   // the root's folders link the fleet (DBA Dash's root); a tag no top-level folder carries (a bookmark, a nested
   // folder's tag, a link kept by a page) stays on them, so the tree keeps a way to that scope's pages (the pass's #9)
   const rootScope = !ctx.instance && ctx.tag && !tops.some(t => t.tag === ctx.tag) ? ctx.tag : undefined;
-  // under such a kept tag the root's folders hold that tag's engines' pages only, as the strip does (main.ts; the TAGTREE
-  // review A #8): a tag no instance carries has no engine, and no page of one engine is offered for it
+  // under such a kept tag the root's folders hold that tag's engines' pages only, as the strip does (main.ts): a tag no
+  // instance carries has no engine, and no page of one engine is offered for it
   const rootEngines = rootScope ? new Set(f.instances.filter(r => inTagScope(rootScope, r)).map(r => isMssql(r.engine) ? 'sqlserver' : 'postgres')) : null;
   const rootPages = (g: TabGroup) => rootEngines ? g.tabs.filter(t => !pageEngine[t] || rootEngines.has(pageEngine[t])) : g.tabs;
   const out: HTMLElement[] = [all, ...(filter ? [] : scopeFolders(ctx, rootScope, g => `r/${g}`, rootPages))];

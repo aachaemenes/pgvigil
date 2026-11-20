@@ -10,11 +10,11 @@
 --      cache rule reads (ServerlessDatabaseCapacity, ACUUtilization, BufferCacheHitRatio, ReadIOPS, CPUUtilization),
 --      one row per metric and datapoint as cloud_io_sample keeps them; serverless_scaling, the instance's cluster and
 --      its Serverless v2 range (DescribeDBClusters, read once an hour), one current row per instance.
---   3. pi_findings: "cache starved by the ACU floor" in the findings view's columns (the join puts it under
---      pgvigil.findings).
+--   3. pi_findings: "cache starved by the ACU floor" in the findings view's columns (the release migration puts
+--      it under pgvigil.findings).
 -- Retention: pi_load and serverless_sample are monthly partitions, dropped whole by pgvigil.purge with the statements'
--- retention (their names join purge's list in the wave's join migration); pi_sql rows not seen within the retention
--- are deleted there too (one DELETE line, the join's). pi_state and serverless_scaling hold one row per instance.
+-- retention (their names join purge's list in the release migration); pi_sql rows not seen within the retention
+-- are deleted there too (one DELETE line of that migration's). pi_state and serverless_scaling hold one row per instance.
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 1. Performance Insights

@@ -9,7 +9,7 @@
 --      autovacuum off, near a forced freeze; the per-database counts; and the wraparound view per database
 --      (age(datfrozenxid) and mxid_age(datminmxid) against the freeze max ages)
 --   3. the checks (the overview's "vacuum" group, the Summary column Vacuum) and their findings rows
---   4. retention (the names the join's purge takes)
+--   4. retention (the names the release migration's purge takes)
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 1. the minute collection
@@ -482,7 +482,7 @@ SELECT r.instance_id, CASE WHEN r.is_wraparound THEN 'critical' ELSE 'warning' E
   FROM pgvigil.vacuum_running r
  WHERE r.kind IN ('vacuum', 'analyze') AND r.wait_event_type = 'Lock';
 
--- the same rows in the findings shape (the join UNION ALLs this view into pgvigil.findings)
+-- the same rows in the findings shape (the release migration UNION ALLs this view into pgvigil.findings)
 CREATE OR REPLACE VIEW pgvigil.vacuum_findings AS
 SELECT c.instance_id, c.severity, c.check_name AS setting, c.object AS value, true AS is_set,
        CASE c.check_name

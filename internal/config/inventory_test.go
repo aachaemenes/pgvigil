@@ -27,7 +27,9 @@ func TestMergeKeepsFileFirstAndSkipsBadPageRows(t *testing.T) {
 		{Name: "inline", Engine: EnginePostgres, DSNRef: "host=x password=y"},            // a connection string, never run
 		{Name: "eng", Engine: "oracle", DSNRef: "file:/x/eng.dsn"},
 	}
-	all, skipped := Merge(file, page, "normalized")
+	// the file's root mssql_counters lines reach a page instance too (the runner reads them from it)
+	root := CounterEdits{Remove: []CounterRef{{Object: "Deprecated Features", Counter: "Usage", Instance: "sp_dboption"}}}
+	all, skipped := Merge(file, page, "normalized", root)
 	var names []string
 	for _, in := range all {
 		names = append(names, in.Name)
@@ -40,6 +42,9 @@ func TestMergeKeepsFileFirstAndSkipsBadPageRows(t *testing.T) {
 	}
 	if all[1].Platform != "auto" || all[1].QueryText != "normalized" || all[1].DSNRaw != "file:/etc/pgvigil/instances/sql1.dsn" {
 		t.Fatalf("sql1 = %+v", all[1])
+	}
+	if len(all[1].MSSQLCountersRoot.Remove) != 1 || all[1].MSSQLCountersRoot.Remove[0] != root.Remove[0] {
+		t.Fatalf("sql1's root counter lines = %+v, want the file's root %+v", all[1].MSSQLCountersRoot, root)
 	}
 	if len(skipped) != 4 {
 		t.Fatalf("skipped %v, want 4 (pg1, bad ref, inline, eng)", skipped)
@@ -95,7 +100,7 @@ func TestWatchInventoryAppliesOnlyWhenTheGenerationMoves(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
+		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", CounterEdits{}, 20*time.Millisecond, func(all []Instance) {
 			var n []string
 			for _, in := range all {
 				n = append(n, in.Name)
@@ -158,7 +163,7 @@ func TestBuildDSN(t *testing.T) {
 		// an IPv6 host goes in brackets: unbracketed, a URL reads 'fe80::1' as host 'fe80:' and port 1
 		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "fe80::1"}, "sqlserver://[fe80::1]?encrypt=true", false},
 		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "2001:db8::5", Port: 14330}, "sqlserver://[2001:db8::5]:14330?encrypt=true", false},
-		// review 206h: only an IPv6 address is bracketed; a host typed with its port stays as typed (it worked before)
+		// only an IPv6 address is bracketed; a host typed with its port stays as typed (it worked before)
 		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "sql01:1433"}, "sqlserver://sql01:1433?encrypt=true", false},
 		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "[fe80::1]:1433"}, "sqlserver://[fe80::1]:1433?encrypt=true", false},
 		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "[fe80::1]", Port: 1433}, "sqlserver://[fe80::1]:1433?encrypt=true", false},
@@ -325,7 +330,7 @@ func TestListsRefuseCredentialsWithoutEchoingThem(t *testing.T) {
 		t.Fatalf("a CSV field with '=': %v", err)
 	}
 	// a .pgpass line (the collector account's own, the pgpass login mode's file) is no server list: refused by its
-	// line number, the password never echoed (the join review of 204, finding 4)
+	// line number, the password never echoed
 	for _, in := range []string{"pg1\ndb1:5432:*:pgvigil:S3cret\n", "pg1\n*:*:*:pgvigil:S3cret\n", "host,port\npg1,1\ndb1:5432:app:u:S3cret,2\n",
 		"pg1\n\\:\\:1:5432:*:pgvigil:S3cret\n"} {
 		_, err := ParseServerList(strings.NewReader(in), EnginePostgres)
@@ -427,7 +432,7 @@ func TestBuildDSNRefusesAPasswordInTheOptions(t *testing.T) {
 }
 
 // A failed first read runs the file's instances once, not again on every failed tick, and the read's recovery
-// hands the merged list (the join review of 204's fold, finding 7 of its review).
+// hands the merged list.
 func TestWatchInventoryFailedFirstReadAppliesTheFileOnce(t *testing.T) {
 	src := &fakeInv{gen: 1, fail: true, list: []PageInstance{{Name: "p", Engine: EnginePostgres, DSNRef: "file:/p"}}}
 	var mu sync.Mutex
@@ -435,7 +440,7 @@ func TestWatchInventoryFailedFirstReadAppliesTheFileOnce(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
+		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", CounterEdits{}, 20*time.Millisecond, func(all []Instance) {
 			var n []string
 			for _, in := range all {
 				n = append(n, in.Name)
@@ -481,7 +486,7 @@ func TestWatchInventoryRawFailedFirstReadIsUnread(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	gens := make(chan int64, 16)
-	go WatchInventoryRaw(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, nil, "full", 20*time.Millisecond, nil, false,
+	go WatchInventoryRaw(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, nil, "full", CounterEdits{}, 20*time.Millisecond, nil, false,
 		func(_ []Instance, _ []PageInstance, gen int64) { gens <- gen })
 	select {
 	case g := <-gens:
@@ -518,7 +523,7 @@ func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
 	}
 	seen := make(chan got, 16)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	go WatchInventoryRaw(ctx, log, src, nil, nil, "full", time.Hour, wake, false, func(all []Instance, page []PageInstance, gen int64) {
+	go WatchInventoryRaw(ctx, log, src, nil, nil, "full", CounterEdits{}, time.Hour, wake, false, func(all []Instance, page []PageInstance, gen int64) {
 		seen <- got{len(all), page, gen}
 	})
 	first := <-seen
@@ -541,7 +546,7 @@ func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 	n := make(chan int64, 16)
-	go WatchInventoryRaw(ctx2, log, src, nil, nil, "full", 20*time.Millisecond, nil, true, func(_ []Instance, _ []PageInstance, gen int64) { n <- gen })
+	go WatchInventoryRaw(ctx2, log, src, nil, nil, "full", CounterEdits{}, 20*time.Millisecond, nil, true, func(_ []Instance, _ []PageInstance, gen int64) { n <- gen })
 	for i := 0; i < 3; i++ {
 		select {
 		case g := <-n:
@@ -551,5 +556,44 @@ func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("reapply did not apply again on a tick")
 		}
+	}
+}
+
+// TestMergePageSettings (ST5a): Merge reads a page instance's settings (admin_instances.settings, 0263) and applies them;
+// a value that does not parse (a hand edit: the page refuses it on write) leaves the instance out with its reason.
+func TestMergePageSettings(t *testing.T) {
+	page := func(name, raw string) PageInstance {
+		return PageInstance{Name: name, Engine: EnginePostgres, DSNRef: "file:/etc/pgvigil/" + name, SettingsRaw: []byte(raw)}
+	}
+	all, skipped := Merge(nil, []PageInstance{
+		page("p1", `{"schedules": {"statements": 60, "activity": 0}, "query_text": "none"}`),
+		page("p2", ``),
+		page("p3", `{"schedules": {"statements": "soon"}}`),
+	}, "full", CounterEdits{})
+	if len(all) != 2 || len(skipped) != 1 || !strings.HasPrefix(skipped[0], "p3: its settings in Admin > Instances do not parse: ") {
+		t.Fatalf("merged %d, skipped %v (want p1 and p2; p3 left out with its reason)", len(all), skipped)
+	}
+	if all[0].QueryText != "none" || all[0].Schedules["statements"].Duration != time.Minute || strings.Join(all[0].Disabled, ",") != "activity" {
+		t.Errorf("p1: %+v", all[0])
+	}
+	if all[1].QueryText != "full" || len(all[1].Schedules) != 0 || len(all[1].Disabled) != 0 {
+		t.Errorf("p2: %+v", all[1])
+	}
+}
+
+// TestFingerprintThresholds (ST5b's design pass F1): a thresholds-only change of a page instance moves its fingerprint,
+// so its loops restart and the collector stores the new set; an equal set in another order does not.
+func TestFingerprintThresholds(t *testing.T) {
+	base := Instance{Name: "m1", Engine: EngineSQLServer}
+	one, two := base, base
+	pa, _ := ParsePageSettings([]byte(`{"thresholds": {"redo_queue_kb": 1, "full_backup_hours": 2}}`))
+	pb, _ := ParsePageSettings([]byte(`{"thresholds": {"full_backup_hours": 2, "redo_queue_kb": 1}}`))
+	pa.apply(&one)
+	pb.apply(&two)
+	if Fingerprint(one) == Fingerprint(base) {
+		t.Error("a thresholds-only change did not move the fingerprint")
+	}
+	if Fingerprint(one) != Fingerprint(two) {
+		t.Error("an equal set of thresholds in another order moved the fingerprint")
 	}
 }

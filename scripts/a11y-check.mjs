@@ -25,7 +25,7 @@ await new Promise(r => ws.addEventListener('open', r));
 let id = 0; const wait = new Map();
 ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
 const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
-// the browser's end said in words (box runs of 2026-11-13 lost the socket after 364 and 518 pages with no reason printed):
+// the browser's end said in words (lab runs lost the socket after 364 and 518 pages with no reason printed):
 // the socket's close and a crash of the page's renderer, each with the pages walked so far
 let walked = 0;
 ws.addEventListener('close', e => { console.log(`the browser's socket closed (code ${e.code}) after ${walked} page(s)`); process.exitCode = 3; });

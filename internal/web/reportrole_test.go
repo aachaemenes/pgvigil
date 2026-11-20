@@ -17,8 +17,7 @@ import (
 )
 
 // testPassword: a throwaway login's password from crypto/rand, unrelated to its name (the names are in pg_roles for
-// any login of the server to read; a run killed before its deferred drops leaves the logins behind) - the code review
-// of REPORT ROLE, part B
+// any login of the server to read; a run killed before its deferred drops leaves the logins behind)
 func testPassword(t *testing.T) string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -67,6 +66,16 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'pgvigil'`).Scan(&owner); err != nil {
 		t.Fatal(err)
 	}
+	// pg_read_all_data is PostgreSQL 14's (the product reads it through to_regrole: a 13 server has none to refuse); the
+	// login 'rad' and its cases run from 14 only, and on 13 the run says so by version (PG13-REPORTROLE)
+	var vnum int
+	if err := pool.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&vnum); err != nil {
+		t.Fatal(err)
+	}
+	hasReadAll := vnum >= 140000
+	if !hasReadAll {
+		t.Logf("PostgreSQL %d: no pg_read_all_data role (14+) - the login rad and its two pgRefusal cases are not run", vnum)
+	}
 	name := func(k string) string { return fmt.Sprintf("pgvrr_%s_%d", k, sfx) }
 	other := fmt.Sprintf("pgvrr_db_%d", sfx)
 	logins := []struct{ key, make string }{
@@ -79,7 +88,7 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"mon", "IN ROLE pgvigil_reader, pg_monitor"},
 		{"none", ""},
 		{"rad", "IN ROLE pg_read_all_data"},
-		{"alr", "IN ROLE pgvigil_alerter"}, // the alerts login: a reader too, and alert_contact_routes() answers it (j14 review B1)
+		{"alr", "IN ROLE pgvigil_alerter"}, // the alerts login: a reader too, and alert_contact_routes() answers it
 	}
 	defer func() {
 		bg := context.Background()
@@ -93,6 +102,9 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		}
 	}()
 	for _, l := range logins {
+		if l.key == "rad" && !hasReadAll {
+			continue
+		}
 		if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD '%s' %s`, name(l.key), pw, l.make)); err != nil {
 			t.Fatal(err)
 		}
@@ -155,8 +167,9 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		case c.want != "" && !strings.Contains(got, "IN ROLE pgvigil_reader alone") && !strings.Contains(got, "GRANT pgvigil_reader") && !strings.Contains(got, "another server"):
 			t.Errorf("%s: the words do not say what to do: %q", c.key, got)
 		}
-		// noinh is a member of the owner, so of pg_database_owner too (the owner owns the database): the words name
-		// every role it is a member of, in name order (reportrole-g2: 'is a member of pg_database_owner, postgres')
+		// noinh is a member of the owner (and from PostgreSQL 14 of pg_database_owner too: the owner owns the database):
+		// the words name every role it is a member of, in name order (reportrole-g2: 'is a member of pg_database_owner,
+		// postgres' on 14+; the owner alone on 13)
 		if c.key == "noinh" && !memberNamed(got, owner) {
 			t.Errorf("noinh: %q, want %s among the roles it is a member of", got, owner)
 		}
@@ -174,8 +187,8 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 	// pgRefusal (every PostgreSQL run of user SQL: an instance's custom report, a community tool, EXPLAIN, the advisor's
 	// hypothetical index) where the run's database is a repository: a NOINHERIT member of the schema's owner (CREATE
 	// answers false for it, SET ROLE reaches the owner) and pg_read_all_data are refused in words; the reader alone runs;
-	// on a database without a pgvigil schema pg_read_all_data runs (a monitoring login's usual grant) - the code review
-	// of REPORT ROLE, part A; a NOINHERIT member of a superuser role is refused on any database (part B)
+	// on a database without a pgvigil schema pg_read_all_data runs (a monitoring login's usual grant); a NOINHERIT
+	// member of a superuser role is refused on any database
 	plain := fmt.Sprintf("pgvrr_plain_%d", sfx)
 	if _, err := pool.Exec(ctx, `CREATE DATABASE `+plain); err != nil {
 		t.Fatal(err)
@@ -218,6 +231,9 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"alr", "", "a member of pgvigil_alerter"},      // alert_contact_routes() returns every contact's address to it
 		{"alr", plain, "a member of pgvigil_alerter"},   // the role is the server's, whichever database the run opens
 	} {
+		if c.key == "rad" && !hasReadAll {
+			continue
+		}
 		got := refusalAs(name(c.key), c.db)
 		switch {
 		case c.want == "" && got != "":
@@ -282,14 +298,14 @@ func TestExplainFoldOnAStore(t *testing.T) {
 	}
 	mon := fmt.Sprintf("host=%s port=%d dbname=%s user=%s password=%s", cfg.Host, cfg.Port, cfg.Database, login, pw)
 	stmt := fmt.Sprintf(`SELECT 1 FROM pg_class c WHERE c.relname = (pgvigil.ui_password_hash('%s')::int)::text`, user)
-	_, err = plans.Explain(ctx, mon, "", stmt, nil)
+	_, err = plans.Explain(ctx, mon, nil, "", stmt, nil)
 	switch {
 	case err != nil && strings.Contains(err.Error(), "argon2id"):
 		t.Logf("without a check (the old behaviour) the fold READ the hash: %.120s", err.Error())
 	default:
 		t.Logf("without a check the fold did not read the hash here: %v", err)
 	}
-	_, err = plans.Explain(ctx, mon, "", stmt, pgRefusal)
+	_, err = plans.Explain(ctx, mon, nil, "", stmt, pgRefusal)
 	if err == nil || !strings.Contains(err.Error(), "the login is a member of pgvigil_auth") || strings.Contains(err.Error(), "argon2id") {
 		t.Errorf("with pgRefusal: %v; want refused naming pgvigil_auth, no hash", err)
 	}

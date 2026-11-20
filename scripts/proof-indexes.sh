@@ -34,7 +34,7 @@
 #     as a login IN ROLE pg_monitor, pg_read_all_data the advisor suggests 'CREATE INDEX ON public.t USING btree (a)' and
 #     at least one statement uses the hypothetical index with a positive gain; afterwards t has no index at all; as a
 #     pg_monitor-only login the same suggestion comes back with its statements noted 'permission denied' and untested.
-#  [review C fold, expected before the rerun:]
+#  [Added expectations:]
 #  A2. more seeds in T1, read in the same collect: t5 (a, b) with t5_a scanned and t5_ab never -> 'T1 redundant t5_a >
 #      t5_ab' and NO unused row for t5_ab (an unused index that covers a listed one is left out); the duplicate pair ->
 #      no unused row for the pair's cover; t6 with PRIMARY KEY (a, b) and a UNIQUE index t6_a_uq on (a) -> no row for
@@ -42,7 +42,7 @@
 #      and t3_mix (a, b DESC) -> no redundant or duplicate row on t3; a partitioned table q (two partitions) with q_a (a)
 #      and q_ab (a, b) -> no redundant row on q or its partitions; a partitioned index p_a built ON ONLY a partitioned
 #      table p -> no invalid row for it. Every drop_sql names the schema ('DROP INDEX CONCURRENTLY public.').
-#      (So A's findings carry a second 'redundant index|info' row, t5_a's, and B's too: the first fold run missed that.)
+#      (So A's findings carry a second 'redundant index|info' row, t5_a's, and B's too.)
 #  C2. the unused finding also needs pgvigil to have seen the index unused for 7 days: x is first imported 8 days
 #      before its second import (one finding); v (the same as x, one import only) -> no finding.
 #  E. the inventory (0056, task 71; expected before its first run): after A, index_inventory holds one present row per

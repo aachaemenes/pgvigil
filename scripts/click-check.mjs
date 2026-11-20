@@ -21,7 +21,7 @@ const tagCount = new Map();
 for (const r of insts) for (const t of (Array.isArray(r.tags) ? r.tags : [])) {
   const e = tagCount.get(t) ?? { n: 0, engines: new Set() }; e.n++; e.engines.add(r.engine === 'sqlserver' ? 'sqlserver' : 'postgres'); tagCount.set(t, e);
 }
-// ... and that a TOP-LEVEL tag folder carries (the TAGTREE review B #6): under ui.group_by [k, ...] a 'k:<v>' (a bare
+// ... and that a TOP-LEVEL tag folder carries: under ui.group_by [k, ...] a 'k:<v>' (a bare
 // value when k is 'tag'), else any written tag - a tag the root only keeps has no folder of its own to click
 const groupBy = (await (await fetch(U + 'api/tags')).json()).group_by ?? [];
 const topLevel = t => !groupBy.length || (groupBy[0] === 'tag' ? !String(t).includes(':') : String(t).toLowerCase().startsWith(groupBy[0].toLowerCase() + ':'));
@@ -41,9 +41,10 @@ const dbadash = {
   'Backup LOG':          { postgres: ['backups'], sqlserver: ['mssqlbackups'], dd: 'Backup LOG -> HA/DR > Backups' },
   'Drive Space':         { postgres: ['drives'], sqlserver: ['drives'], dd: 'Drive Space -> Storage > Drives' },
   'Agent Jobs':          { postgres: ['jobsreport', 'jobs'], sqlserver: ['mssqljobs'], dd: 'Agent Jobs -> Jobs > Job Status' },
-  'Log Shipping':        { postgres: ['pgbackups'], sqlserver: ['availability'], dd: 'Log Shipping -> HA/DR > Log Shipping' },
-  'Mirroring':           { sqlserver: ['availability'], dd: 'Mirroring -> HA/DR > Mirroring' },
-  'Availability Groups': { postgres: ['replication'], sqlserver: ['availability'], dd: 'Availability Groups -> HA/DR > Availability Groups' },
+  // task 383: SQL Server's three HA cells land on the HA/DR folder's pages in DBA Dash's shape (the instance's own tab)
+  'Log Shipping':        { postgres: ['pgbackups'], sqlserver: ['mssqllogshipping'], dd: 'Log Shipping -> HA/DR > Log Shipping' },
+  'Mirroring':           { sqlserver: ['mssqlmirroring'], dd: 'Mirroring -> HA/DR > Mirroring' },
+  'Availability Groups': { postgres: ['replication'], sqlserver: ['mssqlag'], dd: 'Availability Groups -> HA/DR > Availability Groups' },
   'Log Space':           { sqlserver: ['dbfiles'], dd: 'Log Space -> Storage > Files' },
   'File Space':          { sqlserver: ['dbfiles'], dd: 'File Space -> Storage > Files' },
   // PostgreSQL's own names of five of DBA Dash's columns (B7 DONE-3, the pgLabel item: web/src/fleet.ts labelOf): a
@@ -57,7 +58,8 @@ const dbadash = {
   // PostgreSQL's statement store has its own column, which SQL Server has no cell in
   'QS':                  { sqlserver: ['mssqlqs'], dd: 'QS -> Configuration > QS' },
   'pg_stat_statements':  { postgres: ['pgstate'], dd: 'no DBA Dash column: PostgreSQL has no Query Store, its statement store is on Server state' },
-  'Custom Checks':       { postgres: ['custom'], dd: 'Custom Checks -> Checks > Custom Checks' },
+  // a SQL Server row's cell since ST6b (its custom findings, DBA Dash's custom check rows among them)
+  'Custom Checks':       { postgres: ['custom'], sqlserver: ['custom'], dd: 'Custom Checks -> Checks > Custom Checks' },
   'Snapshot Age':        { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'Snapshot Age -> Checks > Collection Dates' },
   'Identity Columns':    { sqlserver: ['mssqlchecks'], cv: { sqlserver: 'identity' }, dd: 'Identity Columns -> Checks > Identity Columns' },
   'Database State':      { postgres: ['pgdboptions'], sqlserver: ['mssqlchecks'], cv: { sqlserver: 'databases' }, dd: 'Database State -> Configuration > DB Options' },
@@ -68,8 +70,7 @@ const dbadash = {
   'DB Mail':             { sqlserver: ['summary'], row: { sqlserver: 'dbmail' }, dd: 'DB Mail -> DBA Dash: text; pgvigil: the instance Summary\'s Server card row' },
   'Is Agent Running':    { sqlserver: ['mssqljobs'], dd: 'Is Agent Running -> DBA Dash: text; pgvigil: the Jobs page, as its reason' },
   // the landing checked, the difference from DBA Dash's page named in the verdict (argued in the report)
-  'Collection Errors (24hrs)': { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'DBA Dash Errors (24hrs) -> Checks > DBA Dash ErrorLog',
-    diff: 'pgvigil has no error-log page yet (E205, parity task P13): Collection dates, whose rows carry each collection\'s last error' },
+  'Collection Health': { postgres: ['collectionhealth'], sqlserver: ['collectionhealth'], dd: 'DBA Dash 4.25.0 Collection Health -> Checks > Collection Health (4.24.1: Errors (24hrs) -> DBA Dash ErrorLog, P13\'s)' },
 };
 // the differences named (pgvigil lands elsewhere, argued in the report): column -> words
 const named = {};
@@ -82,14 +83,15 @@ const dialogColumns = new Set(['Instance Uptime']);
 const statusWant = { '% Max Size': 'critical,warning' };
 // the test grid's names that open a page (pages.ts rootTabOf) and DBA Dash's target where it has one
 const testWant = { 'Drive Space': 'drives', 'Backup FULL': 'backups', 'Backup LOG': 'backups', 'Agent Jobs': 'jobs', 'Snapshot Age': 'collectiondates',
-  'Collection Errors (24hrs)': 'collectiondates', 'Last Good Check DB': 'corruption', 'Corruption': 'corruption', 'Log Space': 'dbfiles', 'File Space': 'dbfiles',
-  '% Max Size': 'dbfiles', 'Availability Groups': 'pgreplication', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
+  'Collection Health': 'collectionhealth', 'Last Good Check DB': 'corruption', 'Corruption': 'corruption', 'Log Space': 'dbfiles', 'File Space': 'dbfiles',
+  // task 383: a scope with SQL Server names this column 'Availability Groups' (a PostgreSQL-only one 'Replication', below)
+  '% Max Size': 'dbfiles', 'Availability Groups': 'mssqlag', 'Mirroring': 'mssqlmirroring', 'Log Shipping': 'mssqllogshipping', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
   // the same tests under PostgreSQL's names, on a scope with no SQL Server instance (B7 DONE-3)
   'Last amcheck': 'corruption', 'WAL archive': 'backups', 'Jobs': 'jobs', 'Replication': 'pgreplication' };
 // DBA Dash's column order (Checks/Summary.Designer.cs Columns.AddRange, under pgvigil's word for DBA Dash Errors)
 const ddOrder = ['Instance', 'Memory Dump', 'Corruption', 'Last Good Check DB', 'SQL Agent Alerts', 'Backup FULL', 'Backup DIFF', 'Backup LOG', 'Drive Space',
   'Agent Jobs', 'Is Agent Running', 'Log Shipping', 'Mirroring', 'Availability Groups', 'Log Space', 'File Space', '% Max Size', 'Elastic Pool Storage', 'QS',
-  'Custom Checks', 'Collection Errors (24hrs)', 'Snapshot Age', 'DB Mail', 'Identity Columns', 'Database State', 'Service Broker', 'Instance Uptime'];
+  'Custom Checks', 'Collection Health', 'Snapshot Age', 'DB Mail', 'Identity Columns', 'Database State', 'Service Broker', 'Instance Uptime'];
 // the cell texts proof-clickmap's T10 seeded: instance -> column -> text ('x*' = starts with x)
 const expectText = JSON.parse(process.env.CLICK_EXPECT || '{}');
 const dumpRoot = (process.env.CLICK_DUMP_ROOT || '').split('|');
@@ -146,7 +148,7 @@ const tagFolder = (group, t = tag) => ev(`(async () => {
 })()`, true);
 const treeClick = async h => { await ev(`(() => { const a = [...document.querySelectorAll('#tree a')].find(x => x.getAttribute('href') === ${JSON.stringify(h)}); a?.click(); return !!a; })()`); await sleep(500); await settled(); return landing(); };
 
-// PGVIGIL_CLICK_ONLY=noenv: the '(no env)' folder alone (TAGTREE: the pass's #6, the review B #4). The demo puts an env on
+// PGVIGIL_CLICK_ONLY=noenv: the '(no env)' folder alone. The demo puts an env on
 // every instance; proof-clickmap.sh adds instances with no tag after the main map and runs this. Under the demo's
 // group_by [env] they are in '(no env)', whose name links ?tag=env: and whose own folders scope the same.
 if (process.env.PGVIGIL_CLICK_ONLY === 'noenv') {
@@ -406,7 +408,11 @@ else {
     const plainLinks = [];
     for (const [name, o] of Object.entries(cells)) for (const c of plain) if (o[c] && o[c].text && !o[c].link) plainLinks.push(c + ' @ ' + name + ' (' + o[c].text + ')');
     const tb = m.querySelector('.summary-toolbar'), rt = tb && tb.querySelector('.refresh-time'), icon = rt && rt.querySelector('[role="img"]'), upper = m.querySelector('.tests');
+    // the View control (views.ts viewControl, D16): its data-view-control attribute, its 'View' prefix only
+    // when no button carries the attribute
+    const vb = tb && (tb.querySelector('button[data-view-control]') ?? [...tb.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('View')));
     return { th: head(tests), ih, testRows, cells, plainLinks, buttons: tb ? [...tb.querySelectorAll('button')].map(b => b.textContent.trim()) : [],
+      view: vb ? { label: vb.textContent.trim(), byAttr: vb.hasAttribute('data-view-control') } : null,
       rt: rt ? rt.textContent : '', icon: icon ? icon.getAttribute('aria-label') : '', maxH: upper ? upper.style.maxHeight : '', upperHidden: upper ? upper.hidden : null };
   })()`);
   const wantTh = ['Test', 'Instance Count OK', 'Instance Count Warning', 'Instance Count Critical', 'Instance Count N/A', 'Instance Count Acknowledged'];
@@ -432,8 +438,12 @@ else {
     const t = sh.testRows.find(x => x.name === 'Instance Uptime');
     shape('Instance Uptime acknowledged', t ? t.n.join('/') : 'no row', !!t && t.n[4] >= 1, t && t.n[4] >= 1 ? 'counted under Instance Count Acknowledged' : 'the acknowledged cell is not counted');
   }
-  const tbWant = ['Refresh', 'View', 'Options', 'Clear Filter'].filter(b => !sh.buttons.includes(b));
-  shape('toolbar', sh.buttons.join(', '), !tbWant.length, tbWant.length ? 'lacks ' + tbWant.join(', ') : 'Refresh, View, Options, Clear Filter');
+  // the View control's label is 'View: <the loaded view's name or None>', ' (changed)' after an edit of a loaded view
+  const tbWant = ['Refresh', 'Options', 'Clear Filter'].filter(b => !sh.buttons.includes(b));
+  const viewLabelOk = !!sh.view && /^View: \S/.test(sh.view.label);
+  if (!viewLabelOk) tbWant.splice(1, 0, sh.view ? `View: <a name or None> (its label reads '${sh.view.label}')` : 'View');
+  shape('toolbar', sh.buttons.join(', ') + (sh.view ? `; the View control found by ${sh.view.byAttr ? 'data-view-control' : 'its View prefix'}` : ''), !tbWant.length,
+    tbWant.length ? 'lacks ' + tbWant.join(', ') : `Refresh, ${sh.view.label}, Options, Clear Filter`);
   shape('Refresh Time', `${sh.rt.trim()} [${sh.icon}]`, sh.rt.startsWith('Refresh Time: ') && sh.icon === 'current', 'DBA Dash\'s Refresh Time with its OK tick');
   shape('Test Summary Max Height %', sh.maxH, sh.maxH === '70vh' && sh.upperHidden === false, 'the test pane at 70 % by default');
   // Options and its three sub-menus
@@ -463,9 +473,18 @@ else {
   const ud = await openDialog(); await closeDialog();
   shape('Uptime Threshold Config (root)', ud ? `${um.join(' | ')}; ${ud.label}; Inherit ${ud.inheritOn ? 'on' : 'off'}${ud.inheritDisabled ? ' (disabled)' : ''}, Warning box ${ud.warnEditable ? 'editable' : 'disabled'}` : 'no dialog', !!ud && ud.label === 'Uptime Threshold Config (root)' && ud.inheritDisabled === true && ud.inheritOn === false && ud.warnEditable === true && um.join('|') === 'Acknowledge Uptime|Configure Thresholds' && ud.text.includes('Clear ALL Alerts'),
     'Instance Uptime > Acknowledge Uptime / Configure Thresholds; the root\'s dialog, Inherit off and disabled, its Warning box editable, Clear ALL Alerts');
-  await clickTb('View'); await sleep(200);
-  const vm = await menuItems(); await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
-  shape('View menu', vm.join(' | '), vm.length === 2 && vm[0].endsWith('Focused View') && vm[1].endsWith('Show Test Summary') && vm[1] !== 'Show Test Summary', 'Focused View, Show Test Summary (ticked)');
+  // DBA Dash's View drop-down (views.ts viewControl, D16): the page's two toggles first, then {None}, the saved views and
+  // Save / Save as... / Rename... / Delete...; the menu draws once the saved views are read, so it is waited for (3 s)
+  const viewOpened = await ev(`(() => { const t = document.querySelector('.summary-toolbar'); const b = t && (t.querySelector('button[data-view-control]') ?? [...t.querySelectorAll('button')].find(x => x.textContent.trim().startsWith('View'))); if (!b) return false; b.click(); return true; })()`);
+  let vm = [];
+  for (let i = 0; viewOpened && i < 30 && !vm.length; i++) { await sleep(100); vm = (await menuItems()) ?? []; }
+  await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+  const vNone = vm.findIndex(x => x.endsWith('{None}')), vSave = vm.findIndex(x => x === 'Save');
+  const vmOk = vm.length >= 4 && vm[0].endsWith('Focused View') && vm[1].endsWith('Show Test Summary') && vm[1] !== 'Show Test Summary' && vNone === 2 && vSave > vNone;
+  shape('View menu', viewOpened ? (vm.length ? vm.join(' | ').slice(0, 260) : 'the View control opened no menu') : 'no View control', vmOk,
+    vmOk ? 'Focused View, Show Test Summary (ticked), then {None} and Save'
+      : !viewOpened ? 'no View control to open' : !vm.length ? 'the View control opened no menu'
+      : `want Focused View, Show Test Summary (ticked), then {None} (item ${vNone + 1}) and Save after it (item ${vSave + 1})`);
 }
 
 const storageScopes = [
@@ -809,7 +828,7 @@ let ownTested = false;
   }
 }
 
-// TAGALL behaviour (the design's T2, the review of rel-tagall #3): what a page under ?tag=<tag> lists or picks is the
+// TAGALL behaviour (the design's T2): what a page under ?tag=<tag> lists or picks is the
 // folder's, and the root's is every instance's. Each row names what it read; a row the demo cannot judge says 'not seen'.
 {
   const sc = `tag ${tag}`;
@@ -889,7 +908,7 @@ let ownTested = false;
   row('retention', '#/retention?tag=untagged', ul, ul === 'Data retention is one setting for the whole repository: the untagged folder shows all of it.' ? 'ok (TAGALL: the untagged folder named as such)' : `FAIL the line under untagged: '${ul}'`);
 }
 
-// TAGTREE rows (the lead's 07:35 GO): (a) the tag folder's own Jobs folder holds the Jobs page of that tag
+// TAGTREE rows: (a) the tag folder's own Jobs folder holds the Jobs page of that tag
 {
   const sc = `tag ${tag}`;
   await go(`#/summary?tag=${encodeURIComponent(tag)}`);
@@ -918,7 +937,7 @@ let ownTested = false;
     }
     return { out, h2: document.querySelector('main h2')?.textContent.trim() ?? '' }; })()`);
   // a repository-wide alert (no instance: the collector, the repository) carries the name 'pgvigil' (0190's
-  // alert_findings) and stays listed in every folder; proof-clickmap.sh seeds one standing (the TAGTREE review A #1)
+  // alert_findings) and stays listed in every folder; proof-clickmap.sh seeds one standing
   const isRepo = n => n === 'pgvigil' && !insts.some(r => String(r.name) === 'pgvigil');
   await go('#/alerts'); const rootA = await alertInstances();
   const outside = [...new Set(rootA.out.filter(n => !tagNames.has(n) && !isRepo(n)))];
@@ -935,11 +954,15 @@ let ownTested = false;
       : `ok (the root lists ${outside.length} instance(s) outside the tag; under it none; the ${repoRoot} repository-wide row(s) under it too)` });
 }
 
-// (d) the TAGTREE review A #2 / #8: under a kept tag no top folder carries whose instances are all SQL Server, the root's
+// (d) under a kept tag no top folder carries whose instances are all SQL Server, the root's
 // folders offer no page that holds PostgreSQL alone (router.ts pageEngine, read from each page's SQL) and still offer
 // SQL Server options
 {
-  const pgOnly = new Set(['pgrisks', 'pgreplication', 'extensions', 'corruption', 'versions', 'tablesize', 'backups', 'roles', 'dms', 'custom', 'disks', 'storage', 'growth', 'indexes', 'jobs']);
+  // router.ts pageEngine's PostgreSQL pages; custom left it with ST6 (mssql_custom writes the same tables: both engines'),
+  // jobs and backups when both pages listed SQL Server rows too (the fleet Jobs page's SQL Agent rows, 4bfd03b0; the root
+  // Backups page's SQL Server section, a606c77d): a SQL Server-only folder offers both (TAGALL: every root page under every tag folder)
+  const pgOnly = new Set(['pgrisks', 'pgreplication', 'extensions', 'corruption', 'versions', 'tablesize', 'roles', 'dms', 'disks', 'storage', 'growth', 'indexes']);
+  const bothEngines = [['backups', 'hadr', 'mssqllogshipping'], ['jobs', 'jobs', 'jobstimeline']];   // [page, its group, a SQL Server page of that group's strip]
   await go('#/summary');
   const tops = await ev(`[...document.querySelectorAll('#tree .folder > .folder-head a')].map(a => new URLSearchParams((a.getAttribute('href') || '').split('?')[1] || '').get('tag')).filter(Boolean)`);
   const carriers = new Map();
@@ -957,12 +980,22 @@ let ownTested = false;
         if (box) for (const a of box.querySelectorAll(':scope > div:not(.tree-node) a.inst')) out.push(a.getAttribute('href'));
       }
       return out; })()`, true);
-    const tabs = (leaves ?? []).map(tabOf), bad = tabs.filter(t => pgOnly.has(t));
+    const tabs = (leaves ?? []).map(tabOf), bad = tabs.filter(t => pgOnly.has(t)), lacks = bothEngines.map(([t]) => t).filter(t => !tabs.includes(t));
     record({ scope: `tag ${msTag}`, kind: 'tag-tree', column: 'engines', engine: 'sqlserver', link: `#/summary?tag=${msTag}`, landed: `${tabs.length} leaves in the root's folders: ${tabs.join(' ')}`.slice(0, 260),
       verdict: tabs.length === 0 ? "FAIL no leaf read in the root's folders"
         : bad.length ? `FAIL page(s) of PostgreSQL alone offered for a SQL Server-only tag: ${bad.join(', ')}`
         : !tabs.includes('mssqlrisks') ? 'FAIL SQL Server options is not offered'
-        : `ok (${carriers.get(msTag).length} SQL Server instance(s); no page of PostgreSQL alone; SQL Server options there)` });
+        : lacks.length ? `FAIL page(s) that list SQL Server rows not offered for a SQL Server-only tag: ${lacks.join(', ')}`
+        : `ok (${carriers.get(msTag).length} SQL Server instance(s); no page of PostgreSQL alone; SQL Server options, ${bothEngines.map(([t]) => t).join(' and ')} there)` });
+    // the strips of those pages' groups, on a SQL Server page of each under that tag: the page is offered (main.ts tagPages)
+    for (const [t, g, on] of bothEngines) {
+      await go(`#/${on}?tag=${encodeURIComponent(msTag)}`);
+      const gs = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf);
+      record({ scope: `tag ${msTag}`, kind: 'tag-tree', column: `strip ${g}`, engine: 'sqlserver', link: `#/${on}?tag=${msTag}`, landed: `the strip: ${gs.join(' ')}`.slice(0, 260),
+        verdict: !gs.includes(on) ? `FAIL the strip does not hold ${on}`
+          : !gs.includes(t) ? `FAIL the ${g} strip does not offer ${t} for a SQL Server-only tag (it lists SQL Server rows)`
+          : `ok (the ${g} strip offers ${t})` });
+    }
     // the Configuration strip on SQL Server options under that tag: no page of PostgreSQL alone (main.ts tagPages)
     await go(`#/mssqlrisks?tag=${encodeURIComponent(msTag)}`);
     const strip = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf);
@@ -971,6 +1004,84 @@ let ownTested = false;
       verdict: !strip.includes('mssqlrisks') ? 'FAIL the strip does not hold SQL Server options'
         : sbad.length ? `FAIL the strip offers page(s) of PostgreSQL alone for a SQL Server-only tag: ${sbad.join(', ')}`
         : 'ok (the Configuration strip holds no page of PostgreSQL alone)' });
+  }
+}
+
+// (e) task 383, the HA/DR folder's pages (design section 8): a folder page's
+// Instance link lands on the same page at that instance with Back on, and Back returns to the folder; a SQL Server
+// instance's HA/DR strip holds DBA Dash's four tabs in its order; a PostgreSQL instance's strip none of the three
+{
+  const haOrder = ['mssqlbackups', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag'];
+  // each folder page and the collection it draws (q_mssql_hadr.go's hadrReads); CLICK_SEEDED (proof-clickmap.sh) names the
+  // collections the demo's seed holds rows of: a page with no Instance link is 'not proven' only for a kind the seed holds
+  // none of, and a FAIL for a kind it holds (or when CLICK_SEEDED is not given: what the data holds is then unknown)
+  const haKinds = { mssqlag: ['mssql_ag', 'Availability Groups'], mssqlmirroring: ['mssql_mirroring', 'Mirroring'], mssqllogshipping: ['mssql_logshipping', 'Log Shipping'] };
+  const seeded = process.env.CLICK_SEEDED == null ? null : new Set(process.env.CLICK_SEEDED.split(/\s+/).filter(Boolean));
+  for (const t of ['mssqlag', 'mssqlmirroring', 'mssqllogshipping']) {
+    await go(`#/${t}`);
+    const link = await ev(`(() => { const x = [...document.querySelectorAll('main table a')].find(a => /[?&]i=\\d+/.test(a.getAttribute('href') || '')); return x ? x.getAttribute('href') : null; })()`);
+    if (!link) {
+      const [coll, name] = haKinds[t];
+      record({ scope: 'root', kind: 'hadr', column: 'Instance drill', engine: 'sqlserver', link: `#/${t}`, landed: 'no row with an Instance link',
+        verdict: seeded && !seeded.has(coll) ? `not proven: no ${name} row in this data (the seed holds no ${coll} row)`
+          : `FAIL the folder page has no Instance link (${seeded ? `the seed holds ${coll} rows` : 'CLICK_SEEDED not given: what the data holds is unknown'})` });
+      continue;
+    }
+    await ev(`(() => { [...document.querySelectorAll('main table a')].find(a => a.getAttribute('href') === ${JSON.stringify(link)})?.click(); })()`);
+    await sleep(500); await settled();
+    const got = await landing();
+    const back = await ev(`(() => { const b = [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back'); return b ? !(b.disabled || b.getAttribute('aria-disabled') === 'true') : null; })()`);
+    let backTo = '';
+    if (back) { await ev(`(() => { [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back')?.click(); })()`); await sleep(500); await settled(); backTo = (await landing()).hash; }
+    record({ scope: 'root', kind: 'hadr', column: 'Instance drill', engine: 'sqlserver', link, landed: `${got.hash}; Back ${back === null ? 'absent' : back ? 'on' : 'off'}${backTo ? ' -> ' + backTo : ''}`,
+      verdict: tabOf(got.hash) !== t || !paramsOf(got.hash).get('i') ? `FAIL want ${t} at the instance, got ${got.hash}`
+        : got.err.length ? `FAIL the landing shows an error: ${got.err[0]}`
+        : back !== true ? 'FAIL Back is not on after the drill'
+        : tabOf(backTo) !== t || paramsOf(backTo).get('i') ? `FAIL Back went to ${backTo}, want the folder's ${t}`
+        : 'ok (DBA Dash: Instance -> the same page at that instance; Navigate Back -> the folder)' });
+  }
+  await go(`#/mssqlag?i=${ms.instance_id}`);
+  const msStrip = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf).filter(t => haOrder.includes(t));
+  record({ scope: `instance ${ms.name}`, kind: 'hadr', column: 'HA/DR strip', engine: 'sqlserver', link: `#/mssqlag?i=${ms.instance_id}`, landed: msStrip.join(' '),
+    verdict: msStrip.join(' ') === haOrder.join(' ') ? 'ok (DBA Dash: Backups, Log Shipping, Mirroring, Availability Groups)' : `FAIL want ${haOrder.join(' ')}` });
+  await go(`#/backups?i=${pg.instance_id}`);
+  const pgStrip = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf);
+  const pgBad = pgStrip.filter(t => haOrder.slice(1).includes(t));
+  record({ scope: `instance ${pg.name}`, kind: 'hadr', column: 'HA/DR strip', engine: 'postgres', link: `#/backups?i=${pg.instance_id}`, landed: pgStrip.join(' ').slice(0, 200),
+    verdict: pgBad.length ? `FAIL a PostgreSQL instance's strip offers ${pgBad.join(', ')}` : 'ok (none of the three SQL Server pages)' });
+}
+// task LSX: the Log Shipping Detail's Database button narrows pgvigil's own panel below DBA Dash's grids (the jobs, the
+// agents' messages, the log backups outside log shipping) to that database: the panel's Database box takes the name and
+// the panel draws its three grids with no error box. A demo with no log shipping Detail row cannot show it: said so.
+{
+  await go('#/mssqllogshipping');
+  const pick = await ev(`(() => { const b = [...document.querySelectorAll('main table button.link')].find(x => /^Show log shipping's jobs/.test(x.getAttribute('aria-label') || '')); return b ? b.textContent : null; })()`);
+  if (pick == null) {
+    record({ scope: 'root', kind: 'hadr', column: 'Log Shipping panel', engine: 'sqlserver', link: '#/mssqllogshipping', landed: 'no Detail row with a Database button',
+      verdict: 'not proven: no log shipping Detail row in this data' });
+  } else {
+    // the box before the click (it must read every database, or the click proves nothing), then the click, then every
+    // Database cell of the panel's three grids: each the clicked name (ignoring case), or the grid empty
+    const before = await ev(`(() => document.querySelector('main .mssql-hadr-logship-config select')?.value ?? null)()`);
+    await ev(`(() => { [...document.querySelectorAll('main table button.link')].find(x => /^Show log shipping's jobs/.test(x.getAttribute('aria-label') || '') && x.textContent === ${JSON.stringify(pick)})?.click(); })()`);
+    await sleep(300); await settled();
+    const st = await ev(`(() => { const p = document.querySelector('main .mssql-hadr-logship-config'); if (!p) return null;
+      const want = ${JSON.stringify(pick)}.toLowerCase(); let rows = 0; const other = [];
+      for (const t of p.querySelectorAll('table:not(.grid-empty)')) {
+        const i = [...t.querySelectorAll('thead th')].map(h => (h.querySelector('.th-label')?.textContent ?? h.textContent).trim()).indexOf('Database');
+        if (i < 0) continue;
+        for (const tr of t.querySelectorAll('tbody tr')) { const c = tr.children[i]; if (!c) continue; rows++; const v = c.textContent.trim(); if (v.toLowerCase() !== want) other.push(v); }
+      }
+      return { value: p.querySelector('select')?.value ?? null, grids: p.querySelectorAll('h4').length, err: p.querySelectorAll('.error').length, rows, other: other.slice(0, 5) }; })()`);
+    record({ scope: 'root', kind: 'hadr', column: 'Log Shipping panel', engine: 'sqlserver', link: `#/mssqllogshipping Database ${pick}`,
+      landed: st ? `before the click ${before === '' ? 'every database' : before}; Database box ${st.value}; ${st.grids} grids, ${st.rows} rows; ${st.err} error boxes` : 'no panel',
+      verdict: pick === '' ? 'FAIL the Detail\'s Database button has no name'
+        : !st ? 'FAIL the page has no log shipping panel'
+        : before !== '' ? `FAIL the Database box read ${before} before the click (want every database)`
+        : String(st.value).toLowerCase() !== pick.toLowerCase() ? `FAIL the Database box reads ${st.value}, want ${pick}`
+        : st.grids !== 3 || st.err ? `FAIL ${st.grids} grids (want 3), ${st.err} error boxes`
+        : st.other.length ? `FAIL the panel still lists other databases after the click: ${st.other.join(', ')}`
+        : `ok (pgvigil's own: the panel narrowed to the clicked database, ${st.rows} row${st.rows === 1 ? '' : 's'} of it)` });
   }
 }
 

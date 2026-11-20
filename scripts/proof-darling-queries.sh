@@ -231,7 +231,7 @@ sqok "A: the monitor login" "CREATE LOGIN [$MON] WITH PASSWORD = '$MON_PW', CHEC
 echo "ok   A: SQL Server $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20))"), pgvq's Query Store $(sq "SELECT actual_state_desc + ' ' + CAST(interval_length_minutes AS varchar(5)) + ' min' FROM sys.database_query_store_options" pgvq)"
 
 psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $PGDB" >/dev/null
-# the join review d10b, b1 (ii): when the box's PostgreSQL preloads pg_stat_statements, the proof's database tracks
+# when the box's PostgreSQL preloads pg_stat_statements, the proof's database tracks
 # planning (set before serve connects), so F reads whether serve's pool planned every run of a named part
 PSS=$(psql "$ADMIN_DSN" -XAtqc "SHOW shared_preload_libraries")
 if [[ ",${PSS// /}," == *",pg_stat_statements,"* ]]; then
@@ -493,9 +493,9 @@ CUT=$(objs "$TMPD/ccmpw2.json" compare_windows | jq -r '.[0].before_cut_reads')
 [[ "$L2/$CUT" == "not kept before/1" ]] || fail "E: with R1 cut, q_new reads '$L2' with $CUT cut read(s) before (want 'not kept before' and 1)"
 pq "UPDATE pgvigil.mssql_pc_read SET capped = false WHERE instance_id = $SB AND snapshot_at = '$R1'" >/dev/null
 echo "ok   E: mssql_pc_handles = the DMV's sql_handle and query_plan_hash for every cached statement of q_cost; with R1 cut q_new reads 'not kept before' and the windows part 1 cut read"
-# E. a restart read (the join review d10a, finding 2): the end state - after it the handles are exactly the read's
+# E. a restart read: the end state - after it the handles are exactly the read's
 # statements (each carries a handle on 2022), none older. 0092's per-read delete alone gives that end state too, so the
-# import's restart detection is read apart (the join review d10b, b6): mssql_pc_state.server_start must change
+# import's restart detection is read apart: mssql_pc_state.server_start must change
 SS0=$(pq "SELECT coalesce(server_start::text, 'null') FROM pgvigil.mssql_pc_state WHERE instance_id = $SB")
 OLDMAX=$(pq "SELECT max(creation_time) FROM pgvigil.mssql_pc_handles WHERE instance_id = $SB")
 RB=$(pq "SELECT count(*) FROM pgvigil.mssql_pc_handles WHERE instance_id = $SB")
@@ -604,9 +604,9 @@ for spec in 761 3000; do
   cmp -s <(jq -S .compare "$TMPD/f-$spec-3.json") <(jq -S .compare "$TMPD/f-$spec-8.json") || fail "F: run 3's compare differs from run 8's at $spec"
 done
 echo "ok   F: the plan-cache compare, a 7-day window against the 7 days before, through the API (s, eight runs each; run 3's rows = run 8's, $(ld)):$TF"
-# the plan cache's other windowed parts at 3,000 rows a read over 7 days (the join review d10a, finding 1): named,
+# the plan cache's other windowed parts at 3,000 rows a read over 7 days: named,
 # cached statements, so the UI pool's plan_cache_mode = force_custom_plan (web.go) alone keeps them planned with their
-# window's values; and the compare's windows part (finding 3)
+# window's values; and the compare's windows part
 TP=""
 for what in "totals:part=totals" "top:part=top" "series:part=series" "cwin:compare=week&part=compare_windows"; do
   for run in 1 2 3 4 5 6 7 8; do
@@ -734,7 +734,7 @@ PT=$(PGOPTIONS='-c plan_cache_mode=force_custom_plan -c jit=off' psql "$PGDSN" -
   || fail "F: no Planning Time from EXPLAIN (SUMMARY) of the findings read"
 [[ -n "$PT" ]] || fail "F: no Planning Time from EXPLAIN (SUMMARY) of the findings read"
 echo "ok   F: PostgreSQL's rule on the compare's SQL: PREPAREd and run 6 x 7 days at 761 + 1 x 7 days at 3,000 it reads generic|custom $PCM_F under force_custom_plan and $PCM_A under auto; the Findings page's read plans in $PT under force_custom_plan (each read pays it)"
-# the UI pool's own setting through serve (the join review d10b, b1 (ii)): F's eight totals runs at 3,000 (and every
+# the UI pool's own setting through serve: F's eight totals runs at 3,000 (and every
 # earlier totals read) were planned once each - plans = calls in pg_stat_statements for the totals' SQL as Go holds it.
 # A pool on auto fails it only where a generic plan was kept (the configuration itself is TestUIPoolConfig's)
 if [[ "$PSS" == on ]]; then
@@ -825,7 +825,7 @@ for metric in ('duration', 'cpu', 'writes', 'executions'):
     print(f"H {metric}: {len(got)} cells of {n_cells} = the hand count over {len(rows)} stored samples (distinct queries {sum(v[0] for v in hand.values())})")
 PYEND
 echo "ok   H: the heatmap's cells (duration, cpu, writes and executions, 24 h, 10-minute bins, $NL samples on and just under the bucket lines) = a hand count of the stored samples: distinct (database, query) per cell, the most-executed by executions summed, whole bins newest first to 1,000 cells"
-# H1 on a PostgreSQL 13 repository (the repository's floor; the join review d10b, a1): a throwaway postgres:13 container
+# H1 on a PostgreSQL 13 repository (the repository's floor): a throwaway postgres:13 container
 # migrated by this binary, H1's samples copied in, served on its own port without the login: its heatmap cells = the
 # box's (PostgreSQL 18), and date_bin (14+) is refused there, so the row would have caught the old binning
 printf 'POSTGRES_PASSWORD=%s\n' "$(pw)" > "$TMPD/pg13.env"

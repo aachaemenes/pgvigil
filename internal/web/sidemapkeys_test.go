@@ -130,11 +130,11 @@ func sideMapKeyFindings(fset *token.FileSet, files []*ast.File) (found []string,
 	return found, maps, calls
 }
 
-// TestSideMapsKeyedBySelf (the lead 11:5x; uidoor's least-sure (2) made a check): report mail renders a page through a
+// TestSideMapsKeyedBySelf: report mail renders a page through a
 // copy of the Server (renderCopy), so every setting serve keeps in a package-level sync.Map keyed by *Server is read and
 // written through <x>.self() - the server itself, or the origin of a render's copy. The walk reads the package's own
 // source (not its tests) and fails on any other *Server key: a map keyed by s misses on every mailed page, as the six did
-// before 4b4b7e4 (uidoor-u7's N6, a product fault of task 171's render). The checker itself first, on the old line
+// before the fix (a product fault of task 171's render). The checker itself first, on the old line
 // (doorSets.Load(s)) and its variants: a field, a parameter, Delete, a Range callback's comparison.
 // Its limit: it reads a key by its type, so a key that only carries a *Server (inside an interface value or a struct) is not seen.
 func TestSideMapsKeyedBySelf(t *testing.T) {

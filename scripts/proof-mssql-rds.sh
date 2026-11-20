@@ -29,18 +29,17 @@
 # Expected (written before the first run):
 #  R. the rights: the collector's login holds exactly VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE
 #     (and CONNECT SQL) at the server and db_datareader in msdb, is no sysadmin (docs/sqlserver.md's login).
-#     [Run 2 graded FAIL: the RDS master user holds no CONNECT ANY DATABASE and cannot grant it (Msg 4613, Grantor
-#      does not have GRANT permission; its own grantable rights hold VIEW SERVER STATE and VIEW ANY DEFINITION). The
-#      login of docs/sqlserver.md cannot be made on RDS. Run 3: neither can its msdb part - the master user is in no
-#      msdb role and may not add a member to db_datareader (Msg 15151); in msdb it may make a user and grant SELECT
-#      on sysjobs, sysjobhistory and sysjobactivity only. From run 4 R checks the RDS form of the login
+#     [On RDS this login cannot be made: the master user holds no CONNECT ANY DATABASE and cannot grant it (Msg 4613,
+#      Grantor does not have GRANT permission; its own grantable rights hold VIEW SERVER STATE and VIEW ANY DEFINITION),
+#      is in no msdb role and may not add a member to db_datareader (Msg 15151); in msdb it may make a user and grant
+#      SELECT on sysjobs, sysjobhistory and sysjobactivity only. So R checks the RDS form of the login
 #      (docs/sqlserver-cloud.md): CONNECT SQL, VIEW ANY DEFINITION, VIEW SERVER STATE at the server, no sysadmin, a
 #      user in msdb with SELECT on those three tables, and a user in each database it reads (here the proof's
 #      database, made with it); what the collections cannot read with it shows in B as their own status.]
 #  A. detection: `collect -once mssql_instance` stores the instance as engine sqlserver, platform rdssqlserver,
 #     server_version_num = major * 10000 + minor of the master user's ProductVersion; mssql_instance holds that
 #     ProductVersion, Edition (Express Edition (64-bit)), EngineEdition 4 and server name.
-#  B. each of the 34 SQL Server collections (21 before the join of wave 1, 32 before the release join) (the list is checked against internal/mssql's Name() functions), status
+#  B. each of the 34 SQL Server collections (21 before the wave 1 release, 32 before the release migration) (the list is checked against internal/mssql's Name() functions), status
 #     ok and never partial, with rows equal to the master user's read of the same view:
 #       mssql_instance     sys.configurations' row count and 'max server memory (MB)'; sysinfo_read, cpu_count
 #       mssql_services     the services' names and states of sys.dm_server_services; Agent not expected (Express)
@@ -108,7 +107,7 @@
 #                           wait is made right before the index lock reads (an idle index's counters can leave the
 #                           cache on this instance, and they then start again from 0).]
 #       mssql_querystore   the proof's database stored with Query Store READ_WRITE, as its options read
-#     [Added after the join of wave 1 (rel-join-w1, 11 collections more), written before their first run here; each
+#     [Added with the wave 1 release (11 collections more), written before their first run here; each
 #      status ok and compared with the master user's read of the same view, the collector's filter mirrored:
 #       mssql_traceflags   the global flags stored equal DBCC TRACESTATUS(-1)
 #       mssql_audit        the server audits (name, type, switched on) and server specifications stored equal
@@ -130,7 +129,7 @@
 #       mssql_defaulttrace the reader's state 'read'; the DDL events of the proof's database stored equal the default
 #                          trace read with the collector's filter
 #      Part C: the collections behind each Summary cell run again right before it; no cell reads never, stale or
-#      failed; the join's seven tabs render too.]
+#      failed; the wave 1 release's seven tabs render too.]
 #     [Runs 16-18, every difference recorded: run 16 Msg 451 on the audit read (catalog collations; COLLATE DATABASE_DEFAULT on
 #      every new hand read). Run 17: identity differed by sq's empty line for an empty result (dropped on both sides);
 #      stats partial on rdsadmin (finding F8 in the slice report: the collector leaves rdsadmin out on RDS); defaulttrace
@@ -144,7 +143,7 @@
 #      read's instance; up to five read-collect-read cycles, a cycle where the cache dropped it compares nothing.
 #      plancache_health: a cycle passes when both reads agree for the proof's database and the stored counts equal them,
 #      up to five cycles (the counts move within seconds here).]
-#     [Task 165b, on the release join (written before its first run; s165-onjoin found the proof's list at 32 of 34 and
+#     [Task 165b, with the release migration (written before its first run; a lab run found the proof's list at 32 of 34 and
 #      procstats and plancache failing on a cache that recompiled between the reads):
 #       mssql_waiting_tasks the proof's own update, waiting LCK_M_X behind the locker in a session of its own: its task
 #                          stored (session, wait type, blocker, database) equals the master user's read of the collector's
@@ -165,6 +164,10 @@
 #     except mssql_ag: skipped, the note "Always On is not enabled on this server" (RDS Express has no availability
 #     group; a rule of the server, said as skipped, never counted as collected or failed). A collection skipped for
 #     a missing right, partial, or failed is a FAIL with its note (the statement and the file are named in the report).
+#     mssql_fci (added at the HA join, 2026-11-15): skipped, the note "a managed service runs its own failover: there
+#     is no failover cluster instance to read", and no row in mssql_fci_nodes. NOT PROVEN: this rule was written from
+#     the collection's code (internal/mssql/fci.go, Applies) and has never run - no RDS SQL Server lab has run since
+#     the collection exists. Its first lab run proves it or shows what RDS answers.
 #  C. the pages: GET /api/mssql/summary gives the instance availability as ok or n/a and every other cell a read
 #     (no 'never'); the Summary renders (chromium) with the platform badge rdssqlserver; each SQL Server tab of the
 #     instance renders without an error line.
@@ -187,14 +190,14 @@
 #     the three tables R checks, so the read stops at the first other one) - and a FAIL when S4 shows the master user
 #     may grant the very table the skip's note names (the note would then be false on Standard); mssql_ag skipped as
 #     on Express (single AZ: no availability group).
-#  [R1 run 1 (2026-11-14 09:14-09:23) graded FAIL on six rows, five of them this proof's: the collections the join added
+#  [A lab run graded FAIL on six rows, five of them this proof's: the collections the release added
 #   (mssql_activity, mssql_pool) are listed and run (ok or a skip with its reason); mssql_xe's hand read includes the
-#   join's 'ag' capture (AlwaysOn_health) and the four of pgvigil are counted apart; Standard has Always On enabled by
+#   release's 'ag' capture (AlwaysOn_health) and the four of pgvigil are counted apart; Standard has Always On enabled by
 #   RDS (IsHadrEnabled 1, no group): mssql_ag ok with the server's 0 groups; Standard writes component results to
 #   system_health's files (16 at the read): the store's lower-case component and state compared upper-cased; part D
 #   leaves out tempdb's temporary objects. The sixth was pgvigil's: RDS refused the server form's bare event file
 #   name ("Extended events event_file target is allowed only ..."): the proof prints -form rds (the folder
-#   D:\rdsdbdata\log AWS names), from run 2 on both editions.]
+#   D:\rdsdbdata\log AWS names), on both editions.]
 #  S. Standard's own rows, each RECORDED (AWS's pages do not show them), none a FAIL by its content:
 #     S1 the master user's EXEC msdb.dbo.rds_get_high_availability_option and EXEC msdb.dbo.rds_failover_time, with
 #        their column names (C3-1 builds its read from these); expected 'Single-AZ', a failover time NULL;
@@ -204,10 +207,10 @@
 #     S5 where the slow session's event file lands (the -form rds script gives only that session a file; the other
 #        three are ring buffers: sys.dm_xe_session_targets' File name; AWS: D:\rdsdbdata\log) and what mssql_xe stored
 #        per capture (its target, source and new events); a refusal of the -form rds script is a FAIL with its words
-#        (R1 run 1's refusal of the server form's bare file name made -form rds; no probe session since);
+#        (a lab run's refusal of the server form's bare file name made -form rds; no probe session since);
 #     S6 msdb's alerts and operators as the master user (sysalerts, sysoperators: counts, or the refusal), beside the
 #        alerts area's note.
-#  NOT PROVEN HERE: SQL Server Agent's jobs (mssql_jobs skipped: the RDS form of the login), Web and Enterprise
+#  NOT PROVEN HERE: mssql_fci's skip rule (never run: see B), SQL Server Agent's jobs (mssql_jobs skipped: the RDS form of the login), Web and Enterprise
 #  Edition, Multi-AZ with Always On or mirroring (AWS's other HA modes), the
 #  Agent's own error log (rds_read_error_log @type = 2), RDS's other procedures (rds_* in msdb) beyond what the
 #  collections read, Windows authentication (AWS Managed Microsoft AD), RDS Custom.
@@ -260,7 +263,7 @@ sqtry() { local u=$ADMIN_USER pw=$ADMIN_PW; if [ "${3:-}" = mon ]; then u=$MON_U
 cleanup() {
   rc=$?; set +e; trap '' INT TERM
   [ -n "$SRV" ] && { kill "$SRV" 2>/dev/null || true; }
-  for c in $WAITER $LOCKER $LOOPER ${UPD:-}; do docker rm -f "$c" >/dev/null 2>&1 || true; done
+  for c in $WAITER $LOCKER $LOOPER ${UPD:-}; do docker rm -fv "$c" >/dev/null 2>&1 || true; done
   if [ -n "$MADE_XE" ]; then "$BIN" mssql-xe -print -drop -form rds -install-id "$XEID" > "$WORK/xe-drop.sql" 2>/dev/null && sqfile < "$WORK/xe-drop.sql" >/dev/null 2>&1 \
     || echo "CLEANUP: the event sessions pgvigil_${XEID}_* were NOT dropped" >&2; fi
   if [ -n "$MADE_FDB" ]; then
@@ -322,7 +325,7 @@ sq "ALTER DATABASE [$FDB] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE);" >
 sq "CREATE USER [$MON_USER] FOR LOGIN [$MON_USER];" "$FDB" >/dev/null
 sq "CREATE TABLE dbo.t (id int NOT NULL CONSTRAINT pk_t PRIMARY KEY, v int NOT NULL); INSERT dbo.t VALUES (1, 0), (2, 0);" "$FDB" >/dev/null
 sq "EXEC('CREATE PROCEDURE dbo.pgvproof_p AS SELECT COUNT(*) FROM dbo.t;');" "$FDB" >/dev/null
-# for the join's collections: an identity column past the collector's floor (30 of tinyint's 255 = 11.76 %), a table with a
+# for the wave 1 release's collections: an identity column past the collector's floor (30 of tinyint's 255 = 11.76 %), a table with a
 # nonclustered index and a NORECOMPUTE statistic, and db_datareader for the collector's user (sys.dm_db_stats_properties
 # asks SELECT on the table: the stats collection reads partial without it)
 sq "CREATE TABLE dbo.idt (id tinyint IDENTITY(1,1) NOT NULL CONSTRAINT pk_idt PRIMARY KEY, x int NOT NULL); INSERT dbo.idt (x) SELECT TOP (30) 0 FROM sys.all_objects;" "$FDB" >/dev/null
@@ -369,7 +372,7 @@ mapfile -t KNOWN < <(grep -ho 'Name() string *{ return Prefix + "[a-z_]*"' $(ls 
 ALL=(mssql_instance mssql_services mssql_requests mssql_waits mssql_xe mssql_ag mssql_mirroring mssql_logshipping mssql_replication mssql_jobs mssql_backups
   mssql_storage mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore
   mssql_audit mssql_checks mssql_defaulttrace mssql_errorlog mssql_identity mssql_indexes mssql_plancache mssql_plancache_health mssql_stats mssql_syshealth mssql_traceflags
-  mssql_waiting_tasks mssql_reports mssql_activity mssql_pool)
+  mssql_waiting_tasks mssql_reports mssql_activity mssql_pool mssql_fci)
 [ "$(printf '%s\n' "${KNOWN[@]}" | tr '\n' ' ')" = "$(printf '%s\n' "${ALL[@]}" | sort | tr '\n' ' ')" ] || bad "B: the collections of internal/mssql (${KNOWN[*]}) are not the proof's list"
 declare -A VERDICT
 status_of() { q "select coalesce(status, '') || '|' || coalesce(note, '') from pgvigil.collection_dates where instance_id=$iid and collection='$1'"; }
@@ -444,7 +447,7 @@ elif run_ok mssql_requests; then
   eq mssql_requests "$(q "select session_id || '|' || command || '|' || wait_type from pgvigil.mssql_requests where instance_id=$iid and session_id=$WSID order by snapshot_at desc limit 1")" \
     "$(sq "SELECT CAST(session_id AS varchar(9)) + '|' + command + '|' + wait_type FROM sys.dm_exec_requests WHERE session_id = $WSID")"
 fi
-docker rm -f "$WAITER" >/dev/null 2>&1 || true; WAITER=
+docker rm -fv "$WAITER" >/dev/null 2>&1 || true; WAITER=
 # the bracketed collections: read before, run, read after
 WSQL="SELECT wait_type + '|' + CAST(waiting_tasks_count AS varchar(20)) + '|' + CAST(wait_time_ms AS varchar(20)) FROM sys.dm_os_wait_stats WHERE waiting_tasks_count > 0 OR wait_time_ms > 0"
 sq "$WSQL" > "$WORK/w-b.txt"
@@ -470,7 +473,7 @@ HB=0
 for _ in $(seq 1 30); do HB=$(sq "$HSQL"); [ "$HB" -ge 1 ] && break; sleep 1; done
 # a cycle (read, the collector's run, read) whose stored plan of the proof's procedure neither read lists while the two
 # reads list different plans of it (the cache recompiled it between them) is a dropped cycle and is run again, ten
-# cycles at most (F13; s165-onjoin: the plan stored at 03:52:38.483, compiled after the first read and gone before
+# cycles at most (F13; a lab run: the plan stored at 03:52:38.483, compiled after the first read and gone before
 # the second); a stored plan neither read lists while both reads list the same plan fails at once
 PSDONE=; PSWHY=
 if [ "$HB" -lt 1 ]; then VERDICT[mssql_procstats]="FAIL"; PSDONE=1; bad "B: mssql_procstats: the proof's procedure was never listed by the master user's read while a session ran it in a loop; the looper: $(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' "$LOOPER" 2>&1 | tr '\n' ' ') output '$(docker logs "$LOOPER" 2>&1 | tail -5 | tr -s ' \n' ' ' | cut -c1-300)'"; fi
@@ -498,7 +501,7 @@ for pcyc in $(seq 1 10); do
   bad "B: mssql_procstats (cycle $pcyc): the proof's procedure (database $FDBID, object $POBJ) stored as '$PK' with $PX execution(s), a plan neither read lists while both list '$KB' (the master user read $HB executions before the run, $HA after it); $(tr '\n' ' ' <<<"$BR_OUT")"
 done
 if [ -z "$PSDONE" ]; then VERDICT[mssql_procstats]="FAIL"; bad "B: mssql_procstats: no cycle of ten met a stored plan of the proof's procedure in a read:$(cut -c1-900 <<<"$PSWHY")"; fi
-docker rm -f "$LOOPER" >/dev/null 2>&1 || true; LOOPER=
+docker rm -fv "$LOOPER" >/dev/null 2>&1 || true; LOOPER=
 # one row lock wait on pk_t: a session holds the row for 45 seconds, the proof's update waits for it
 LOCKER=pgvproof-lock-$SUF
 docker run -d --name "$LOCKER" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d "$FDB" -C -l 60 \
@@ -535,8 +538,8 @@ else
     else VERDICT[mssql_waiting_tasks]="FAIL"; bad "B: mssql_waiting_tasks: stored [$(tr '\n' ' ' < "$WORK/wt-s.txt")], the master user read [$(tr '\n' ' ' < "$WORK/wt-b.txt")] before and [$(tr '\n' ' ' < "$WORK/wt-a.txt")] after (want '$US|LCK_M_X|$LBS|$FDB' on all three)"; fi
   fi
 fi
-docker wait "$UPD" >/dev/null 2>&1 || true; docker rm -f "$UPD" >/dev/null 2>&1 || true; UPD=
-docker wait "$LOCKER" >/dev/null 2>&1 || true; docker rm -f "$LOCKER" >/dev/null 2>&1 || true; LOCKER=
+docker wait "$UPD" >/dev/null 2>&1 || true; docker rm -fv "$UPD" >/dev/null 2>&1 || true; UPD=
+docker wait "$LOCKER" >/dev/null 2>&1 || true; docker rm -fv "$LOCKER" >/dev/null 2>&1 || true; LOCKER=
 # the collector reads only the online databases its login can enter, never the engine's catalog tables (object ids 1 to
 # 100: indexlocks.go); the hand read mirrors both, the database list read as the collector's login
 IDBS=$(sqmon "SELECT STRING_AGG(CAST(database_id AS varchar(9)), ',') FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1") || IDBS=
@@ -619,7 +622,7 @@ if run_ok mssql_xe; then
     else VERDICT[mssql_xe]="FAIL"; bad "B: mssql_xe: $NRUN capture(s) stored running where RDS refused every session"; fi
   elif [[ ${VERDICT[mssql_xe]} == PASS* ]] && [ "$NRUN" != 4 ]; then VERDICT[mssql_xe]="FAIL"; bad "B: mssql_xe: $NRUN of four captures running after the -form rds script"; fi
 fi
-# the collections the join added since run 20: mssql_activity runs on RDS (ok; its rows are not compared here:
+# the collections the release added: mssql_activity runs on RDS (ok; its rows are not compared here:
 # RECORDED), mssql_pool is skipped with its own note (elastic pools are Azure SQL Database's); anything else FAILs
 for c in mssql_activity mssql_pool; do
   "$BIN" collect -config "$CFG" -once "$c" -instance "$N" > "$WORK/$c.out" 2>&1 || true
@@ -630,6 +633,13 @@ for c in mssql_activity mssql_pool; do
     *) VERDICT[$c]="FAIL"; bad "B: $c status '$st' (want $( [ "$c" = mssql_activity ] && echo "ok" || echo "skipped: elastic pools are Azure SQL Database's")): $(tr '\n' ' ' < "$WORK/$c.out" | cut -c1-300)" ;;
   esac
 done
+# mssql_fci (the HA join): a failover cluster instance is a cluster the user owns; RDS runs its own failover, so the
+# collection is skipped by its managed-service rule and stores no node. NOT PROVEN until an RDS SQL Server lab runs
+# (the header says so): the note's words are read from internal/mssql/fci.go, not from a run
+"$BIN" collect -config "$CFG" -once mssql_fci -instance "$N" > "$WORK/mssql_fci.out" 2>&1 || true
+st=$(status_of mssql_fci)
+if [[ $st == "skipped|a managed service runs its own failover"* ]] && grep -q "skipped: " "$WORK/mssql_fci.out" && [ "$(q "select count(*) from pgvigil.mssql_fci_nodes where instance_id=$iid")" = 0 ]; then VERDICT[mssql_fci]="SKIP (${st#skipped|})"
+else VERDICT[mssql_fci]="FAIL"; bad "B: mssql_fci status '$st' (want skipped: a managed service runs its own failover, and no row in mssql_fci_nodes): $(tr '\n' ' ' < "$WORK/mssql_fci.out" | cut -c1-300)"; fi
 "$BIN" collect -config "$CFG" -once mssql_ag -instance "$N" > "$WORK/mssql_ag.out" 2>&1 || true
 st=$(status_of mssql_ag)
 HADR=$(sq "SELECT CAST(ISNULL(SERVERPROPERTY('IsHadrEnabled'), 0) AS int)")
@@ -666,7 +676,7 @@ if [ "$RDS_ED" = se ]; then
   [ -z "$XE_FAILED" ] || echo "  S5 the -form rds script was refused (its words in the FAIL above): an rds form needs another folder or option"
   echo "  S6 msdb's alerts and operators (sysalerts|sysoperators): $(sqtry "SELECT (SELECT COUNT(*) FROM msdb.dbo.sysalerts) AS alerts, (SELECT COUNT(*) FROM msdb.dbo.sysoperators) AS operators;")"
 fi
-# --- the eleven collections of the join of wave 1 (rel-join-w1), written before their first run here: each run as the
+# --- the eleven collections of the wave 1 release, written before their first run here: each run as the
 # collector's login and compared with the master user's read of the same view, filtered as the collector filters
 setcmp() { # setcmp <collection> <stored> <read>: the two lists are equal (sorted in byte order); an empty pair fails
   sed -i '/^[[:space:]]*$/d' "$3"   # sq prints an empty line for an empty result (the read side only)
@@ -855,7 +865,7 @@ PY
   PHWHY="$PHWHY cycle $cyc: $out;"
 done
 [ -n "$PHDONE" ] || { VERDICT[mssql_plancache_health]="FAIL"; bad "B: mssql_plancache_health: no cycle of five held:$(cut -c1-900 <<<"$PHWHY")"; }
-docker rm -f "$LOOPER" >/dev/null 2>&1 || true; LOOPER=
+docker rm -fv "$LOOPER" >/dev/null 2>&1 || true; LOOPER=
 
 # the three readers keep their own state (read, no right, off, failed): each must say read
 # mssql_syshealth: the component results stored per component and state lie between the master user's counts of

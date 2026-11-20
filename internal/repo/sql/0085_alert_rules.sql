@@ -9,6 +9,9 @@
 --                         the family's samples in (from, to] as (at, metric, value): the one read behind the grid, a
 --                         row's chart and a rule's evaluation, so the three agree. A counter is a rate over its own
 --                         interval (the *_rate functions of 0004: a reset gives no point, never a dip).
+--                         0166 extends both: the Collection family's catalog rows appended to the live view, and this
+--                         function renamed metric_points_0085 under a wrapper that reads that family - a later file
+--                         redefining either keeps them (internal/repo's TestMetricCollectionArmKept fails otherwise).
 --   metric_grid(i, from, to, lookback, database, family)
 --                         one row per metric of the instance's engine (of one family when named): max, min, avg and the newest value of the
 --                         window, the sample count, and the thresholds in force for it (metric_rule: the most

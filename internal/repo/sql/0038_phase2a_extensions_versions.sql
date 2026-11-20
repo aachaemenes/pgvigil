@@ -1,12 +1,12 @@
--- 0038: the wave A join for the extensions (0019) and versions (0035) collections. The findings view gains the
+-- 0038: wires in the extensions (0019) and versions (0035) collections. The findings view gains the
 -- extension rules (outdated, pg_stat_statements not preloaded or absent, pg_hint_plan created but not preloaded,
 -- auto_explain at 0 ms, and the rest) and the version rules (a deprecated engine version, maintenance AWS applies
 -- on its own or that waits undated, a changed collation version; the end-of-life and minors-behind readings come
 -- from the release table through the Versions API and the Summary's Version cell, not this view); purge() gains the
 -- rows of extensions, settings, pending actions and collations no longer present (the three change logs
 -- extension_history, instance_setting_history and version_history stay whole: one row per real change; neither
--- migration partitions a table). Both bodies are 0037's with the additions (a frozen file is never edited; a later join re-creates
--- them again with its own).
+-- migration partitions a table). Both bodies are 0037's with the additions (a frozen file is never edited; a later
+-- release migration re-creates them again with its own).
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (

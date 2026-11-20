@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // The Alerts tab at the root (task 60): GET /api/alerts?[from=&to=][&part=channels|open|log] (Server.Alerts) is the
@@ -51,7 +53,7 @@ SELECT c.name, c.kind, c.destination, c.min_severity, c.instances, c.tags, c.qui
  ORDER BY c.is_configured DESC, c.name`
 
 const sqlAlertOpen = `
-SELECT s.channel, s.instance_id, s.instance_name AS instance, s.severity, s.source, s.setting, s.value, s.first_sent_at,
+SELECT s.channel, s.instance_id AS "instance_id@inst", s.instance_name AS instance, s.severity, s.source, s.setting AS "setting@fcheck", s.value AS "value@fvalue", s.first_sent_at,
        s.last_sent_at, s.send_count, s.finding_key
   FROM pgvigil.alert_state s
  WHERE s.cleared_at IS NULL
@@ -74,7 +76,7 @@ const alertThreshold = `CASE WHEN o.source = 'alert rule' THEN substring(o.value
 // sqlAlertHistory: every firing open at some point of the window [$1, $2), newest first; a finding's suggested value
 // (its threshold while it stands) comes with the fixes part, so the findings view is not read here
 const sqlAlertHistory = `
-SELECT o.fired_at, o.cleared_at, o.status, o.severity, o.instance_id, o.instance, o.source, o.setting, o.value,
+SELECT o.fired_at, o.cleared_at, o.status, o.severity, o.instance_id AS "instance_id@inst", o.instance, o.source, o.setting AS "setting@fcheck", o.value AS "value@fvalue",
        ` + alertThreshold + ` AS threshold, o.channels, o.sends, o.occurrence, o.finding_key, o.missing_since,
        d.dismiss_id IS NOT NULL AS dismissed
   FROM pgvigil.alert_occurrences o
@@ -126,14 +128,14 @@ SELECT a.ack_id, a.kind, a.instance_id, a.instance_name AS instance, a.check_key
 const sqlAlertFixes = `
 WITH k AS (SELECT DISTINCT s.finding_key FROM pgvigil.alert_state s),
 fx AS MATERIALIZED (
-  SELECT pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.suggested,
+  SELECT pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.suggested, y.instance_id, y.setting,
          pgvigil.finding_fix(i.engine, y.source, y.instance_id, y.setting, y.is_set, y.suggested, y.detail) AS fix,
          pgvigil.severity_rank(y.severity) AS sev
     FROM pgvigil.findings y
     LEFT JOIN pgvigil.instances i ON i.instance_id = y.instance_id
    WHERE i.is_active OR y.source = 'pgvigil repository'
 )
-SELECT DISTINCT ON (fx.finding_key) fx.finding_key, fx.fix, fx.suggested
+SELECT DISTINCT ON (fx.finding_key) fx.finding_key, fx.fix AS "fix@ffix", fx.suggested, fx.instance_id AS "@inst", fx.setting AS "@fcheck"
   FROM fx JOIN k ON k.finding_key = fx.finding_key
  WHERE fx.fix IS NOT NULL OR fx.suggested IS NOT NULL
  ORDER BY fx.finding_key, fx.sev DESC`
@@ -149,8 +151,8 @@ WITH f AS MATERIALIZED (
          r.setting, r.value, r.suggested, r.detail, r.at, r.is_set
     FROM pgvigil.alert_rule_findings r
 )
-SELECT f.finding_key, f.instance_id, coalesce(i.name, 'pgvigil') AS instance, f.severity, f.source, f.setting, f.value, f.suggested, f.detail,
-       f.at, i.engine, f.is_set, pgvigil.finding_fix(i.engine, f.source, f.instance_id, f.setting, f.is_set, f.suggested, f.detail) AS fix,
+SELECT f.finding_key, f.instance_id AS "instance_id@inst", coalesce(i.name, 'pgvigil') AS instance, f.severity, f.source, f.setting AS "setting@fcheck", f.value AS "value@fvalue", f.suggested, f.detail AS "detail@fdetail",
+       f.at, i.engine, f.is_set, pgvigil.finding_fix(i.engine, f.source, f.instance_id, f.setting, f.is_set, f.suggested, f.detail) AS "fix@ffix",
        CASE WHEN f.source = 'alert rule' THEN substring(f.value FROM '^((?:above|below) [^ ]+)') ELSE f.suggested END AS threshold
   FROM f
   LEFT JOIN pgvigil.instances i ON i.instance_id = f.instance_id
@@ -160,8 +162,8 @@ SELECT f.finding_key, f.instance_id, coalesce(i.name, 'pgvigil') AS instance, f.
 
 // every firing of the alert, newest first, with the open one's per-channel state
 const sqlAlertOccurrences = `
-SELECT o.occurrence, o.fired_at, o.last_sent_at, o.cleared_at, o.status, o.severity, o.instance_id, o.instance, o.source,
-       o.setting, o.value, CASE WHEN o.source = 'alert rule' THEN substring(o.value FROM '^((?:above|below) [^ ]+)') END AS threshold,
+SELECT o.occurrence, o.fired_at, o.last_sent_at, o.cleared_at, o.status, o.severity, o.instance_id AS "instance_id@inst", o.instance, o.source,
+       o.setting AS "setting@fcheck", o.value AS "value@fvalue", CASE WHEN o.source = 'alert rule' THEN substring(o.value FROM '^((?:above|below) [^ ]+)') END AS threshold,
        o.channels, o.sends, o.missing_since, i.engine, i.is_active
   FROM pgvigil.alert_occurrences o
   LEFT JOIN pgvigil.instances i ON i.instance_id = o.instance_id
@@ -254,7 +256,11 @@ func (s *Server) alertDoor(w http.ResponseWriter, r *http.Request, fn string, bu
 	defer cancel()
 	pay := map[string]any{"ui_user": user, "client": seat.client}
 	if err := build(ctx, pay); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		code := http.StatusBadRequest
+		if errors.As(err, &roleErr{}) {
+			code = http.StatusForbidden // a write its body puts above the route's need (B24f)
+		}
+		writeErr(w, code, err)
 		return
 	}
 	b, _ := json.Marshal(pay)
@@ -369,6 +375,25 @@ func (s *Server) AlertMute(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.AnyInstance && in.InstanceID > 0 {
 			return errors.New("any_instance and instance_id name two scopes: send one")
+		}
+		// an edit writes the rule's successor, a mute like any other: one over more than one instance
+		// (every instance, a tag) or with no end needs admin. The successor keeps the old rule's kind, its one alert
+		// (finding_key) and, where the edit names none, its instance - by id, or by name when the instance was removed
+		// since (0093 import_ack_change) - so they are read here. A rule that is not there is the store's answer
+		// below; any other read error refuses the edit (the check never fails open).
+		var kind string
+		var oldInst *int
+		var oldName, oldFinding *string
+		err := s.pool.QueryRow(ctx, `SELECT kind, instance_id, instance_name, finding_key FROM pgvigil.acks WHERE ack_id = $1`, in.AckID).Scan(&kind, &oldInst, &oldName, &oldFinding)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("rule %d could not be read: %w", in.AckID, err)
+		}
+		one := (oldFinding != nil && *oldFinding != "") || in.InstanceID > 0 ||
+			(!in.AnyInstance && (oldInst != nil || (oldName != nil && *oldName != "")))
+		if err == nil && kind == "mute" && (!one || in.Tag != "" || openEnded(in.StartsAt, in.Until, time.Now())) {
+			if err := s.needErr(r, needAdmin, "a fleet-wide or open-ended mute"); err != nil {
+				return err
+			}
 		}
 		if in.AnyInstance {
 			pay["any_instance"] = true

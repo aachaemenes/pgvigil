@@ -6,6 +6,8 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
 // The Performance summary (plan task 108): GET /api/perfsummary?[from=&to=][&tag=] is the fleet page of DBA Dash's
@@ -31,7 +33,13 @@ import (
 //   commits_s ...    PostgreSQL: dbstats, the counters' rise per restart epoch (0010) summed over the databases.
 //                    SQL Server: tps is Databases _Total Transactions/sec and batch_s Batch Requests/sec
 //                    (mssql_sched_sample, each read's rate weighed by its interval); commits_s, rollbacks_s and
-//                    temp_bytes_s are NULL.
+//                    temp_bytes_s are NULL. compiles_per_100 (SQL Server only, task 401 D6 / PBI#2): SQL
+//                    Compilations per 100 Batch Requests over the range from the same reads; NULL under the 'counters'
+//                    metric compiles_per_100_batches' floor (0152's metric_floors, 5 Batch Requests/s, task 402), with
+//                    compiles_under_floor true and compiles_floor the floor, judged on the unrounded rate.
+//                    wait_s_core_min (SQL Server only, task 412, SQLMonitor C53): the range's waits not left out (the
+//                    benign ones and SQLMonitor's per-core list) in seconds per scheduler per minute, time-weighted
+//                    (0152's mssql_wait_core_summary); NULL with no scheduler count or under 300 s of wait reads.
 //   read_ms ...      PostgreSQL: iostats (pg_stat_io, PostgreSQL 16+; a time of 0 with operations = track_io_timing
 //                    off = NULL), else CloudWatch's ReadLatency / WriteLatency / *Throughput (cloud_io_sample),
 //                    each column on its own; latency_source and io_source name which. SQL Server: mssql_fileio_sample
@@ -76,7 +84,8 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        round((1000 * w.other_s / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
        round((1000 * w.total_s / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
        NULL::numeric AS signal_pct,
-       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
+       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS compiles_per_100, NULL::boolean AS compiles_under_floor,
+       NULL::double precision AS compiles_floor, NULL::double precision AS wait_s_core_min, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
        NULL::int AS grants_waiting_max, NULL::numeric AS mem_available_pct,
        round(d.commits / nullif(d.secs, 0), 2) AS commits_s,
        round(d.rollbacks / nullif(d.secs, 0), 2) AS rollbacks_s,
@@ -189,7 +198,14 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        round((w.other_ms / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
        round((w.total_ms / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
        round((100 * w.signal_ms / nullif(w.total_ms, 0))::numeric, 1) AS signal_pct,
-       h.cpu_sql_avg, h.cpu_source, t.batch_s, m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
+       h.cpu_sql_avg, h.cpu_source, t.batch_s,
+       CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL OR t.batch_raw < cf.floor THEN NULL
+            ELSE round(100 * t.compiles_s / t.batch_raw, 1) END AS compiles_per_100,
+       t.batch_raw < cf.floor AS compiles_under_floor, cf.floor AS compiles_floor,
+       -- task 412: SQLMonitor's wait seconds per core per minute over the range, time-weighted (0152); NULL with no
+       -- scheduler count or under 300 s of wait reads
+       pgvigil.mssql_wait_core_summary(inst.instance_id, $1, $2) AS wait_s_core_min,
+       m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
        NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
        CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
        CASE WHEN io.secs > 0 THEN 'virtual_file_stats' END AS io_source,
@@ -198,7 +214,8 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        n.now_at, n.longest_stmt_secs AS now_longest_stmt_secs, n.oldest_xact_secs AS now_oldest_xact_secs, n.blocked AS now_blocked
   FROM inst
   LEFT JOIN LATERAL (
-    -- the source with samples: SQL Server's scheduler monitor, or on Azure SQL Database (B2a) mssql_azuredb_minute -
+    -- the source with samples: SQL Server's scheduler monitor, or on Azure SQL Database (B2a) its window's hours and edge
+    -- minutes (pgvigil.mssql_azuredb_window, 0167) -
     -- DBA Dash's Azure Summary arithmetic: the 15-second samples' average CPU, their largest, their ten buckets summed in
     -- one pass, the minutes that start in the window (DBA Dash's window, as q_azuredb.go); cpu_source names the source
     SELECT u.cpu_samples, u.cpu_avg, u.cpu_max, u.cpu_sql_avg, u.cpu_hist, CASE WHEN u.pri = 0 THEN 'azure' ELSE 'scheduler' END AS cpu_source FROM (
@@ -215,19 +232,25 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
      WHERE s.instance_id = inst.instance_id AND s.snapshot_at > $1 AND s.snapshot_at <= $2
     ) x
     UNION ALL
-    SELECT 0, sum(a.samples)::bigint, round(sum(a.avg_cpu_percent * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_cpu_percent IS NOT NULL), 0), 1),
-           max(a.max_cpu_percent), round(sum(a.avg_cpu_percent * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_cpu_percent IS NOT NULL), 0), 1),
+    SELECT 0, sum(a.samples)::bigint, round(sum(a.cpu_total) / nullif(sum(a.cpu_counted), 0), 1),
+           max(a.max_cpu_percent), round(sum(a.cpu_total) / nullif(sum(a.cpu_counted), 0), 1),
            ARRAY[coalesce(sum(a.cpu_buckets[1]), 0), coalesce(sum(a.cpu_buckets[2]), 0), coalesce(sum(a.cpu_buckets[3]), 0), coalesce(sum(a.cpu_buckets[4]), 0),
                  coalesce(sum(a.cpu_buckets[5]), 0), coalesce(sum(a.cpu_buckets[6]), 0), coalesce(sum(a.cpu_buckets[7]), 0), coalesce(sum(a.cpu_buckets[8]), 0),
                  coalesce(sum(a.cpu_buckets[9]), 0), coalesce(sum(a.cpu_buckets[10]), 0)]::int[]
-      FROM pgvigil.mssql_azuredb_minute a
-     WHERE a.instance_id = inst.instance_id AND a.snapshot_at >= $1 AND a.snapshot_at < $2
+      FROM pgvigil.mssql_azuredb_window(ARRAY[inst.instance_id], $1, $2) a
+     WHERE inst.platform = 'azuresqldb'
     ) u ORDER BY (coalesce(u.cpu_samples, 0) > 0) DESC, u.pri DESC LIMIT 1) h ON true
   LEFT JOIN LATERAL (
     SELECT round((sum(x.transactions_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.transactions_s IS NOT NULL), 0))::numeric, 2) AS tps,
-           round((sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric, 2) AS batch_s
+           round((sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric, 2) AS batch_s,
+           -- the floor and the ratio read the rate before rounding (task 401 D6)
+           (sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric AS batch_raw,
+           (sum(x.compiles_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.compiles_s IS NOT NULL), 0))::numeric AS compiles_s
       FROM pgvigil.mssql_sched_sample x
      WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2 AND x.interval_secs > 0) t ON true
+  -- task 402: the floor of compilations per 100 batches (0152's metric_floors; none = never under)
+  LEFT JOIN LATERAL (SELECT coalesce((SELECT f.floor FROM pgvigil.metric_floors f WHERE f.key = 'counters.compiles_per_100_batches'),
+                                     '-infinity'::double precision) AS floor) cf ON true
   LEFT JOIN LATERAL (
     SELECT min(x.ple) AS ple_min, max(greatest(x.grants_pending, x.grants_waiting, x.sem_waiting)) AS grants_waiting_max,
            (array_agg(round((100.0 * x.total_kb / nullif(x.target_kb, 0))::numeric, 1) ORDER BY x.snapshot_at DESC))[1] AS mem_total_pct,
@@ -336,9 +359,12 @@ func queryTx(ctx context.Context, tx pgx.Tx, sql string, args ...any) (*table, e
 			return nil, err
 		}
 		for i, x := range v {
-			// a bigint past 2^53 would lose digits as a JSON number in a browser
+			// a bigint past 2^53 would lose digits as a JSON number in a browser; +/-infinity and the float specials as
+			// PostgreSQL's text (collect.JSONValue, as Server.query)
 			if n, ok := x.(int64); ok && (n > 1<<53 || n < -(1<<53)) {
 				v[i] = strconv.FormatInt(n, 10)
+			} else {
+				v[i] = collect.JSONValue(x)
 			}
 		}
 		t.Rows = append(t.Rows, v)

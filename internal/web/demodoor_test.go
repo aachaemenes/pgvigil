@@ -132,6 +132,13 @@ func TestDemoDoorScope(t *testing.T) {
 		{"an alert of no instance (repository-wide, or its instance removed)", writeScope{Route: doorAck, FindingKey: "k-repo"}, noInstance},
 		{"a key no alert holds", writeScope{Route: doorDismiss, FindingKey: "k-nothing"}, "no alert has this key"},
 		{"a rule that names no instance and no alert", writeScope{Route: doorAck}, "an every-instance change " + wide},
+		// B6g-2 (iii): Collection Health's thresholds on the demo door - one demo instance (its
+		// collection or every collection of it) is carried; the two scopes wider than one instance are refused in words
+		{"a Collection Health threshold of a demo instance's collection", scopeOfCHThreshold(map[string]any{"instance_id": "1", "collection": "activity"}), ""},
+		{"a Collection Health threshold of every collection of a demo instance", scopeOfCHThreshold(map[string]any{"instance_id": "1"}), ""},
+		{"a Collection Health threshold of a real instance", scopeOfCHThreshold(map[string]any{"instance_id": "3"}), "prod-db1 " + notDemo},
+		{"a Collection Health threshold of a collection on every instance", scopeOfCHThreshold(map[string]any{"collection": "activity"}), "an every-instance change " + wide},
+		{"a Collection Health threshold of everything", scopeOfCHThreshold(map[string]any{}), "an every-instance change " + wide},
 		{"a silence that names no instance (a name alone is not read)", writeScope{Route: doorAck, OneInstance: true}, "names one instance or one alert"},
 		{"a silence of a seeded instance", writeScope{Route: doorAck, OneInstance: true, InstanceID: 1}, ""},
 		{"a rule by tag", writeScope{Route: doorAck, Tag: "env:prod"}, "a tag 'env:prod' change " + wide},
@@ -178,6 +185,12 @@ func TestDemoDoorScope(t *testing.T) {
 		{"an edit that moves the rule to a real instance", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 10}, InstanceID: 3}, "prod-db1 " + notDemo},
 		{"an edit that moves a rule on every instance to a seeded instance (it would end the wide rule)", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 12}, InstanceID: 1}, "an every-instance change " + wide},
 		{"an edit of a real instance's rule", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 11}, InstanceID: 1}, "prod-db1 " + notDemo},
+		// the Expected values editor (task 409): one seeded instance's own value only
+		{"an expected value on a seeded instance", writeScope{Route: doorConfigExpect, Level: "instance", InstanceID: 1}, ""},
+		{"an expected value at the root", writeScope{Route: doorConfigExpect, Level: "root"}, "a root change " + wide},
+		{"an expected value on a tag", writeScope{Route: doorConfigExpect, Level: "tag", Tag: "demo"}, "a tag 'demo' change " + wide},
+		{"an expected value on a real instance", writeScope{Route: doorConfigExpect, Level: "instance", InstanceID: 3}, "prod-db1 " + notDemo},
+		{"an expected value whose instance level names no instance", writeScope{Route: doorConfigExpect, Level: "instance"}, "a instance " + oneInstance},
 		{"Send test", writeScope{Route: doorAlertTest}, "pgvigil demo -serve runs no sender"},
 		{"a route the door was never taught", writeScope{Route: "customreports", InstanceID: 1}, "is not made through the demo"},
 		{"no route at all", writeScope{InstanceID: 1}, "is not made through the demo"},

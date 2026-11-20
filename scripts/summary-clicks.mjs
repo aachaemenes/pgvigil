@@ -8,7 +8,9 @@
 // A dead click whose change landed only outside the view ('below the fold') is a FAIL too: nobody saw it. Every status
 // text answers a click, DBA Dash's text cells (Memory Dump, Is Agent Running, DB Mail) too: a text left plain FAILS as
 // 'dead twin' where a link of the same check (data-group) is on its page, and as 'dead status text' where it is in the
-// warning or critical band's colour, unless it is a heading.
+// warning or critical band's colour, unless it is a heading. A link that opens an outside page in a new tab (target
+// _blank, an http(s) href: a vendor's document) is read, not clicked: 'opens <host> in a new tab', ok - its href read,
+// the page never fetched (a click would open a tab the walk does not read and fetch a page off the machine).
 // Usage:
 //   node scripts/summary-clicks.mjs <cdp port> <base url/> <out dir>
 //   chromium --headless=new --remote-debugging-port=<p> about:blank &   pgvigil demo ... -serve -listen 127.0.0.1:<port>
@@ -41,7 +43,7 @@ const pgI = insts.find(r => r.engine !== 'sqlserver' && String(r.name).endsWith(
 const msI = insts.find(r => r.engine === 'sqlserver' && String(r.name).endsWith('sql01')) ?? insts.find(r => r.engine === 'sqlserver');
 const want = new Set((process.env.SUMCLICK_SCOPES || 'root,tag,instance').split(','));
 // each scope opened at the address the app's own links give it (the window w=1h: router.ts href), so a link to the
-// page it is on changes nothing in the walk either (the review of 823e113, finding 2)
+// page it is on changes nothing in the walk either
 const scopes = [...(want.has('root') ? [['root', '#/summary?w=1h']] : []), ...(tag && want.has('tag') ? [[`tag ${tag}`, '#/summary?tag=' + encodeURIComponent(tag) + '&w=1h']] : []),
   ...(want.has('instance') ? [pgI, msI].filter(Boolean).map(r => [`instance ${r.name}`, `#/summary?i=${r.instance_id}&w=1h`]) : [])];
 
@@ -126,7 +128,7 @@ const go = async hash => { await cmd('Page.navigate', { url: 'about:blank' }); a
 const key = async k => { await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code: k, windowsVirtualKeyCode: 27 }); await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code: k, windowsVirtualKeyCode: 27 }); };
 const reset = async (hash, load = false) => {
   // the app's own refresh is Off (paused) for the whole walk: a refresh landing between a click's two looks would
-  // read as the click's change (the review of 823e113, finding 3)
+  // read as the click's change
   if (load) {
     await go(hash); await ev(`(() => { sessionStorage.removeItem('pgvigil.summaryPick'); localStorage.setItem('pgvigil.refresh', '0'); return true; })()`);
     // the scope's targets are read from this page: every late part on it first (3 s more, then still)
@@ -173,9 +175,10 @@ const PARTS = HELP + `
       const m = document.querySelector('main'); let e = m; for (const i of d.path) { e = e?.children[i]; }
       const holds = x => !!x && [...x.childNodes].some(n => n.nodeType === 3 && sameShape(normT(n.textContent), d.text));
       if (holds(e)) return e;
-      // found again by its shape: a bare number only inside the box it was in (any number on the page would match it:
-      // the review of 823e113, finding 13), any other text anywhere on the page
-      let box = m; if (/^[0-9][0-9.,]*$/.test(d.text)) for (const i of d.path.slice(0, -1)) box = box?.children[i];
+      // found again by its shape: a number - bare, or with a short unit ('0s', '14 %', '3 GB') - only inside the box it
+      // was in (any such number on the page would match it: a tile's '0s' found again in another table's cell), any
+      // other text anywhere on the page
+      let box = m; if (/^[0-9][0-9.,]*\\s*(%|[a-z]{1,2})?$/i.test(d.text)) for (const i of d.path.slice(0, -1)) box = box?.children[i];
       return [...(box?.querySelectorAll('*') ?? [])].find(holds) ?? null;
     }
     return null;
@@ -216,7 +219,7 @@ const enumerate = full => ev(`(() => { ${PARTS}
       if (clips.some(c => c.contains(e))) continue;
       // a disabled control is plain only when it says why (its title, or the off-reason words beside it)
       const offBtn = e.closest('button:disabled, [aria-disabled="true"]');
-      // a control first (the review of 823e113, finding 4): a link or a button inside a heading, a label or a value is
+      // a control first: a link or a button inside a heading, a label or a value is
       // clicked like any other, never called plain by the place it sits in
       const base = offBtn && (offBtn.title || offBtn.parentElement?.querySelector('.off-reason')) ? 'off'
         : e.closest('a, button') ? 'control'
@@ -261,7 +264,7 @@ const enumerate = full => ev(`(() => { ${PARTS}
     // the reasons: the line's text after the name, split at its separators
     const rest = txt(r).slice(name.length).replace(/(Critical|Warning)\\s*Acknowledge.*$/, '').trim();
     for (const w of rest.split(' · ').map(s => s.replace(/\\s*\\+\\d+ more$/, '').trim()).filter(Boolean)) out.push({ part: 'strip', row: name, label: w.replace(/\\s.*$/, ''), text: w });
-    // its '+n more' (the line's other reasons shown in place) is clicked as well (the review of 823e113, finding 10)
+    // its '+n more' (the line's other reasons shown in place) is clicked as well
     const more = [...r.querySelectorAll('button')].find(b => /^\\+\\d+ more$/.test(txt(b)));
     if (more) out.push({ part: 'strip', row: name, label: '+n more', text: txt(more) });
   }
@@ -291,8 +294,14 @@ const locate = d => ev(`(() => { ${PARTS}
   if (!b || b.width === 0) return { why: 'its text is not drawn' };
   const x = b.left + Math.min(b.width / 2, 40), y = b.top + b.height / 2;
   const hit = document.elementFromPoint(x, y);
+  // a link that opens an outside page in a new tab: its host, read from its href (the page is never fetched); the
+  // target itself is the link or inside it - a cell whose click point lands on a link beside its own text is not read
+  const ext = e.closest('a[target="_blank"][href]');
+  // (inside this template a backslash is written twice, as the other patterns here: a lone one before '/' is dropped,
+  // and the page would read '/^https?:/' with the rest of the line a comment)
+  const out = ext && /^https?:\\/\\//i.test(ext.getAttribute('href') ?? '') ? new URL(ext.href).host : '';
   // the point a person clicks must be on the target itself: another element over it (a sticky bar, a menu) would take
-  // the click, and its effect would be counted as the target's (the review of 823e113, finding 13)
+  // the click, and its effect would be counted as the target's
   if (hit && !(e === hit || e.contains(hit) || hit.contains(e))) return { why: 'another element is over its text: ' + hit.tagName.toLowerCase() + (typeof hit.className === 'string' && hit.className ? '.' + hit.className.split(' ')[0] : '') };
   // the twin rule: a text of a check (data-group, on a fleet page with its instance's data-inst) beside which a link
   // of the same check is on the page - the text is dead where its twin answers
@@ -307,7 +316,7 @@ const locate = d => ev(`(() => { ${PARTS}
   const tint = c => { const q = document.createElement('span'); q.style.color = c; document.body.append(q); const v = getComputedStyle(q).color; q.remove(); return v; };
   const band = new Set([tint('var(--warn)'), tint('var(--crit)')]);
   const status = !e.closest('h1, h2, h3, h4, h5, h6') && (band.has(getComputedStyle(e).color) || !!e.closest('td.status.warn, td.status.crit, .badge.warn, .badge.crit'));
-  return { x, y, twin, status, hit: hit ? hit.tagName.toLowerCase() + (hit.className && typeof hit.className === 'string' ? '.' + hit.className.split(' ')[0] : '') : '' };
+  return { x, y, twin, status, out, hit: hit ? hit.tagName.toLowerCase() + (hit.className && typeof hit.className === 'string' ? '.' + hit.className.split(' ')[0] : '') : '' };
 })()`);
 // what a person can see, and what the page holds: the text in view by place, the text anywhere, the sort marks, an
 // open dialog or menu, the address (the Refresh Time's clock left out: it moves by itself)
@@ -367,6 +376,8 @@ const clickOne = async (scope, t) => {
   const p = await locate(t);
   const r = { scope, ...t, engine: t.part === 'instcell' ? engineByName.get(t.row) ?? '' : '' };
   if (p.why) { r.effect = p.why; r.verdict = 'FAIL ' + p.why; return { r, dirty: false, vanished: VANISHED.has(p.why) }; }
+  // an outside page in a new tab: read, not clicked (the header)
+  if (p.out) { r.hit = p.hit; r.effect = `opens ${p.out} in a new tab (its href read, the page not fetched)`; r.verdict = 'ok'; return { r, dirty: false }; }
   await mouse('mouseMoved', p.x, p.y); await sleep(150);
   const before = await snap(), d0 = dialogs.length;
   await mouse('mousePressed', p.x, p.y); await mouse('mouseReleased', p.x, p.y);
@@ -374,7 +385,7 @@ const clickOne = async (scope, t) => {
   let after = await snap();
   if (after.hash !== before.hash) { await drawn(); after = await snap(); }
   const effects = [];
-  // where it lands: the address, and a page the tab strip does not hold said so (finding 14 of the review of 823e113)
+  // where it lands: the address, and a page the tab strip does not hold said so
   if (after.hash !== before.hash) effects.push('lands on ' + after.hash + (after.tab ? '' : ' (a page outside the tab strip)'));
   if (dialogs.length > d0) effects.push('opens a browser dialog: ' + dialogs.slice(d0).join(' / ').slice(0, 80));
   if (after.modal > before.modal) effects.push('opens a dialog or a menu');
@@ -414,8 +425,9 @@ const recover = async hash => { await freshTab(); await reset(hash, true); };
 // the planted self-test of the twin and status rules (once, on the first scope's page): three texts planted at the top
 // of the page, each marked as text (data-nolink) and clicked as any target: a twin of a planted link of its own group
 // (wanted 'FAIL dead twin'), a badge in the critical band and a text in the warning colour ('FAIL dead status text'),
-// plain words, a text whose check's link is on another instance's line, a label holding a check's link ('plain'). A
-// walk without the rules calls them all plain, and the self-test fails the walk
+// plain words, a text whose check's link is on another instance's line, a label holding a check's link ('plain'), and a
+// link to an outside page in a new tab ('ok', read, not clicked) beside an in-app address in a new tab ('plain': only an
+// http(s) href is read). A walk without the rules calls them all plain, and the self-test fails the walk
 let selfTested = false;
 const selfTest = async (scope) => {
   selfTested = true;
@@ -423,12 +435,16 @@ const selfTest = async (scope) => {
     p.innerHTML = '<span data-group="walkplant" data-nolink="this page">planted twin</span> <a data-group="walkplant" href="#/findings">planted link</a> <span class="badge crit" data-nolink="this page">planted critical</span> <span data-nolink="this page">planted words</span>'
       + ' <span data-nolink="this page" style="color: var(--warn)">planted warning colour</span>'
       + ' <span data-inst="1"><span data-group="walkplant3" data-nolink="this page">planted other instance</span></span> <span data-inst="2"><a data-group="walkplant3" href="#/findings">planted link 3</a></span>'
-      + ' <span data-nolink="this page">planted label: <a data-group="walkplant2" href="#/findings">planted link 2</a></span> <a data-group="walkplant2" href="#/findings">planted link 2b</a>';
+      + ' <span data-nolink="this page">planted label: <a data-group="walkplant2" href="#/findings">planted link 2</a></span> <a data-group="walkplant2" href="#/findings">planted link 2b</a>'
+      + ' <a href="https://example.invalid/walkplant" target="_blank" rel="noopener">planted outside page</a>'
+      + ' <a href="#/findings" target="_blank" rel="noopener">planted in-app tab</a>';
     m.prepend(p); window.scrollTo(0, 0); return true; })()`);
   // wanted: the twin and the two status texts (a badge's tint, a text in the warning colour) dead; plain words, a text
-  // whose same check's link is on another instance's line, and a label holding a check's link plain
+  // whose same check's link is on another instance's line, and a label holding a check's link plain; the outside page
+  // read as ok, the in-app address in a new tab clicked as any target (plain)
   const want = [['planted twin', [0, 0], 'FAIL dead twin'], ['planted critical', [0, 2], 'FAIL dead status text'], ['planted words', [0, 3], 'plain'],
-    ['planted warning colour', [0, 4], 'FAIL dead status text'], ['planted other instance', [0, 5, 0], 'plain'], ['planted label:', [0, 7], 'plain']];
+    ['planted warning colour', [0, 4], 'FAIL dead status text'], ['planted other instance', [0, 5, 0], 'plain'], ['planted label:', [0, 7], 'plain'],
+    ['planted outside page', [0, 9], 'ok'], ['planted in-app tab', [0, 10], 'plain']];
   const got = []; let right = 0;
   for (const [text, path, w] of want) {
     const o = await clickOne(scope, { part: 'inst', path, nth: 0, label: 'self-test', text, kind: 'nolink' });

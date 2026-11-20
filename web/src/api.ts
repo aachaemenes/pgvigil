@@ -76,13 +76,15 @@ export async function post<T = unknown>(path: string, data: unknown = {}): Promi
   return b as T;
 }
 
-export interface Session { login: boolean; user?: string }
+// role (B24f): viewer, operator or admin; role_error: the role could not be read (a write is refused 503 then)
+export interface Session { login: boolean; user?: string; role?: string; role_error?: string }
 
 export interface Activity {
   snapshot_at: string | null;
   summary: Table | null;
   sessions: Table | null;
   chains: Table | null;
+  own_hidden?: Table | null;   // B24 OWN: what the default hid, the read's own in all, since (own.ts)
 }
 
 export interface DMS {

@@ -55,7 +55,7 @@ func TestPlansRow(t *testing.T) {
 	}
 }
 
-// TestMaskPlanReal: the collector's own normalizer takes the literals out of the keys the review named.
+// TestMaskPlanReal: the collector's own normalizer takes the literals out of a Conflict Filter and a Window key.
 func TestMaskPlanReal(t *testing.T) {
 	js := `[{"Plan": {"Node Type": "ModifyTable", "Conflict Filter": "(t.x <> 4242)", "Plan Rows": 1,
 	  "Plans": [{"Node Type": "WindowAgg", "Parent Relationship": "Outer", "Window": "w1 AS (ORDER BY x ROWS BETWEEN '1234'::bigint PRECEDING AND CURRENT ROW)", "Plan Rows": 1}]}}]`

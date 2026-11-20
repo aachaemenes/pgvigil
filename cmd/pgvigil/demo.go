@@ -115,8 +115,8 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("demo: %d instance(s) seeded (%d replaced), %d import call(s), %d row(s) in %s; anchor %s\n",
-		st.Instances, st.Replaced, st.Imports, st.Rows, st.Elapsed.Round(time.Millisecond), st.Anchor.UTC().Format(time.RFC3339))
+	fmt.Printf("demo: %d instance(s) seeded (%d replaced), %d import call(s), %d row(s) in %s; %d import(s) taken again after a deadlock; anchor %s\n",
+		st.Instances, st.Replaced, st.Imports, st.Rows, st.Elapsed.Round(time.Millisecond), st.Retries, st.Anchor.UTC().Format(time.RFC3339))
 	if !*serve {
 		return nil
 	}
@@ -127,16 +127,8 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	// the accepted Host values come from the bound port (-listen 127.0.0.1:0 picks one)
 	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
-	// the demo's SQL Server instances run mssql_running_plans every minute (off by default; an admin's schedules: line
-	// turns it on): the seed sends it each snapshot, so the stale check and Collection dates expect it there
-	exp := expectedIntervals(&config.Config{})
-	for _, name := range fleet.RunningPlanInstances() {
-		exp.Instances[name] = map[string]int{"mssql_running_plans": 60}
-	}
-	srv, err := web.Open(ctx, log, repoDSN, web.Options{Expected: exp, Hosts: web.LoopbackHosts(port),
-		Tags: web.TagsUI{GroupBy: []string{"env"}, EnvOrder: config.DefaultEnvOrder}, Version: versionLine(),
-		// the demo's own write door: user demo, on the instances this run seeded, on the repository login demo already holds
-		DemoDoor: &web.DemoDoor{DSN: repoDSN, Instances: fleet.IDs(), Prefix: fleet.Prefix()}})
+	// the demo's own write door: user demo, on the instances this run seeded, on the repository login demo already holds
+	srv, err := demoServe(ctx, log, repoDSN, port, fleet.RunningPlanInstances(), &web.DemoDoor{DSN: repoDSN, Instances: fleet.IDs(), Prefix: fleet.Prefix()})
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -169,4 +161,26 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 			}
 		}
 	}
+}
+
+// demoServe opens the demo's server on the seeded repository (runDemo -serve, and its store test): the intervals the
+// seed keeps - the demo's SQL Server instances run mssql_running_plans every minute (off by default; an admin's
+// schedules: line turns it on): the seed sends it each snapshot, so the stale check and Collection dates expect it
+// there -, the loopback hosts of the bound port, the env tags and the demo's write door.
+func demoServe(ctx context.Context, log *slog.Logger, repoDSN, port string, runningPlans []string, door *web.DemoDoor) (*web.Server, error) {
+	exp := expectedIntervals(&config.Config{})
+	for _, name := range runningPlans {
+		exp.Instances[name] = map[string]int{"mssql_running_plans": 60}
+	}
+	srv, err := web.Open(ctx, log, repoDSN, web.Options{Expected: exp, Hosts: web.LoopbackHosts(port),
+		Tags: web.TagsUI{GroupBy: []string{"env"}, EnvOrder: config.DefaultEnvOrder}, Version: versionLine(), DemoDoor: door})
+	if err != nil {
+		return nil, err
+	}
+	// the plan configuration of an install with no file lines: every instance's statement-text policy is the
+	// configuration's default, so a page built from it (the XE captures script) reads the demo as it reads an install;
+	// the handlers' refusal of an empty policy stays (doorSet.queryText: never an empty policy read as full text).
+	// EXPLAIN ANALYZE and the planner check stay off (no gate, as before).
+	srv.SetPlans(web.PlansConfig{DefaultQueryText: config.DefaultQueryText})
+	return srv, nil
 }

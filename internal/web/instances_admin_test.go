@@ -33,10 +33,10 @@ func TestListPathOK(t *testing.T) {
 }
 
 // The page's five read-only reasons in its own words (each reason a proof row):
-// a demo serve (the join's demo door: proof-demodoor), -no-login (proof-instances L), the audit login off (L2), the
+// a demo serve (the demo door: proof-demodoor), -no-login (proof-instances L), the audit login off (L2), the
 // audit login not connected, and no actions door at all, which serve never has (it always builds the door) - so this
 // test is that reason's row. Each answers every write 403 with the words before any login is asked: an instance add,
-// a source's sweep and edit, a proposal's test (205's merge review, finding 2).
+// a source's sweep and edit, a proposal's test.
 func TestInstancesOffReasons(t *testing.T) {
 	login := newAuth(func(context.Context, string) (string, error) { return "h", nil }, false, time.Hour)
 	for _, c := range []struct {

@@ -6,7 +6,7 @@
 --   backup_status    one row per instance: the archiver, the cloud retention and restore point, the newest
 --                    automated and manual snapshot and their ages.
 --   backup_checks    the overview's rows (check group 'backups': the Summary column Backups).
---   backup_findings  the four rules in the findings columns (the join adds them to pgvigil.findings).
+--   backup_findings  the four rules in the findings columns (a later migration adds them to pgvigil.findings).
 -- pgBackRest and barman are not read: their repositories and catalogs live outside the server.
 
 CREATE TABLE IF NOT EXISTS pgvigil.backup_state (
@@ -198,7 +198,7 @@ SELECT h.instance_id, h.severity, h.check_name, h.object, h.at, h.detail
  WHERE h.at > now() - interval '1 hour';
 
 -- The rules in the findings columns, on reads of the last hour like the checks (a removed aws: block or an expired
--- login leaves the last cloud read stored: its findings do not outlive it); the join UNION ALLs this into pgvigil.findings.
+-- login leaves the last cloud read stored: its findings do not outlive it); a later migration UNION ALLs this into pgvigil.findings.
 CREATE OR REPLACE VIEW pgvigil.backup_findings AS
 SELECT h.instance_id, h.severity, h.check_name AS setting, h.object || ': ' || h.detail AS value, true AS is_set,
        CASE h.check_name

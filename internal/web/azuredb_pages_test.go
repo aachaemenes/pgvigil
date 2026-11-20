@@ -15,7 +15,7 @@ import (
 // and the Azure Summary's reads of one Azure SQL Database - its tier, the window's row (averages weighed by samples, the
 // largest sample, DBA Dash's unused DTUs, the histograms summed), its minutes newest first, the gap in the window, its
 // PRIMARY data files against their max size with the '% Max Size' status - and the Summary's Disk cell n/a on Azure SQL
-// Database while a SQL Server's with the same storage read says ok. [the review's fold, part c L5:] a DTU database whose
+// Database while a SQL Server's with the same storage read says ok. A DTU database whose
 // tier is not read gives its DTU limit from its minutes and its files read 4 hours ago at 92 % say 'stale'; a vCore
 // database without a tier row gives its vCores from its minutes and an unlimited data file says 'no max size'; the
 // fleet sorts by unused DTUs, most first (DBA Dash's), and carries all four histograms with their 70 %+ shares.

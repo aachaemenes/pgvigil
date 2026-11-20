@@ -22,7 +22,7 @@ export interface ChartPicture {
 export type PictureBox = HTMLElement & { pgvPicture?: ChartPicture; pgvNumbers?: () => ChartNumbers };
 export const pictureOf = (e: Element): ChartPicture | undefined => (e as PictureBox).pgvPicture;
 
-// SCALE: a picture's pixels per CSS pixel (the lead 19:22, C2 (A): 2x on any screen; it cannot be redrawn by Excel)
+// SCALE: a picture's pixels per CSS pixel (C2 (A): 2x on any screen; it cannot be redrawn by Excel)
 export const SCALE = 2;
 // EMU: the sheet's drawing units per CSS pixel (914,400 an inch, 96 px an inch)
 export const EMU = 9525;

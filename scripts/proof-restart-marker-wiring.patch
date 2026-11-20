@@ -1,0 +1,129 @@
+diff --git c/docs/performance.md i/docs/performance.md
+index daea7365..50afe867 100644
+--- c/docs/performance.md
++++ i/docs/performance.md
+@@ -52,6 +52,31 @@ with a sample in any chart). Each title opens the detailed page.
+ API: `GET /api/performance?instance=N&from=&to=[&part=]` - parts `meta`, `grid` and, per engine, `cpu`, `sessions`,
+ `waits`, `db`, `io` (PostgreSQL) or `cpu`, `sessions`, `waits`, `db`, `io` (SQL Server).
+ 
++## Restarts, failovers and builds
++
++Every instance chart marks each restart, failover, crash restart and build change in its range, listed under the chart
++(`GET /api/frame/events`), and each one is an info finding for 24 hours: `instance restarted`, `instance failed over`,
++`crash restart`, `build changed`. They come from the reads pgvigil already makes: an instance's first read is no event.
++
++- SQL Server: the start time moved. On another machine (a failover cluster's physical node, else the machine name) a
++  failover; on the same machine a restart when the start moved by over 120 s and the new start is after the read before
++  (the server's own clock at that read); any other move on the same machine is the host's clock stepping, no event.
++- PostgreSQL: the postmaster's start moved. A new start after the read before is a restart; a start at or before it
++  is a failover (a node already up took over), whatever the server's address: a container or pod recreated on a new
++  address reads restart, and a promotion behind a virtual IP or over a Unix socket reads failover. "The read before" is
++  the server's own clock at that read. Two edges read restart, since the timeline is not read: a standby created and
++  promoted between two reads, and a managed high-availability failover whose standby runs no PostgreSQL until it takes
++  over (an Amazon RDS Multi-AZ DB instance, Cloud SQL HA); the event's words keep both addresses. The managed edge
++  stays until task 390b, which reads the provider's own failover events (RDS events, Cloud SQL operations) for an
++  instance with its cloud block; the provider's word then wins.
++- A crash restart (PostgreSQL 15 and later): the statistics were reset with the postmaster kept, the server's crash
++  recovery; a crash the server log already reports is one finding, the log's. On 14 and older only the server log's
++  finding names it.
++- A build change: SQL Server's product version moved between two reads; on PostgreSQL a row of its version history (a
++  patch, an upgrade, an engine version read from AWS).
++- An event is dated at the new start when that is after the read before, else at the read that saw it: a failover onto
++  a node up for days is dated when it was seen, not days back. Events are kept 365 days.
++
+ ## Not proven
+ 
+ The SQL Server columns and charts on SQL Server 2016 (task 164), on Windows (task 144), on Amazon RDS for SQL Server (task 165) and on Azure SQL Managed Instance: `scripts/proof-mssql-perf.sh` runs on SQL Server 2017 to 2025 in Linux containers (through `scripts/proof-mssql-versions.sh`).
+diff --git c/internal/mssql/instance.go i/internal/mssql/instance.go
+index bcd7ac41..88a2b875 100644
+--- c/internal/mssql/instance.go
++++ i/internal/mssql/instance.go
+@@ -22,6 +22,8 @@ func (instanceCollector) Applies(Info) (bool, string)    { return true, "" }
+ const serverSQL = `SELECT
+   'server' AS kind,
+   CAST(SERVERPROPERTY('MachineName') AS nvarchar(128)) AS machine_name,
++  -- task 404 (0155): the node the instance runs on; a failover cluster's MachineName is its virtual name on every node
++  CAST(SERVERPROPERTY('ComputerNamePhysicalNetBIOS') AS nvarchar(128)) AS physical_machine,
+   CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)) AS server_name,
+   CAST(SERVERPROPERTY('InstanceName') AS nvarchar(128)) AS instance_name,
+   CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS edition,
+@@ -40,10 +42,15 @@ const configSQL = `SELECT 'config' AS kind, CAST(name AS nvarchar(128)) AS name,
+   CAST(is_dynamic AS int) AS is_dynamic, CAST(is_advanced AS int) AS is_advanced
+ FROM sys.configurations ORDER BY name`
+ 
+-// the start time is the server's local clock in the DMV: moved to UTC by the server's own offset at the read
++// the start time: the server's UTC clock less the ticks since the start (sqlserver_start_time_ms_ticks, in seconds and
++// milliseconds so no DATEADD argument passes an int). The DMV's sqlserver_start_time is local: moved to UTC by today's
++// offset it was an hour off after every daylight-saving change, a false restart to 0155's events (task 404, F5).
+ const sysinfoSQL = `SELECT 'sysinfo' AS kind, cpu_count, hyperthread_ratio, physical_memory_kb, committed_target_kb,
+   max_workers_count, scheduler_count, CAST(virtual_machine_type_desc AS nvarchar(60)) AS virtual_machine_type,
+-  CONVERT(varchar(33), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), sqlserver_start_time), 126) + 'Z' AS started_at_utc
++  CONVERT(varchar(33), DATEADD(MILLISECOND, -CAST((ms_ticks - sqlserver_start_time_ms_ticks) % 1000 AS int),
++    DATEADD(SECOND, -CAST((ms_ticks - sqlserver_start_time_ms_ticks) / 1000 AS int), SYSUTCDATETIME())), 126) + 'Z' AS started_at_utc,
++  -- task 404 (0155): the server's own clock at this read, the read 0155 compares the next start with
++  CONVERT(varchar(33), SYSUTCDATETIME(), 126) + 'Z' AS server_utc
+ FROM sys.dm_os_sys_info`
+ 
+ func (instanceCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
+diff --git c/internal/web/q_frame.go i/internal/web/q_frame.go
+index b9cdd5ff..f0efa48f 100644
+--- c/internal/web/q_frame.go
++++ i/internal/web/q_frame.go
+@@ -16,7 +16,8 @@ import (
+ //       window (newest first, at most frameEventCap of each kind): 'setting' (a setting's value changed: PostgreSQL's
+ //       instance_setting_history, SQL Server's mssql_config_history past its first read), 'restart' (the instance's
+ //       start as its newest read names it: postmaster_start, SQL Server's started_at), 'failover' (an availability
+-//       group's new primary, mssql_ag_failovers) and 'deadlock' (PostgreSQL's server log, SQL Server's deadlock
++//       group's new primary, mssql_ag_failovers), task 404's events (0155's instance_event_list: every 'restart',
++//       'failover', 'crash restart' and 'build' change seen between two reads) and 'deadlock' (PostgreSQL's server log, SQL Server's deadlock
+ //       events); each with the tab of the page that holds its rows and of_kind, the window's count of its kind (above
+ //       the cap the page says 'the newest 200 of n'). limits: the server limits a chart may draw as a line, by name
+ //       (max_connections), as the newest read before the window's end holds them.
+@@ -116,13 +117,29 @@ SELECT at, kind, label, tab, of_kind FROM (
+       LEFT JOIN pgvigil.mssql_config_history p ON p.instance_id = h.instance_id AND p.name = h.name AND p.valid_to = h.valid_from
+      WHERE h.instance_id = $1 AND NOT h.first_read AND h.valid_from > $2 AND h.valid_from <= $3
+     UNION ALL
++    -- the newest start where no restart or failover of 0155 was seen since it (an instance first read after it started;
++    -- a failover onto a node up for days is dated at the read, its node's start is not marked again;
++    -- 120 s below the start, as 0155's tolerance, so a clock step after a quick read does not mark it again)
+     SELECT st.postmaster_start, 'restart', 'PostgreSQL started', 'summary'
+       FROM pgvigil.instance_state st
+      WHERE st.instance_id = $1 AND st.postmaster_start > $2 AND st.postmaster_start <= $3
++       AND NOT EXISTS (SELECT 1 FROM pgvigil.instance_events e WHERE e.instance_id = $1 AND e.kind IN ('restart', 'failover') AND e.seen_at >= st.postmaster_start - interval '120 seconds')
+     UNION ALL
+     SELECT m.started_at, 'restart', 'SQL Server started', 'summary'
+       FROM pgvigil.mssql_instance m
+      WHERE m.instance_id = $1 AND m.started_at > $2 AND m.started_at <= $3
++       AND NOT EXISTS (SELECT 1 FROM pgvigil.instance_events e WHERE e.instance_id = $1 AND e.kind IN ('restart', 'failover') AND e.seen_at >= m.started_at - interval '120 seconds')
++    UNION ALL
++    -- task 404 (0155): each restart, failover, crash restart and build change seen between two reads
++    -- a PostgreSQL build is the Versions tab's (version_history); an availability group's failover is marked once, by
++    -- mssql_ag_failovers (its hadr read may come up to 15 minutes after the instance read that saw the new node)
++    SELECT e.at, e.kind, pgvigil.instance_event_words(e.kind, i.engine, e.old_value, e.new_value),
++           CASE WHEN e.kind = 'build' AND i.engine = 'postgres' THEN 'versions' ELSE 'summary' END
++      FROM pgvigil.instance_event_list e
++      JOIN pgvigil.instances i ON i.instance_id = e.instance_id
++     WHERE e.instance_id = $1 AND e.at > $2 AND e.at <= $3
++       AND NOT (e.kind = 'failover' AND EXISTS (SELECT 1 FROM pgvigil.mssql_ag_failovers f WHERE f.instance_id = $1
++                  AND f.at > coalesce(e.prev_at, e.seen_at - interval '1 hour') AND f.at <= e.seen_at + interval '15 minutes'))
+     UNION ALL
+     SELECT f.at, 'failover', f.group_name || ': ' || f.old_primary || ' -> ' || f.new_primary, 'availability'
+       FROM pgvigil.mssql_ag_failovers f
+diff --git c/web/src/chart.ts i/web/src/chart.ts
+index 8a1ea88a..7d5d4b07 100644
+--- c/web/src/chart.ts
++++ i/web/src/chart.ts
+@@ -90,9 +90,10 @@ function chartWindow(xs: number[]): { from: number; to: number } {
+   const to = Math.ceil(b / minute) * minute;
+   return { from: Math.max(Math.floor(a / minute) * minute, to - MAX_RANGE_MS), to };
+ }
+-const markWords: Record<string, string> = { setting: 'Setting change', restart: 'Restart', failover: 'Failover', deadlock: 'Deadlock' };
+-const markPlural: Record<string, string> = { setting: 'setting changes', restart: 'restarts', failover: 'failovers', deadlock: 'deadlocks' };
+-const markColour = (kind: string) => { const p = seriesColors(); return ({ setting: p[3], restart: p[7], failover: p[6], deadlock: p[1] } as Record<string, string>)[kind] ?? neutralColor(); };
++// task 404 (0155): 'crash restart' and 'build' beside the restarts and failovers it now reads between two reads
++const markWords: Record<string, string> = { setting: 'Setting change', restart: 'Restart', failover: 'Failover', deadlock: 'Deadlock', 'crash restart': 'Crash restart', build: 'Build change' };
++const markPlural: Record<string, string> = { setting: 'setting changes', restart: 'restarts', failover: 'failovers', deadlock: 'deadlocks', 'crash restart': 'crash restarts', build: 'build changes' };
++const markColour = (kind: string) => { const p = seriesColors(); return ({ setting: p[3], restart: p[7], failover: p[6], deadlock: p[1], 'crash restart': p[4], build: p[5] } as Record<string, string>)[kind] ?? neutralColor(); };
+ // a mark's link: its rows' page over ten minutes around it (a deadlock opens the log's deadlocks)
+ function markHref(m: FrameMark): string {
+   const ctx = parse();

@@ -6,7 +6,7 @@
 #
 #   PGVIGIL_REPO_DSN   a superuser connection to the sandbox; the proof makes its own repository database and logins
 #                      (random suffix) and drops them at the end.
-#   PGVIGIL_BIN        a build with the alerts command and the /api/alerts route (the lead's wiring; default bin/pgvigil).
+#   PGVIGIL_BIN        a build with the alerts command and the /api/alerts route (the wiring; default bin/pgvigil).
 #   python3            the SMTP sink and the HTTP listener.
 #
 # Every sender pass after B prints its exit code, summary line and stderr into the record (pass <tag>: ...). Expected of
@@ -17,7 +17,7 @@
 # The demo's findings move while the proof runs (some are defined over the last minutes), so every count below is
 # graded against what the pass itself recorded (its alert_log rows, the alert rows it opened), never against a later
 # read of the findings view alone; B's key sets are the one exception: the view read right before and right after its
-# pass, a key in one read only owed neither way. [First form, before the review fold: D graded against the view and failed twice in four
+# pass, a key in one read only owed neither way. [First form: D graded against the view and failed twice in four
 # runs; root cause: a finding entered or left the view between the pass and the read.] Two findings are the proof's
 # own and do not move: 'autovacuum is off' (critical) on instance P, made by a non-default setting in its
 # instance_state, and P's 'database xid age', whose severity the proof sets through pgvigil.databases.
@@ -32,7 +32,7 @@
 #     (permission denied for the function); a reader login (IN ROLE pgvigil_reader) is refused alert_record (permission
 #     denied for the table alert_log) and the partition door ("is not the alert sender"); the alerter login reads
 #     alert_due.
-#  A. [join fold] a configuration without alerts and without alerts_dsn whose repository login is the collector's:
+#  A. a configuration without alerts and without alerts_dsn whose repository login is the collector's:
 #     `pgvigil alerts` exits 0 with "no channel configured: nothing sent" and writes nothing (alert_log 0 rows).
 #     The same with alerts_dsn (the alerter): "no channel configured: nothing sent"; alert_log holds one row, outcome
 #     'none', channel NULL; alert_channels and alert_state 0 rows (no sync); nothing received.
@@ -48,7 +48,7 @@
 #     message holds P1 "[FIRING CRITICAL]" lines among them P's
 #     autovacuum; hook 1 POST of P1, drop, drop2 and grace P1 files each, night 0; the five channels P1 open rows each;
 #     redir 1 refused ("redirect: not followed"), dead 1 failed ("connection refused"), no token in any error or
-#     destination; alert_channels 9 configured. [join fold] bulk (a webhook at min_severity warning on a listener path
+#     destination; alert_channels 9 configured. Bulk (a webhook at min_severity warning on a listener path
 #     of its own): its sent rows carry PB firing, PB > 25, in ceil(PB/25) posts of at most 25 alerts, the posts'
 #     alerts PB in all.
 #  C. a second run at once: no repeat row in any channel, every row B opened still at send_count 1. mail's open rows
@@ -57,7 +57,7 @@
 #  H. the severity hold: P's xid age set to 1.5 billion (critical), a run: mail opens it (one more firing). Set to
 #     500 million (warning, under mail's floor), a run: no resolved, its row open, no repeat. Back to 1.6 billion, a
 #     run: no new firing, no escalated (the row is open at critical), its send_count unchanged.
-#  D. P's autovacuum setting back on (the finding gone), a run [join fold]: no collection of P since, so nothing is
+#  D. P's autovacuum setting back on (the finding gone), a run: no collection of P since, so nothing is
 #     resolved: no "[RESOLVED] P" line, its six rows open with missing_since set. A collection of P logged ok, a run:
 #     mail's message holds "[RESOLVED] P: pg_gather autovacuum", hook's post an event 'resolved' for it, drop a
 #     *-resolved-* file of it, bulk resolved; drop2 no resolved file, its row cleared without recovery (outcome
@@ -67,7 +67,7 @@
 #     message, no resolved event of it in a new post or file; its rows on the five channels cleared with
 #     recovery_sent_at NULL.
 #  F. the API (`pgvigil serve -no-login` on loopback): /api/alerts answers 9 channels (all configured), mail, hook,
-#     drop and drop2 with the same open count, grace at least as many [first fold run: grace 5, the others 4: a demo
+#     drop and drop2 with the same open count, grace at least as many [an earlier run: grace 5, the others 4: a demo
 #     finding left the view within grace's 10-minute clear delay; the four at clear_after 0 resolved it, grace holds it], a log of the last hour with the 'none', 'sent', 'refused',
 #     'failed' and 'cleared' outcomes; /api/findings: the rows carrying alert_last_sent with mail in alert_channels are
 #     mail's open rows whose finding is in the view, the alert rules' own findings left out (the Alert rules page shows
@@ -466,8 +466,13 @@ for _ in $(seq 1 100); do curl -fs "http://127.0.0.1:$UI_PORT/api/health" >/dev/
 curl -fs "http://127.0.0.1:$UI_PORT/api/alerts" > "$WORK/alerts.json" || fail "F: /api/alerts: $(curl -s "http://127.0.0.1:$UI_PORT/api/alerts" | head -c 800)"
 curl -fs "http://127.0.0.1:$UI_PORT/api/findings" > "$WORK/findings.json" || fail "F: /api/findings: $(curl -s "http://127.0.0.1:$UI_PORT/api/findings" | head -c 800)"
 # /api/findings lists pgvigil.findings; alert_findings also holds the alert rules' own findings (0085: source 'alert rule',
-# shown on the Alert rules page, not in the Findings grid), which the demo's rules raise: they are not counted here
-N3=$(q "select count(*) from pgvigil.alert_state s where s.channel = 'mail' and s.cleared_at is null and exists (select 1 from pgvigil.alert_findings f where f.finding_key = s.finding_key and f.source <> 'alert rule')")
+# shown on the Alert rules page, not in the Findings grid), which the demo's rules raise: they are not counted here;
+# nor are the alert channels' own 'alert channel failing' findings (0154's alert_channel_findings, task 403b's K3: shown
+# on the Collector page, never in pgvigil.findings), which this proof's own failing channels (dead, redir) raise;
+# nor a finding the API never lists: /api/findings joins an active instance (sqlFindings, internal/web/queries.go),
+# so a repository-wide finding with no instance (a critical 'collections run long', 0166) can be sent to mail and
+# never be listed
+N3=$(q "select count(*) from pgvigil.alert_state s where s.channel = 'mail' and s.cleared_at is null and exists (select 1 from pgvigil.alert_findings f where f.finding_key = s.finding_key and f.source <> 'alert rule' and not (f.source = 'pgvigil repository' and f.setting = 'alert channel failing') and exists (select 1 from pgvigil.instances i where i.instance_id = f.instance_id and i.is_active))")
 python3 - "$WORK/alerts.json" "$WORK/findings.json" "$N3" <<'PY' || fail "F: the API's rows"
 import json, sys
 a = json.load(open(sys.argv[1])); f = json.load(open(sys.argv[2])); N3 = int(sys.argv[3])
@@ -596,7 +601,7 @@ PY
 ok "W1: $NW critical alerts to og (one create each, alias and page address), dc and gc (within their text limits), tplmail (its templates); capped sent 3 and held $((NW - 3))"
 
 # W2: the cap holds through the hour, and lets 3 more go when the hour has passed
-# graded against W2's own records [review 4: a demo finding moving between W1 and W2 changes what capped owes]:
+# graded against W2's own records [a demo finding moving between W1 and W2 changes what capped owes]:
 # capped owes what og holds open and capped does not, read right after the pass
 TW2=$(mark); wpass W2
 OWE=$(q "select count(distinct finding_key) from pgvigil.alert_state o where o.channel = 'og' and o.cleared_at is null and not exists (select 1 from pgvigil.alert_state c where c.channel = 'capped' and c.cleared_at is null and c.finding_key = o.finding_key)")
@@ -609,7 +614,7 @@ SENT2=$(logsum capped n_firing "$TW2b" sent)
 ok "W2: the cap held all $CAP2 owed while the hour was used, then sent $SENT2 more"
 
 # W3: the API - the page, dismiss, mute rules (serve with the UI login; the audit login is the repository's dsn)
-# a fixed length: \$RANDOM alone can make one shorter than the login's minimum [s151-proof2: 'user add' refused it]
+# a fixed length: \$RANDOM alone can make one shorter than the login's minimum [a lab run: 'user add' refused it]
 UIUSER=proofui; UIPW="ui$(printf '%05d%05d%05d' $RANDOM $RANDOM $RANDOM)"
 PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$WORK/none.yaml" $UIUSER >"$WORK/useradd.log" 2>&1 || fail "W3: user add: $(tail -3 "$WORK/useradd.log")"
 UI2=$(freeport); U="http://127.0.0.1:$UI2"
@@ -622,7 +627,7 @@ idof() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.arg
 curl -s -c "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"$UIUSER\",\"password\":\"$UIPW\"}" "$U/api/login" >/dev/null
 [[ -n $(awk '$6 == "pgvigil_session" {print $7}' "$JAR") ]] || fail "W3: no session cookie"
 [[ $(q "select finding_key from pgvigil.alert_findings where instance_id = $PID and setting = 'autovacuum'") == "$AKEY" ]] || fail "W3: P's autovacuum is under another key"
-# finding_fix's two branches and its refusals [s151-proof1: a {1,400} bound in its pattern (PostgreSQL allows 255) failed
+# finding_fix's two branches and its refusals [a lab run: a {1,400} bound in its pattern (PostgreSQL allows 255) failed
 # every /api/alerts read at the first finding taking the detail branch]
 LONGD="rebuild it: REINDEX INDEX CONCURRENTLY public.$(printf 'x%.0s' $(seq 1 600)); then ANALYZE"
 FX() { q "select coalesce(pgvigil.finding_fix($1), 'null')"; }
@@ -630,7 +635,7 @@ FX() { q "select coalesce(pgvigil.finding_fix($1), 'null')"; }
 [[ $(FX "'postgres', 'x', $PID, 'x', false, null, 'run VACUUM (ANALYZE) public.t; then look again'") == "VACUUM (ANALYZE) public.t;" ]] || fail "W3: finding_fix, a statement in the detail"
 [[ $(q "select length(pgvigil.finding_fix('postgres', 'x', $PID, 'x', null, null, '$LONGD'))") == 635 ]] || fail "W3: finding_fix, a long statement"
 # never a statement that cannot run: a parameter no ALTER SYSTEM changes (data_checksums), an extension's name, a
-# two-word value, a SQL Server finding, a name with a ';', an alert rule's detail [review 2 should-fix 1]
+# two-word value, a SQL Server finding, a name with a ';', an alert rule's detail
 for args in "'postgres', 'pg_gather', $PID, 'data_checksums', true, 'on', null" "'postgres', 'pgvigil', $PID, 'amcheck', true, 'keep', null" \
             "'postgres', 'pg_gather', $PID, 'work_mem', true, 'at least 64MB', 'nothing to run'" "'sqlserver', 'config', $PID, 'max degree', true, '4', null" \
             "'postgres', 'pg_gather', $PID, 'a; drop', true, 'on', null" "'postgres', 'alert rule', $PID, 'x', null, null, 'alert rule 3 \"ANALYZE lag\" (every instance): x; held'"; do
@@ -711,7 +716,7 @@ PY
 ok "W4: Send test asked through the door (a second one and an unconfigured channel refused), sent by the next pass (og: the test and its close), answered and logged"
 
 # W5: P's autovacuum clears
-# the order D keeps: a pass marks the finding missing, then a read of P, then the pass that resolves it [s151-proof3:
+# the order D keeps: a pass marks the finding missing, then a read of P, then the pass that resolves it [a lab run:
 # the read before the marking pass resolved nothing - a read must come after the finding went missing]
 q "update pgvigil.instance_state set non_default_settings = (select coalesce(jsonb_agg(x), '[]'::jsonb) from jsonb_array_elements(non_default_settings) x where x->>'name' <> 'autovacuum') where instance_id = $PID" >/dev/null
 wpass W5a

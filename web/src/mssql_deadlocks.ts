@@ -5,6 +5,7 @@
 // victim's details, and the processes and resources as grids (the picture's text form).
 // Data: /api/mssql/xe (state, findings, deadlocks), /api/mssql/xe/deadlock and deadlock.xdl, /api/blocking/history.
 import { get, Row, rowsOf, Table } from './api';
+import { xeLossNote } from './mssql_xe';
 import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
@@ -14,7 +15,7 @@ import { stripGrid } from './timestrip';
 
 const text = (v: unknown) => v == null ? '' : String(v);
 const ms = (v: unknown) => v == null ? '' : fmtNum(v) + ' ms';
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const CHECKS = ['deadlocks in the last hour', 'a capture is not installed', 'a capture is stopped', 'the ring buffer dropped events'];
 
 // stateLine: the deadlock capture as the reader last saw it (the Extended Events tabs' wording, shortened)
@@ -127,6 +128,8 @@ export async function mssqlDeadlocksView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'severity', fmt: sevBadge }, { key: 'check_name', label: 'finding' }, { key: 'object', wide: true }, { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime },
     ]));
     sec.append(stateLine(rowsOf(st.state).find(r => r.capture === 'deadlocks')));
+    const lost = await xeLossNote(ctx, 'deadlocks').catch(() => null);
+    if (lost) sec.append(lost);
     const rows = rowsOf(dl.deadlocks);
     const trend = rowsOf(tr.deadlock_trend);
     // the rate from the trend (every deadlock of its window, not the list's newest 500); the trend reads at most 7 days

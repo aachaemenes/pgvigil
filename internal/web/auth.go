@@ -49,8 +49,8 @@ type failRecord struct {
 }
 
 type authState struct {
-	// lookup returns the stored hash of an enabled user, "" when there is none.
-	lookup   func(ctx context.Context, user string) (string, error)
+	// lookup returns the stored hash and role of an enabled user, "" and "" when there is none (B24f: ui_login_of).
+	lookup   func(ctx context.Context, user string) (string, string, error)
 	secure   bool
 	ttl      time.Duration
 	sem      chan struct{}
@@ -61,7 +61,20 @@ type authState struct {
 	fails    map[string]failRecord
 }
 
+// newAuth is the login with a lookup that knows no role: every user it finds is an admin (the tests' and an older
+// repository's shape; serve uses newAuthRoles).
 func newAuth(lookup func(context.Context, string) (string, error), secure bool, ttl time.Duration) *authState {
+	return newAuthRoles(func(ctx context.Context, user string) (string, string, error) {
+		h, err := lookup(ctx, user)
+		if h == "" || err != nil {
+			return h, "", err
+		}
+		return h, "admin", nil
+	}, secure, ttl)
+}
+
+// newAuthRoles is the login whose lookup returns the hash and the role (pgvigil.ui_login_of).
+func newAuthRoles(lookup func(context.Context, string) (string, string, error), secure bool, ttl time.Duration) *authState {
 	if ttl <= 0 {
 		ttl = defaultTTL
 	}
@@ -99,10 +112,11 @@ func (a *authState) issue(user, hash string) (string, error) {
 	return tok, nil
 }
 
-// verify returns the session's user when the token is live and the user still exists, is enabled
+// verify returns the session's user and role when the token is live and the user still exists, is enabled
 // and keeps the password the session was opened with; otherwise the session is gone. A repository
-// error keeps the session (the request's own query fails on the same error).
-func (a *authState) verify(ctx context.Context, tok string) (string, bool) {
+// error keeps the session (the request's own query fails on the same error) with no role: who.err says why,
+// and a write is refused on it. The role is never kept between requests.
+func (a *authState) verify(ctx context.Context, tok string) (who, bool) {
 	a.mu.Lock()
 	s, ok := a.sessions[tok]
 	if ok && !a.now().Before(s.expires) {
@@ -111,17 +125,17 @@ func (a *authState) verify(ctx context.Context, tok string) (string, bool) {
 	}
 	a.mu.Unlock()
 	if !ok {
-		return "", false
+		return who{}, false
 	}
-	hash, err := a.lookup(ctx, s.user)
+	hash, role, err := a.lookup(ctx, s.user)
 	if err != nil {
-		return s.user, true
+		return who{user: s.user, err: err}, true
 	}
 	if hash == "" || hash != s.hash {
 		a.revoke(tok)
-		return "", false
+		return who{}, false
 	}
-	return s.user, true
+	return who{user: s.user, role: role}, true
 }
 
 func (a *authState) revoke(tok string) {
@@ -201,25 +215,41 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// sessionUser names the live session's user, or "" without one.
+// sessionUser names the live session's user, or "" without one (the request's who when requireLogin read it).
 func (s *Server) sessionUser(r *http.Request) string {
-	c, err := r.Cookie(sessionCookie)
-	if err != nil {
-		return ""
+	if wh, ok := whoOf(r); ok {
+		return wh.user
 	}
-	u, ok := s.auth.verify(r.Context(), c.Value)
-	if !ok {
-		return ""
-	}
-	return u
+	return s.sessionWho(r).user
 }
 
-// requireLogin lets a request through with a live session, or when the login is off.
+// sessionWho reads the live session's user and role from the repository (a zero who without one).
+func (s *Server) sessionWho(r *http.Request) who {
+	if s.auth == nil {
+		return who{}
+	}
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return who{}
+	}
+	wh, ok := s.auth.verify(r.Context(), c.Value)
+	if !ok {
+		return who{}
+	}
+	return wh
+}
+
+// requireLogin lets a request through with a live session, or when the login is off; the session's who is read
+// once here and carried in the request (s.post and the gates read it from there).
 func (s *Server) requireLogin(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.auth != nil && s.sessionUser(r) == "" {
-			writeErr(w, http.StatusUnauthorized, errors.New("login required"))
-			return
+		if s.auth != nil {
+			wh := s.sessionWho(r)
+			if wh.user == "" {
+				writeErr(w, http.StatusUnauthorized, errors.New("login required"))
+				return
+			}
+			r = withWho(r, wh)
 		}
 		h.ServeHTTP(w, r)
 	})
@@ -261,7 +291,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	hash, err := a.lookup(r.Context(), user)
+	hash, role, err := a.lookup(r.Context(), user)
 	if err != nil {
 		s.log.Warn("login lookup failed", "err", err)
 		writeErr(w, http.StatusInternalServerError, errors.New("the login check could not run"))
@@ -294,8 +324,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	a.clearFails(ip, user)
 	http.SetCookie(w, a.cookie(tok, int(a.ttl.Seconds())))
-	s.log.Info("login", "user", user, "from", ip)
-	s.reply(w, r, map[string]any{"login": true, "user": user}, nil)
+	s.log.Info("login", "user", user, "role", role, "from", ip)
+	s.reply(w, r, map[string]any{"login": true, "user": user, "role": role}, nil)
 }
 
 // logout: POST /api/logout with the X-Pgvigil header ends the session named by the cookie.
@@ -321,8 +351,12 @@ func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, map[string]any{"login": false}, nil)
 		return
 	}
-	if u := s.sessionUser(r); u != "" {
-		s.reply(w, r, map[string]any{"login": true, "user": u}, nil)
+	if wh := s.sessionWho(r); wh.user != "" {
+		out := map[string]any{"login": true, "user": wh.user, "role": wh.role}
+		if wh.err != nil {
+			out["role_error"] = "the role could not be read: " + wh.err.Error()
+		}
+		s.reply(w, r, out, nil)
 		return
 	}
 	writeErr(w, http.StatusUnauthorized, errors.New("login required"))

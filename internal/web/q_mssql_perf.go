@@ -51,26 +51,44 @@ SELECT s.snapshot_at, s.schedulers, s.cpu_count, s.runnable_tasks, s.work_queue,
 // sqlMSSQLCPUSeries: on Azure SQL Database (B2a) the database's CPU of its limit from mssql_azuredb_minute as the
 // SQL Server share (weighed by each minute's samples; the per-sample maximum as total_max), no machine figure.
 const sqlMSSQLCPUSeries = `
-SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snapshot_at,
+WITH p AS (SELECT CASE WHEN $3::timestamptz - $2::timestamptz > interval '1 day' AND (SELECT i.platform FROM pgvigil.instances i WHERE i.instance_id = $1) = 'azuresqldb'
+                         THEN ceil($4::numeric / 3600) * 3600 ELSE $4::numeric END AS step)
+SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / p.step) * p.step) AS snapshot_at,
        round(sum(s.sql_pct * s.w) / nullif(sum(s.w) FILTER (WHERE s.sql_pct IS NOT NULL), 0), 1) AS sql_pct, round(avg(s.other_pct), 1) AS other_pct,
        round(avg(100 - s.idle_pct), 1) AS total_pct, coalesce(max(100 - s.idle_pct), max(s.az_max)) AS total_max, bool_or(s.idle_pct IS NOT NULL) AS machine_read,
        bool_or(s.az_max IS NOT NULL) AS azure
   FROM (SELECT c.snapshot_at, c.sql_pct::numeric AS sql_pct, c.other_pct, c.idle_pct, NULL::numeric AS az_max, 1 AS w
           FROM pgvigil.mssql_cpu_sample c WHERE c.instance_id = $1 AND c.snapshot_at > $2 AND c.snapshot_at <= $3
         UNION ALL
-        -- Azure SQL Database's minutes by DBA Dash's window (a minute that starts in it: q_azuredb.go)
+        -- Azure SQL Database's window (DBA Dash's: a minute that starts in it): up to a day its minutes; past a day its
+        -- built hours and edge minutes (pgvigil.mssql_azuredb_window, 0167) at a whole-hour step (an hour row lands whole
+        -- in one step)
         SELECT a.snapshot_at, a.avg_cpu_percent, NULL, NULL, a.max_cpu_percent, a.samples
-          FROM pgvigil.mssql_azuredb_minute a WHERE a.instance_id = $1 AND a.snapshot_at >= $2 AND a.snapshot_at < $3) s
+          FROM pgvigil.mssql_azuredb_minute a
+         WHERE $3::timestamptz - $2::timestamptz <= interval '1 day' AND a.instance_id = $1 AND a.snapshot_at >= $2 AND a.snapshot_at < $3
+        UNION ALL
+        SELECT a.snapshot_at, a.cpu_total / nullif(a.cpu_counted, 0), NULL, NULL, a.max_cpu_percent, coalesce(a.cpu_counted, 0)
+          FROM pgvigil.mssql_azuredb_window(ARRAY[$1::int], $2, $3) a WHERE $3::timestamptz - $2::timestamptz > interval '1 day') s, p
  GROUP BY 1 ORDER BY 1`
 
+// sqlMSSQLSchedSeries: the scheduler read's steps, with the schedulers that failed to create a worker (task 401 D6 /
+// OVW#51: sys.dm_os_schedulers.failed_to_create_worker summed over the VISIBLE ONLINE schedulers by mssql_counters,
+// the most in each step; NULL in a step with no counter read).
 const sqlMSSQLSchedSeries = `
+WITH s AS (
 SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snapshot_at,
        round(avg(s.runnable_tasks), 2) AS runnable_tasks, max(s.runnable_tasks) AS runnable_max, round(avg(s.work_queue), 2) AS work_queue,
        round(avg(s.pending_io), 2) AS pending_io, round(avg(s.current_workers), 0) AS current_workers, round(avg(s.active_workers), 0) AS active_workers,
        max(s.max_workers) AS max_workers
   FROM pgvigil.mssql_sched_sample s
  WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
- GROUP BY 1 ORDER BY 1`
+ GROUP BY 1),
+f AS (
+SELECT to_timestamp(floor(extract(epoch FROM v.snapshot_at) / $4) * $4) AS snapshot_at, max(v.value) AS failed_to_create_worker
+  FROM pgvigil.mssql_counter_values($1, $2, $3, 'instance') v
+ WHERE v.object = 'sys.dm_os_schedulers' AND v.counter = 'failed_to_create_worker'
+ GROUP BY 1)
+SELECT s.*, f.failed_to_create_worker FROM s LEFT JOIN f USING (snapshot_at) ORDER BY 1`
 
 // sqlMSSQLCounterSeries: each read's rate weighed by its interval, so a step's figure is the step's own per second.
 const sqlMSSQLCounterSeries = `
@@ -127,15 +145,18 @@ SELECT x.snapshot_at, x.clerk_type, round(avg(x.kb) / 1024.0, 1) AS mb
          GROUP BY 1, 2, 3) x
  GROUP BY 1, 2 ORDER BY 1, 2`
 
+// sqlMSSQLClerkStats: clerk_name is the type's friendly name (task 401 D6 / T24: pgvigil.mssql_clerk_names, Telegraf's
+// list), NULL for a type the list does not name.
 const sqlMSSQLClerkStats = `
-SELECT c.clerk_type, (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1] AS current_kb, max(c.pages_kb) AS max_kb,
+SELECT c.clerk_type, (SELECT n.name FROM pgvigil.mssql_clerk_names n WHERE n.clerk_type = c.clerk_type) AS clerk_name,
+       (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1] AS current_kb, max(c.pages_kb) AS max_kb,
        round(avg(c.pages_kb), 0) AS avg_kb, min(c.pages_kb) AS min_kb, max(c.snapshot_at) AS snapshot_at,
        round((100.0 * (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1]
               / nullif((SELECT clerks_kb FROM pgvigil.mssql_memory_sample m WHERE m.instance_id = $1 AND m.snapshot_at = max(c.snapshot_at)), 0))::numeric, 1) AS current_pct
   FROM pgvigil.mssql_memory_clerk c
  WHERE c.instance_id = $1 AND c.snapshot_at > $2 AND c.snapshot_at <= $3
  GROUP BY c.clerk_type
- ORDER BY 2 DESC NULLS LAST`
+ ORDER BY 3 DESC NULLS LAST`
 
 // sqlMSSQLFileLatency: read and write latency per step for each database and file type ('tempdb ROWS'); the five
 // groups with the most stall over the range on their own, the rest as '(other)'.
@@ -250,7 +271,7 @@ func (s *Server) MSSQLCPU(w http.ResponseWriter, r *http.Request) {
 
 // sqlMSSQLCPUFindings: 0124's findings of one instance; $2 picks them by the start of the check's name.
 const sqlMSSQLCPUFindings = `
-SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_cpu_findings
+SELECT severity, check_name AS "check_name@fcheck", object, at, detail AS "detail@fdetail" FROM pgvigil.mssql_cpu_findings
  WHERE instance_id = $1 AND check_name ~ $2
  ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, check_name, object`
 
@@ -318,7 +339,7 @@ func seriesIDs(v string) ([]int32, error) {
 
 // sqlMSSQLMemoryChecks: 0074's memory checks (as they stand) and 0119's memory findings over the range.
 const sqlMSSQLMemoryChecks = `
-SELECT severity, check_name, object, at, detail FROM (
+SELECT severity, check_name AS "check_name@fcheck", object, at, detail AS "detail@fdetail" FROM (
   SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_perf_findings WHERE instance_id = $1 AND check_name ~ 'memory'
   UNION ALL
   SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_memory_findings_between($1, $2, $3)) f
@@ -332,7 +353,7 @@ const (
 	sqlMSSQLPoolSeries       = `SELECT at AS snapshot_at, pool_id, coalesce(pool_name, 'pool ' || pool_id) AS pool, waiters,
        round(granted_kb / 1024.0, 1) AS granted_mb, round(available_kb / 1024.0, 1) AS available_mb, timeouts, forced_grants
   FROM pgvigil.mssql_grant_series_between($1, $2, $3, $4)`
-	sqlMSSQLRmon = `SELECT snapshot_at AS sample_at, notification, ind_process, ind_system, avail_phys_kb, avail_vas_kb, record_id
+	sqlMSSQLRmon = `SELECT snapshot_at AS sample_at, notification, memory_node_id, ind_process, ind_system, avail_phys_kb, avail_vas_kb, record_id
   FROM pgvigil.mssql_memory_rmon WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
  ORDER BY snapshot_at DESC, record_id DESC LIMIT 1000`
 	sqlMSSQLRmonHourly = `SELECT * FROM pgvigil.mssql_memory_rmon_hourly($1, $2, $3)`
@@ -355,7 +376,7 @@ const (
  GROUP BY 1 ORDER BY 1`
 	sqlMSSQLGrantsNow = `SELECT g.snapshot_at, g.session_id, g.request_id, g.database_name, g.request_at, g.grant_at, g.wait_time_ms,
        g.requested_kb, g.granted_kb, g.used_kb, g.max_used_kb, g.ideal_kb, g.required_kb, g.queue_id, g.wait_order, g.is_next_candidate,
-       g.timeout_sec, g.semaphore_id, g.pool_id, g.group_id, g.is_small, g.dop, g.query_cost, g.wait_type, g.wait_ms, g.plan_handle, g.statement
+       g.timeout_sec, g.semaphore_id, g.pool_id, g.group_id, g.is_small, g.dop, g.query_cost, g.wait_type, g.wait_ms, g.plan_handle, g.statement AS "statement@stmt"
   FROM pgvigil.mssql_memory_grant_query g
  WHERE g.instance_id = $1 AND g.snapshot_at = (SELECT max(s.snapshot_at) FROM pgvigil.mssql_memory_sample s
                                                 WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3)
@@ -397,6 +418,9 @@ func (s *Server) MSSQLMemory(w http.ResponseWriter, r *http.Request) {
 		{"plancache_trend", sqlMSSQLPlanCacheTrend, base},
 		{"grants_now", sqlMSSQLGrantsNow, []any{id, from, to}},
 		{"rg", sqlMSSQLResourceGovernor, []any{id}},
+		// task 405 (Fixed 8 on S4): PerformanceMonitor's max server memory number, 0156's, the one the
+		// Server options check states in its words (checks.go pmMemorySuggestion)
+		{"suggestion", `SELECT * FROM pgvigil.mssql_memory_suggestion($1)`, []any{id}},
 		{"skipped", sqlMSSQLMemorySkipped, []any{id}},
 	})
 }

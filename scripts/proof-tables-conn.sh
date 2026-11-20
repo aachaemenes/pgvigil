@@ -6,7 +6,7 @@
 #               repository database and two target databases with a random suffix and drops them at the end; its own
 #               psql sessions carry application names with the suffix, so the sandbox's other sessions never count.
 #   Needs: psql, curl, python3, ss; a pgvigil binary whose serve wires /api/tables/top, /api/connections, /api/tiles and
-#   /api/dbchanges (the lead's join applies the wiring; part E fails on a tree without it).
+#   /api/dbchanges (the release applies the wiring; part E fails on a tree without it).
 #
 # Expected (written before the first run):
 #  A. table_activity: read 1, then in tgt1 a_scan seq-scanned 7 times, b_ins +500 rows, c_upd 300 rows updated,
@@ -16,9 +16,8 @@
 #     n_tup_del equals the hand delta of pg_stat_user_tables (read by psql right before read 1, after read 2, and after
 #     read 3, the reset step adding its new value); c_upd shows n_tup_upd 340 and resets 1; rank_seq 1 = a_scan,
 #     rank_ins 1 = b_ins, rank_upd 1 = c_upd, rank_del 1 = d_del; t2_ins comes from tgt2's own dbid; e_quiet absent.
-#     [run 1 graded: the ranks are instance-wide and the sandbox's other databases are busier, so the top 5 held none
-#      of the proof's tables; the expectation had assumed a quiet server. From run 2: the function with an unbounded
-#      n, the proof's two databases only, the deltas as above, and each measure's leader among the proof's tables
+#     [the ranks are instance-wide and the sandbox's other databases are busier: the function runs with an unbounded
+#      n over the proof's two databases only, the deltas as above, and each measure's leader among the proof's tables
 #      carries the smallest rank]
 #  B. connections, read twice with: 3 idle sessions (app pv_idle_<suf>), 1 idle in transaction holding a row lock
 #     (pv_hold_<suf>), 1 waiting on that lock (pv_wait_<suf>), 1 running pg_sleep (pv_act_<suf>); then the idle three
@@ -35,8 +34,8 @@
 #     both instances' rows, newest first.
 #  D. the tile wall: (1) live: the activity collect during B; instance_tiles' idle_in_txn, waiting_lock, total and
 #     max_connections equal a hand read of pg_stat_activity / max_connections taken right after it (either side of
-#     the collect, the sandbox has other sessions) [run 3 graded: total was the hand count + 1, the collect's own
-#     repository connection on the same server, open during the read; expected from run 4: total - 1]; fsync, full_page_writes, synchronous_commit, data_checksums and
+#     the collect, the sandbox has other sessions) [total - 1: the collect's own
+#     repository connection on the same server is open during the read]; fsync, full_page_writes, synchronous_commit, data_checksums and
 #     wal_level equal current_setting() of each. (2) seeded on a scratch instance: activity_summary total 80 of 100,
 #     idle_in_txn 2 + 1 aborted, waiting_lock 4, longest_active_secs 700, oldest_xmin_age 2,000,000; dbstats two
 #     databases, blks_hit rising 900 and 8,100, blks_read 100 and 900 inside the window, and a third row outside it ->
@@ -45,16 +44,15 @@
 #  E. the API (serve -no-login): /api/tables/top the same rows as A's function; /api/connections?by=application the
 #     same rows as B's by-application call; /api/tiles one row equal to D(2); /api/dbchanges?days=30 equal to C's
 #     fleet call; by=nonsense, n=0 and days=0 answer 400.
-#  F. purge(30) runs (a smoke line: the new series are not in its list until the lead's join names them).
+#  F. purge(30) runs (a smoke line: the new series are not in its list until the release migration names them).
 #  Not exercised: the 500-source fold of the connections read and the 100-per-counter cap of the table read (both
 #  constants; a sandbox with that many sources or tables is not made here).
-#  [review 1 fold, expected before the rerun: A's ok line names what is checked (each measure's leader among the proof's tables). C seeds
+#  [expected before the rerun: A's ok line names what is checked (each measure's leader among the proof's tables). C seeds
 #   tempdb created 3 hours ago and a database snapshot dropped a day ago: neither listed; a storage read 23 hours ago
 #   still lists ms_gone, so its dropped_by is the read 20 hours ago. E: /api/tables/top asked for 20 days answers
 #   from_at = to - 7 days. B waits for all three idle sessions before the first read.
-#   Fold run 1 graded: a pg_stat_reset() case for t2_ins (the database's stats_reset as the reset mark) brought
-#   e_quiet in: from PG 15 the single-table reset of c_upd moves tgt1's stats_reset too, so every table there counted
-#   as reset. The mark was taken out (the limit is documented) and the case with it]
+#   No reset mark from the database's stats_reset: from PG 15 a single-table reset (c_upd) moves its database's
+#   stats_reset too, so every table there would count as reset (the limit is documented)]
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}"

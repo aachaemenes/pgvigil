@@ -11,7 +11,7 @@
 # It makes and drops its own database (only when this run made it), stops the serve and Chromium by their own pids;
 # nothing that exists before the run is touched.
 #
-# Expected (rewritten 2026-11-13 by pdfp-relw2c-s1 for the fold of the design pass 20261113-053822, before its first
+# Expected (rewritten for the pies design pass, before its first
 # run). pies-check prints one line per row: 'ok   <page> '<pie>': <row>: ...' or 'FAIL ...' (the rows: pies-check.mjs's
 # head), then 'pies-check: every row ok' and 'proof-pies: OK', exit 0. The pages and pies (RIG below): the root DB Space
 # ('DB Space (allocated)': big, its instances, other, edge, touch); a PostgreSQL demo instance's Storage ('Databases by
@@ -22,28 +22,28 @@
 # small, no target). The three DB Space pies 'beside': each pie's box on its grid's row and reaching the row's end at 1600 /
 # 1500 / 1400 px (DBA Dash's shape: its pie fills the room beside the grid), and 'narrow': the box inside its row at a 360 /
 # 320 px window; the PostgreSQL one's edge row narrows the window to the row's end first.
-# The control (finding 12): the same proof on three products in one box job.
-#  - base 54cb1d3 (the join's tip, no pie change): GREEN size on every small pie, menu, away, swatch, no-target ('Data
+# The control: the same proof on three products in one run.
+#  - the base (the build before any pie change): GREEN size on every small pie, menu, away, swatch, no-target ('Data
 #    against log', 'Files of'), click on the root DB Space and on SQL Server's 'Databases by size' (their pages existed);
 #    RED size on every big pie, labels, hover, other-hover, legend, escape, redraw, export, every other click, grid-link,
 #    ctrl-click, touch, edge, other-click (a row that cannot be reached prints FAIL with its row name); rest RED (nothing
 #    marked).
-#  - prefold a1c6461 (the lead's build before the pass): RED swatch (the box's squares are .swatch: twice the legend),
+#  - the build before the design pass: RED swatch (the box's squares are .swatch: twice the legend),
 #    export (the pop-out a transform attribute), escape (Escape heard only inside the box), the size of SQL Server's
 #    'Databases by size' and 'Files of' (drawn big), labels (one decimal on the small pies, names cut and a fixed size on the
 #    big ones), the Growth pies' clicks (no target), grid-link, ctrl-click, touch, other-click (the choice kept per
-#    browser, the focus lost); GREEN hover, other-hover, legend, away, menu, redraw, no-target, the targets the lead added
+#    browser, the focus lost); GREEN hover, other-hover, legend, away, menu, redraw, no-target, the added targets
 #    (PostgreSQL Storage and DB Space databases, SQL Server DB Space) and the base's two; rest and edge either way.
-#  - fold (this tree): every row GREEN. Folded after the product-code review 20261113-102227 (rows red first on 5e403ae):
-#    labels also want each label's halo 0.4 of its font size with round joins (its finding 1, WCAG 1.4.3 in the dark
-#    theme: red on 5e403ae, 0.16); pan (its finding 2: a touch pan from a wedge, then a mouse click on it opens its page:
-#    red on 5e403ae, the click swallowed); edge on the PostgreSQL DB Space pie wants the box flipped left of the pointer
-#    (its finding 3: green on 5e403ae too, the branch read correct, unrun until now). The proofs this fold must leave
-#    green, unedited (its finding 4): frame-check rows K and T (scripts/proof-frame.sh), proof-reports' shapes() rows
-#    (scripts/proof-reports.sh:559-564, 606-611, 693-694) and proof-export's ring row (scripts/proof-export.sh:420, 891-909):
-#    green at 5e403ae in box job pdfp-pies-u1; run again on the folded tree with this proof. The redraw row grades no STALE state: Chromium sends pointerover to the new
+#  - this tree: every row GREEN. Rows added later (each red first on the tree before them): labels also want each
+#    label's halo 0.4 of its font size with round joins (WCAG 1.4.3 in the dark theme: before the fix the halo was
+#    0.16); pan (a touch pan from a wedge, then a mouse click on it opens its page: before the fix the click was
+#    swallowed); edge on the PostgreSQL DB Space pie wants the box flipped left of the pointer (green before the change
+#    too, the branch read correct, unrun until then). The proofs this change must leave green, unedited: frame-check
+#    rows K and T (scripts/proof-frame.sh), proof-reports' shapes() rows (scripts/proof-reports.sh:559-564, 606-611,
+#    693-694) and proof-export's ring row (scripts/proof-export.sh:420, 891-909): green before the change; run again on
+#    this tree with this proof. The redraw row grades no STALE state: Chromium sends pointerover to the new
 #    wedge under a resting pointer, so one fresh box marking that wedge's row, that wedge alone popped, is right
-#    (pdfp-pies-f1); a label's whole number is the legend's shown share rounded (the legend's 3.5 % reads 4 %).
+#    (a lab run); a label's whole number is the legend's shown share rounded (the legend's 3.5 % reads 4 %).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -59,7 +59,7 @@ cleanup() {
     kill -9 "$p" 2>/dev/null; wait "$p" 2>/dev/null
   done
   if [[ -n "$MADE" ]]; then
-    # the drop can take over a minute on a shared machine (pdfp-pies-f1 / -f2: psql cut at 60 s, the database gone by
+    # the drop can take over a minute on a shared machine (two lab runs: psql cut at 60 s, the database gone by
     # the next run: the server finishes the drop after the client is cut): it waits 5 minutes, then asks the catalog
     out=$(timeout 300 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" 2>&1); n=$?
     if [[ $n -ne 0 ]]; then

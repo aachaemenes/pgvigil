@@ -5,7 +5,7 @@
 # follows their links, counting the API reads each folder makes.
 #   A. the tree: an instance's folders, the Databases / Tables / Jobs folders loading on first open with one read each,
 #      the database, table and job nodes opening their pages with the time range kept, the search, the status dots.
-#   B. the tab links (wired by the lead: the Tables, Jobs, Job report and Indexes tabs link each row to its page): "NOT
+#   B. the tab links (wired in the release: the Tables, Jobs, Job report and Indexes tabs link each row to its page): "NOT
 #      PROVEN (B)" when the build's /api/tables carries no dbid (the wiring is not in it).
 #
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a login that may create a database (the throwaway one).
@@ -20,13 +20,13 @@
 #     with w=7d and rel=; demo-aurora-crm01's Jobs folder opens with exactly 1 /api/jobs read and lists its present jobs;
 #     a job node opens "Job <name>" with w=7d. Closing and opening a folder again makes no read; no /api/tables read at
 #     any point. A search for "rds" leaves only instances whose name holds rds, each with its status dot.
-#     [review fold, expected before the rerun: Tables lists at most 15 tables (16 rows only when the 16th is "all N
+#     [expected before the rerun: Tables lists at most 15 tables (16 rows only when the 16th is "all N
 #      tables..."); closing and opening Jobs reads nothing either; every tree read carries part= (databases, tables,
 #      jobs); a caret opened with the keyboard (Enter) keeps the focus after the redraw and after its children arrive;
 #      on #/dbinfo exactly one tree node is marked on besides the instance (Storage > Database info).
 #      With the wiring (B): /api/drill/db?part=tables answers with only "tables", /api/dbinfo?part=databases only
 #      "databases", /api/jobs?part=jobs only "jobs"; part=nope is refused with 400 naming the parts.]
-#     [join review fold, expected before the rerun: the Jobs folder lists the first 30 present jobs, then "all N
+#     [expected before the rerun: the Jobs folder lists the first 30 present jobs, then "all N
 #      jobs..." when there are more (crm01 has 4: all of them); the Databases and the Jobs reopen checks count every
 #      tree read (none); last, with every /api/ read answered 401 from the moment demo-rds-orders01's Jobs folder is
 #      opened (not read before), the tree reads that folder exactly once over 2 s and the sign-in form is up (body.signin)
@@ -98,7 +98,7 @@ const rows = t => t ? t.rows.map(r => Object.fromEntries(t.columns.map((c, i) =>
 const since = n => reqs.slice(n).filter(u => /^\/api\/(dbinfo|drill|jobs\?|tables)/.test(u));
 // the tree's helpers in the page: the instance row by name, a caret under a node, the node texts under it
 const H = `
-  // a silenced instance's link holds ' ' and the bell after its name (the join's D29, c3e04e0): the name is trimmed
+  // a silenced instance's link holds ' ' and the bell after its name: the name is trimmed
   window.__inst = n => [...document.querySelectorAll('#tree .tree-inst')].find(r => r.querySelector('a.inst')?.textContent.trim() === n);
   window.__under = (row) => { const out = []; let e = row.nextElementSibling; while (e && !e.classList.contains('tree-inst')) { out.push(e); e = e.nextElementSibling; } return out; };
   window.__folder = (row, name) => window.__under(row).find(b => b.querySelector(':scope > .tree-node')?.textContent.endsWith(name));
@@ -206,7 +206,7 @@ await ev(`(() => { const s = document.querySelector('#tree input[type=search]');
 
 // ---- B. the tab links
 if (wired !== '1') {
-  console.log('NOT PROVEN (B): this build has no dbid in /api/tables (the lead applies the tab wiring at the join)');
+  console.log('NOT PROVEN (B): this build has no dbid in /api/tables (the tab wiring is applied in the release)');
 } else {
   const linkCheck = async (hash, sel, want, what) => {
     await go(hash);

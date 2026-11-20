@@ -56,7 +56,7 @@
 #     moved, counters lower) stores no difference and the next read does; a cpu read after a restart stores no rate
 #     although its counter is higher (the start time alone stops it); a counter missing from one read gets its rate
 #     over its own two-read interval (1,200 over 120 s = 10/s, not 20); every fileio read that took differences keeps
-#     its seconds in mssql_fileio_read, an idle read too. (Added with the review's fold.)
+#     its seconds in mssql_fileio_read, an idle read too.
 #  P. the API on the servers' repository: /api/mssql/cpu, /memory, /fileio answer for the first server with rows in
 #     cpu, latest, series, clerks, files; /api/mssql/tempdb lists both servers (every server the run names); /api/performance for the first
 #     server has the parts cpu, db and io with rows; /api/perfsummary's mssql rows carry cpu_avg and mem_total_pct

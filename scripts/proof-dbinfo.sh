@@ -6,7 +6,7 @@
 #      size series, and the other stays.
 #   C. seeded size history (scratch instances in the proof's own repository): the 7- and 30-day growth, the fleet's
 #      top growers, the size series.
-#   D. the API through `pgvigil serve` when the binary has the routes (after the lead's join); "NOT PROVEN (D)" before.
+#   D. the API through `pgvigil serve` when the binary has the routes (once they are wired); "NOT PROVEN (D)" before.
 #
 #   PGVIGIL_REPO_DSN   a superuser connection to the sandbox in KEYWORD form (host=... user=... dbname=...: the proof appends
 #                      dbname= to it); the proof makes its own repository database, a login and two
@@ -146,7 +146,7 @@ for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null
 kill -0 "$SRVPID" 2>/dev/null || fail "D: serve exited: $(cat "$LOG")"
 U="http://127.0.0.1:$PORT/api"
 if [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/dbinfo/fleet")" = 404 ]; then
-  echo "NOT PROVEN (D): this binary has no /api/dbinfo route yet (the lead wires it at the join)"
+  echo "NOT PROVEN (D): this binary has no /api/dbinfo route yet (it is wired in the release)"
 else
   body=$(curl -fs "$U/dbinfo?instance=$iid") || fail "D: dbinfo"
   python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert set(d)=={"databases","tablespaces","db_series","table_series","series_meta"}, d.keys(); n=[r[d["databases"]["columns"].index("datname")] for r in d["databases"]["rows"]]; assert sys.argv[2] in n and sys.argv[3] in n, n' "$body" "$DBA" "$DBB" || fail "D: dbinfo body"

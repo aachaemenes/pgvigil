@@ -17,7 +17,7 @@
 --                           compiled parameter values; a policy tightened later drops the stored XML at the
 --                           database's next read).
 --   mssql_qs_tuning         the automatic tuning recommendations (sys.dm_db_tuning_recommendations) and their state.
--- mssql_querystore_findings the slice's findings in the findings columns (the join adds the arm to pgvigil.findings).
+-- mssql_querystore_findings this file's findings in the findings columns (the release migration's arm in pgvigil.findings).
 -- mssql_querystore_status   the Summary's 'QS' cell, one row per instance (the shape of mssql_health_status).
 --
 -- A cleared store numbers its queries and plans again from 1. A runtime row therefore carries its query's hash and
@@ -28,7 +28,7 @@
 -- pgvigil.mssql_hadr_cursor (0066) is re-created here with two more sources, 'qs_since:<database>' and
 -- 'qs_plan:<plan id>:<database>'; 'jobs' and 'jobs_mark' answer as before.
 --
--- Partition parents for purge() (the join adds them): mssql_qs_interval, mssql_qs_runtime. The join also ages
+-- Partition parents for purge() (the release migration adds them): mssql_qs_interval, mssql_qs_runtime. It also ages
 -- mssql_qs_query, mssql_qs_plan and mssql_qs_tuning by snapshot_at. Until that migration none of them is purged.
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_qs_store (

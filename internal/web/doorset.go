@@ -46,6 +46,9 @@ type doorSet struct {
 	// Unread: the page's list not read yet on this serve (its first read failed, or has not run): an instance in
 	// neither list is said to be unknown here, never 'in neither list'
 	Unread bool
+	// Expected: each merged page instance's intervals in seconds (ST5a: its own settings, the running plans box, the
+	// file's global schedules:), the stale check's per-instance map (expectedNow); nil where no watcher runs
+	Expected map[string]map[string]int
 }
 
 // noDoor is why an instance has no read login here (Why: the words a refusal and the page carry) and what opens it
@@ -61,7 +64,7 @@ const (
 	howCorrect   = "correct its row in Admin > Instances (docs/configuration.md)"
 	howSwitch    = "an admin sets 'doors: page_instance_reads: on' in pgvigil.yaml and serves again, or the instance goes into pgvigil.yaml with its read login (docs/configuration.md)"
 	howInTheFile = "put the instance in pgvigil.yaml with its read login (docs/configuration.md)"
-	howUnread    = "serve reads the list again every 15 s; its log names why a read failed (a repository without migration 0131, or serve's role without EXECUTE on admin_inventory())"
+	howUnread    = "serve reads the list again every 15 s; its log names why a read failed (a repository older than this serve - run pgvigil migrate (0131, 0263) - or serve's role without EXECUTE on admin_inventory() or admin_instance_settings())"
 )
 
 // unreadWords: an instance this serve cannot place while the page's list is unread
@@ -147,15 +150,19 @@ func noDoorWords(name string) string {
 // none and what opens it. engine is 'sqlserver' or a PostgreSQL one.
 func (ds *doorSet) readLogin(engine, name string) (dsn, kind string, no noDoor) {
 	var monitor string
-	var ok, page bool
+	var ok, page, secret bool
 	if engine == config.EngineSQLServer {
 		d, has := ds.MS[name]
-		monitor, ok, page = d.Monitor, has, d.Page
+		monitor, ok, page, secret = d.Monitor, has, d.Page, d.Secret != nil
 	} else {
 		d, has := ds.PG[name]
-		monitor, ok, page = d.Monitor, has, d.Page
+		monitor, ok, page, secret = d.Monitor, has, d.Page, d.Secret != nil
 	}
 	switch {
+	case secret:
+		// B24e: these readers take the login as a string; an instance whose password is in AWS Secrets Manager is
+		// refused in words here rather than connecting without its password (a NOT PROVEN line of B24e's DONE)
+		return "", "", noDoor{"instance " + name + ": its read login's password comes from AWS Secrets Manager (password_secret): custom reports, the community tools and Query Store plans do not read it yet", howFile}
 	case ds.NoDoor[name].Why != "":
 		return "", "", ds.NoDoor[name]
 	case !ok && ds.Unread:
@@ -191,6 +198,8 @@ type pageDoorsConfig struct {
 	file      []config.Instance
 	queryText string
 	reads     bool
+	// intervals: an instance's effective intervals (PageSettingsConfig.Intervals); nil = none kept (demo, tests)
+	intervals func(config.Instance) map[string]int
 }
 
 // pageDoors builds the set of one generation: the file's set copied, each open page door added. prev (the set
@@ -218,7 +227,7 @@ func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Ins
 	for _, in := range all {
 		merged[in.Name] = in
 	}
-	_, skipped := config.Merge(c.file, page, c.queryText)
+	_, skipped := config.Merge(c.file, page, c.queryText, config.CounterEdits{}) // only skipped is read: the root counter lines never decide it
 	left := map[string]string{}
 	for _, sk := range skipped {
 		if n, why, ok := cutColon(sk); ok {
@@ -239,6 +248,19 @@ func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Ins
 			}
 		}
 		in, isMerged := merged[name]
+		// ST5a: a page instance's own statement-text policy and intervals hold whether its read door opens or not (the
+		// design pass's M7: a shut door kept the file's policy; M1: the stale check knew none of its intervals)
+		if isMerged {
+			ds.QueryText[name] = in.QueryText
+			if c.intervals != nil {
+				if ds.Expected == nil {
+					ds.Expected = map[string]map[string]int{}
+				}
+				ds.Expected[name] = c.intervals(in)
+			}
+		} else if ps, err := config.ParsePageSettings(p.SettingsRaw); err == nil && ps.QueryText != "" {
+			ds.QueryText[name] = ps.QueryText
+		}
 		// the row's own refusal before the switch: the switch never opens it, so its words come first
 		switch why := config.PageDoorRefusal(name, p.Engine, p.Auth, p.Options); {
 		case p.Disabled:
@@ -271,7 +293,6 @@ func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Ins
 				continue
 			}
 		}
-		ds.QueryText[name] = in.QueryText
 		if p.Engine == config.EngineSQLServer {
 			ds.MS[name] = mssql.Door{Monitor: dsn, Page: true}
 		} else {
@@ -324,7 +345,7 @@ func pageDSNRefusal(name, engine, dsn string) string {
 	return ""
 }
 
-// poolInventory reads Admin > Instances' list on serve's own pool (repo.go Inventory's statement; 0131 lets
+// poolInventory reads Admin > Instances' list on serve's own pool (config.InventorySQL, as repo.Inventory; 0131 lets
 // pgvigil_reader call admin_inventory()).
 type poolInventory struct{ pool *pgxpool.Pool }
 
@@ -335,38 +356,13 @@ func (p poolInventory) InventoryGeneration(ctx context.Context) (int64, error) {
 }
 
 func (p poolInventory) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
-	rows, err := p.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation FROM pgvigil.admin_inventory()`)
+	// with the running plans box and its own settings (0263, ST5a): serve's expected intervals follow them
+	rows, err := p.pool.Query(ctx, config.InventorySQL) // the collector's statement and scan
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []config.PageInstance
-	var gen int64
-	for rows.Next() {
-		var name, engine, platform, ref, auth, options *string
-		var tags []string
-		var disabled *bool
-		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen); err != nil {
-			return nil, 0, err
-		}
-		if name == nil {
-			continue
-		}
-		pi := config.PageInstance{Name: *name, Tags: tags}
-		for _, f := range []struct {
-			to   *string
-			from *string
-		}{{&pi.Engine, engine}, {&pi.Platform, platform}, {&pi.DSNRef, ref}, {&pi.Auth, auth}, {&pi.Options, options}} {
-			if f.from != nil {
-				*f.to = *f.from
-			}
-		}
-		if disabled != nil {
-			pi.Disabled = *disabled
-		}
-		out = append(out, pi)
-	}
-	return out, gen, rows.Err()
+	return config.ScanInventory(rows)
 }
 
 // DoorEvery is how often serve's watcher reads the inventory's generation (another serve's write reaches this one
@@ -380,18 +376,26 @@ const doorWait = 5 * time.Second
 // doorWake: serve's watcher's wake channel per server (InstancesAdminWrite signals it after a write)
 var doorWake sync.Map // *Server -> chan struct{}
 
+// schedCfg: serve's loaded configuration per server (WatchDoors keeps it): the Connection Test's list of what will
+// not run reads it as the scheduler does
+var schedCfg sync.Map // *Server -> *config.Config
+
 // WatchDoors runs serve's watcher: pgvigil.yaml's set at once, then a new set on each generation of Admin >
 // Instances (at once after this serve's own write, within every of another serve's), each stored whole. Serve
 // alone calls it (demo and mcp keep pgvigil.yaml's doors).
 func (s *Server) WatchDoors(ctx context.Context, log *slog.Logger, cfg *config.Config, every time.Duration) {
 	wake := make(chan struct{}, 1)
 	doorWake.Store(s.self(), wake)
+	schedCfg.Store(s.self(), cfg) // the Connection Test's list reads the loaded configuration
 	c := pageDoorsConfig{file: cfg.Instances, queryText: cfg.QueryText, reads: cfg.Doors.PageInstanceReads}
+	if ps := s.settingsConfig(); ps != nil {
+		c.intervals = ps.Intervals
+	}
 	file := s.fileDoors()
 	first := *file // until the first read: pgvigil.yaml's doors, the page's list unread
 	first.Unread, first.PageReads = true, c.reads
 	s.storeDoors(&first)
-	config.WatchInventoryRaw(ctx, log, poolInventory{s.pool}, nil, cfg.Instances, cfg.QueryText, every, wake, true,
+	config.WatchInventoryRaw(ctx, log, poolInventory{s.pool}, nil, cfg.Instances, cfg.QueryText, cfg.MSSQLCounters, every, wake, true,
 		func(all []config.Instance, page []config.PageInstance, gen int64) {
 			prev := s.doorsNow()
 			if prev.Gen == gen && !prev.Unread && !prev.emptyPage() {
@@ -475,4 +479,26 @@ func (s *Server) doorsAfterGen(gen int64, err error) string {
 		return doorUnreadAfterWrite
 	}
 	return doorTakesEffect(s.wakeDoors(gen, doorWait), DoorEvery)
+}
+
+// expectedNow is the stale check's interval map now: pgvigil.yaml's (Options.Expected) with each page instance of the
+// current door set's generation (its own settings, the running plans box, the file's global schedules:).
+func (s *Server) expectedNow() Expected {
+	page := s.doorsNow().Expected
+	if len(page) == 0 {
+		page = s.pageIntervalsNow() // pgvigil mcp: no door watcher, its own reader of the page's intervals (page_intervals.go)
+	}
+	if len(page) == 0 {
+		return s.expected
+	}
+	e := Expected{Defaults: s.expected.Defaults, Builtin: s.expected.Builtin, Instances: make(map[string]map[string]int, len(s.expected.Instances)+len(page))}
+	for k, v := range s.expected.Instances {
+		e.Instances[k] = v
+	}
+	for k, v := range page {
+		if _, file := e.Instances[k]; !file {
+			e.Instances[k] = v
+		}
+	}
+	return e
 }

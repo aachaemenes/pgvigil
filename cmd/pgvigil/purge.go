@@ -24,9 +24,12 @@ import (
 // the UI logins cannot call it). pgvigil does not schedule it; the operator does
 // (deploy/pgvigil-purge.timer, pg_cron on the repository, a Windows scheduled task). -dry-run
 // lists the partitions a run would drop and changes nothing. After purge() it builds the job statistics' hours
-// (0139) of every instance still waiting, one instance per transaction; a purge scheduled as SQL alone
-// (SELECT pgvigil.purge(N) from pg_cron) does not: schedule beside it
-// SELECT pgvigil.job_stats_heal_one(i) FROM pgvigil.job_stats_pending() i LIMIT 1 (one instance a run).
+// (0139) and the replication hours (0150) of every instance still waiting, one instance per transaction; a purge
+// scheduled as SQL alone (SELECT pgvigil.purge(N) from pg_cron) does not: schedule beside it
+// SELECT pgvigil.job_stats_heal_one(i) FROM pgvigil.job_stats_pending() i LIMIT 1 (one instance a run), and for the
+// replication hours TWO jobs of their own, so that an instance's month partitions are committed before its build
+// starts: SELECT pgvigil.replication_hourly_months(i) FROM pgvigil.replication_hourly_pending() i LIMIT 1, and
+// SELECT pgvigil.replication_hourly_heal_one(i) FROM pgvigil.replication_hourly_pending() i LIMIT 1.
 func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("pgvigil purge", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -147,6 +150,43 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 		fmt.Println()
 	}
+	// 0150: the replication hours the same way - an instance's month partitions in a transaction of their own, then
+	// its build or heal
+	start = time.Now()
+	inst, rows, failed, err = r.ReplicationHourlyHeal(ctx)
+	if err != nil {
+		return err
+	}
+	if inst > 0 || failed > 0 {
+		log.Info("replication hours healed", "instances", inst, "hour_rows", rows, "failed", failed, "ms", time.Since(start).Milliseconds())
+		fmt.Printf("purge: the replication hours of %d instance(s) built (%d hour rows) in %.1f s", inst, rows, time.Since(start).Seconds())
+		if failed > 0 {
+			fmt.Printf("; %d instance(s) failed and stay for the next run (collection log 'replication_hourly')", failed)
+		}
+		fmt.Println()
+	}
+	// 0167: this month's and the next month's partition of the Azure SQL Database hours (never an import's trigger's
+	// ACCESS EXCLUSIVE), then the hours still waiting (the first build, a failed rollup), each instance in its own
+	// transaction
+	if err := r.AzureDBHourMonths(ctx); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		log.Warn("azure hours: this month's or the next month's partition not made now (a later purge run makes it)", "err", err)
+	}
+	start = time.Now()
+	ainst, arows, afailed, err := r.AzureDBHoursHeal(ctx)
+	if err != nil {
+		return err
+	}
+	if ainst > 0 || afailed > 0 {
+		log.Info("azure hours healed", "instances", ainst, "hour_rows", arows, "failed", afailed, "ms", time.Since(start).Milliseconds())
+		fmt.Printf("purge: the Azure SQL Database hours of %d instance(s) built (%d hour rows) in %.1f s", ainst, arows, time.Since(start).Seconds())
+		if afailed > 0 {
+			fmt.Printf("; %d instance(s) failed and stay for the next run (collection log 'mssql_azuredb_hour')", afailed)
+		}
+		fmt.Println()
+	}
 	return nil
 }
 
@@ -186,6 +226,11 @@ func parseHoursFlag(v string) ([]hoursSet, error) {
 		t = strings.TrimSpace(t)
 		if !ok || err != nil || n < 1 || n > 3650 || t == "" || seen[t] || strings.Trim(t, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
 			return nil, fmt.Errorf("-hours wants <table>=<days>, each table once, with days 1 to 3650 (job_stats_hourly=730), not %q", part)
+		}
+		// a table's own cap, in words before any pair is set (0166's CHECK would refuse it half-way, and -dry-run would
+		// print a value the store refuses)
+		if t == "collection_health_hour" && n > 30 {
+			return nil, fmt.Errorf("-hours collection_health_hour=%d: this table keeps 30 days at most (0166)", n)
 		}
 		seen[t] = true
 		out = append(out, hoursSet{t, n})

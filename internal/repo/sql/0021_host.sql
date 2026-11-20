@@ -11,7 +11,7 @@
 --   host_disk_history  a volume's size at most every 15 minutes (partitioned): the days-until-full forecast's input.
 --   host_io            system_stats' per-device IO counters as read (partitioned); host_io_rate() takes the rates.
 -- host_checks feeds the overview (check groups 'host' and 'disk': the Summary columns Host and Disk) and
--- host_findings carries the same rules in the findings columns (the join adds it to pgvigil.findings).
+-- host_findings carries the same rules in the findings columns (0036 adds it to pgvigil.findings).
 
 CREATE TABLE IF NOT EXISTS pgvigil.host_state (
   instance_id    int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -246,7 +246,7 @@ SELECT s.instance_id, CASE WHEN c.min_cpu >= 98 THEN 'critical' ELSE 'warning' E
          WHERE h.instance_id = s.instance_id AND h.snapshot_at > now() - interval '10 minutes' AND h.cpu_pct IS NOT NULL) c
  WHERE c.min_cpu > 90 AND c.n >= 5 AND c.last_at - c.first_at >= interval '8 minutes';
 
--- The same rules in the findings columns; the join UNION ALLs this into pgvigil.findings.
+-- The same rules in the findings columns; 0036 UNION ALLs this into pgvigil.findings.
 CREATE OR REPLACE VIEW pgvigil.host_findings AS
 SELECT c.instance_id, c.severity, c.check_name AS setting, c.object || ': ' || c.detail AS value, true AS is_set,
        CASE c.check_name WHEN 'disk free under 10 %' THEN 'grow the volume or free space before it fills'

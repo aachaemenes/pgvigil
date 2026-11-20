@@ -72,8 +72,8 @@ func TestPoolMinutes(t *testing.T) {
 // TestPoolName: the database's own answer wins; a tag fills in when the login may not read it; a tag naming another
 // pool is a skip, never a silent write under the wrong name.
 func TestPoolName(t *testing.T) {
-	// a stale tag (the database moved to another pool after discovery wrote it at the approve: the wire review's
-	// blocker 1) reads the database's own pool and says so, never a skip
+	// a stale tag (the database moved to another pool after discovery wrote it at the approve) reads the database's
+	// own pool and says so, never a skip
 	for _, c := range []struct{ tag, objectives, pool, from, stale, err string }{
 		{"", "pool1", "pool1", "service objectives", "", ""},
 		{"pool1", "", "pool1", "tag", "", ""},

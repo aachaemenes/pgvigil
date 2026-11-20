@@ -336,7 +336,7 @@ func TestSysHealthParserRegistered(t *testing.T) {
 	}
 }
 
-// The terse form (one line, the error and its text; the review's sample from a sandbox archive) is a whole error: at
+// The terse form (one line, the error and its text, as a sandbox's archive holds it) is a whole error: at
 // severity 17 it is kept with its numbers, under 17 it is noise; a severity of -1 is read; an error line whose
 // message never came is dropped at the end of the current log and kept at the end of an archive only when it is 17+.
 func TestErrorLogTerse(t *testing.T) {

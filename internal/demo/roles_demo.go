@@ -2,7 +2,7 @@ package demo
 
 // Role rows for the demo fleet (the roles collection, task 31): the shapes import_roles takes.
 //
-// Wiring (the lead's, in gen.go):
+// Wiring (in gen.go):
 //   Step:        inside `if first || t.Minute() == 0 {` next to extensions and versions:  add("roles", g.roleRows(t))
 //   Collections: append "roles" to the final list: ..., "extensions", "versions", "roles")
 

@@ -42,6 +42,14 @@
 #  B. the read login gets SELECT on the dbo schema, EXECUTE on dbo.IDs and on the nine page procedures only; as that
 #     login an INSERT into dbo.Settings, EXEC dbo.Summary_Upd and EXEC dbo.Summary_Get are each refused with a
 #     permission error.
+#  CH9 (B6.3; written before the run): on 4.25.0 the tenth screen answers with its five result sets (CH9a); the same read
+#     login with dbo.CollectionHealth_Get's GRANT taken back reads 'page collectionhealth ... sets=0 ... note=not read:
+#     this login has no EXECUTE on dbo.CollectionHealth_Get' (CH9e), then the GRANT is
+#     given again; on 4.24.1 the screen is not called and says it came with version 4.25.0 (CH9c); neither note names
+#     the source product (task 168). CH9b (part G, Chromium): the
+#     fleet grid's header ('Collection Health' on 4.25.0, 'Collection errors (24hrs)' on 4.24.1) with DBA Dash's own
+#     tooltip, each row's landing by the version, on 4.25.0 the screen's h3 and five h4s and its Collections grid without
+#     the columns DBA Dash hides, on 4.24.1 the 'not read' line alone; a mixed fleet NOT COVERED (one release per rig).
 #  C. the pages: TestLivePages through the read login prints 9 lines 'page <key> ok ... proven=true'; the same nine
 #     procedures called as sa by pymssql (FreeTDS: another driver, the GUI's parameters written out in T-SQL here)
 #     return, page by page, the same number of result sets, the same column names in the same order, the same row
@@ -50,22 +58,53 @@
 #     computes a few cells from the clock at the call (BackupStatus.SnapshotAge as 'dd hh:mm:ss', ages in whole
 #     minutes or days): such a cell is equal within 300 s, or 1 unit, and their number is printed. The exact snapshot:
 #     the sessions page called with one SnapshotDateUTC as pgvigil's page printed it (7 digits) returns the same rows as
-#     RunningQueries_Get called with that exact literal, 1 row or more.
+#     RunningQueries_Get called with that exact literal, 1 row or more. A page's text columns (a statement, a job's
+#     description, an alert's notification message: the list in internal/dbadash/pages.go, handed to this proof by
+#     TestMaskCells) are shown through the credential mask, so the second client's cells of those columns pass the same
+#     mask before the comparison (TestMaskCells again: the package's own mask, no second copy of it here), and a text
+#     cell that differs is named by its column and its length, never printed.
+#     C2 (the text a page shows passes the collection's credential mask) after the comparison, as sa: a new dbo.QueryText
+#     handle on the first session of the instance's latest running-queries snapshot (its offsets NULL, so text is the
+#     batch), a cursor of that session (dbo.RunningQueriesCursors, uniqueifier 1, created a minute before the snapshot)
+#     on a second new handle, the description of the instance's first job (dbo.Jobs) and the notification message of its
+#     first alert (dbo.Alerts), each holding one credential form with a token made at run time; the pages read again: the
+#     sessions page's batch_text and text are "CREATE LOGIN pgv_c2 WITH PASSWORD = '<masked>'; SELECT 1", its
+#     cursor_text "ALTER LOGIN pgv_c2 WITH PASSWORD = '<masked>'", the jobs page's
+#     description "loads the warehouse; Server=db1;Database=app;User Id=etl;Password=<masked>;", the alerts page's
+#     Notification Message 'page the DBA: sqlcmd -S db1 -U ops -P <masked> -Q "EXEC dbo.ack"', and no page's reply holds
+#     a token; DBA Dash's tables still hold their four tokens (read as sa): the mask is the page's, not the source's. A
+#     job or an alert name with a quote in it is seeded as it is; with PGVIGIL_DBADASH_BAK an instance without a job or
+#     without an alert has that text said as not run.
+#     C3 the comparison of C again for the sessions, jobs and alerts pages as C2 read them, the seeded credentials in
+#     DBA Dash's tables: the three pages equal (the second client's text cells through the same mask), and no line the
+#     comparison prints holds a token.
 #  D. the actions, through the API of a running `pgvigil serve` as a signed-in UI user:
 #     D1 the DBADash read (TestLive) stores the instance; GET /api/dbadash?repo=lab&id=<id>&part=pgvigil answers 200
 #        with 0 rows while pgvigil monitors no SQL Server of that @@SERVERNAME;
 #     D1w the Collection Errors cell (part=statuses): on 4.24.1 'DBA Dash Errors (24hrs)|<k> error(s) in 24 h'; on
 #        4.25.0 'Collection Health|<k> collection(s) at warning or critical' (the instance has collection runs), then -
-#        its runs removed, Summary_Upd again - 'Collection Health|<k2> error(s) in 24 h'. On 4.25.0 also (review 425's
-#        fold, written before their first run): D1s a deploy row newer than the instance's Summary RefreshDate (a row
+#        its runs removed, Summary_Upd again - 'Collection Health|<k2> error(s) in 24 h'. On 4.25.0 also
+#        (written before their first run): D1s a deploy row newer than the instance's Summary RefreshDate (a row
 #        DBA Dash wrote before the upgrade) reads 'Collection Health|<k> error(s) in 24 h'; D1p a read login with VIEW
 #        DEFINITION and SELECT on the four tables only (it sees dbo.CollectionRunStatus, may not read it) reads without
 #        an error and gets the bare count 'Collection Health|<k>'. With PGVIGIL_DBADASH_BAK an instance without runs
 #        takes the 24 h branch, and D1s / D1p are not run (a restored repository's history is the site's);
+#     D1t (the instance's query_text on the statements a page shows; run on a tree whose internal/web/q_dbadash.go
+#        calls Statements, or with PGVIGIL_DOOR_TEXTRULE=1, else said as not run) while no pgvigil instance matches
+#        the DBA Dash instance (part=imported holds no row for it), serve under the file's query_text none with the
+#        instance sqlbox at full (a wrong match would show the statements): the sessions page's batch_text, text and
+#        cursor_text of C2's session all read '(not shown: this instance's query_text policy is none)';
 #     D2 after `pgvigil collect -once mssql_instance` of a pgvigil SQL Server instance on the same server it returns
 #        that instance (its instance_id and name); D2x a session named DBADash_T206 (stopped, a ring buffer) made on the
 #        server, then `collect -once mssql_xe`: pgvigil.mssql_xe_foreign holds it 'false|ring_buffer' and the read's count
 #        equals the server's own count of DBADash_% sessions; the session dropped;
+#     D2t (as D1t) with the matched instance sqlbox: at query_text none under the file's full the three cells read the
+#        same words; the same with the repository named in another case (repo=LAB: the page answers it, so the rule
+#        must); the same with the door's stored row of the instance deleted (a server DBA Dash added after the door's
+#        last read: the screen's own Instance is the server name pgvigil collects sqlbox under), the row then read
+#        again by TestLive; at normalized under the file's none batch_text and text read 'CREATE LOGIN pgv_c2 WITH
+#        PASSWORD = ?; SELECT ?' and cursor_text 'ALTER LOGIN pgv_c2 WITH PASSWORD = ?' (the masked text through the
+#        collector's normalizer); serve then runs D3's configuration again;
 #     D3 without an actions_dsn on it, a kill of the proof's own application session is 409, outcome refused, the
 #        detail names 'actions_dsn', one audit row 'refused' is in pgvigil.actions_log and the session is still
 #        connected;
@@ -82,33 +121,42 @@
 #     'progress' line per batch of 2 (ceil(source / 2) for each mapping, the last at inserted = source) and one final
 #     line per mapping at inserted = source; the pool answers after the import (Import leaves it open); the second run
 #     goes through the dsn as before; a pgvigil_reader login's pool is refused ('may not write') as its dsn is.
+#     E3 (the import's texts pass collection's masks) before the dry run, as sa, the instance's first dbo.JobHistory row
+#     gets a message holding three credential forms with tokens made at run time (a sqlcmd command line's password
+#     switch, a connection string's password pair, a ConvertTo-SecureString string; an UPDATE, so E's counts stay);
+#     after the import pgvigil.mssql_job_runs holds that run (its history_id) once, its message with none of the
+#     tokens and each form's '<masked>', the text around them kept, its job_name and step_name equal to DBA Dash's.
 #  F. the version pin: with a newer version row '9.9.9' in the repository, every page answers ok with proven=false and
 #     the note 'not proven on source version 9.9.9'; the row is removed again.
-#  G. the imported server's tabs (task 168), under `pgvigil serve` built from a copy of this tree with the join's wiring
-#     (internal/dbadash/testdata/join-168.patch applied to the copy; already applied, or no patch file once the release
-#     join carries the wiring = said and used as it is) and the
+#  G. the imported server's tabs (task 168), under `pgvigil serve` built from a copy of this tree with task 168's wiring
+#     (internal/dbadash/testdata/join-168.patch applied to the copy; already applied, or no patch file once the tree
+#     itself carries the wiring = said and used as it is) and the
 #     web bundle rebuilt, on a pgvigil repository of its own whose configuration names the DBA Dash repository and no
 #     instance, in a headless Chromium signed in as a UI user:
 #     G0 (before the walk, Node) web/src/move_address.test.mjs: the move's prefill rule - which DBA Dash connection is
 #        a network address, its host and port apart, else DBA Dash's Instance with why - every row 'ok';
+#        and web/src/chhealth.test.mjs: the Collection Health helpers' rows, 'chhealth: 0 FAIL';
 #     G1 before any import, the DBA Dash instance's own page (#/dbadash?dr=lab&di=<id>) lists every SQL Server tab (as many
-#        as web/src/router.ts mssqlInstanceTabs holds in the tree: 33 at task 168, 53 at the release join);
+#        as web/src/router.ts mssqlInstanceTabs holds in the tree: 33 at task 168, 53 in the release);
 #        each renders with no error box: summary, performance, mssql_running, mssqlbackups, mssqljobs (with the SQL
 #        Agent alerts), mssqlstorage (the Drives screen: 0 rows on Linux, as C's), mssqlfiles, mssqlconfig and
 #        mssqlproperties as the repository's screens with rows (mssqlstorage: as many as part C's DrivesReport_Get),
+#        the tenth screen collectionhealth (B6.3) by version - on 4.25.0 the repository's screen with rows, on 4.24.1
+#        a screen with no call (no row, no grid; its gate's words read by CH9b below) -,
 #        every other tab its one 'not read for an imported server' line and no grid row; no tab but the seven live
-#        screens holds 'DBADash' or 'DBA Dash' text; the tree shows 'Imported: lab' and no such text; the Imported servers
-#        page names the source product on its settings line only;
-#     G2 `pgvigil import dbadash -config <it> -repo lab` (the join's subcommand) exits 0 and makes the imported server
+#        screens (and collectionhealth's rows on 4.25.0: the source's data) holds 'DBADash' or 'DBA Dash' text; the tree
+#        shows 'Imported: lab' and no such text; the Imported servers page names the source product on its settings
+#        line only;
+#     G2 `pgvigil import dbadash -config <it> -repo lab` (the wiring's subcommand) exits 0 and makes the imported server
 #        under DBA Dash's display name;
 #     G3 the imported server at its own pgvigil instance (#/summary?i=<id>) lists the same tabs (Availability
 #        kept); mssqlcpu and jobstimeline render pgvigil's own pages over the imported rows (a grid row or a chart),
-#        mssqlstorage the imported database sizes from pgvigil's store (a grid row) above the Drives screen, the eight
-#        other screen tabs as in G1, every other tab its one line; the tree as in G1. [s168-proof2 expected pgvigil's own
+#        mssqlstorage the imported database sizes from pgvigil's store (a grid row) above the Drives screen, the other
+#        screen tabs as in G1 (collectionhealth by version), every other tab its one line; the tree as in G1. [a lab run expected pgvigil's own
 #        Storage page there; it lists the databases of pgvigil's own file read, which an imported server has not.]
 # NOT PROVEN HERE: the page's machine-name and latest-snapshot guards on the buttons in a browser; the imported-server match
 # with two repositories under one display name, a repository removed from the configuration, or a collection attempt on
-# the imported server's name (read in the code and the review, not run); the 'volumes' mapping with rows
+# the imported server's name (read in the code, not run); the 'volumes' mapping with rows
 # when DBA Dash collects none (Linux: run with PGVIGIL_DBADASH_BAK of a Windows-side repository); pgvigil's own
 # collector run after an import (the duplicates the docs' -to rule is about); a DBA Dash version other than 4.24.1;
 # Azure SQL Database rows of a repository.
@@ -133,6 +181,8 @@ NET=pgvdoor-net-$SUF; SQL=pgvdoor-sql-$SUF; SVC=pgvdoor-svc-$SUF; CFGC=pgvdoor-c
 DDB=DBADash_pgv$SUF; PGDB=pgv_door_$SUF; PGRO=pgv_door_ro_$SUF
 RO=pgv_ddro_$SUF; MON=pgv_ddmon_$SUF; ACT=pgv_ddact_$SUF; APP=pgv_ddapp_$SUF; USR=proofdba$SUF
 PROCS="PerformanceSummary_Get RunningQueriesSummary_Get RunningQueries_Get BackupReport_Get AgentJobsReport_Get DrivesReport_Get DBFilesReport_Get Configuration_Get Alerts_Get"
+# B6.3 (CH9): the tenth screen's procedure came with 4.25.0 - granted there only (docs/dbadash.md's GRANT line)
+[[ "$DDV" == 4.25.0 ]] && PROCS="$PROCS CollectionHealth_Get"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
@@ -144,7 +194,7 @@ cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   [[ -n "$APPPID" ]] && kill "$APPPID" 2>/dev/null || true
   [[ -n "$CHRPID" ]] && kill "$CHRPID" 2>/dev/null || true
-  docker rm -f "$SVC" "$CFGC" "$PYC" "$SQL" >/dev/null 2>&1 || true
+  docker rm -fv "$SVC" "$CFGC" "$PYC" "$SQL" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   if compgen -G "$CACHE/ServiceConfig.json*" >/dev/null; then echo "WARN: $CACHE holds a ServiceConfig.json* (remove it by hand)" >&2; fi
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || true
@@ -223,7 +273,7 @@ else
   docker run -d --name "$SVC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$DD:/dd" -w /dd "$IMG_NET" dotnet DBADashService.dll >/dev/null
   sleep "$SVC_SECS"
   docker logs "$SVC" 2>&1 | grep -E '\[(ERR|FTL)\]' | head -5 | sed 's/^/note /' || true
-  docker rm -f "$SVC" >/dev/null
+  docker rm -fv "$SVC" >/dev/null
   rm -rf "$DD"
   ! compgen -G "$CACHE/ServiceConfig.json*" >/dev/null || fail "A: the cache holds a ServiceConfig.json*"
   echo "ok   A: DBA Dash's service collected for $SVC_SECS s as a console process in this run's own copy of the release, now removed; the cache holds no service config"
@@ -264,9 +314,29 @@ mkdir -p "$TMPD/pages"
 export PGV_DD_RO="sqlserver://$RO:$(urlq "$RO_PW")@127.0.0.1:$PORT_SQL?database=$DDB&encrypt=true&TrustServerCertificate=true"
 pages() { PGVIGIL_DBADASH_PAGE_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_PAGE_ID="$ID" PGVIGIL_DBADASH_PAGE_FROM="$FROM" PGVIGIL_DBADASH_PAGE_TO="$TO" PGVIGIL_DBADASH_PAGE_DIR="${1:-$TMPD/pages}" \
   PGVIGIL_DBADASH_PAGE_SNAPSHOT="${2:-}" go test -count=1 -run '^TestLivePages$' -v ./internal/dbadash 2>&1 | grep '^page ' || true; }
-echo "page read at $(date +%s) (the page side; the doorage review, finding 2: the gap to the pymssql read)"
+echo "page read at $(date +%s) (the page side; the gap to the pymssql read)"
 res=$(pages); echo "$res"
-[[ "$(echo "$res" | grep -c ' ok .*proven=true ')" == 9 ]] || fail "C: not every page answered ok and proven"
+# the page count, derived once (never a literal 10 in C and F): every PageDef of pages.go answers a line
+NPAGE=$(echo "$res" | grep -c '^page ' || true); NDEF=$(grep -cE '^\s*\{Key: "' internal/dbadash/pages.go || true)
+[[ "$NPAGE" == "$NDEF" && "$NPAGE" -gt 0 ]] || fail "C: $NPAGE page line(s) for $NDEF PageDef(s) in internal/dbadash/pages.go"
+[[ "$(echo "$res" | grep -c ' ok .*proven=true ')" == "$NPAGE" ]] || fail "C: not every page answered ok and proven"
+# CH9: the tenth screen (B6.3) - on 4.25.0 its five result sets; on 4.24.1 no call, the gate's words
+chl=$(echo "$res" | grep '^page collectionhealth ' || true)
+if [[ "$DDV" == 4.25.0 ]]; then
+  [[ "$chl" == *" sets=5 "* && "$chl" == *"note="* && "$chl" != *"not read:"* ]] || fail "CH9a: the Collection Health screen on 4.25.0: $chl"
+  echo "ok   CH9a: Collection Health on 4.25.0 answers with its five result sets ($chl)"
+  # CH9e: a 4.25.0 read login without the procedure's GRANT - OBJECT_ID cannot see what
+  # the login has no right on - reads 'no EXECUTE', never 'not in this repository'; the GRANT given again first
+  sqok "CH9e: the GRANT taken back" "REVOKE EXECUTE ON dbo.CollectionHealth_Get FROM [$RO]" "$DDB"
+  mkdir -p "$TMPD/pages-ch9e"
+  che=$(pages "$TMPD/pages-ch9e" | grep '^page collectionhealth ' || true)
+  sqok "CH9e: the GRANT given again" "GRANT EXECUTE ON dbo.CollectionHealth_Get TO [$RO]" "$DDB"
+  [[ "$che" == *" sets=0 "*"note=not read: this login has no EXECUTE on dbo.CollectionHealth_Get (the GRANT in docs/dbadash.md, version 4.25.0 and later)"* ]] || fail "CH9e: a 4.25.0 read login without the GRANT: $che"
+  echo "ok   CH9e: a 4.25.0 read login without the GRANT reads 'no EXECUTE' ($che)"
+else
+  [[ "$chl" == *" sets=0 "*"note=not read: dbo.CollectionHealth_Get is not in this repository (it came with version 4.25.0)"* ]] || fail "CH9c: the Collection Health screen on $DDV: $chl"
+  echo "ok   CH9c: Collection Health on $DDV is not called and says why"
+fi
 # the exact snapshot: one SnapshotDateUTC as the running page printed it, back through the sessions page
 SNAPTXT=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["results"][0]; i=[c["name"] for c in s["columns"]].index("SnapshotDateUTC"); print(s["rows"][0][i] if s["rows"] else "")' "$TMPD/pages/running.json")
 [[ -n "$SNAPTXT" ]] || fail "C: the running page holds no snapshot to call back"
@@ -276,6 +346,11 @@ cat > "$TMPD/grids.py" <<'PY'
 import datetime, decimal, glob, json, os, sys, uuid
 import pymssql
 idn, frm, to, snap = int(os.environ["ID"]), os.environ["FROM"][:19], os.environ["TO"][:19], os.environ["SNAP"]
+label, only, mode = os.environ.get("LABEL", "C"), os.environ.get("ONLY", "").split(), os.environ.get("MODE", "compare")
+# the pages' text columns and (MODE=compare) the second client's cells of them through the page's own mask: both from
+# the package (TestMaskCells), so this script holds no copy of the mask or of the list
+mask = json.load(open(os.environ["MASK"]))
+textcols = lambda page: set(mask["columns"].get(page.split("@")[0], []))
 ids = f"DECLARE @i dbo.IDs; INSERT @i VALUES ({idn}); "
 st = "@IncludeCritical = 1, @IncludeWarning = 1, @IncludeNA = 1, @IncludeOK = 1"
 calls = {  # DBA Dash GUI's parameters for one instance, every status ticked (DBADashGUI source, 4.24.1)
@@ -288,6 +363,9 @@ calls = {  # DBA Dash GUI's parameters for one instance, every status ticked (DB
   "dbfiles": ids + f"EXEC dbo.DBFilesReport_Get @InstanceIDs = @i, {st}, @FilegroupLevel = 1, @ShowHidden = 1",
   "configuration": f"EXEC dbo.Configuration_Get @InstanceIDs = '{idn}', @ShowHidden = 1",
   "alerts": f"EXEC dbo.Alerts_Get @InstanceIDs = '{idn}', @ShowHidden = 1",
+  # B6.3 (CH9a): 4.25.0's Collection Health as its GUI calls it by default (CollectionHealthView.cs), 4.25.0 only
+  **({"collectionhealth": ids + f"EXEC dbo.CollectionHealth_Get @InstanceIDs = @i, @FromDate = '{frm}', @ToDate = '{to}', @DetailMaxHours = 48, @GroupByInstance = 1, @IncludeSteps = 1, {st}"}
+     if os.environ.get("DDV") == "4.25.0" else {}),
   "sessions@snapshot": f"EXEC dbo.RunningQueries_Get @InstanceID = {idn}, @SnapshotDateFrom = '{snap}', @SnapshotDateTo = '{snap}'",
 }
 def dec(s):
@@ -325,6 +403,26 @@ def canon_pg(v, typ):  # pgvigil's JSON value with its column type
         d, _, f = v.partition("."); return "H" + d + "." + (f + "000000")[:3]
     return "S" + str(v)
 con = pymssql.connect(server=os.environ["SQLHOST"], user="sa", password=os.environ["SA_PW"], database=os.environ["DDB"], port=1433, tds_version="7.4")
+if only: calls = {p: c for p, c in calls.items() if p in only}
+if mode == "cells":   # the distinct texts of the text columns as a JSON list on stdout, and nothing else
+    seen = {}
+    for page, sqltext in calls.items():
+        tcs = textcols(page)
+        if not tcs: continue
+        cur = con.cursor()
+        cur.execute("SET NOCOUNT ON; " + sqltext)
+        while True:
+            if cur.description:
+                idx = [i for i, c in enumerate(cur.description) if c[0] in tcs]
+                for r in cur.fetchall():
+                    for i in idx:
+                        if isinstance(r[i], str) and r[i]: seen[r[i]] = None
+            if not cur.nextset(): break
+    json.dump(list(seen), sys.stdout); sys.exit(0)
+raw = json.load(open(os.environ["CELLS"]))
+assert len(raw) == len(mask["masked"]), "the mask step answered another number of texts than it was given"
+masked = dict(zip(raw, mask["masked"]))
+UNSEEN = chr(0) + "a text the mask step did not see"
 import re
 DUR = re.compile(r"^S(\d+) (\d\d):(\d\d):(\d\d)$")
 AGE = re.compile(r"^(?!.*(Count|Fails)).*(Age|Days|Mins|Minutes|Hours)$|^(TimeSinceLast(Failed|Succeeded)|Days since Last Occurrence)$")   # Alerts_Get.sql L39: DATEDIFF(d, last_occurrence_utc, GETUTCDATE()), its unit first in the name   # AgentJob7Day.sql L29-30: DATEDIFF(mi, ..., GETUTCDATE()) at the call; a count (FailCount7Days, JobStepFails7Days) is never an age
@@ -345,11 +443,11 @@ def near(x, y, col):
     ok = abs(sx(mx) - sx(my)) <= 300
     if ok and x != y: clockcells[0] += 1
     return ok
-# near()'s self-test (the doorage review, finding 4): a count is never a clock age, a minute age is 1 apart at most
+# near()'s self-test: a count is never a clock age, a minute age is 1 apart at most
 assert not near("N2", "N3", "FailCount7Days") and near("N4", "N3", "TimeSinceLastSucceeded") and not near("N5", "N3", "TimeSinceLastSucceeded") \
     and near("N4", "N3", "Days since Last Occurrence") and not near("N2", "N3", "JobStepFails7Days"), "near() self-test"
 clockcells[0] = 0
-print(f"read at {int(datetime.datetime.now(datetime.timezone.utc).timestamp())} (the pymssql side; the doorage review, finding 2: the gap to the page read)", flush=True)
+print(f"read at {int(datetime.datetime.now(datetime.timezone.utc).timestamp())} (the pymssql side; the gap to the page read)", flush=True)
 for page, sqltext in calls.items():
     cur = con.cursor()
     cur.execute("SET NOCOUNT ON; " + sqltext)
@@ -370,11 +468,17 @@ for page, sqltext in calls.items():
         pcols = [c["name"] for c in ps["columns"]]; types = [c["type"] for c in ps["columns"]]
         if cols != pcols: bad.append(f"{page} set {n+1}: columns {cols} vs {pcols}"); continue
         if len(rows) != len(ps["rows"]): bad.append(f"{page} set {n+1}: {len(rows)} rows vs {len(ps['rows'])}"); continue
-        a = sorted(tuple(canon_py(v, t) for v, t in zip(r, types)) for r in rows)
+        tcs = textcols(page)
+        def py(v, t, c):   # the second client's value; a text column's through the mask the page's cell passed
+            if c in tcs and isinstance(v, str) and v: return "S" + masked.get(v, UNSEEN)
+            return canon_py(v, t)
+        # a text cell is never printed: a restored repository's may hold a credential form the mask does not know
+        hide = lambda v, c: v if c not in tcs or v == "NULL" else "<a text of %d characters, not printed>" % (len(v) - 1)
+        a = sorted(tuple(py(v, t, c) for v, t, c in zip(r, types, cols)) for r in rows)
         b = sorted(tuple(canon_pg(v, t) for v, t in zip(r, types)) for r in ps["rows"])
         if a != b:
             # a clock-computed cell is equal within near()'s tolerance (above); every other cell must be equal as it is.
-            # NOT COVERED (the doorage review, finding 3, 2026-11-14): a count summed over hour buckets with a GETUTCDATE()
+            # NOT COVERED: a count summed over hour buckets with a GETUTCDATE()
             # window (AgentJob7Day.sql L6-17) and a status cell derived from a clock age flip when the two reads straddle a
             # bucket's or a threshold's edge; a back-to-back re-read of both sides before C fails would cover them - not
             # built until the two 'read at' lines give the measured gap
@@ -382,19 +486,113 @@ for page, sqltext in calls.items():
                 # the first pair near() refuses (a pair differing only in accepted clock cells is not it), and only its
                 # cells near() refuses, by column name (the whole pair is long: a cut log loses the cells)
                 diff = next(((x, y) for x, y in zip(a, b) if not (len(x) == len(y) and all(near(p, q, c) for p, q, c in zip(x, y, cols)))), None)
-                cells = [f"{c}: DBA Dash {p} / page {q}" for p, q, c in zip(diff[0], diff[1], cols) if not near(p, q, c)] if diff else []
-                bad.append(f"{page} set {n+1}: the rows differ in {'; '.join(cells) or 'their order'} - first pair: {diff}")
+                cells = [f"{c}: DBA Dash {hide(p, c)} / page {hide(q, c)}" for p, q, c in zip(diff[0], diff[1], cols) if not near(p, q, c)] if diff else []
+                pair = tuple(tuple(hide(v, c) for v, c in zip(side, cols)) for side in diff) if diff else None
+                bad.append(f"{page} set {n+1}: the rows differ in {'; '.join(cells) or 'their order'} - first pair: {pair}")
         rows_seen += len(rows)
     if page == "sessions@snapshot" and rows_seen == 0: bad.append(f"{page}: 0 rows for the snapshot {snap}")
     nonempty += rows_seen > 0
-    print(f"ok   C: {page}: {len(sets)} set(s), rows {[len(r) for _, r in sets]}, equal" if not any(x.startswith(page) for x in bad) else f"FAIL C: {page}")
+    print(f"ok   {label}: {page}: {len(sets)} set(s), rows {[len(r) for _, r in sets]}, equal" if not any(x.startswith(page) for x in bad) else f"FAIL {label}: {page}")
 if bad: print("\n".join("FAIL " + x for x in bad)); sys.exit(1)
-if nonempty < 7: print(f"FAIL C: only {nonempty - 1} of 9 pages and the snapshot call returned rows"); sys.exit(1)
-print(f"ok   C: 9 pages and the exact snapshot {snap} equal to DBA Dash's own procedure output through pymssql; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
+if only:
+    print(f"ok   {label}: {len(calls)} page(s) ({', '.join(calls)}) equal to DBA Dash's own procedure output through pymssql, {len(raw)} text cell(s) of it through the page's mask; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
+    sys.exit(0)
+if nonempty < 7: print(f"FAIL C: only {nonempty - 1} of {len(calls) - 1} pages and the snapshot call returned rows"); sys.exit(1)
+print(f"ok   C: {len(calls) - 1} pages and the exact snapshot {snap} equal to DBA Dash's own procedure output through pymssql, {len(raw)} text cell(s) of it through the page's mask; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
 PY
-docker run --rm --name "$PYC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" -e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e PAGES=/w/pages \
-  -v "$TMPD:/w:ro" "$IMG_PY" sh -c 'pip install -q --disable-pip-version-check --root-user-action=ignore "pymssql>=2.3,<2.4" 2>&1 | tail -3 && python /w/grids.py' | tee "$TMPD/grids.out" || true
-grep -q "^ok   C: 9 pages and the exact snapshot" "$TMPD/grids.out" || fail "C: the pages are not DBA Dash's grids (the lines above)"
+# the second client's container stays for C and C3 (one install of pymssql) and goes after C3
+docker run -d --name "$PYC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" -v "$TMPD:/w:ro" "$IMG_PY" sleep 3600 >/dev/null
+docker exec "$PYC" pip install -q --disable-pip-version-check --root-user-action=ignore "pymssql>=2.3,<2.4" 2>&1 | tail -3 || true
+docker exec "$PYC" python -c 'import pymssql' || fail "C: pymssql did not install in the second client's container"
+# grids <label> <the pages' folder under $TMPD> [<pages>]: the second client's call of each page's procedure against the
+# page's reply in that folder (every page and the exact snapshot, or the pages named); its lines in grids-<label>.out
+# The pages' text columns are shown through the credential mask, so the second client's cells of those columns pass the
+# same mask first: TestMaskCells names the columns, the second client's texts of them go to a file of this run's folder
+# (as stored: never printed, gone with the folder), TestMaskCells masks them, and the comparison reads both files.
+grids() {
+  local e=(-e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e DDV="$DDV" -e PAGES="/w/$2" -e LABEL="$1" -e ONLY="${3:-}")
+  PGVIGIL_DBADASH_MASK_OUT="$TMPD/mask-$1-list.json" go test -count=1 -run '^TestMaskCells$' ./internal/dbadash >/dev/null 2>&1 || fail "$1: the pages' text columns (TestMaskCells)"
+  docker exec "${e[@]}" -e MODE=cells -e MASK="/w/mask-$1-list.json" "$PYC" python /w/grids.py > "$TMPD/cells-$1.json" || fail "$1: the second client's read of the text columns"
+  PGVIGIL_DBADASH_MASK_IN="$TMPD/cells-$1.json" PGVIGIL_DBADASH_MASK_OUT="$TMPD/mask-$1.json" go test -count=1 -run '^TestMaskCells$' ./internal/dbadash >/dev/null 2>&1 || fail "$1: the mask over the second client's text cells (TestMaskCells)"
+  docker exec "${e[@]}" -e MODE=compare -e MASK="/w/mask-$1.json" -e CELLS="/w/cells-$1.json" "$PYC" python /w/grids.py | tee "$TMPD/grids-$1.out" || true
+}
+grids C pages
+NPG=9; [[ "$DDV" == 4.25.0 ]] && NPG=10   # DBA Dash 4.25.0 adds the Collection Health page (CollectionHealth_Get)
+grep -q "^ok   C: $NPG pages and the exact snapshot" "$TMPD/grids-C.out" || fail "C: the pages are not DBA Dash's grids (the lines above)"
+# C2: the text a page shows passes the collection's credential mask (the seeds after the comparison; tokens made now)
+C2A="tk$RANDOM$RANDOM"; C2B="tk$RANDOM$RANDOM"; C2C="tk$RANDOM$RANDOM"; C2D="tk$RANDOM$RANDOM"
+C2SNAP=$(sq "SELECT CONVERT(varchar(33), MAX(SnapshotDateUTC), 126) FROM dbo.RunningQueries WHERE InstanceID = $ID" "$DDB")
+[[ "$C2SNAP" =~ ^[0-9]{4}- ]] || fail "C2: no running-queries snapshot of instance $ID: '$C2SNAP'"
+C2SID=$(sq "SELECT MIN(session_id) FROM dbo.RunningQueries WHERE InstanceID = $ID AND SnapshotDateUTC = '$C2SNAP'" "$DDB")
+[[ "$C2SID" =~ ^[0-9]+$ ]] || fail "C2: no session in the snapshot $C2SNAP: '$C2SID'"
+C2H="0x$(python3 -c 'import secrets; print(secrets.token_hex(20))')"; C2HC="0x$(python3 -c 'import secrets; print(secrets.token_hex(20))')"
+sqok "C2: the statement" "INSERT INTO dbo.QueryText (sql_handle, text, SnapshotDate) VALUES ($C2H, N'CREATE LOGIN pgv_c2 WITH PASSWORD = ''$C2A''; SELECT 1', SYSUTCDATETIME());
+  UPDATE dbo.RunningQueries SET sql_handle = $C2H, statement_start_offset = NULL, statement_end_offset = NULL
+   WHERE InstanceID = $ID AND SnapshotDateUTC = '$C2SNAP' AND session_id = $C2SID" "$DDB"
+# the session's first cursor (the screen shows uniqueifier 1, created at or before the snapshot): its statement by its
+# own handle, the offsets NULL, so cursor_text is the whole text
+sqok "C2: the cursor's statement" "INSERT INTO dbo.QueryText (sql_handle, text, SnapshotDate) VALUES ($C2HC, N'ALTER LOGIN pgv_c2 WITH PASSWORD = ''$C2D''', SYSUTCDATETIME());
+  DELETE dbo.RunningQueriesCursors WHERE InstanceID = $ID AND SnapshotDateUTC = '$C2SNAP' AND session_id = $C2SID AND uniqueifier = 1;
+  INSERT INTO dbo.RunningQueriesCursors (InstanceID, SnapshotDateUTC, session_id, uniqueifier, sql_handle, creation_time_utc)
+  VALUES ($ID, '$C2SNAP', $C2SID, 1, $C2HC, DATEADD(minute, -1, CAST('$C2SNAP' AS datetime2(7))))" "$DDB"
+C2JOB=$(sq "SELECT TOP (1) name FROM dbo.Jobs WHERE InstanceID = $ID AND IsActive = 1 ORDER BY name" "$DDB")
+C2ALERT=$(sq "SELECT TOP (1) name FROM dbo.Alerts WHERE InstanceID = $ID ORDER BY name" "$DDB")
+# a restored repository's instance may have no job or no alert: that text is said as not run (the lab's has both)
+if [[ -z "$C2JOB" || -z "$C2ALERT" ]]; then
+  [[ -n "${PGVIGIL_DBADASH_BAK:-}" ]] || fail "C2: instance $ID has no job ('$C2JOB') or no alert ('$C2ALERT') to carry a text"
+  [[ -n "$C2JOB" ]] || echo "not run: C2's job description (instance $ID has no job in the restored repository)"
+  [[ -n "$C2ALERT" ]] || echo "not run: C2's alert message (instance $ID has no alert in the restored repository)"
+fi
+# a name goes into the T-SQL with its quotes doubled
+QT="'"; C2JOBQ=${C2JOB//$QT/$QT$QT}; C2ALERTQ=${C2ALERT//$QT/$QT$QT}; c2want=2
+if [[ -n "$C2JOB" ]]; then
+  sqok "C2: the job's description" "UPDATE dbo.Jobs SET description = N'loads the warehouse; Server=db1;Database=app;User Id=etl;Password=$C2B;' WHERE InstanceID = $ID AND name = N'$C2JOBQ'" "$DDB"; c2want=$((c2want + 1))
+fi
+if [[ -n "$C2ALERT" ]]; then
+  sqok "C2: the alert's message" "UPDATE dbo.Alerts SET notification_message = N'page the DBA: sqlcmd -S db1 -U ops -P $C2C -Q \"EXEC dbo.ack\"' WHERE InstanceID = $ID AND name = N'$C2ALERTQ'" "$DDB"; c2want=$((c2want + 1))
+fi
+src=$(sq "SELECT (SELECT COUNT(*) FROM dbo.QueryText WHERE sql_handle = $C2H AND text LIKE N'%$C2A%') + (SELECT COUNT(*) FROM dbo.Jobs WHERE InstanceID = $ID AND description LIKE N'%$C2B%')
+  + (SELECT COUNT(*) FROM dbo.Alerts WHERE InstanceID = $ID AND notification_message LIKE N'%$C2C%')
+  + (SELECT COUNT(*) FROM dbo.RunningQueriesCursors C JOIN dbo.QueryText T ON T.sql_handle = C.sql_handle
+      WHERE C.InstanceID = $ID AND C.SnapshotDateUTC = '$C2SNAP' AND C.session_id = $C2SID AND C.uniqueifier = 1 AND T.text LIKE N'%$C2D%')" "$DDB")
+[[ "$src" == "$c2want" ]] || fail "C2: DBA Dash's tables hold $src of the $c2want seeded tokens"
+mkdir -p "$TMPD/pages-c2"
+# every page of C's count (NPAGE: 10 with B6.3's collectionhealth line, 'ok' with its note on 4.24.1), never a literal
+pages "$TMPD/pages-c2" | grep -c '^page [^ ]* ok ' | grep -qx "$NPAGE" || fail "C2: not every page answered after the seeds"
+c2=$(python3 - "$TMPD/pages-c2" "$C2SID" "$C2JOB" "$C2ALERT" "$C2A" "$C2B" "$C2C" "$C2D" <<'PY'
+import json, os, sys
+d, sid, job, alert, toks = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5:]
+def cell(page, keycol, key, col):
+    r = json.load(open(os.path.join(d, page + ".json")))["results"][0]
+    n = [c["name"] for c in r["columns"]]
+    for row in r["rows"]:
+        if row[n.index(keycol)] == key:
+            return row[n.index(col)]
+    return "NO ROW"
+stmt = "CREATE LOGIN pgv_c2 WITH PASSWORD = '<masked>'; SELECT 1"
+want = {"sessions batch_text": stmt, "sessions text": stmt, "sessions cursor_text": "ALTER LOGIN pgv_c2 WITH PASSWORD = '<masked>'"}
+got = {k: cell("sessions", "session_id", sid, k.split()[1]) for k in want}
+if job:
+    want["jobs description"] = "loads the warehouse; Server=db1;Database=app;User Id=etl;Password=<masked>;"
+    got["jobs description"] = cell("jobs", "name", job, "description")
+if alert:
+    want["alerts Notification Message"] = 'page the DBA: sqlcmd -S db1 -U ops -P <masked> -Q "EXEC dbo.ack"'
+    got["alerts Notification Message"] = cell("alerts", "Alert Name", alert, "Notification Message")
+bad = ["%s reads %r" % (k, got[k]) for k in want if got[k] != want[k]]
+for p in ("sessions", "jobs", "alerts"):
+    raw = open(os.path.join(d, p + ".json")).read()
+    bad += ["the %s page's reply holds a seeded token" % p for t in toks if t in raw]
+print("ok" if not bad else "; ".join(bad))
+PY
+)
+[[ "$c2" == ok ]] || fail "C2: $c2"
+echo "ok   C2: session $C2SID's batch_text, text and cursor_text, job ${C2JOB:-(none)}'s description and alert ${C2ALERT:-(none)}'s Notification Message are shown with their credential as <masked> and the words around it; no page's reply holds a token; DBA Dash's tables hold all $c2want"
+# C3: the comparison again over the seeded pages (the second client reads the credentials as stored, the pages show them masked)
+grids C3 pages-c2 "sessions jobs alerts"
+grep -q "^ok   C3: 3 page(s)" "$TMPD/grids-C3.out" || fail "C3: the seeded pages are not DBA Dash's grids (the lines above)"
+for t in "$C2A" "$C2B" "$C2C" "$C2D"; do ! grep -qF -- "$t" "$TMPD/grids-C3.out" || fail "C3: a line of the comparison holds a seeded token"; done
+docker rm -fv "$PYC" >/dev/null
+echo "ok   C3: the sessions, jobs and alerts pages with the seeded credentials equal DBA Dash's own procedure output, the second client's text cells through the page's mask; no line of the comparison holds a token"
 
 echo "== D. the actions, through pgvigil serve =="
 go build -o "$TMPD/pgvigil" ./cmd/pgvigil
@@ -504,6 +702,32 @@ else
   echo "ok   D1w: on $VER the cell reads '$w1' with $runs collection runs, and '$w2' once they were removed and Summary_Upd ran again (the 24 h errors, as DBA Dash chooses for an instance without runs)"
   fi
 fi
+# D1t / D2t: the instance's query_text on the statements a page shows (the read rule's wiring in q_dbadash.go)
+textrule=0; grep -q 'Statements(' internal/web/q_dbadash.go 2>/dev/null && textrule=1; [[ "${PGVIGIL_DOOR_TEXTRULE:-}" == 1 ]] && textrule=1
+# stmts <row> [<repo>]: the three statement cells of C2's session on the sessions page, as serve answers them
+stmts() { local code; code=$(curl -s -o "$BODY" -w '%{http_code}' -b "$CJ" "$U/api/dbadash?repo=${2:-lab}&id=$ID&page=sessions")
+  [[ "$code" == 200 ]] || fail "$1: GET page=sessions (repo=${2:-lab}) answered $code: $(cat "$BODY")"
+  python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["results"][0]; n=[c["name"] for c in r["columns"]]
+row=[x for x in r["rows"] if x[n.index("session_id")] == int(sys.argv[2])]
+print("|".join(str(row[0][n.index(c)]) for c in ("batch_text", "text", "cursor_text")) if row else "NO ROW")' "$BODY" "$C2SID"; }
+WORDS="(not shown: this instance's query_text policy is none)"; WORDS3="$WORDS|$WORDS|$WORDS"
+if [[ $textrule == 1 ]]; then
+  # the file at none, sqlbox at full: a wrong match of the instance to sqlbox would show the statements
+  { echo "query_text: none"; cfg "    query_text: full"; } > "$TMPD/d-qt1.yaml"
+  serve "$TMPD/d-qt1.yaml"
+  code=$(curl -s -o "$BODY" -w '%{http_code}' -b "$CJ" "$U/api/dbadash?repo=lab&part=imported")
+  [[ "$code" == 200 ]] || fail "D1t: GET part=imported answered $code: $(cat "$BODY")"
+  nimp=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))
+if "imported" not in d: print("NOKEY"); sys.exit(0)
+t=d["imported"] or {}; c=t.get("columns") or []
+print(sum(1 for r in (t.get("rows") or []) if r[c.index("source_id")] == int(sys.argv[2])))' "$BODY" "$ID")
+  [[ "$nimp" == 0 ]] || fail "D1t: part=imported holds '$nimp' row(s) for instance $ID before pgvigil collects the server (want 0)"
+  got=$(stmts D1t); [[ "$got" == "$WORDS3" ]] || fail "D1t: no pgvigil instance matches and the file's query_text is none: the cells read '$got' (want the words '$WORDS' in all three)"
+  echo "ok   D1t: no pgvigil instance matches (part=imported: no row of instance $ID); under the file's query_text none, sqlbox at full, session $C2SID's batch_text, text and cursor_text read '$WORDS'"
+  serve "$TMPD/d.yaml"
+else
+  echo "not run here: D1t and D2t (the instance's query_text on the statements a page shows) need a tree whose internal/web/q_dbadash.go calls Statements (scripts/door-textrule-wiring.patch over the read rule)"
+fi
 if [[ -n "${PGVIGIL_DBADASH_BAK:-}" ]]; then
   echo "not proven: D2-D4 (the restored repository's instance is another server than this run's container; run without PGVIGIL_DBADASH_BAK for them)"
 else
@@ -511,7 +735,7 @@ else
 SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'sqlbox'")
 p2=$(part); echo "$p2" | grep -qE "^1 .*instance_id=$SB( |$)" && echo "$p2" | grep -q 'name=sqlbox' || fail "D2: part=pgvigil after the collect: $p2 (want instance $SB sqlbox)"
 echo "ok   D2: after pgvigil collected sqlbox ($SERVERNAME): part=pgvigil names instance $SB sqlbox"
-# D2x (task 206, review 206f 1): the collector's own XE read stores the DBA Dash sessions it lists (xe.go's tail through
+# D2x (task 206): the collector's own XE read stores the DBA Dash sessions it lists (xe.go's tail through
 # import_mssql_xe), a stopped one with its ring buffer, and the count the server itself gives
 sqok "D2x: a DBA Dash-named session" "CREATE EVENT SESSION [DBADash_T206] ON SERVER ADD EVENT sqlserver.error_reported ADD TARGET package0.ring_buffer;"
 "$BIN" collect -config "$TMPD/d.yaml" -instance sqlbox -once mssql_xe >"$TMPD/collect-xe.out" 2>&1 || { cat "$TMPD/collect-xe.out" >&2; fail "D2x: collect mssql_xe"; }
@@ -520,6 +744,26 @@ xgot=$(pq "SELECT coalesce((SELECT running::text || '|' || array_to_string(targe
 [[ "$xgot" == "false|ring_buffer|$xhand" ]] || fail "D2x: the stored DBA Dash sessions: '$xgot' (want 'false|ring_buffer|$xhand': DBADash_T206 stopped with its ring buffer, and the server's own count)"
 sqok "D2x: the session dropped" "DROP EVENT SESSION [DBADash_T206] ON SERVER;"
 echo "ok   D2x: the collector's XE read stored DBA Dash's sessions as the server lists them ($xhand, DBADash_T206 stopped with its ring_buffer); the session dropped"
+if [[ $textrule == 1 ]]; then
+  cfg "    query_text: none" > "$TMPD/d-qt2.yaml"
+  serve "$TMPD/d-qt2.yaml"
+  got=$(stmts D2t); [[ "$got" == "$WORDS3" ]] || fail "D2t: the matched sqlbox at query_text none under the file's full: the cells read '$got' (want the words in all three)"
+  # the repository named in another case: the page answers it, so the rule finds the same instance
+  got=$(stmts D2t LAB); [[ "$got" == "$WORDS3" ]] || fail "D2t: repo=LAB, the matched sqlbox at query_text none under the file's full: the cells read '$got' (want the words in all three)"
+  # the door's stored row of the instance gone (a server DBA Dash added after the door's last read): the screen's own
+  # Instance is the server name pgvigil collects sqlbox under
+  pq "DELETE FROM pgvigil.dbadash_instances WHERE repository = 'lab' AND instance_id = $ID" >/dev/null
+  [[ "$(pq "SELECT count(*) FROM pgvigil.dbadash_instances WHERE repository = 'lab' AND instance_id = $ID")" == 0 ]] || fail "D2t: the door's stored row of instance $ID was not deleted"
+  got=$(stmts D2t); [[ "$got" == "$WORDS3" ]] || fail "D2t: the door's stored row of the instance deleted, sqlbox (collected as $SERVERNAME) at query_text none under the file's full: the cells read '$got' (want the words in all three)"
+  PGVIGIL_DBADASH_CONFIG="$TMPD/d.yaml" go test -count=1 -run '^TestLive$' ./internal/dbadash >/dev/null 2>&1 || fail "D2t: the door's read again"
+  [[ "$(pq "SELECT count(*) FROM pgvigil.dbadash_instances WHERE repository = 'lab' AND instance_id = $ID")" == 1 ]] || fail "D2t: the door's read did not store instance $ID again"
+  { echo "query_text: none"; cfg "    query_text: normalized"; } > "$TMPD/d-qt3.yaml"
+  serve "$TMPD/d-qt3.yaml"
+  NORM="CREATE LOGIN pgv_c2 WITH PASSWORD = ?; SELECT ?"; NORMC="ALTER LOGIN pgv_c2 WITH PASSWORD = ?"
+  got=$(stmts D2t); [[ "$got" == "$NORM|$NORM|$NORMC" ]] || fail "D2t: the matched sqlbox at query_text normalized under the file's none: the cells read '$got' (want '$NORM' twice, then '$NORMC')"
+  echo "ok   D2t: the matched sqlbox at query_text none (the file's full): the words, also under repo=LAB and with the door's stored row of the instance deleted (read again after); at normalized (the file's none): '$NORM' and the cursor's '$NORMC'"
+  serve "$TMPD/d.yaml"
+fi
 # the proof's own application session, an open transaction, waiting
 printf "BEGIN TRAN; SELECT 1 AS pgvdoor_marker; WAITFOR DELAY '00:10:00';\n" | docker exec -i --env-file "$TMPD/app.env" "$SQL" /opt/mssql-tools18/bin/sqlcmd -S localhost -U "$APP" -C -i /dev/stdin >/dev/null 2>&1 & APPPID=$!
 for _ in $(seq 1 30); do S_ID=$(sq "SELECT MIN(session_id) FROM sys.dm_exec_sessions WHERE login_name = '$APP'"); [[ -n "$S_ID" && "$S_ID" != NULL ]] && break; sleep 0.5; done
@@ -552,6 +796,14 @@ imp() { PGVIGIL_DBADASH_IMPORT_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_IMPORT_REPO="$1"
   PGVIGIL_DBADASH_IMPORT_STORE="${3:-0}" go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep -E '^(import |progress |store open after: )' || true; }
 declare -A want=([cpu]=$n_cpu [volumes]=$n_vol [dbsize]=$n_dbs [jobruns]=$n_job)
 field() { echo "$1" | grep "^import $ID [0-9]* $2 " | sed -n "s/.* $3=\([0-9]*\).*/\1/p"; }
+# E3: one run's message carries three credential forms (tokens made now)
+HID=$(sq "SELECT TOP (1) CAST(instance_id AS bigint) FROM dbo.JobHistory WHERE InstanceID = $ID ORDER BY RunDateTime, instance_id" "$DDB")
+[[ "$HID" =~ ^[0-9]+$ ]] || fail "E3: no dbo.JobHistory row of instance $ID: '$HID'"
+E3A="tk$RANDOM$RANDOM"; E3B="tk$RANDOM$RANDOM"; E3C="tk$RANDOM$RANDOM"
+E3MSG="Executed as user: proof. sqlcmd -S db1 -U agent -P $E3A -Q \"EXEC dbo.load\" then Server=db1;Database=app;User Id=agent;Password=$E3B; then \$p = ConvertTo-SecureString ''$E3C'' -AsPlainText -Force. The step succeeded."
+sqok "E3: the message" "UPDATE dbo.JobHistory SET message = N'$E3MSG' WHERE InstanceID = $ID AND instance_id = $HID" "$DDB"
+[[ "$(sq "SELECT COUNT(*) FROM dbo.JobHistory WHERE InstanceID = $ID AND message LIKE N'%$E3C%'" "$DDB")" == 1 ]] || fail "E3: the seeded message is not on exactly one row"
+E3NAMES=$(sq "SELECT ISNULL(J.name, N'') + N'|' + ISNULL(H.step_name, N'') FROM dbo.JobHistory H LEFT JOIN dbo.Jobs J ON J.InstanceID = H.InstanceID AND J.job_id = H.job_id WHERE H.InstanceID = $ID AND H.instance_id = $HID" "$DDB")
 dry=$(imp "$PGDSN" 1); echo "$dry"
 for m in cpu volumes dbsize jobruns; do
   [[ "$(field "$dry" "$m" source)" == "${want[$m]}" && "$(field "$dry" "$m" inserted)" == 0 ]] || fail "E: the dry run of $m: $(echo "$dry" | grep " $m ") (want source=${want[$m]} inserted=0)"
@@ -580,6 +832,14 @@ got=$(pq "SELECT (SELECT count(*) FROM pgvigil.mssql_cpu_sample WHERE instance_i
 [[ "$got" == "${want[cpu]} ${want[volumes]} ${want[dbsize]} ${want[jobruns]}" ]] || fail "E: pgvigil's tables hold $got for the instance (want ${want[cpu]} ${want[volumes]} ${want[dbsize]} ${want[jobruns]})"
 row=$(pq "SELECT name || '|' || engine || '|' || array_to_string(tags, ',') FROM pgvigil.instances WHERE instance_id = $PID_IMP")
 [[ "$row" == "$DISP|sqlserver|"* && ",${row##*|}," == *",env:proof,"* && "${row##*|}" != *"{"* ]] || fail "E: the imported instance: $row"
+[[ "$(pq "SELECT count(*) FROM pgvigil.mssql_job_runs WHERE instance_id = $PID_IMP AND history_id = $HID")" == 1 ]] || fail "E3: pgvigil holds run $HID $(pq "SELECT count(*) FROM pgvigil.mssql_job_runs WHERE instance_id = $PID_IMP AND history_id = $HID") time(s) (want 1)"
+E3GOT=$(pq "SELECT message FROM pgvigil.mssql_job_runs WHERE instance_id = $PID_IMP AND history_id = $HID")
+for tk in "$E3A" "$E3B" "$E3C"; do [[ "$E3GOT" != *"$tk"* ]] || fail "E3: a credential token is stored: $E3GOT"; done
+for w in '-P <masked> -Q' 'Password=<masked>;' 'ConvertTo-SecureString <masked>' 'Database=app' 'The step succeeded.'; do
+  [[ "$E3GOT" == *"$w"* ]] || fail "E3: the stored message has no '$w': $E3GOT"
+done
+[[ "$(pq "SELECT coalesce(job_name, '') || '|' || coalesce(step_name, '') FROM pgvigil.mssql_job_runs WHERE instance_id = $PID_IMP AND history_id = $HID")" == "$E3NAMES" ]] || fail "E3: the run's names changed: want '$E3NAMES'"
+echo "ok   E3: run $HID's message stored with its three credentials masked and the text around them kept: $E3GOT; names '$E3NAMES' as DBA Dash's"
 psql "$ADMIN_DSN" -Xqc "CREATE ROLE $PGRO LOGIN IN ROLE pgvigil_reader" >/dev/null
 ROPG="$PGDSN user=$PGRO"; ROPG="${ROPG/user=postgres /}"
 bad=$(PGVIGIL_DBADASH_IMPORT_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_IMPORT_REPO="$ROPG" go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep '^import error' || true)
@@ -592,7 +852,7 @@ echo "== F. the version pin =="
 sqok "F: the version row" "INSERT INTO dbo.DBVersionHistory (DeployDate, Version) VALUES (DATEADD(day, 1, SYSUTCDATETIME()), '9.9.9')" "$DDB"
 res=$(pages)
 sqok "F: the version row's removal" "DELETE FROM dbo.DBVersionHistory WHERE Version = '9.9.9'" "$DDB"
-[[ "$(echo "$res" | grep -c ' ok version=9.9.9 proven=false ')" == 9 ]] || fail "F: not every page answered ok with proven=false on 9.9.9: $res"
+[[ "$(echo "$res" | grep -c ' ok version=9.9.9 proven=false ')" == "$NPAGE" ]] || fail "F: not every page answered ok with proven=false on 9.9.9: $res"
 for pj in "$TMPD"/pages/*.json; do jget "$pj" note | grep -q 'not proven on source version 9.9.9' || fail "F: the note of $(basename "$pj"): $(jget "$pj" note)"; done
 echo "ok   F: on a repository at 9.9.9 every page says proven=false: '$(jget "$TMPD/pages/alerts.json" note)'; the row removed"
 
@@ -600,15 +860,21 @@ echo "== G. the imported server's tabs under pgvigil serve, in headless Chromium
 GSRC=$TMPD/gsrc; mkdir -p "$GSRC"
 tar -C . --exclude=./web/node_modules --exclude=./.lab --exclude=./.git -cf - . | tar -C "$GSRC" -xf -
 JP=internal/dbadash/testdata/join-168.patch
-if [ ! -f "$GSRC/$JP" ]; then grep -q importedPage "$GSRC/web/src/main.ts" || fail "G: no $JP and the tree lacks the join's wiring (web/src/main.ts has no importedPage)"; echo "G: no wiring patch in the tree: the release join carries the wiring (the tree is used as it is)"
-elif (cd "$GSRC" && git apply --check -R "$JP" 2>/dev/null); then echo "G: the join's wiring is already in this tree"
-elif (cd "$GSRC" && git apply "$JP" 2>"$TMPD/g-apply.err"); then echo "G: the join's wiring applied to the run's copy"
+if [ ! -f "$GSRC/$JP" ]; then grep -q importedPage "$GSRC/web/src/main.ts" || fail "G: no $JP and the tree lacks task 168's wiring (web/src/main.ts has no importedPage)"; echo "G: no wiring patch in the tree: the tree itself carries the wiring (the tree is used as it is)"
+elif (cd "$GSRC" && git apply --check -R "$JP" 2>/dev/null); then echo "G: task 168's wiring is already in this tree"
+elif (cd "$GSRC" && git apply "$JP" 2>"$TMPD/g-apply.err"); then echo "G: task 168's wiring applied to the run's copy"
 else fail "G: $JP neither applies nor is applied: $(cat "$TMPD/g-apply.err")"; fi
 (cd "$GSRC/web" && npm ci --no-audit --no-fund >"$TMPD/g-web.log" 2>&1 && npm run build >>"$TMPD/g-web.log" 2>&1) || { tail -20 "$TMPD/g-web.log" >&2; fail "G: the web build"; }
 # G0: the move's prefill rule (web/src/move_address.ts: which DBA Dash connection is a network address) in Node
 "$GSRC/web/node_modules/.bin/esbuild" "$GSRC/web/src/move_address.ts" --format=esm --outfile="$TMPD/move_address.mjs" --log-level=warning || fail "G0: move_address.ts did not compile"
 node "$GSRC/web/src/move_address.test.mjs" "$TMPD/move_address.mjs" > "$TMPD/g0-unit.out" 2>&1 || { cat "$TMPD/g0-unit.out"; fail "G0: the move's prefill unit tests"; }
 echo "ok   G0: the move's prefill rule: $(tail -1 "$TMPD/g0-unit.out")"
+# G0: the Collection Health helpers (web/src/chhealth.ts: the Summary column's version rule and
+# tooltips, the chart's hours) - their rows run here, not only in the light checks
+"$GSRC/web/node_modules/.bin/esbuild" "$GSRC/web/src/chhealth.ts" --bundle --format=esm --platform=neutral --outfile="$TMPD/chhealth.mjs" --log-level=warning || fail "G0: chhealth.ts did not compile"
+node "$GSRC/web/src/chhealth.test.mjs" "$TMPD/chhealth.mjs" > "$TMPD/g0-ch.out" 2>&1 || { cat "$TMPD/g0-ch.out"; fail "G0: the Collection Health helpers' rows"; }
+grep -q '^chhealth: 0 FAIL' "$TMPD/g0-ch.out" || fail "G0: the Collection Health helpers: $(tail -1 "$TMPD/g0-ch.out")"
+echo "ok   G0: the Collection Health helpers: $(grep '^chhealth' "$TMPD/g0-ch.out" | tail -1)"
 (cd "$GSRC" && go build -o "$TMPD/pgvigil-g" ./cmd/pgvigil) || fail "G: the build"
 BIN="$TMPD/pgvigil-g"
 psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $GDB" >/dev/null
@@ -675,7 +941,8 @@ for (const h of tabs) {
   const r = await ev(`(() => { const m = document.querySelector('main'); const s = m.querySelector('[data-source]');
     const rows = [...m.querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty') && tr.children.length > 0).length;
     return JSON.stringify({ src: s?.dataset.source ?? 'native', rows: s?.dataset.rows ?? '-', trs: rows, charts: m.querySelectorAll('canvas, svg').length,
-      notread: m.querySelectorAll('p.notread').length, errors: m.querySelectorAll('.error:not([role=status])').length, named: /DBA ?Dash/.test(m.innerText) ? 1 : 0 }); })()`);
+      notread: m.querySelectorAll('p.notread').length, errors: m.querySelectorAll('.error:not([role=status])').length,
+      named: (() => { const c = m.cloneNode(true); c.querySelectorAll('table.grid tbody').forEach(e => e.remove()); return /DBA ?Dash/.test(c.textContent) ? 1 : 0; })() }); })()`);
   const o = JSON.parse(r);
   console.log(`tab ${key} render=yes source=${o.src} rows=${o.rows} trs=${o.trs} charts=${o.charts} notread=${o.notread} named=${o.named} errors=${o.errors}`);
 }
@@ -699,7 +966,7 @@ G168="availability counters findings jobstimeline mssql_blocked mssql_deadlocks 
 for k in $G168; do [[ " $GKEYS " == *" $k "* ]] || fail "G: task 168's SQL Server tab $k is no longer in router.ts mssqlInstanceTabs"; done
 # gtabs <walk output> <store tabs> <screen tabs>: every listed tab as said, every other its one line
 gtabs() {
-  local out="$1" store=" $2 " screen=" $3 " data=" performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlstorage " n line k
+  local out="$1" store=" $2 " screen=" $3 " n line k
   n=$(echo "$out" | grep -c '^tab ' || true); [[ "$n" == "$GWANT" ]] || fail "$4: $n tabs walked (want $GWANT, router.ts mssqlInstanceTabs): $out"
   local walked; walked=$(echo "$out" | awk '/^tab /{print $2}' | LC_ALL=C sort | tr '\n' ' ')
   [[ "$walked" == "$(printf '%s\n' "${GK[@]}" | LC_ALL=C sort | tr '\n' ' ')" ]] || fail "$4: the walked tabs ($walked) are not router.ts mssqlInstanceTabs ($GKEYS)"
@@ -709,8 +976,9 @@ gtabs() {
   while read -r line; do
     k=$(echo "$line" | awk '{print $2}')
     [[ "$line" == *" render=yes "* && "$line" == *" errors=0" ]] || fail "$4: $line"
-    # pgvigil's own words name no source product; a live screen's rows are the source's data and may (a session's program name)
-    [[ "$data" == *" $k "* || "$line" == *" named=0 "* ]] || fail "$4: $k names the source product in pgvigil's words: $line"
+    # pgvigil's own words name no source product: named is read with every grid's rows left out (the source's data may:
+    # a session's program name), so no tab is exempt
+    [[ "$line" == *" named=0 "* ]] || fail "$4: $k names the source product in pgvigil's words: $line"
     if [[ "$store" == *" $k "* ]]; then
       [[ "$line" == *" source=store "* ]] || fail "$4: $k is not pgvigil's own page over the imported rows: $line"
       t=$(echo "$line" | sed -n 's/.* trs=\([0-9]*\) charts=\([0-9]*\) .*/\1 \2/p'); (( ${t% *} + ${t#* } > 0 )) || fail "$4: $k shows no imported row: $line"
@@ -718,17 +986,85 @@ gtabs() {
       [[ "$line" == *" source=screen "* ]] || fail "$4: $k is not the repository's screen: $line"
       r=$(echo "$line" | sed -n 's/.* rows=\([0-9]*\) .*/\1/p')
       [[ "$k" == mssqlstorage ]] && { [[ "$r" == "$n_drv" ]] || fail "$4: the Drives screen shows $r rows (want $n_drv, part C's DrivesReport_Get)"; } || (( r > 0 )) || fail "$4: $k shows no row: $line"
+    elif [[ "$GGATED" == *" $k "* ]]; then
+      [[ "$line" == *" source=screen "* && "$line" == *" rows=0 "* && "$line" == *" trs=0 "* ]] || fail "$4: $k on $DDV is not the screen with no call (no row, no grid): $line"
     else
       [[ "$line" == *" source=none "* && "$line" == *" notread=1 "* && "$line" == *" trs=0 "* ]] || fail "$4: $k is not one 'not read' line: $line"
     fi
   done < <(echo "$out" | grep '^tab ')
 }
 SCREENS="summary performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlproperties"
+# B6.3: the tenth screen by version (dbadash.ts tabSources: collectionhealth is a screen on both) - on 4.25.0 the
+# repository's screen with rows, which are the source's data as the live screens' rows are; on 4.24.1 the screen makes
+# no call: no row, no grid, its gate's words (read by CH9b below), and pgvigil's words name no source product
+GGATED=" collectionhealth "
+[[ "$DDV" == 4.25.0 ]] && { SCREENS="$SCREENS collectionhealth"; GGATED=""; }
 # the Drives screen's rows as part C read them (DrivesReport_Get through the read login)
 n_drv=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(len(s.get("rows") or []) for s in d.get("results") or []))' "$TMPD/pages/drives.json")
 g1=$(gwalk "#/dbadash?dr=lab&di=$ID") || fail "G1: the Chromium walk stopped: $g1"
 gtabs "$g1" "" "$SCREENS mssqlstorage" G1
 echo "ok   G1: the DBA Dash instance's own page: $GWANT tabs, $(echo "$g1" | grep -c 'source=screen') from the repository's screens, $(echo "$g1" | grep -c 'source=none') with their one 'not read' line, no error; the tree 'Imported: lab' and no source-product name"
+# CH9b: the door's fleet grid and its Collection Health landing, by this run's version -
+# 4.25.0: the header 'Collection Health' with DBA Dash's tooltip, every row's cell on the instance's Collection Health
+# screen, that screen's h3 and five h4s in DBA Dash's order, the Collections grid without the columns DBA Dash hides;
+# 4.24.1: 'Collection errors (24hrs)' with 4.24.1's tooltip, the old landing, and the screen's 'not read' line alone.
+# A mixed fleet (one repository of each) needs two releases in one rig: NOT COVERED here, said.
+cat > "$TMPD/g-ch9b.mjs" <<'JS'
+const [port, U, ver, id] = process.argv.slice(2);
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let n = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++n; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); return d.result?.result?.value; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let fails = 0; const say = (ok, row, what) => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${row}: ${what}`); };
+const go = async h => { await cmd('Page.navigate', { url: U + h }); for (let i = 0; i < 150; i++) { if (await ev(`!!document.querySelector('main table.grid, main p.empty, main p.meta')`)) break; await sleep(200); } await sleep(1500); };
+await cmd('Page.enable'); await cmd('Runtime.enable');
+await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
+const st = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(process.env.G_USR)}, password: ${JSON.stringify(process.env.G_UPW)} }) }).then(r => r.status)`, true);
+if (st !== 200) { console.log(`FAIL CH9b login: ${st}`); process.exit(1); }
+// DBA Dash's own tooltips (4.25.0's and 4.24.1's Checks/Summary.Designer.cs L433, word for word)
+const TIP = {
+  '4.25.0': 'Collections at warning or critical: failing in a row for long enough, or a high failure rate since errors were acknowledged (24hrs at most) - thresholds configured in the Collection Health tab.  For an instance whose DBA Dash service predates collection health, the count of collection and import errors in the last 24hrs.  Click to see collection health.',
+  '4.24.1': 'Count of errors encountered by the DBA Dash service during data collection or import for the instance.  Retries are highlighted as warning, failures are critical.' };
+const LABEL = { '4.25.0': 'Collection Health', '4.24.1': 'Collection errors (24hrs)' };
+await go('#/dbadash?w=24h');
+const g = await ev(`(() => { for (const t of document.querySelectorAll('main table.grid')) { const ths = [...t.querySelectorAll('thead tr:first-child th')];
+  const k = ths.findIndex(th => /^Collection (Health|errors)/.test((th.querySelector('.th-label') ?? th).textContent.trim())); if (k < 0) continue; const th = ths[k];
+  return { label: (th.querySelector('.th-label') ?? th).textContent.trim(), title: th.getAttribute('title') ?? th.querySelector('[title]')?.getAttribute('title') ?? '',
+    links: [...t.querySelectorAll('tbody tr')].map(tr => tr.children[k]?.querySelector('a')?.getAttribute('href') ?? '') }; } return null; })()`);
+say(!!g && g.label === LABEL[ver], 'CH9b header', g ? g.label : 'no Collection column');
+say(!!g && g.title === TIP[ver], 'CH9b header tooltip', g ? g.title.slice(0, 80) : '-');
+// each row's link (a cell with no link must never pass as 'not collectionhealth'): the instance asked, on
+// 4.25.0 its Collection Health tab, on 4.24.1 its page with no tab (DBA Dash's old landing)
+const lands = (g?.links ?? []).map(h => new URLSearchParams(h.split('?')[1] ?? '').get('dp'));
+say(!!g && g.links.length > 0 && g.links.every((h, n) => h !== '' && h.includes(`di=${id}`) && (ver === '4.25.0' ? lands[n] === 'collectionhealth' : lands[n] === null)),
+  'CH9b each row\'s landing', `${g?.links.length ?? 0} row(s): ${(g?.links ?? []).join(' ')}`);
+await go(`#/dbadash?dr=lab&di=${id}&dp=collectionhealth&w=24h`);
+const s = await ev(`(() => { const m = document.querySelector('main'); const h3 = [...m.querySelectorAll('h3')].map(h => h.textContent.trim()); const h4 = [...m.querySelectorAll('h4')].map(h => h.textContent.trim());
+  const t = m.querySelector('table.grid'); const heads = t ? [...t.querySelectorAll('thead tr:first-child th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim()) : [];
+  const k = heads.indexOf('Status Reason');
+  return { h3, h4, heads, rows: t ? t.querySelectorAll('tbody tr').length : 0, coloured: k < 0 || !t ? false : [...t.querySelectorAll('tbody tr')].every(tr => tr.children[k]?.classList.contains('status')),
+    notRead: m.textContent.includes('not read: dbo.CollectionHealth_Get is not in this repository (it came with version 4.25.0)'), grids: m.querySelectorAll('table.grid').length,
+    calledNow: m.textContent.includes('called now') }; })()`);
+if (ver === '4.25.0') {
+  say(s.h3.includes('Collection Health') && JSON.stringify(s.h4.slice(0, 5)) === JSON.stringify(['Collections', 'Runs Over Time', 'Cost Over Time', 'Import Lag Over Time', 'Insights']), 'CH9b the screen\'s headings', `${s.h3.join(' | ')} / ${s.h4.join(' | ')}`);
+  // every key chHidden hides that comes back at @GroupByInstance = 1, and No Status (UnknownCount's alias)
+  const hidden = ['No Status', 'InstanceID', 'Reference', 'Step', 'Status', 'LastStatus', 'ErrorsFrom', 'ErrorsTo', 'LastDurationMs', 'TotalDurationMs',
+    'MaxLogicalReads', 'TotalLogicalReads', 'TotalImportMs', 'AvgImportLogicalReads', 'TotalImportLogicalReads'].filter(h => s.heads.includes(h));
+  say(s.heads.length > 0 && hidden.length === 0 && s.rows > 0 && s.coloured, 'CH9b the Collections grid', `${s.rows} row(s); ${s.heads.join(' | ')}${hidden.length ? '; shown though DBA Dash hides: ' + hidden.join(', ') : ''}`);
+} else {
+  // the gated screen makes no call and says so (its meta line said 'called now ... (0 ms)')
+  say(s.notRead && s.grids === 0 && !s.calledNow, 'CH9b the screen on ' + ver, `not read line ${s.notRead}, ${s.grids} grid(s), 'called now' ${s.calledNow}`);
+}
+console.log('NOT COVERED: CH9b on a mixed fleet (a 4.25.0 and a 4.24.1 repository in one rig)');
+console.log(fails ? `ch9b: ${fails} FAIL` : 'ch9b: 0 FAIL');
+process.exit(fails ? 1 : 0);
+JS
+ch9b=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/g-ch9b.mjs" "$CDP" "$U/" "$DDV" "$ID" 2>&1) || fail "CH9b: $ch9b"
+echo "$ch9b"; echo "ok   CH9b: the door's Collection Health column and landing on $DDV ($(echo "$ch9b" | tail -1))"
 "$BIN" import dbadash -config "$TMPD/g.yaml" -repo lab >"$TMPD/g-import.out" 2>&1 || { cat "$TMPD/g-import.out" >&2; fail "G2: pgvigil import dbadash"; }
 GID=$(psql "$GDSN" -XAtq -c "SELECT instance_id FROM pgvigil.instances WHERE name = '$DISP' AND engine = 'sqlserver'")
 [[ "$GID" =~ ^[1-9][0-9]*$ ]] || { cat "$TMPD/g-import.out" >&2; fail "G2: no imported server named $DISP"; }
@@ -741,4 +1077,4 @@ kill "$SRVPID" 2>/dev/null || true; wait "$SRVPID" 2>/dev/null || true; SRVPID=
 
 echo "Not proven here: the buttons' machine-name and latest-snapshot guards in a browser;"
 echo "the 'volumes' mapping with rows when DBA Dash collected none ($n_vol here); a DBA Dash version other than $VER; Azure SQL Database rows."
-echo "proof-dbadash-door: OK (DBA Dash $VER; 9 pages equal to DBA Dash's grids; an action refused without the actions login, done with it; the import's counts equal the source's; every SQL Server tab of the door instance and of the imported server rendered in Chromium)"
+echo "proof-dbadash-door: OK (DBA Dash $VER; $NPG pages equal to DBA Dash's grids; an action refused without the actions login, done with it; the import's counts equal the source's; every SQL Server tab of the door instance and of the imported server rendered in Chromium)"

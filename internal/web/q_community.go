@@ -41,7 +41,6 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +51,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	mssqldb "github.com/microsoft/go-mssqldb"
 
+	"github.com/aachaemenes/pgvigil/internal/community/kits"
 	"github.com/aachaemenes/pgvigil/internal/demo/community"
 )
 
@@ -376,6 +376,12 @@ type toolState struct {
 	communityTool
 	Installed *bool  `json:"installed"`
 	Where     string `json:"where,omitempty"`
+	// a procedure's version read from its own text, its date, the version pgvigil was tested with and the word for the
+	// difference (community_versions.go: DBA Dash's Check Versions; nothing is run or deployed)
+	Version     *string `json:"version"`
+	VersionDate string  `json:"version_date,omitempty"`
+	Tested      string  `json:"tested,omitempty"`
+	VersionWord string  `json:"version_word,omitempty"`
 	// the tool's state here, said before any click: ready | note (it runs, a note beside it) | needs (off: what it
 	// lacks) | not_checked (off: a check failed or ran out of time) | demo (off: a demo instance has no server)
 	State string     `json:"state"`
@@ -386,6 +392,84 @@ type toolState struct {
 	Preset map[string]string `json:"preset,omitempty"`
 	// a demo instance only: the tool's stored sample (GET /api/community/sample has its result sets)
 	Sample *sampleMark `json:"sample,omitempty"`
+	// KITWATCH K4.3: the version installed here (mssql_kits' daily read of the definitions; the page's database, else
+	// master) beside the one pgvigil was checked against - its own key: 'version' is the page-time read above
+	KitVersion *kitVersion `json:"kit_version,omitempty"`
+}
+
+// kitVersion: a tool's installed version as mssql_kits last read it and the version pgvigil was checked against (named
+// apart from community_versions.go's toolVersion, the version read from the procedure's text at page time)
+type kitVersion struct {
+	Installed     string     `json:"installed,omitempty"`
+	InstalledDate string     `json:"installed_date,omitempty"`
+	Database      string     `json:"database,omitempty"`
+	Readable      bool       `json:"readable"`
+	Present       bool       `json:"present,omitempty"` // the last read found the procedure (else read_at is that read's, or absent: never read)
+	ReadAt        *time.Time `json:"read_at,omitempty"`
+	Checked       string     `json:"checked"`
+	CheckedDate   string     `json:"checked_date"`
+	Newer         bool       `json:"newer,omitempty"`
+}
+
+// kitVersions fills each SQL Server tool's version (the page's database first, then master) and answers the fleet's
+// lines: one per procedure and version newer than pgvigil was checked against (never a finding per instance: F14)
+func (s *Server) kitVersions(ctx context.Context, id int, db string, tools []toolState) []string {
+	rows, err := s.pool.Query(ctx, `SELECT procedure_name, database_name, version, version_date, readable, read_at
+	  FROM pgvigil.mssql_kit_versions WHERE instance_id = $1 AND database_name IN ($2, 'master') ORDER BY (database_name = $2) DESC`, id, db)
+	if err != nil {
+		s.log.Debug("community: the kits' versions were not read", "err", err)
+		return nil
+	}
+	got := map[string]kitVersion{}
+	for rows.Next() {
+		var proc string
+		var v kitVersion
+		var at time.Time
+		if rows.Scan(&proc, &v.Database, &v.Installed, &v.InstalledDate, &v.Readable, &at) != nil {
+			continue
+		}
+		if _, seen := got[proc]; !seen {
+			v.ReadAt, v.Present = &at, true
+			got[proc] = v
+		}
+	}
+	rows.Close()
+	// the instance's last mssql_kits read: a tool it did not find shows that read's time (not installed then), a tool
+	// never read none (a read with no procedure stores no row, so the rows alone cannot tell the two apart)
+	var lastRead *time.Time
+	var lr time.Time
+	if s.pool.QueryRow(ctx, `SELECT snapshot_at FROM pgvigil.collection_dates WHERE instance_id = $1 AND collection = 'mssql_kits' AND status IN ('ok', 'partial')`, id).Scan(&lr) == nil {
+		lastRead = &lr
+	}
+	for i := range tools {
+		c, ok := kits.Checked(tools[i].Name)
+		if !ok {
+			continue
+		}
+		v, found := got[tools[i].Name]
+		if !found {
+			v.ReadAt = lastRead
+		}
+		v.Checked, v.CheckedDate = c.Version, c.Date
+		v.Newer = kits.NewerThanChecked(tools[i].Name, v.InstalledDate)
+		tools[i].KitVersion = &v
+	}
+	var lines []string
+	fl, err := s.pool.Query(ctx, `SELECT procedure_name, version, version_date, instances FROM pgvigil.kit_versions_fleet ORDER BY procedure_name, version_date`)
+	if err != nil {
+		return nil
+	}
+	defer fl.Close()
+	for fl.Next() {
+		var proc, ver, date string
+		var n int
+		if fl.Scan(&proc, &ver, &date, &n) != nil || !kits.NewerThanChecked(proc, date) {
+			continue
+		}
+		c, _ := kits.Checked(proc)
+		lines = append(lines, fmt.Sprintf("%s %s on %d instance(s) of the fleet: newer than the %s pgvigil was checked against", proc, ver, n, c.Version))
+	}
+	return lines
 }
 
 // sampleMark says what a stored sample is, wherever it is shown: the kit and version that produced it, when and on
@@ -431,7 +515,7 @@ var kitLicense = map[string]string{
 var testPlatform = map[string]string{"sqlserver": "sqlserver", "postgres": "onprem"}
 
 // platformWords: how a sample line names a demo instance's platform where it is not the test server's - the same run
-// there returns other rows (other paths, settings and host words), so the line says so (review 20261112-222929 D2).
+// there returns other rows (other paths, settings and host words), so the line says so.
 var platformWords = map[string]string{
 	"sqlserver/azuresqlmi": "an Azure SQL Managed Instance",
 	"postgres/aurora":      "an Aurora PostgreSQL instance",
@@ -517,6 +601,15 @@ func (s *Server) communityOff() *toolNeed {
 
 // communityOffWords is serverOff in the Community tools page's words, "" = nothing missing.
 func (s *Server) communityOffWords() string {
+	if q := s.queue(); q != nil { // queue mode: the collector runs it and writes the audit (q_requests.go)
+		switch {
+		case s.auth == nil:
+			return "Running a tool needs a signed-in user: this server runs without the UI login (pgvigil serve -no-login, or pgvigil demo -serve)."
+		case q.off != "":
+			return "Running a tool needs " + q.off + "."
+		}
+		return ""
+	}
 	if w := s.serverOff(); w != "" {
 		return "Running a tool needs " + w + "."
 	}
@@ -538,6 +631,7 @@ type communityCheck struct {
 	Inst      []toolNeed                   // what stops every tool here
 	Tools     map[string][]toolNeed        // each tool's own needs and notes
 	Installed map[string]bool              // SQL Server: the procedures found in DB (nil = not read)
+	Versions  map[string]toolVersion       // SQL Server: the found procedures' versions from their text (nil = not read)
 	Preset    map[string]map[string]string // each tool's form values
 }
 
@@ -753,6 +847,22 @@ func (s *Server) msChecks(ctx context.Context, id int, name, dsn, db string) *co
 		return c
 	}
 	c.Installed = installed
+	// the installed procedures' versions, from a window of their own text (community_versions.go)
+	var inst []string
+	for _, t := range communityTools {
+		if t.Engine == "sqlserver" && t.Kind == "proc" && installed[strings.ToLower(t.Name)] {
+			inst = append(inst, "N'"+t.Name+"'")
+		}
+	}
+	c.Versions = map[string]toolVersion{}
+	if len(inst) > 0 {
+		if v, err := readVersions(ctx, conn, c.DB, azure, inst); err == nil {
+			c.Versions = v
+		} else {
+			c.Versions = nil
+			c.Inst = append(c.Inst, noteNeed("the procedures' versions could not be read: "+err.Error(), "", "live"))
+		}
+	}
 	for _, t := range communityTools {
 		if t.Engine != "sqlserver" || t.Kind != "proc" {
 			continue
@@ -846,8 +956,12 @@ func (s *Server) msChecks(ctx context.Context, id int, name, dsn, db string) *co
 		c.Preset["sp_IndexCleanup"] = map[string]string{"@database_name": firstUserDB}
 		add("sp_IndexCleanup", noteNeed("sp_IndexCleanup's own default reads the database it is installed in ("+c.DB+"), a system database it skips: the form reads "+firstUserDB+"; @get_all_databases = 1 reads every database the login reaches", "", "live"))
 	}
-	s.blockViewerPreset(ctx, conn, c, id, liveThreshold, add)
-	s.quickieStorePreset(ctx, conn, c, id, name, add)
+	// the form's presets read the repository through the UI's reader: the request queue's collector (cq_community.go)
+	// checks with no reader pool and leaves them to serve
+	if s.pool != nil {
+		s.blockViewerPreset(ctx, conn, c, id, liveThreshold, add)
+		s.quickieStorePreset(ctx, conn, c, id, name, add)
+	}
 	return c
 }
 
@@ -1097,6 +1211,10 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
 	}
+	if q := s.queue(); q != nil { // queue mode: the live collector's published tools (q_requests.go)
+		s.queuedCommunity(w, r, q, id, name, engine, db)
+		return
+	}
 	ds := s.doorsNow() // the request's one door set
 	demo, err := s.demoWithoutDoor(ctx, ds, id, name, engine)
 	if err != nil {
@@ -1115,6 +1233,12 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		// what every tool here lacks before it can run (the server's state, the instance's login), with the way to get it
 		Needs     []toolNeed `json:"needs"`
 		CheckedAt *time.Time `json:"checked_at,omitempty"`
+		// SQL Server: the script that installs what is missing or older here (printed, never run) and the groups whose
+		// procedures are at different versions
+		InstallScript string   `json:"install_script,omitempty"`
+		VersionNotes  []string `json:"version_notes,omitempty"`
+		// KITWATCH K4.3: the fleet's community procedures newer than pgvigil was checked against, one line per version
+		KitFleet []string `json:"kit_fleet,omitempty"`
 	}{Instance: name, Engine: engine, Tools: []toolState{}, Needs: []toolNeed{}}
 	for _, t := range communityTools {
 		if t.Engine == engine {
@@ -1124,6 +1248,9 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 	door, _, no := ds.readLogin(engine, name)
 	if engine == "sqlserver" {
 		out.Database = msDB(db)
+		if !demo {
+			out.KitFleet = s.kitVersions(ctx, id, out.Database, out.Tools)
+		}
 	}
 	var c *communityCheck
 	var platform string
@@ -1172,6 +1299,13 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range out.Tools {
 		t := &out.Tools[i]
+		if out.Demo && t.Kind == "proc" && engine == "sqlserver" {
+			// a demo instance's procedures: invented at the tested version, as the rest of its data is invented
+			if tv, ok := testedVersions[t.Group]; ok && testedOf(t.Name) != "" {
+				vv := testedOf(t.Name)
+				t.Version, t.VersionDate, t.Tested, t.VersionWord = &vv, tv.Date, vv, "the tested version"
+			}
+		}
 		if out.Demo {
 			// the tool's stored sample, said per tool; a tool without one says why beside it
 			if sm, err := community.Get(t.ID); err == nil {
@@ -1194,6 +1328,14 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 				if yes {
 					t.Where = out.Database + ".dbo"
 				}
+				if c.Versions != nil {
+					v := c.Versions[strings.ToLower(t.Name)]
+					if v.Version != "" {
+						vv := v.Version
+						t.Version = &vv
+					}
+					t.VersionDate, t.Tested, t.VersionWord = v.Date, testedOf(t.Name), versionWord(yes, v, t.Name)
+				}
 			}
 			t.Preset = c.Preset[t.ID]
 		}
@@ -1209,6 +1351,9 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		}
 		t.On = t.State == "ready" || t.State == "note"
 	}
+	if engine == "sqlserver" && (out.Demo || c != nil && c.Versions != nil) {
+		out.InstallScript, out.VersionNotes = installScript(name, msServerOf(door), out.Database, out.Tools)
+	}
 	for _, n := range out.Needs {
 		if n.Hard {
 			out.Reason = n.What
@@ -1222,7 +1367,7 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 
 // seeded: id (in, as the door's lookup reads it) is one of this demo's instances - seeded by this running pgvigil
 // demo, still tagged demo, still under the demo's name prefix. The demo door's allow (demodoor.go) and the Community
-// page's demo instance are this one rule (review 20261112-222929 finding 1); nil (a serve) seeds none.
+// page's demo instance are this one rule; nil (a serve) seeds none.
 func (d *demoDoor) seeded(id int, in doorInstance) bool {
 	return d != nil && d.ids[id] && in.DemoTag && strings.HasPrefix(in.Name, d.prefix)
 }
@@ -1318,6 +1463,8 @@ type communityBody struct {
 	TimeoutSecs int               `json:"timeout_secs"`
 	Text        string            `json:"text"`
 	QueryName   string            `json:"query_name"`
+	// ExactTypes: the answer's sets carry the driver's SQL type and nullability too (KITWATCH K4.1, opt-in)
+	ExactTypes bool `json:"exact_types"`
 }
 
 // communityGate is a POST's shared part: the gate, the body, the tool, the instance of the tool's engine.
@@ -1362,6 +1509,10 @@ func (s *Server) communityGate(w http.ResponseWriter, r *http.Request) (in commu
 func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 	in, user, name, t, ok := s.communityGate(w, r)
 	if !ok {
+		return
+	}
+	if s.queue() != nil { // queue mode: the form from the live collector's published list (q_requests.go)
+		s.queuedCommunityParams(w, r, t, name)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), runBudget)
@@ -1429,8 +1580,9 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 		hcancel()
 		run := instanceRun{Instance: name, Door: kind, DoorGen: ds.Gen}
 		run.finish(t0, sets, "", err)
+		maskRun(&run) // CQ-LIVEMASK: the help's sets, and so each parameter's help words, as the queue stores them
 		if err != nil {
-			out.HelpError = err.Error()
+			out.HelpError = maskText(err.Error())
 		}
 		out.HelpSets = run.Sets
 		descs := helpText(run.Sets)
@@ -1455,6 +1607,14 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if q := s.queue(); q != nil { // queue mode: an ask the collector runs (?help=1: the procedure's @help) (q_requests.go)
+		if r.URL.Query().Get("help") == "1" {
+			s.queuedCommunityHelp(w, r, q, in, user, name, t)
+		} else {
+			s.queuedCommunityRun(w, r, q, in, user, name, t)
+		}
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), runBudget)
 	defer cancel()
 	if err := s.mayAudit(ctx); err != nil {
@@ -1474,155 +1634,10 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 			fmt.Errorf("%s is a demo instance: pgvigil demo invented its data and no server stands behind it, so no tool runs here", name))
 		return
 	}
-	timeout := time.Duration(in.TimeoutSecs) * time.Second
-	t0 := time.Now()
-	var stmt string
-	// no read login on this door set: each kind refuses where it did before (a script's text is checked first),
-	// before anything is sent, the set's words as the run's
-	switch t.Kind {
-	case "query":
-		if no.Why != "" {
-			run.finish(t0, nil, no.Why, nil)
-			break
-		}
-		cfg, err := pgx.ParseConfig(dsn)
-		if err != nil {
-			run.finish(t0, nil, "", errors.New("the monitoring dsn does not parse"))
-			break
-		}
-		// a database other than the login's own: the same login on that database
-		if in.Database != "" {
-			cfg.Database = in.Database
-		}
-		args := pgx.NamedArgs{}
-		for _, p := range t.Params {
-			v := in.Params[p.Name]
-			x, err := paramValue(p, &v)
-			if err != nil {
-				s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-					"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}}),
-					fmt.Errorf("parameter %s %w", p.Name, err))
-				return
-			}
-			args[p.Name] = x
-		}
-		stmt = t.SQL
-		if t.ID == "pg_top_statements" {
-			// the view in the schema the extension was created in, whatever the login's search path
-			schema, err := pgExtSchema(ctx, cfg, "pg_stat_statements")
-			if err != nil {
-				run.finish(t0, nil, "", err)
-				break
-			}
-			if schema == "" {
-				run.finish(t0, nil, "pg_stat_statements is not created in this database: a superuser-class role runs CREATE EXTENSION pg_stat_statements there", nil)
-				break
-			}
-			stmt = strings.Replace(stmt, "FROM pg_stat_statements s", "FROM "+pgx.Identifier{schema, "pg_stat_statements"}.Sanitize()+" s", 1)
-		}
-		sets, why, err := runPG(ctx, cfg, stmt, args, timeout, 5000, nil)
-		run.finish(t0, sets, why, err)
-	case "script":
-		text := strings.TrimSpace(in.Text)
-		if text == "" || len(text) > 128<<10 {
-			s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-				"instance_id": in.InstanceID, "instance": name, "report_name": in.QueryName}), errors.New("text is the query to run, 1 to 128 KB (pick a query of the script)"))
-			return
-		}
-		stmt = text
-		if in.Database != "" {
-			stmt = "USE " + msQuote(in.Database) + ";\n" + text
-		}
-		if no.Why != "" {
-			run.finish(t0, nil, no.Why, nil)
-			break
-		}
-		sets, why, err := runMS(ctx, dsn, stmt, nil, timeout, 5000, true)
-		run.finish(t0, sets, why, err)
-	default:
-		if no.Why != "" {
-			run.finish(t0, nil, no.Why, nil)
-			break
-		}
-		db, conn, why, err := openMS(ctx, dsn, "pgvigil-community")
-		if err != nil || why != "" {
-			run.finish(t0, nil, why, err)
-			break
-		}
-		in.Database = msDB(in.Database)
-		params, _, found, err := readProcParams(ctx, conn, in.Database, t.Name, t.Help)
-		switch {
-		case err != nil:
-			run.finish(t0, nil, "", fmt.Errorf("the parameters of %s could not be read: %v", t.Name, err))
-		case !found:
-			run.finish(t0, nil, fmt.Sprintf("%s is not installed in %s on %s: pgvigil never installs it; get it from %s", t.Name, in.Database, name, t.URL), nil)
-		}
-		if run.Outcome != "" {
-			_ = conn.Close()
-			_ = db.Close()
-			break
-		}
-		byName := map[string]procParam{}
-		for _, p := range params {
-			byName[strings.ToLower(strings.TrimPrefix(p.Name, "@"))] = p
-		}
-		keys := make([]string, 0, len(in.Params))
-		for k := range in.Params {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		var b strings.Builder
-		b.WriteString("EXEC " + msQuote(in.Database) + ".[dbo]." + msQuote(t.Name))
-		var args []any
-		var bad error
-		for _, k := range keys {
-			v := in.Params[k]
-			if strings.TrimSpace(v) == "" {
-				continue
-			}
-			key := strings.ToLower(strings.TrimPrefix(k, "@"))
-			p, ok := byName[key]
-			if !ok {
-				bad = fmt.Errorf("%s has no parameter @%s pgvigil passes (a parameter that writes a table, an OUTPUT one and @help are left out)", t.Name, key)
-				break
-			}
-			x, err := msArg(p, v)
-			if err != nil {
-				bad = err
-				break
-			}
-			pn := "p" + strconv.Itoa(len(args)+1)
-			if len(args) > 0 {
-				b.WriteString(",")
-			}
-			b.WriteString(" " + p.Name + " = @" + pn)
-			args = append(args, sql.Named(pn, x))
-		}
-		if bad != nil {
-			_ = conn.Close()
-			_ = db.Close()
-			s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-				"instance_id": in.InstanceID, "instance": name, "statement": b.String(), "params": map[string]any{"values": in.Params, "database": in.Database}}), bad)
-			return
-		}
-		stmt = b.String()
-		rctx, rcancel := context.WithTimeout(ctx, timeout)
-		rows, err := conn.QueryContext(rctx, stmt, args...)
-		var sets []resultSet
-		if err == nil {
-			sets, err = readMS(rows, 5000, &sizer{}, rcancel)
-		}
-		rcancel()
-		_ = conn.Close()
-		_ = db.Close()
-		run.finish(t0, sets, "", err)
-		// the procedure looked at this server and said no in one of its own listed messages, before any result set:
-		// still a failed run in the audit (the statement reached the server), drawn as a note
-		var me mssqldb.Error
-		if errors.As(err, &me) && len(sets) == 0 && declinedBy(t.Name, me) {
-			run.Declined = true
-			run.Error = fmt.Sprintf("%s declined: %s (msg %d, severity %d)", t.Name, strings.TrimSpace(me.Message), me.Number, me.Class)
-		}
+	run, stmt, refused := communityExec(ctx, t, &in, name, dsn, no, run, user, clientIP(r))
+	if refused != nil {
+		s.refuseRun(w, r, refused.row, refused.err)
+		return
 	}
 	run.Statement = stmt
 	actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditBudget)

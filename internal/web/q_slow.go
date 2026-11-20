@@ -32,7 +32,7 @@ import (
 //           'sample'), as the log line carries none
 //   meta    matched (the cell's count), shown
 //
-// The routes are the lead's lines in web.go.
+// The routes are lines in web.go.
 
 // slowGroupExpr: the Group By keys (DBA Dash 04's menu, Time - Custom aside) and the SQL text of each; only these
 // texts reach the query (the key picks one), never the request's own text.
@@ -83,7 +83,8 @@ const slowCounts = `
 const sqlSlowGroups = sqlSlowFilter + `
 SELECT e.grp AS value, CASE WHEN count(DISTINCT e.instance_id) = 1 THEN min(e.instance_id) END AS instance_id,
        CASE WHEN count(DISTINCT e.engine) = 1 THEN min(e.engine) END AS engine,
-       left(min(e.statement) FILTER (WHERE e.grp IS NOT NULL), 400) AS example,` + slowCounts + `
+       left((array_agg(e.statement ORDER BY e.statement) FILTER (WHERE e.grp IS NOT NULL AND e.statement IS NOT NULL))[1], 400) AS "example@stmt",
+       (array_agg(e.instance_id ORDER BY e.statement) FILTER (WHERE e.grp IS NOT NULL AND e.statement IS NOT NULL))[1] AS "@inst",` + slowCounts + `
   FROM e
  GROUP BY e.grp
  ORDER BY %s
@@ -117,11 +118,11 @@ cell AS (
 
 const sqlSlowEvents = sqlSlowCell + `,
 top AS (SELECT * FROM cell ORDER BY duration_ms DESC NULLS LAST, at DESC LIMIT 500)
-SELECT t.instance_id, t.instance, t.engine, t.database_name, t.event_type, t.object_name, t.at, t.duration_ms, t.cpu_ms,
+SELECT t.instance_id AS "instance_id@inst", t.instance, t.engine, t.database_name, t.event_type, t.object_name, t.at, t.duration_ms, t.cpu_ms,
        t.logical_reads, t.physical_reads, t.writes, t.row_count, t.user_name, t.client,
        coalesce(t.application, a.application_name) AS application,
        CASE WHEN t.application IS NULL AND a.application_name IS NOT NULL THEN 'sample' END AS application_from,
-       t.result, t.failed, t.session_id, left(t.statement, 4000) AS statement, t.shape_key
+       t.result, t.failed, t.session_id, left(t.statement, 4000) AS "statement@stmt", t.shape_key
   FROM top t
   LEFT JOIN LATERAL (
     SELECT s.application_name
@@ -197,6 +198,9 @@ func slowFilterOf(r *http.Request) (slowFilter, error) {
 	return f, nil
 }
 
+// slowGroupsAll: the most groups Top ALL reads (web/src/slow.ts ALL_CAP)
+const slowGroupsAll = 5000
+
 // SlowGroups serves the Group By grid of the Slow queries pages (an instance, or the fleet without ?instance=).
 func (s *Server) SlowGroups(w http.ResponseWriter, r *http.Request) {
 	f, err := slowFilterOf(r)
@@ -204,10 +208,13 @@ func (s *Server) SlowGroups(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// top: 1..1000 groups, or all = at most slowGroupsAll (D26's Top ALL; the page says when that cap cut)
 	top := 50
-	if v := r.URL.Query().Get("top"); v != "" {
-		if top, err = strconv.Atoi(v); err != nil || top < 1 || top > 500 {
-			writeErr(w, http.StatusBadRequest, errors.New("top must be 1..500"))
+	if v := r.URL.Query().Get("top"); v == "all" {
+		top = slowGroupsAll
+	} else if v != "" {
+		if top, err = strconv.Atoi(v); err != nil || top < 1 || top > 1000 {
+			writeErr(w, http.StatusBadRequest, errors.New("top must be 1..1000, or all"))
 			return
 		}
 	}

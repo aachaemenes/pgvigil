@@ -7,6 +7,7 @@ import { indexLink } from './drill';
 import type { Ctx } from './router';
 import { get, post, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
+import { needControl } from './needs';
 import { whatIsThis } from './sqlview';
 import { depthError } from './statements';
 
@@ -26,7 +27,7 @@ const problemText: Record<string, string> = {
 };
 const problemKind: Record<string, string> = { invalid: 'warn', duplicate: 'warn', redundant: '', unused: '' };
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 
 const indexCols: Col[] = [
   { key: 'datname', label: 'database' },
@@ -62,7 +63,7 @@ function inventoryCols(ctx?: Ctx): Col[] {
     { key: 'scans_30d', label: '30 d', num: true, fmt: blankNum },
     { key: 'idx_tup_fetch', label: 'rows fetched', num: true },
     { key: 'last_idx_scan', label: 'last scan', fmt: v => v ? fmtTime(v) : '' },
-    { key: 'problems', fmt: v => v ? badge(String(v), /invalid|duplicate/.test(String(v)) ? 'warn' : '') : '' },
+    { key: 'problems', fmt: v => v ? badge(String(v), /invalid|duplicate/.test(String(v)) ? 'warn' : 'none') : '' },
   ];
 }
 // one database at a time: /api/indexes?instance=&db= returns that database's 2,000 largest indexes and its total
@@ -106,7 +107,8 @@ function inventorySection(instance: number, dbs: Row[], ctx?: Ctx): HTMLElement 
 // adviseBox: the advisor button for one database and its report.
 function adviseBox(instance: number, dbs: string[]): HTMLElement {
   const pick = el('select', { 'aria-label': 'database to advise on' }, ...dbs.map(d => el('option', { value: d }, d)));
-  const run = el('button', { type: 'button' }, 'Test the suggested indexes');
+  // the advisor runs hypopg and EXPLAIN on the monitored server: it needs operator, as plans/hypo
+  const run = needControl(el('button', { type: 'button' }, 'Test the suggested indexes'), 'indexes/advise');
   const out = el('div');
   run.addEventListener('click', async () => {
     run.setAttribute('disabled', '');
@@ -148,7 +150,7 @@ export function adviceView(rep: AdvReport): HTMLElement {
         { key: 'cost_before', label: 'cost before', num: true },
         { key: 'cost_after', label: 'cost with the index', num: true },
         { key: 'gain_pct', label: 'gain', num: true, fmt: v => v == null ? '' : fmtNum(Math.round(Number(v))) + ' %' },
-        { key: 'uses_index', label: 'plan uses it', fmt: v => v ? badge('yes', 'ok') : 'no' },
+        { key: 'uses_index', label: 'plan uses it', fmt: v => v ? badge('yes', 'ok') : badge('no', 'none') },
         { key: 'note', wide: true },
         { key: 'query', wide: true },
       ], 'No statement to test.'));
@@ -166,7 +168,7 @@ const bloatCols: Col[] = [
   { key: 'index_bytes', label: 'size', num: true, fmt: fmtBytes },
   { key: 'est_bytes', label: 'its rows need', num: true, fmt: fmtBytes },
   { key: 'bloat_bytes', label: 'bloat', num: true, fmt: fmtBytes },
-  { key: 'bloat_pct', label: 'bloat share', num: true, fmt: pctTxt, cls: v => Number(v) >= 50 ? 'warn' : '' },
+  { key: 'bloat_pct', label: 'bloat share', num: true, fmt: pctTxt, cls: v => v == null ? '' : Number(v) >= 50 ? 'warn' : 'status ok' },
   { key: 'fillfactor', num: true }, { key: 'tuples', label: 'rows', num: true, fmt: fmtNum },
   { key: 'est_note', label: 'not estimated', wide: true },
   { key: 'reindex_sql', label: 'rebuild (run it yourself)', wide: true },
@@ -178,7 +180,7 @@ const seqCols: Col[] = [
   { key: 'last_value', label: 'last value', num: true, fmt: fmtNum },
   { key: 'max_value', label: 'its maximum', num: true, fmt: fmtNum },
   { key: 'col_table', label: 'feeds', fmt: (v, r) => v == null ? '' : `${String(v)}.${String(r.col_name ?? '')} (${String(r.col_type ?? '')})` },
-  { key: 'pct_used', label: 'used', num: true, fmt: pctTxt, cls: v => Number(v) >= 98 ? 'crit' : Number(v) >= 90 ? 'warn' : '' },
+  { key: 'pct_used', label: 'used', num: true, fmt: pctTxt, cls: (v, r) => v == null ? '' : r.cycles === true ? 'status none' : Number(v) >= 98 ? 'crit' : Number(v) >= 90 ? 'warn' : 'status ok' },   // a CYCLE sequence is not judged (0095)
   { key: 'readable', label: 'readable', fmt: v => v === false ? badge('no: the login may not read it', 'warn') : '' },
   { key: 'blks_read', label: 'blocks read', num: true, fmt: fmtNum }, { key: 'blks_hit', label: 'blocks hit', num: true, fmt: fmtNum },
 ];
@@ -298,7 +300,7 @@ export async function indexesFleetView(keep?: (r: Row) => boolean, instLink?: (n
       { key: 'instance', fmt: inst },
       { key: 'platform' },
       { key: 'inventory', label: 'indexes', num: true }, { key: 'inventory_bytes', label: 'their size', num: true, fmt: fmtBytes },
-      { key: 'invalid', num: true, fmt: warnNum }, { key: 'duplicate', num: true, fmt: warnNum },
+      { key: 'invalid', num: true, fmt: warnNum, cls: v => Number(v) > 0 ? '' : 'status ok' }, { key: 'duplicate', num: true, fmt: warnNum, cls: v => Number(v) > 0 ? '' : 'status ok' },
       { key: 'redundant', num: true }, { key: 'unused', num: true },
       { key: 'bytes', label: 'problem size', num: true, fmt: fmtBytes },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },

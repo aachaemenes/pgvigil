@@ -9,7 +9,7 @@
 #   PGVIGIL_ADMIN_DSN   a superuser connection to a PostgreSQL in KEYWORD form, no dbname and no password in it
 #                       (host=... user=...; PGPASSWORD or ~/.pgpass carries one).
 #   MSSQL_IMAGE         the SQL Server image, default mcr.microsoft.com/mssql/server:2022-latest.
-# The binary must carry the routes /api/mssql/checks and /api/mssql/checks/fleet (the lead's wiring in web.go): the
+# The binary must carry the routes /api/mssql/checks and /api/mssql/checks/fleet (the wiring in web.go): the
 # proof stops at its first API read when it does not.
 # What it makes, and removes on every exit path the shell can catch: its own SQL Server container (SQL Server Agent
 # on, the zone America/Los_Angeles so a server-local time differs from UTC, a throwaway sa password made here, never
@@ -33,8 +33,8 @@
 #     a critical; back to CHECKSUM: cleared.
 #  D. 'cross db ownership chaining' 1 (RECONFIGURE): the option's cell is 'warn' (dbachecks CrossDBOwnershipChaining)
 #     and a finding is raised; back to 0: 'ok', the finding gone. 'cost threshold for parallelism' 50: 'ok' (green,
-#     though off its default); back to 5: 'warn' again. [Changed after run 2, before run 3: the option seeded was
-#     xp_cmdshell, and run 2 stopped at its sp_configure with the server's message hidden (sq sent it to /dev/null; sq
+#     though off its default); back to 5: 'warn' again. [Changed after a run: the option seeded was
+#     xp_cmdshell, and that run stopped at its sp_configure with the server's message hidden (sq sent it to /dev/null; sq
 #     now prints it on a failure). The option is now one that changes on any platform; xp_cmdshell's rule is the unit
 #     test's.]
 #  E. trace flag 1211 on globally (DBCC TRACEON(1211, -1)): its row of the checks' view mssql_trace_flag_checks (over
@@ -58,7 +58,7 @@
 #     to 25' and 'no alerts for corruption errors' are raised (warning each); an operator and alerts for severities
 #     19-25 and errors 823-825 that notify it: all three gone; the alerts and the operator deleted: back. Read as sa
 #     (an instance of its own): the fail-safe operator is readable, 'no fail-safe operator' is raised (info) on the new
-#     server. Whether the monitoring login may read it is printed, not asserted. [Changed after the fold's first run,
+#     server. Whether the monitoring login may read it is printed, not asserted. [Changed after an earlier run,
 #     which also set the operator with master.dbo.sp_MSsetalertinfo and expected it stored: on the Linux image the
 #     procedure returns 0 while its registry write under the Agent's key stores nothing (xp_instance_regread of
 #     AlertFailSafeOperator is NULL right after it, AlertNotificationMethod stays 0), so the set is not proven here.]
@@ -218,10 +218,13 @@ U=http://127.0.0.1:$PORT/api
 for _ in $(seq 1 40); do curl -fs "$U/health" >/dev/null 2>&1 && break; sleep 0.25; done
 curl -fs "$U/health" >/dev/null || { cat "$WORK/serve.log" >&2; fail "the UI did not serve"; }
 for r in "mssql/checks?instance=$I" "mssql/checks/fleet"; do
-  [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/$r")" = 200 ] || fail "L: /api/$r does not answer 200 (the lead's wiring in web.go)"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/$r")" = 200 ] || fail "L: /api/$r does not answer 200 (the wiring in web.go)"
 done
 curl -fs "$U/mssql/checks?instance=$I" > "$WORK/checks.json"
-[ "$(jq -r 'keys | length' "$WORK/checks.json")" = 14 ] || fail "L: parts $(jq -r 'keys | join(",")' "$WORK/checks.json")"
+# the parts by name (jq's keys come sorted): build_docs since 412's wiring 7eaa0a1e3 (the build catalogue's pages,
+# internal/web/q_mssql_checks.go); a count alone hid which part came or went
+PARTS_WANT="alerting,alerts,areas,build,build_docs,columns,databases,findings,flags,identity,identity_scan,operators,options,state,suspect"
+[ "$(jq -r 'keys | join(",")' "$WORK/checks.json")" = "$PARTS_WANT" ] || fail "L: parts $(jq -r 'keys | join(",")' "$WORK/checks.json"), want $PARTS_WANT"
 objs() { jq -c --arg p "$2" '.[$p] as $t | [$t.rows[] | [$t.columns, .] | transpose | map({(.[0]): .[1]}) | add]' "$1"; }
 [ "$(objs "$WORK/checks.json" databases | jq -r --arg d "$DB" '.[] | select(.database_name == $d) | .deviations.auto_close.status')" = warn ] || fail "L: the API's auto-close cell"
 [ "$(objs "$WORK/checks.json" columns | jq -r 'length')" -ge 30 ] || fail "L: the grid's columns"

@@ -1,13 +1,13 @@
--- 0043: the wave C join for the corruption column (0023: the log reader's corruption classes and the auto_explain
+-- 0043: wires in the corruption column (0023: the log reader's corruption classes and the auto_explain
 -- plan kind, the opt-in amcheck collection). The findings view gains the corruption rules (data checksums off,
 -- ignore_checksum_failure on, a corruption event in 24 h, amcheck damage; the zero_damaged_pages row stays out: the
 -- settings rule above already reports it, as 0037 did for autovacuum off); purge() gains the amcheck_runs partitions
 -- (no current table to clear: 0023 has none). log_events' kind CHECK is re-created with the two new kinds (0024 had
--- narrowed it to its five; a fresh repository applies 0023 before 0024, so the join carries the widened list): the
+-- narrowed it to its five; a fresh repository applies 0023 before 0024, so this file carries the widened list): the
 -- plain DROP / ADD as 0024 did, which scans every partition under ACCESS EXCLUSIVE once at upgrade time, before the
 -- collector starts (NOT VALID would skip the scan but leave the constraint unvalidated on a partitioned parent: the
 -- documented behaviour for partitions was not confirmed, so the scan is kept). Both bodies are 0042's with the
--- additions (a frozen file is never edited; a later join re-creates them again with its own).
+-- additions (a frozen file is never edited; a later migration re-creates them again with its own).
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (
@@ -246,6 +246,6 @@ BEGIN
   RETURN n;
 END $$;
 
--- the log event kinds the two readers store: 0024's five plus the plan and corruption kinds of 0023 (a later join adds its own)
+-- the log event kinds the two readers store: 0024's five plus the plan and corruption kinds of 0023 (a later migration adds its own)
 ALTER TABLE pgvigil.log_events DROP CONSTRAINT IF EXISTS log_events_kind_check;
 ALTER TABLE pgvigil.log_events ADD CONSTRAINT log_events_kind_check CHECK (kind IN ('slow', 'lock_wait', 'deadlock', 'auth_fail', 'autovacuum', 'plan', 'corruption'));

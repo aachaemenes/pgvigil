@@ -18,12 +18,12 @@
 #     list a 'running' row with Open; Open draws the plan: a 'Query plan:' dialog holding 'Statement 1' and an operator
 #     grid of 1+ rows, the status line naming demo data, no error box. On #/activity?i=<erp01> (PostgreSQL's Running
 #     queries) the page says 'PostgreSQL keeps no plan of a running statement'.
-#  [review fold (drpa-fallback), before the rerun: S1: a request with a kept row holds it as above; a request without
+#  [Added rows: S1: a request with a kept row holds it as above; a request without
 #  one must be below DBA Dash's plan threshold in that snapshot (CPU 1,000 ms, a 6,400-page grant, 10 s running; a row
 #  kept at an earlier snapshot stays); sql01 and sql03 each show one request with its kept plan; S3's plan carries
 #  the '<!-- demo data' comment inside its root (a downloaded file says it too); C reads 'demo data' INSIDE the plan
 #  dialog (its first line, the reply's words), not the status line behind it; a page slower than 15 s fails by name]
-#  Red on 24c1b7c7 (rel-j15-fix): S1 no row; S2 interval_secs 0 or no row; S3 404; C no 'running' source (the sources
+#  Red on the code before the fix: S1 no row; S2 interval_secs 0 or no row; S3 404; C no 'running' source (the sources
 #  answer 'pgvigil holds no plan of these hashes'), and the PostgreSQL words absent.
 set -euo pipefail
 cd "$(dirname "$0")/.."

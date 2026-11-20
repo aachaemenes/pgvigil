@@ -1,6 +1,6 @@
--- 0190 the second join file of the release (v0.4.0): what the slices numbered after 0110 leave to the lead's join. It
--- sorts after every slice migration of the release (they take 0111-0189) and each later join of the release extends it
--- in place, as 0110 was (nothing of either has been released yet).
+-- 0190 the second release migration of v0.4.0: what the feature migrations numbered after 0110 leave to the release's
+-- shared objects. It sorts after every feature migration of the release (they take 0111-0189) and each later addition
+-- to the release extends it in place, as 0110 was (nothing of either has been released yet).
 --   task 177 D02 (0114): pgvigil.findings gains the mssql_blocking_findings arm; nothing for purge() (no table added).
 --   task 177 D03 (0115): the mssql_waits_findings arm; mssql_memory_pool among purge()'s monthly partition parents.
 --   task 177 D04 (0116): nothing here (its findings are the Blocked reports tab's own; mssql_blocked_reports is purged).
@@ -18,11 +18,44 @@
 --   task 301 (0140): the mssql_backup_loc_findings arm; purge() keeps mssql_backup_roots_seen 400 days at least.
 --   task 304 (0147): the mssql_restore_findings arm; nothing for purge() (its tables are current state, cascaded).
 --   SLOW-CONNECT (0121): alert_due's slow-connect terms; the 'connect_time' threshold key (and 'seconds' in
---     pg_threshold_keys' unit check); import_pg_threshold is 0117's with connect_time taken at a SQL Server instance.
+--     pg_threshold_keys' unit check, which also takes the HA files' 'MB' and 'count'); import_pg_threshold is 0117's
+--     with 0142's engines rule (pg_threshold_keys.engines), connect_time's row naming both engines.
+--   HA join (0141-0144, 0150): purge()'s monthly partition parents gain mssql_repl_sample (0142) and
+--     mssql_ag_replica_sample, mssql_ag_dbcounter_sample, mssql_mirroring_sample, mssql_logrestore_sample (0143);
+--     mssql_mirroring_role_changes, mssql_fci_owner_changes and mssql_ag_seeding (0143) go by their time, as
+--     mssql_ag_failovers (mssql_ag_seeding holds current rows, replaced whole by each newest read of its instance -
+--     0143's import_mssql_ag - so its line only takes the last rows of an instance no read reaches any more: not
+--     needed, kept as a bound); mssql_repl_hourly (0142) loses the hours past a year of an instance no import
+--     reaches (a live instance's are trimmed by its import); purge()'s last block calls
+--     pgvigil.replication_hourly_purge() (0150) beside 0139's. No line, on purpose: mssql_logship_foreign_logs and
+--     mssql_logship_errors (current rows of 24 hours) and mssql_logship_idle, each replaced by every newest read
+--     of its instance whose part did not fail (0143 L602-627: a read older than the state, or a failed part, leaves
+--     the rows); replication_hourly_dirty (working ranges a heal removes). The threshold keys' unit check and
+--     import_pg_threshold: at their lines below.
+--   HA join, 376 (0144): the pg_patroni_findings arm of the findings view (0144 L19-20 leaves it to this file).
+--   HA join (the Aurora reader's fix): backup_status (0103's) gains cluster_backups_on and
+--     backup_rule_hits (0103's) raises 'retention under N days' and 'no snapshot in 24 h' once per Aurora cluster
+--     (backup_cluster_holders, new: the cluster keyed by its ARN, backup_state.arn; import_backups is 0022's with it),
+--     at the end of this file.
 -- The view is 0110's with the new arms; purge() is 0110's with the new parents and lines; apply_roles() is not here
 -- (0110's, its owner-only list extended in 0110 itself).
---   INVALID DATABASES (rel-invxid): pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
+--   INVALID DATABASES: pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
 --     'not judged'; the rest 0104's text), and the findings view's 'database xid age' arm leaves an invalid database out.
+--   task 409 (0160): pgvigil.mssql_checks_findings (0090's view) leaves out the day-one finding of a server option that
+--     has an expected value in force, met or not (the expectation alone judges it): every reader follows - pgvigil.findings,
+--     mssql_checks_status (the Checks page's areas and the Summary's cells) and the Checks page's list. The findings and
+--     purge() arms of tasks 407, 409 and 410 are 0300's (the release migration: no new hunk of an object 0300 re-creates).
+
+-- 0090's mssql_checks_findings with task 409's anti-join (0160 sorts below this file)
+CREATE OR REPLACE VIEW pgvigil.mssql_checks_findings AS
+SELECT f.instance_id, f.severity, f.check_name, f.object, f.snapshot_at AS at,
+       f.detail || ' [rule: ' || f.rule || coalesce('; value: ' || nullif(f.value, ''), '') || ']' AS detail,
+       f.area, f.rule, f.value, f.first_seen
+  FROM pgvigil.mssql_check_finding f
+  JOIN pgvigil.mssql_check_area a ON a.instance_id = f.instance_id AND a.area = f.area
+ WHERE a.snapshot_at > now() - CASE WHEN f.area = 'identity' THEN interval '18 hours' ELSE interval '3 hours' END
+   AND NOT (f.area = 'config' AND f.check_name = 'server option'
+            AND EXISTS (SELECT 1 FROM pgvigil.mssql_config_expect_now n WHERE n.instance_id = f.instance_id AND n.kind = 'config' AND n.key = lower(f.object)));
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
@@ -80,7 +113,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the corruption column (0023): checksums off, ignore_checksum_failure on, a corruption event in 24 h, amcheck damage
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.corruption_findings WHERE setting <> 'zero_damaged_pages'
     UNION ALL
-    -- the plans slice (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
+    -- plan_findings (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.plan_findings
     UNION ALL
     -- the indexes collection (0030): invalid and duplicate indexes (warning), redundant and unused ones (info)
@@ -143,6 +176,9 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- task 162 (0103): base backups, log shipping, crash restarts, the statement store, amcheck age
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pg_backups_findings
     UNION ALL
+    -- task 376 (0144): Patroni - no leader, a member down, paused, a pending restart, the DCS not reached, the API
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pg_patroni_findings
+    UNION ALL
     -- task 177 D02 (0114): an implicit transaction blocking, sessions in implicit transactions, a lead blocker's share
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_blocking', at FROM pgvigil.mssql_blocking_findings
     UNION ALL
@@ -157,7 +193,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     -- task 177 D30 (0118): Darling's alert thresholds (PerformanceMonitor's alert set) over the stored reads
     SELECT d.instance_id, d.severity, d.setting, d.value, d.is_set, d.suggested, d.platforms, d.detail, d.source, d.at FROM pgvigil.darling_alert_findings d
-     -- task 201 (the join fold): an instance has ONE 'server unreachable'. Where a collector that beats covers the failed
+     -- task 201: an instance has ONE 'server unreachable'. Where a collector that beats covers the failed
      -- read (0121's collector_covers) the connect failure is 0121's to report - 'authentication failing' for a refused
      -- login, 'server unreachable' after 3 failed connects in a row - with its streak and its place under 'collector or
      -- network'; 0118's own stays for an instance no heartbeat covers (a `pgvigil collect` on a schedule)
@@ -204,7 +240,9 @@ BEGIN
                          'mssql_waiting_summary', 'mssql_waiting_tasks', 'mssql_memory_pool',
                          'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
                          'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
-                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'mssql_azuredb_minute')
+                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'mssql_azuredb_minute',
+                         'mssql_repl_sample', 'mssql_ag_replica_sample', 'mssql_ag_dbcounter_sample', 'mssql_mirroring_sample',
+                         'mssql_logrestore_sample')
        AND c.relname ~ '_[0-9]{6}$'
        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
@@ -376,6 +414,20 @@ BEGIN
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_ag_failovers WHERE at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  -- the HA join (0143): a mirrored database's role changes and a failover cluster instance's owner changes are history
+  -- as the failovers above are, and go by the same age. The seeding rows are current rows that each read replaces
+  -- whole: one older than the age belongs to an instance no read has reached for the whole window, as with
+  -- mssql_xe_state above
+  DELETE FROM pgvigil.mssql_mirroring_role_changes WHERE at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.mssql_fci_owner_changes WHERE at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.mssql_ag_seeding WHERE snapshot_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  -- the HA join (0142): the replication hours keep a year - the import trims them per instance; this takes the rest
+  -- of an instance no import reaches any more (as pgaudit_count_secs below), never under that year
+  DELETE FROM pgvigil.mssql_repl_hourly WHERE hour < now() - make_interval(days => greatest(p_days, 366));
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   -- Query Store (0083): a query or a plan no read has listed within the window goes once no kept runtime row names it
   -- (the runtime partitions go by whole months, so a query's text stays as long as a runtime row of it does); a
   -- tuning recommendation no read has listed within the window goes; mssql_qs_store (each database's read cursor)
@@ -441,6 +493,12 @@ BEGIN
   IF to_regprocedure('pgvigil.job_stats_hourly_purge()') IS NOT NULL THEN
     n := n - cardinality(v_dropped);
     v_dropped := v_dropped || pgvigil.job_stats_hourly_purge();
+    n := n + cardinality(v_dropped);
+  END IF;
+  -- 0150 (the HA join): replication_hourly the same way, by its own hours_retention row
+  IF to_regprocedure('pgvigil.replication_hourly_purge()') IS NOT NULL THEN
+    n := n - cardinality(v_dropped);
+    v_dropped := v_dropped || pgvigil.replication_hourly_purge();
     n := n + cardinality(v_dropped);
   END IF;
   -- task 201: the run recorded (the Collector page's last purge, the 'purge not run in 2 days' finding)
@@ -573,7 +631,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
   ORDER BY 1, 2, 6, 5
 $$;
 
--- task 201, the join fold (review 201a finding 5): a rule that names an instance never matches a repository-wide
+-- task 201: a rule that names an instance never matches a repository-wide
 -- alert. Those rows have no instance (source 'pgvigil repository': each collector's 'collector or network', 'purge not
 -- run in 2 days') and are shown under the name 'pgvigil', which a real instance may carry too - the repository's own
 -- server, monitored: a blackout for its maintenance held the parent on every channel. No name is impossible for an
@@ -756,15 +814,24 @@ SELECT j.instance_id, j.dbid, j.datname, j.is_template, j.snapshot_at, j.platfor
 -- the tier itself is 0121's) =====
 -- the 'connect_time' threshold: an instance's average connect over its last 5 written minutes, in seconds, over 1.00 /
 -- 2.50 by default, at the root, a tag or an instance - both engines at the instance level (as 'uptime'); a unit of
--- 'seconds' joins the keys' check
+-- 'seconds' joins the keys' check. This file runs after 0141 and 0150 (the HA join), whose keys are stored in 'MB' and
+-- as a 'count' by then: the list is every unit a file below this one stores, or the check fails on those rows
 ALTER TABLE pgvigil.pg_threshold_keys DROP CONSTRAINT IF EXISTS pg_threshold_keys_unit_check;
-ALTER TABLE pgvigil.pg_threshold_keys ADD CONSTRAINT pg_threshold_keys_unit_check CHECK (unit IN ('seconds', 'minutes', 'hours', 'days'));
-INSERT INTO pgvigil.pg_threshold_keys (key, label, unit, direction, warn_default, crit_default, levels, max_value) VALUES
-  ('connect_time', 'Connect time: an instance''s average connect over its last 5 written minutes', 'seconds', 'over', 1.00, 2.50, '{root,tag,instance}', 60)
+ALTER TABLE pgvigil.pg_threshold_keys ADD CONSTRAINT pg_threshold_keys_unit_check CHECK (unit IN ('seconds', 'minutes', 'hours', 'days', 'MB', 'count'));
+-- the engines whose instances take a key at the instance and database level: pg_threshold_keys.engines (the HA join;
+-- 0142's column and 0142's two lines, repeated here so this file stands on a tree without 0142). connect_time is both
+-- engines', as uptime
+ALTER TABLE pgvigil.pg_threshold_keys ADD COLUMN IF NOT EXISTS engines text[] NOT NULL DEFAULT '{postgres}';
+UPDATE pgvigil.pg_threshold_keys SET engines = '{postgres,sqlserver}' WHERE key = 'uptime';
+INSERT INTO pgvigil.pg_threshold_keys (key, label, unit, direction, warn_default, crit_default, levels, max_value, engines) VALUES
+  ('connect_time', 'Connect time: an instance''s average connect over its last 5 written minutes', 'seconds', 'over', 1.00, 2.50, '{root,tag,instance}', 60, '{postgres,sqlserver}')
 ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, direction = EXCLUDED.direction,
-  warn_default = EXCLUDED.warn_default, crit_default = EXCLUDED.crit_default, levels = EXCLUDED.levels, max_value = EXCLUDED.max_value;
+  warn_default = EXCLUDED.warn_default, crit_default = EXCLUDED.crit_default, levels = EXCLUDED.levels, max_value = EXCLUDED.max_value,
+  engines = EXCLUDED.engines;
 
--- import_pg_threshold: 0117's, with one change - 'connect_time' is both engines' at the instance level, as 'uptime'
+-- import_pg_threshold: 0117's with 0142's one change (the HA join: this file runs after 0142 and would undo it) - a key
+-- is taken at the instance and database level by an instance of the key's engines; 'connect_time' is both engines'
+-- by its row above, as 'uptime'
 CREATE OR REPLACE FUNCTION pgvigil.import_pg_threshold(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
@@ -796,10 +863,11 @@ BEGIN
   ELSIF v_level IS NULL OR NOT (v_level = ANY (v_k.levels)) THEN
     v_why := format('%s is set at the levels %s', v_key, array_to_string(v_k.levels, ', '));
   ELSIF v_level IN ('instance', 'database') AND (v_inst IS NULL OR NOT EXISTS (SELECT 1 FROM pgvigil.instances i WHERE i.instance_id = v_inst
-                                                  AND (i.engine = 'postgres' OR (v_key IN ('uptime', 'connect_time') AND v_level = 'instance')))) THEN
-    -- the uptime key is both engines' (DBA Dash's Instance Uptime dialog, task 176b), and the slow-connect tier's
-    -- connect_time: a SQL Server instance takes them
-    v_why := format(CASE WHEN v_key IN ('uptime', 'connect_time') THEN 'no instance %s' ELSE 'no PostgreSQL instance %s' END, coalesce(p_payload->>'instance_id', '(none)'));
+                                                  AND i.engine = ANY (v_k.engines))) THEN
+    -- the key's engines take it (0142): uptime (DBA Dash's Instance Uptime dialog, task 176b) and the slow-connect
+    -- tier's connect_time both engines', the replication and HA keys SQL Server's, every other key PostgreSQL's
+    v_why := format(CASE WHEN v_k.engines = '{postgres}' THEN 'no PostgreSQL instance %s' WHEN v_k.engines = '{sqlserver}' THEN 'no SQL Server instance %s'
+                         ELSE 'no instance %s' END, coalesce(p_payload->>'instance_id', '(none)'));
   ELSIF v_level = 'tag' AND (v_tag IS NULL OR length(v_tag) > 200) THEN
     v_why := 'a tag level names its tag (200 characters at most)';
   ELSIF v_level = 'database' AND (v_db IS NULL OR length(v_db) > 63) THEN
@@ -856,3 +924,206 @@ BEGIN
   RETURN jsonb_build_object('outcome', 'done', 'detail', 'set', 'threshold_id', v_new);
 END $$;
 
+-- An Aurora cluster's backups are the cluster's: every instance with an aws: block reads the same cluster (its
+-- retention and snapshots), so 0103's two cloud rules fired on the writer and again on each reader; now once, on the
+-- cluster's holder (a stable member: backup_cluster_holders). backup_status is
+-- 0103's with cluster_backups_on at the end: the instance that holds the cluster's backups when it is another one
+-- (NULL: not a cluster, or this instance holds them); backup_rule_hits is 0103's with the two cloud arms held to the
+-- holder (backup_cluster_holders). A cluster's key is its lower-cased DBClusterArn (backup_state.arn, read since this
+-- file); a row with no ARN (a collector before it, one read after the upgrade) takes the one ARN its identifier carries
+-- among the rows, else keeps its identifier: two clusters of one name, neither read with an ARN, read as one. One
+-- holder per key, so a mix of rows never silences a cluster (it may raise twice until the next read). import_backups
+-- is 0022's with arn stored.
+ALTER TABLE pgvigil.backup_state ADD COLUMN IF NOT EXISTS arn text;   -- cloud: a cluster's DBClusterArn
+
+CREATE OR REPLACE FUNCTION pgvigil.import_backups(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_backups'), p_instance_id);
+  PERFORM pgvigil.ensure_month_partition('backup_sample', p_snapshot_at);
+
+  INSERT INTO pgvigil.backup_state AS s (instance_id, kind, name, snapshot_at, archive_mode, archive_timeout, archive_set, archived_count,
+                                         last_archived_wal, last_archived_time, failed_count, last_failed_wal, last_failed_time, stats_reset,
+                                         is_replica, wal_segment_bytes, current_lsn, archive_lag_bytes, archive_warn_minutes, resource_kind,
+                                         retention_days, latest_restorable_time, earliest_restorable_time, backup_window, snapshot_type,
+                                         status, created_at, allocated_gib, encrypted, first_seen, is_present, arn)
+  SELECT p_instance_id, r->>'kind', r->>'name', p_snapshot_at, r->>'archive_mode', r->>'archive_timeout', (r->>'archive_set')::boolean,
+         (r->>'archived_count')::bigint, r->>'last_archived_wal', (r->>'last_archived_time')::timestamptz, (r->>'failed_count')::bigint,
+         r->>'last_failed_wal', (r->>'last_failed_time')::timestamptz, (r->>'stats_reset')::timestamptz, (r->>'is_replica')::boolean,
+         (r->>'wal_segment_bytes')::bigint, r->>'current_lsn', (r->>'archive_lag_bytes')::bigint,
+         coalesce((r->>'archive_warn_minutes')::int, CASE WHEN r->>'kind' = 'archiver' THEN 60 END), r->>'resource_kind',
+         (r->>'retention_days')::int, (r->>'latest_restorable_time')::timestamptz, (r->>'earliest_restorable_time')::timestamptz,
+         r->>'backup_window', r->>'snapshot_type', r->>'status', (r->>'created_at')::timestamptz, (r->>'allocated_gib')::int,
+         (r->>'encrypted')::boolean, p_snapshot_at, true, nullif(r->>'arn', '')
+    FROM (SELECT DISTINCT ON (r->>'kind', r->>'name') r FROM jsonb_array_elements(p_payload) r
+           WHERE r->>'kind' IN ('archiver', 'cloud', 'snapshot') AND r->>'name' IS NOT NULL) x
+  ON CONFLICT (instance_id, kind, name) DO UPDATE SET
+    snapshot_at = EXCLUDED.snapshot_at, archive_mode = EXCLUDED.archive_mode, archive_timeout = EXCLUDED.archive_timeout,
+    archive_set = EXCLUDED.archive_set, archived_count = EXCLUDED.archived_count, last_archived_wal = EXCLUDED.last_archived_wal,
+    last_archived_time = EXCLUDED.last_archived_time, failed_count = EXCLUDED.failed_count, last_failed_wal = EXCLUDED.last_failed_wal,
+    last_failed_time = EXCLUDED.last_failed_time, stats_reset = EXCLUDED.stats_reset, is_replica = EXCLUDED.is_replica,
+    wal_segment_bytes = EXCLUDED.wal_segment_bytes, current_lsn = EXCLUDED.current_lsn, archive_lag_bytes = EXCLUDED.archive_lag_bytes,
+    archive_warn_minutes = EXCLUDED.archive_warn_minutes, resource_kind = EXCLUDED.resource_kind, retention_days = EXCLUDED.retention_days,
+    latest_restorable_time = EXCLUDED.latest_restorable_time, earliest_restorable_time = EXCLUDED.earliest_restorable_time,
+    backup_window = EXCLUDED.backup_window, snapshot_type = EXCLUDED.snapshot_type, status = EXCLUDED.status,
+    created_at = EXCLUDED.created_at, allocated_gib = EXCLUDED.allocated_gib, encrypted = EXCLUDED.encrypted, is_present = true,
+    arn = EXCLUDED.arn;
+
+  -- absence: a cloud resource no longer named (the config moved to another), a snapshot no longer listed by a
+  -- list that was read in full this run
+  UPDATE pgvigil.backup_state s SET is_present = false
+   WHERE s.instance_id = p_instance_id AND s.is_present AND s.kind IN ('cloud', 'archiver')
+     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = s.kind)
+     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = s.kind AND r->>'name' = s.name);
+  UPDATE pgvigil.backup_state s SET is_present = false
+   WHERE s.instance_id = p_instance_id AND s.is_present AND s.kind = 'snapshot'
+     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'snapshots_read')
+     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'snapshot' AND r->>'name' = s.name);
+
+  INSERT INTO pgvigil.backup_sample (instance_id, snapshot_at, archived_count, failed_count, archive_lag_bytes, last_archived_time, restorable_age_s)
+  SELECT p_instance_id, p_snapshot_at, (a->>'archived_count')::bigint, (a->>'failed_count')::bigint, (a->>'archive_lag_bytes')::bigint,
+         (a->>'last_archived_time')::timestamptz,
+         round(extract(epoch FROM p_snapshot_at - (c->>'latest_restorable_time')::timestamptz)::numeric, 0)
+    FROM (SELECT (SELECT r FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'archiver' LIMIT 1) AS a,
+                 (SELECT r FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'cloud' LIMIT 1) AS c) x
+   WHERE x.a IS NOT NULL OR x.c IS NOT NULL;
+END $$;
+
+-- backup_cluster_holders: per active instance with a cluster cloud row, the instance that holds its cluster's backups -
+-- a STABLE member: the lowest instance id among the cluster's active instances read in the last hour
+-- (the lowest id when none is), not necessarily the writer, so a failover neither moves, resolves nor reopens the
+-- cluster's findings; cluster_backups_on is the holder's name when it is another instance (backup_status and the
+-- Summary's row).
+CREATE OR REPLACE VIEW pgvigil.backup_cluster_holders AS
+WITH cl AS (
+  SELECT c.instance_id, lower(c.name) AS cname, lower(c.arn) AS arn, c.snapshot_at > now() - interval '1 hour' AS fresh
+    FROM pgvigil.backup_state c
+    JOIN pgvigil.instances i ON i.instance_id = c.instance_id AND i.is_active
+   WHERE c.kind = 'cloud' AND c.is_present AND c.resource_kind = 'cluster'
+), ck AS (
+  SELECT cl.*, coalesce(cl.arn, n.arn, 'id:' || cl.cname) AS ckey
+    FROM cl LEFT JOIN (SELECT cname, min(arn) AS arn FROM cl GROUP BY cname HAVING count(DISTINCT arn) = 1) n USING (cname)
+), hold AS (
+  SELECT DISTINCT ON (ckey) ckey, instance_id AS holder_id FROM ck ORDER BY ckey, fresh DESC, instance_id
+)
+SELECT ck.instance_id, ck.ckey AS cluster_key, h.holder_id, hi.name AS holder,
+       CASE WHEN h.holder_id <> ck.instance_id THEN hi.name END AS cluster_backups_on
+  FROM ck JOIN hold h USING (ckey) JOIN pgvigil.instances hi ON hi.instance_id = h.holder_id;
+
+CREATE OR REPLACE VIEW pgvigil.backup_status AS
+WITH snap AS (
+  SELECT instance_id,
+         max(created_at) FILTER (WHERE snapshot_type = 'automated' AND status = 'available') AS newest_automated_at,
+         max(created_at) FILTER (WHERE snapshot_type = 'manual' AND status = 'available') AS newest_manual_at,
+         max(created_at) FILTER (WHERE status = 'available') AS newest_snapshot_at,
+         count(*) FILTER (WHERE snapshot_type = 'automated') AS automated_count,
+         count(*) FILTER (WHERE snapshot_type = 'manual') AS manual_count
+    FROM pgvigil.backup_state WHERE kind = 'snapshot' AND is_present GROUP BY instance_id
+)
+SELECT i.instance_id, i.name AS instance, i.platform,
+       a.archive_mode, a.archive_set, a.is_replica,
+       (a.archive_set AND (a.archive_mode = 'always' OR (a.archive_mode = 'on' AND NOT a.is_replica))) AS archiving,
+       a.archived_count, a.failed_count, a.last_archived_wal, a.last_archived_time, a.last_failed_wal, a.last_failed_time,
+       a.stats_reset, a.archive_lag_bytes, a.wal_segment_bytes,
+       CASE WHEN aw.level <> 'default' AND aw.warn IS NOT NULL THEN aw.warn::int ELSE a.archive_warn_minutes END AS archive_warn_minutes,
+       round(extract(epoch FROM a.snapshot_at - a.last_archived_time)::numeric, 0) AS archive_age_s,
+       (a.archive_set AND (a.archive_mode = 'always' OR (a.archive_mode = 'on' AND NOT a.is_replica))
+        AND a.last_failed_time IS NOT NULL AND (a.last_archived_time IS NULL OR a.last_failed_time > a.last_archived_time)) AS archiver_failing,
+       (a.archive_lag_bytes > a.wal_segment_bytes) AS wal_waiting,
+       a.snapshot_at AS archiver_read_at,
+       c.name AS cloud_resource, c.resource_kind, c.retention_days, c.latest_restorable_time, c.earliest_restorable_time, c.backup_window,
+       round(extract(epoch FROM c.snapshot_at - c.latest_restorable_time)::numeric, 0) AS restorable_age_s,
+       c.snapshot_at AS cloud_read_at,
+       s.newest_automated_at, s.newest_manual_at, s.newest_snapshot_at,
+       round(extract(epoch FROM c.snapshot_at - s.newest_snapshot_at)::numeric, 0) AS newest_snapshot_age_s,
+       coalesce(s.automated_count, 0) AS automated_count, coalesce(s.manual_count, 0) AS manual_count,
+       h.cluster_backups_on
+  FROM pgvigil.instances i
+  LEFT JOIN pgvigil.backup_state a ON a.instance_id = i.instance_id AND a.kind = 'archiver' AND a.is_present
+  LEFT JOIN pgvigil.backup_state c ON c.instance_id = i.instance_id AND c.kind = 'cloud' AND c.is_present
+  LEFT JOIN snap s ON s.instance_id = i.instance_id
+  LEFT JOIN pgvigil.backup_cluster_holders h ON h.instance_id = i.instance_id
+  CROSS JOIN LATERAL pgvigil.pg_threshold(i.instance_id, 'archive_age') aw
+ WHERE i.is_active AND (a.instance_id IS NOT NULL OR c.instance_id IS NOT NULL);
+
+
+CREATE OR REPLACE VIEW pgvigil.backup_rule_hits AS
+SELECT b.instance_id, 'critical' AS severity, 'archiver failing' AS check_name, coalesce(b.last_failed_wal, 'pg_stat_archiver') AS object,
+       b.archiver_read_at AS at,
+       'archive of ' || coalesce(b.last_failed_wal, '?') || ' failed at ' || to_char(b.last_failed_time AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC'
+       || coalesce(', after the last success at ' || to_char(b.last_archived_time AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC', ', no success since the stats reset')
+       || ' (' || b.failed_count || ' failed, ' || b.archived_count || ' archived)' AS detail
+  FROM pgvigil.backup_status b
+ WHERE b.archiver_failing AND b.platform <> 'aurora'
+UNION ALL
+SELECT b.instance_id, 'warning', 'last archive older than ' || b.archive_warn_minutes || ' min', coalesce(b.last_archived_wal, 'pg_stat_archiver'), b.archiver_read_at,
+       coalesce('last archived ' || round(b.archive_age_s / 60) || ' min before the read', 'nothing archived since the stats reset')
+       || '; ' || pg_size_pretty(b.archive_lag_bytes) || ' of WAL waiting'
+  FROM pgvigil.backup_status b
+ WHERE b.archiving AND b.wal_waiting AND b.platform <> 'aurora'
+   AND (b.last_archived_time IS NULL OR b.archive_age_s > b.archive_warn_minutes * 60)
+UNION ALL
+SELECT b.instance_id, CASE WHEN r.crit_days IS NOT NULL AND b.retention_days <= r.crit_days THEN 'critical' ELSE 'warning' END,
+       CASE WHEN r.warn_days IS NOT NULL THEN 'retention under ' || trim_scale(r.warn_days) || ' days'
+            ELSE 'retention at or under ' || trim_scale(r.crit_days) || ' days' END, b.cloud_resource, b.cloud_read_at,
+       CASE WHEN b.retention_days = 0 THEN 'automated backups are off (retention 0 days)'
+            ELSE 'backup retention ' || b.retention_days || ' days' END
+  FROM pgvigil.backup_status b JOIN pgvigil.backup_retention r USING (instance_id)
+ WHERE ((r.warn_days IS NOT NULL AND b.retention_days < r.warn_days) OR (r.crit_days IS NOT NULL AND b.retention_days <= r.crit_days))
+   AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0)
+   AND b.cluster_backups_on IS NULL
+UNION ALL
+SELECT b.instance_id, 'warning', 'no snapshot in 24 h', b.cloud_resource, b.cloud_read_at,
+       coalesce('newest snapshot ' || to_char(b.newest_snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC, '
+                || round(b.newest_snapshot_age_s / 3600) || ' h before the read', 'no available snapshot listed')
+  FROM pgvigil.backup_status b
+ WHERE b.cloud_resource IS NOT NULL AND (b.newest_snapshot_at IS NULL OR b.newest_snapshot_age_s > 86400)
+   AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0)
+   AND b.cluster_backups_on IS NULL;
+
+-- ---- task 401 (0152, B3): the SQL Server counters --------------------------------------------------------------------
+-- mssql_cpu_newest is 0124's with its Workload Group Stats taken from the instance counter read nearest the scheduler
+-- read (the counters are mssql_counters' own read since 401: an exact match on mssql_cpu's read time would never find
+-- them). metric_catalog and metric_points with the family 'counters' are 0300's (the release migration: no new hunk of an
+-- object 0300 re-creates goes into an earlier file).
+
+CREATE OR REPLACE FUNCTION pgvigil.mssql_cpu_newest(p_instance_id int, p_from timestamptz, p_to timestamptz)
+RETURNS TABLE (snapshot_at timestamptz, schedulers int, cpu_count int, runnable_tasks int, work_queue int, current_workers int,
+               active_workers int, max_workers int, offline_cpus int, nodes_total int, nodes_online int,
+               level text, verdict text, pm_level text, pm_recommendation text,
+               rg_active_requests bigint, rg_queued_requests bigint, rg_blocked_tasks bigint, rg_parallel_threads bigint,
+               requests_at timestamptz, requests bigint, runnable_requests bigint, runnable_pct numeric,
+               threadpool_at timestamptz, threadpool int, threadpool_longest_ms bigint, cpu_info jsonb)
+LANGUAGE sql STABLE AS $$
+  WITH s AS (SELECT * FROM pgvigil.mssql_sched_sample x WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to
+              ORDER BY x.snapshot_at DESC LIMIT 1),
+  -- task 401: the counters are mssql_counters' own read now (not mssql_cpu's): the instance counter read nearest the
+  -- scheduler read within 30 s, as rq and tp take theirs
+  cr AS (SELECT c.snapshot_at FROM s, pgvigil.mssql_counter_read c
+          WHERE c.instance_id = p_instance_id AND c.scope = 'instance'
+            AND c.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
+          ORDER BY abs(extract(epoch FROM c.snapshot_at - s.snapshot_at)) LIMIT 1),
+  wg AS (SELECT sum(c.value) FILTER (WHERE k.counter = 'Active requests') AS act, sum(c.value) FILTER (WHERE k.counter = 'Queued requests') AS q,
+                sum(c.value) FILTER (WHERE k.counter = 'Blocked tasks') AS blk, sum(c.value) FILTER (WHERE k.counter = 'Active parallel threads') AS par
+           FROM cr JOIN pgvigil.mssql_counter_sample c ON c.instance_id = p_instance_id AND c.snapshot_at = cr.snapshot_at
+           JOIN pgvigil.mssql_counter_series k ON k.series_id = c.series_id AND k.object = 'Workload Group Stats'),
+  rq AS (SELECT q.snapshot_at FROM s, pgvigil.mssql_requests_summary q
+          WHERE q.instance_id = p_instance_id AND q.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
+          ORDER BY abs(extract(epoch FROM q.snapshot_at - s.snapshot_at)) LIMIT 1),
+  rc AS (SELECT count(*) AS n, count(*) FILTER (WHERE r.status = 'runnable') AS runnable
+           FROM rq JOIN pgvigil.mssql_requests r ON r.instance_id = p_instance_id AND r.snapshot_at = rq.snapshot_at
+          WHERE r.session_id > 50 AND coalesce(r.status, '') NOT IN ('background', 'sleeping')),
+  tp AS (SELECT w.snapshot_at, w.threadpool, w.threadpool_longest_ms FROM s, pgvigil.mssql_waiting_summary w
+          WHERE w.instance_id = p_instance_id AND w.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
+          ORDER BY abs(extract(epoch FROM w.snapshot_at - s.snapshot_at)) LIMIT 1)
+  SELECT s.snapshot_at, s.schedulers, s.cpu_count, s.runnable_tasks, s.work_queue, s.current_workers, s.active_workers, s.max_workers,
+         s.offline_cpus, s.nodes_total, s.nodes_online, l.level, l.verdict, l.pm_level, l.pm_recommendation,
+         wg.act, wg.q, wg.blk, wg.par,
+         rq.snapshot_at, rc.n, rc.runnable, CASE WHEN rc.n > 0 THEN round(100.0 * rc.runnable / rc.n, 2) END,
+         tp.snapshot_at, tp.threadpool, tp.threadpool_longest_ms,
+         (SELECT i.info FROM pgvigil.mssql_cpu_info i WHERE i.instance_id = p_instance_id)
+    FROM s
+    LEFT JOIN wg ON true LEFT JOIN rq ON true LEFT JOIN rc ON rq.snapshot_at IS NOT NULL LEFT JOIN tp ON true
+    CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
+                                                  s.cpu_count, wg.q::int) l
+$$;

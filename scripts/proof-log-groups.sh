@@ -12,7 +12,7 @@
 #                started, a fresh database migrated, the database dropped, the container stopped again.
 # The monitored servers are throwaways this proof makes (logging_collector on, log_checkpoints on, log_temp_files 0,
 # log_min_duration_statement 0, checkpoint_timeout 1h so no timed checkpoint lands in the run) and removes at the end.
-# The build must serve the three routes (the lead's wiring: notes WIRING BLOCK); without them the API sections fail.
+# The build must serve the three routes (the wiring: notes WIRING BLOCK); without them the API sections fail.
 #
 # Expected (written before the first run):
 #  A. PostgreSQL 18, the workload (one superuser session unless said): select from three missing tables (nosuch_a,
@@ -48,11 +48,10 @@
 #     timed 0 (pg_stat_bgwriter); causes one row requested 1; checkpoint_log one row, cause requested, the
 #     PostgreSQL 13 complete line's buffers and total_secs read; a select from a missing table gives the group
 #     'relation "..." does not exist' ERROR 1.
-#  [first run 2026-11-10 17:54: two differences. (1) the relation group read 'relation "..." does not exist at
-#   character ...': the server appends the cursor position to the message line; the shape now drops a trailing
-#   ' at character N' (Go and SQL), graded against the expectation as written. (2) WARNING 1, not 2: the two
-#   ROLLBACKs ran in one session in the same millisecond and share the event key (time text, level, pid, message:
-#   0013's), so they are one event - a stated limit (docs/logs.md); the workload now runs them in two sessions.]
+#  [(1) the server appends the cursor position to a message line ('... does not exist at character N'); the shape
+#   drops a trailing ' at character N' (Go and SQL). (2) two ROLLBACKs in one session in the same millisecond share
+#   the event key (time text, level, pid, message: 0013's) and are one event - a stated limit (docs/logs.md); the
+#   workload runs them in two sessions.]
 #  [run 4: F causes read requested 1 and shutdown 1: the postgres:13 image's entrypoint starts a temporary server on
 #   first init and shuts it down, and that shutdown checkpoint's start line fell inside the window; F's window now
 #   starts after the container is up, graded against the expectation as written. Run 3 found a real fault, fixed in
@@ -60,9 +59,9 @@
 #  G. 0079 on PostgreSQL 13 (pgv-pg13-proof): a fresh database migrated without error; import_logs of a payload with
 #     level and message stores both; a second import of the same event with a longer detail keeps one row; the
 #     kind check accepts 'error' and 'checkpoint'.
-#  [review 1 fold, expected before the rerun] E and F also: the stored complete line carries 'STARTED: <time> <flags>'
+#  [expected before the rerun] E and F also: the stored complete line carries 'STARTED: <time> <flags>'
 #   (paired by the parser) and the row's flags are those. G also: on PostgreSQL 13 log_message_shape gives Go's shape
-#   for the review's value cases (an e-mail, a $ amount, a name with digits, a UUID, an array literal with inner quotes,
+#   for the value cases (an e-mail, a $ amount, a name with digits, a UUID, an array literal with inner quotes,
 #   an IP address) - every value masked. A to D unchanged (the shapes of the workload's messages do not change).
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}

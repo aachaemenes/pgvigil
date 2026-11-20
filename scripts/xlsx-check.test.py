@@ -8,7 +8,9 @@ thing in a copy and names the rule that must FAIL, or must still PASS. One 'ok' 
 FAIL. The probes are the shapes a writer can get wrong in a way Excel draws or repairs: colours given by theme or index,
 patterns and gradients, a column's or a row's own style, a style index past its list, table names and ids, a merge in a
 table, dates and booleans stored as text, a time in a sheet name; a number that shows more decimals than its column on the
-page (X13, the page's decimals given beside the file).
+page (X13, the page's decimals given beside the file); a percent column's figures, a number written as text with its unit
+or its status word, a status column's plain cell, words in a date column, the measured cell's status (X14-X18, X8; X17
+with the page's map given beside the file).
 """
 import importlib.util
 import os
@@ -166,6 +168,33 @@ def fmt_b2(v, code):
     return set_b2(p, v, s)
 
 
+# X14-X18 and X8's date columns: one grid sheet 'Grid' with the cells given; styles: {ref: ('fill', rgb) | ('fmt', code) |
+# ('date', None)} restyle a cell of it
+FILL = '<fill><patternFill patternType="solid"><fgColor rgb="%s"/></patternFill></fill>'
+OK, WARN, CRIT, NA = 'FF006638', 'FFE49325', 'FFAB1F26', 'FFE0E1E9'
+
+
+def grid1(head, rows, styles=None, name='Grid'):
+    p = base([(name, head, rows)])
+    for ref, (kind, arg) in (styles or {}).items():
+        j, i = xc.col_index(ref) - 1, xc.row_index(ref) - 2
+        v = rows[i][j]
+        if kind == 'fill':
+            s = add_style(p, fill=FILL % arg)
+        elif kind == 'fmt':
+            s = add_style(p, xf_attrs='numFmtId="%d" fontId="0" fillId="0" borderId="0" applyNumberFormat="1"' % add_fmt(p, arg))
+        else:
+            s = 2   # the built styles' date-time format
+        sub(p, 'xl/worksheets/sheet1.xml', cell(ref, v), cell(ref, v, s))
+    return p
+
+
+PCT = ['name', 'free %']
+UNIT = ['name', 'lock (ms/s)']
+ST = ['name', 'status']
+DATE = ['name', 'last failure']
+
+
 # X13: the decimals the page shows in a column, given beside the file (sheet -> column header -> decimals); the built
 # workbook's 'size (GB)' holds 1.5 and 0.25 under General
 PAGE2 = {'Grid': {'size (GB)': 2}}
@@ -270,7 +299,13 @@ PROBES = [
     ('X7 a number under 0.000', 'X7', 'PASS', lambda: fmt_b2(1.6328125, '0.000')),
     ('X7 a share under 0%', 'X7', 'PASS', lambda: fmt_b2(0.125, '0%')),
     ('X7 a unit inside the format', 'X7', 'FAIL', lambda: fmt_b2(1.6328125, '0.0" GB"')),
-    ('X7 a grouped format', 'X7', 'FAIL', lambda: fmt_b2(1234.5, '#,##0.0')),
+    # (changed: a grouped fixed format where the page groups thousands, the page's formatting carried; never a unit in it)
+    ('X7 a grouped format #,##0.0', 'X7', 'PASS', lambda: fmt_b2(1234.5, '#,##0.0')),
+    ('X7 a grouped format #,##0', 'X7', 'PASS', lambda: fmt_b2(1234.5, '#,##0')),
+    ('X7 a grouped format #,##0.000', 'X7', 'PASS', lambda: fmt_b2(1234.5, '#,##0.000')),
+    ('X7 a grouped format with four decimals', 'X7', 'FAIL', lambda: fmt_b2(1234.5, '#,##0.0000')),
+    ('X7 a grouped format with a unit inside', 'X7', 'FAIL', lambda: fmt_b2(1234.5, '#,##0.00" GB"')),
+    ('X7 a grouping of other than thousands', 'X7', 'FAIL', lambda: fmt_b2(1234.5, '#,#0.0')),
     # X13: no number cell shows more decimals than its column shows on the page
     ('X13 the built workbook, the page 2 decimals', 'X13', 'PASS', base, PAGE2),
     ('X13 the built workbook, the page 1 decimal (0.25 shows 2)', 'X13', 'FAIL', base, PAGE1),
@@ -278,6 +313,9 @@ PROBES = [
     ('X13 0.01605224609375 under General (Excel draws 0.016052246), the page 2', 'X13', 'FAIL', lambda: set_b2(base(), 0.01605224609375), PAGE2),
     ('X13 1.6328125 under 0.00, the page 2', 'X13', 'PASS', lambda: fmt_b2(1.6328125, '0.00'), PAGE2),
     ('X13 1.6328125 under 0.000, the page 2', 'X13', 'FAIL', lambda: fmt_b2(1.6328125, '0.000'), PAGE2),
+    ('X13 1234.5678 under #,##0.00, the page 2', 'X13', 'PASS', lambda: fmt_b2(1234.5678, '#,##0.00'), PAGE2),
+    ('X13 1234.5678 under #,##0.0, the page 2 (fewer)', 'X13', 'FAIL', lambda: fmt_b2(1234.5678, '#,##0.0'), PAGE2),
+    ('X13 1234.5678 under #,##0.000, the page 2 (more)', 'X13', 'FAIL', lambda: fmt_b2(1234.5678, '#,##0.000'), PAGE2),
     ('X13 1.6 under General (a value stored rounded), the page 2', 'X13', 'PASS', lambda: set_b2(base(), 1.6), PAGE2),
     ('X13 1.25E-05 under General (drawn 1.25E-05 = 7 decimals), the page 2', 'X13', 'FAIL', lambda: set_b2(base(), 1.25e-05), PAGE2),
     # (B3 set so that only B2 decides: 0.5 shows one decimal, 1 none)
@@ -297,21 +335,69 @@ PROBES = [
     ('X13 a column the page does not name is not judged', 'X13', 'PASS', lambda: set_b2(base(), 1.6328125), {'Grid': {'name': 0}}),
     ('X13 the page names a sheet the workbook lacks', 'X13', 'FAIL', base, {'Gird': {'size (GB)': 2}}),
     ('X13 the page names a column the sheet lacks', 'X13', 'FAIL', base, {'Grid': {'size (MB)': 2}}),
+    # X14: a percent column holds fractions under a percent format
+    ('X14 free % 13.4 under 0.0', 'X14', 'FAIL', lambda: grid1(PCT, [['c', 13.4]], {'B2': ('fmt', '0.0')})),
+    ('X14 free % 13.4 under General', 'X14', 'FAIL', lambda: grid1(PCT, [['c', 13.4]])),
+    ('X14 free % 0.134 under 0.0%', 'X14', 'PASS', lambda: grid1(PCT, [['c', 0.134]], {'B2': ('fmt', '0.0%')})),
+    ('X14 a share past 1,000 % under 0% (a run at 15 times its average; its size is the proof\'s)', 'X14', 'PASS', lambda: grid1(['job', '% of average'], [['c', 15.0]], {'B2': ('fmt', '0%')})),
+    ('X14 a growth of +4,900 % under 0.0%', 'X14', 'PASS', lambda: grid1(['query', 'Duration +%'], [['q', 49.0]], {'B2': ('fmt', '0.0%')})),
+    ('X14 free (GB) 13.4 under 0.0: no percent', 'X14', 'PASS', lambda: grid1(['name', 'free (GB)'], [['c', 13.4]], {'B2': ('fmt', '0.0')})),
+    ('X14 free % with words only', 'X14', 'PASS', lambda: grid1(PCT, [['c', 'n/a']])),
+    # X15: a unit column holds no number as text
+    ('X15 lock (ms/s) text 463.71 warning', 'X15', 'FAIL', lambda: grid1(UNIT, [['a', '463.71 warning']])),
+    ('X15 log age (s) text 1m 9s', 'X15', 'FAIL', lambda: grid1(['name', 'log age (s)'], [['a', '1m 9s']])),
+    ('X15 lock (ms/s) text n/a', 'X15', 'PASS', lambda: grid1(UNIT, [['a', 'n/a']])),
+    ('X15 lock (ms/s) the number 463.71', 'X15', 'PASS', lambda: grid1(UNIT, [['a', 463.71]])),
+    ('X15 a one-word bracket that is no unit: (mode)', 'X15', 'PASS', lambda: grid1(['resource', 'held by session (mode)'], [['a', '62 (X), 71 (U)']])),
+    ('X15 (server) holding an address', 'X15', 'PASS', lambda: grid1(['name', 'source (server)'], [['a', '10.0.0.5']])),
+    ('X15 (minutes) text 1m 9s', 'X15', 'FAIL', lambda: grid1(['name', 'log age (minutes)'], [['a', '1m 9s']])),
+    ('X15 (MB/day) text 3 MB', 'X15', 'FAIL', lambda: grid1(['name', 'growth (MB/day)'], [['a', '3 MB']])),
+    ('X15 a bracket that is no unit (words inside)', 'X15', 'PASS', lambda: grid1(['name', 'rows (from the page)'], [['a', '3 rows']])),
+    # X16: no number-and-unit text
+    ('X16 full age text 0 h', 'X16', 'FAIL', lambda: grid1(['name', 'full age'], [['a', '0 h']])),
+    ('X16 compressed text 5.6 MB', 'X16', 'FAIL', lambda: grid1(['name', 'compressed'], [['a', '5.6 MB']])),
+    ('X16 a growth column mixing a size and a percent', 'X16', 'PASS', lambda: grid1(['file', 'growth'], [['a', '64 MB'], ['b', '10 %']])),
+    ('X16 a growth column of sizes alone', 'X16', 'FAIL', lambda: grid1(['file', 'growth'], [['a', '64 MB'], ['b', '1024 MB']])),
+    ('X16 ages in hours and days (two times, one unit)', 'X16', 'FAIL', lambda: grid1(['name', 'full age'], [['a', '12.5 h'], ['b', '2.1 d']])),
+    ('X16 an age in words (DBA Dash\'s Summary)', 'X16', 'PASS', lambda: grid1(['name', 'uptime'], [['a', '41 minutes, 16 seconds']])),
+    ('X16 a version', 'X16', 'PASS', lambda: grid1(['name', 'version'], [['a', '16.0.4325.4']])),
+    ('X16 an Item | Value sheet\'s Value with a unit', 'X16', 'PASS', lambda: grid1(['Item', 'Value'], [['memory', '2 GB']], name='Server')),
+    # X18: no plain cell in a status column
+    ('X18 OK beside a plain cell', 'X18', 'FAIL', lambda: grid1(ST, [['a', 'ok'], ['b', 'no']], {'B2': ('fill', OK)})),
+    ('X18 OK beside N/A', 'X18', 'PASS', lambda: grid1(ST, [['a', 'ok'], ['b', 'no']], {'B2': ('fill', OK), 'B3': ('fill', NA)})),
+    ('X18 Warning beside an empty plain cell', 'X18', 'PASS', lambda: grid1(ST, [['a', 3], ['b', '']], {'B2': ('fill', WARN)})),
+    ('X18 N/A beside a plain cell: no status column', 'X18', 'PASS', lambda: grid1(ST, [['a', 3], ['b', 4]], {'B2': ('fill', NA)})),
+    # X8: a date column holds no words
+    ('X8 words in a date column', 'X8', 'FAIL', lambda: grid1(DATE, [['a', 46339.5], ['b', 'none in the last 7 days']], {'B2': ('date', None)})),
+    ('X8 a date with its note in brackets in a date column', 'X8', 'PASS', lambda: grid1(DATE, [['a', 46339.5], ['b', '11/14/2026, 10:00:00 (on SQL02)']], {'B2': ('date', None)})),
+    ('X8 an ISO date with its note in brackets', 'X8', 'PASS', lambda: grid1(DATE, [['a', 46339.5], ['b', '2026-11-14 10:00 (expired)']], {'B2': ('date', None)})),
+    ('X8 words in brackets after words, not a date', 'X8', 'FAIL', lambda: grid1(DATE, [['a', 46339.5], ['b', 'none yet (new database)']], {'B2': ('date', None)})),
+    ('X8 an empty cell in a date column', 'X8', 'PASS', lambda: grid1(DATE, [['a', 46339.5], ['b', '']], {'B2': ('date', None)})),
+    ('X8 an Item | Value sheet\'s Value: a date and words', 'X8', 'PASS', lambda: grid1(['Item', 'Value'], [['read', 46339.5], ['note', 'none in the last 7 days']], {'B2': ('date', None)}, name='Server')),
+    # X17: the measured cell carries its row's status, by the page's map
+    ('X17 the measured cell plain, its status Critical', 'X17', 'FAIL', lambda: grid1(['job', 'status'], [['a', 'crit']], {'B2': ('fill', CRIT)}), None, {'Grid': {'job': 'status'}}),
+    ('X17 the measured cell Critical as its status', 'X17', 'PASS', lambda: grid1(['job', 'status'], [['a', 'crit']], {'A2': ('fill', CRIT), 'B2': ('fill', CRIT)}), None, {'Grid': {'job': 'status'}}),
+    ('X17 the measured cell Warning, its status Critical', 'X17', 'FAIL', lambda: grid1(['job', 'status'], [['a', 'crit']], {'A2': ('fill', WARN), 'B2': ('fill', CRIT)}), None, {'Grid': {'job': 'status'}}),
+    ('X17 a size column N/A as mapped', 'X17', 'PASS', lambda: grid1(['free (GB)', 'status'], [[1.5, 'ok']], {'A2': ('fill', NA)}), None, {'Grid': {'free (GB)': 'N/A'}}),
+    ('X17 a size column plain, mapped N/A', 'X17', 'FAIL', lambda: grid1(['free (GB)', 'status'], [[1.5, 'ok']]), None, {'Grid': {'free (GB)': 'N/A'}}),
+    ('X17 any status (*) on a plain cell', 'X17', 'FAIL', lambda: grid1(['since', 'status'], [[3, 'ok']]), None, {'Grid': {'since': '*'}}),
+    ('X17 the map names a column the sheet lacks', 'X17', 'FAIL', lambda: grid1(['job', 'status'], [['a', 'ok']]), None, {'Grid': {'jobs': 'status'}}),
+    ('X17 no map: not judged', 'X17', 'PASS', lambda: grid1(['job', 'status'], [['a', 'crit']], {'B2': ('fill', CRIT)})),
 ]
 
 
-def verdicts(path, page=None):
-    return {r: bool(p) for r, p in xc.check(xc.Book(path), page).items()}
+def verdicts(path, page=None, measured=None):
+    return {r: bool(p) for r, p in xc.check(xc.Book(path), page, measured).items()}
 
 
 def run():
     bad = 0
     tmp = tempfile.mkdtemp(prefix='xlsx-check-test-')
     try:
-        for i, (what, rule, want, build, *page) in enumerate(PROBES):
+        for i, (what, rule, want, build, *given) in enumerate(PROBES):
             path = write(build(), os.path.join(tmp, 'p%02d.xlsx' % i))
             try:
-                v = verdicts(path, page[0] if page else None)
+                v = verdicts(path, given[0] if given else None, given[1] if len(given) > 1 else None)
             except Exception as e:
                 print('FAIL %s: the check raised %s: %s' % (what, type(e).__name__, e))
                 bad += 1

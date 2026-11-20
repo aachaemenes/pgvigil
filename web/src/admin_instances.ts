@@ -9,7 +9,10 @@ import { get, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
 import { fleet, fleetWideNote, inTagScope, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, fmtTime, grid, offControl } from './ui';
+import { Can, routeWhy } from './needs';
 import { moveSection } from './migrate';
+import { instanceChecks } from './admin_checks';
+import { instanceSettings } from './admin_settings';
 
 // the page's one sentence where this server cannot write ('Read only: ...'): every control that is off for it is
 // described by that sentence (its id), so the reason is words on the page for each of them
@@ -29,6 +32,25 @@ function offRead(c: Element, why: string): void {
 interface AdminData {
   file: Table | null; page: Table | null; sources: Table | null; proposals: Table | null; audit: Table | null;
   generation: number; secret_dir: string; dbadash: string[]; writable: boolean; why_not: string;
+  // B24p: whether this install uses page instances' cloud blocks (doors.page_cloud_blocks), its words when off, and
+  // each row whose block the collector will not use, with why
+  cloud_blocks?: { on: boolean; off_words: string; notes: Record<string, string> };
+  checks?: Table | null; // ST1 (Check all): admin_checks.ts
+  can?: Can | null;   // what the session's role may do (B24f): every write of this page needs admin
+}
+
+// B24p: a row's cloud blocks as the store keeps them (0193)
+interface CloudAWS { region?: string; cluster?: string; db_instance?: string; profile?: string }
+interface CloudAzure { subscription?: string; resource_group?: string; server?: string; cloud?: string }
+const asObj = <T>(v: unknown): T | null => (v && typeof v === 'object' ? v as T : typeof v === 'string' && v.startsWith('{') ? JSON.parse(v) as T : null);
+// the row's cell: 'AWS: <id> in <region>' / 'Azure: <server>' and, when the collector will not use it, why
+function cloudCell(r: Row, note: string | undefined): HTMLElement | string {
+  const a = asObj<CloudAWS>(r.aws), z = asObj<CloudAzure>(r.azure);
+  const parts: string[] = [];
+  if (a) parts.push(`AWS: ${a.db_instance || a.cluster || ''} in ${a.region || ''}${a.profile ? ` (profile ${a.profile})` : ''}`);
+  if (z) parts.push(`Azure: ${z.server || ''}`);
+  if (!parts.length) return '';
+  return note ? el('span', {}, parts.join('; '), ' ', badge(`not used: ${note}`, 'warn')) : parts.join('; ');
 }
 
 // send POSTs and answers the server's outcome: a refusal (409) carries its reason, which the status line shows
@@ -73,11 +95,30 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
   // to read again after each of this page's writes, and redrawing this page after an add of its own
   const moves = moveSection(() => { void draw(); });
   const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const say = (text: string, bad = false) => { status.textContent = text; status.className = bad ? 'meta error' : 'meta'; status.setAttribute('role', 'status'); };
+  const say = (text: string, bad = false) => { status.textContent = text; status.className = bad ? 'meta error' : 'meta'; status.setAttribute('role', 'status'); notRun.replaceChildren(); };
+  // N59: the Test's 'Will not run here' list (DBA Dash's add-connection review notes: what will not be collected, and why)
+  const notRun = el('div', { class: 'not-running' });
+  const showNotRun = (b: Record<string, unknown>) => {
+    const rows = Array.isArray(b.not_running) ? b.not_running as { name: string; why: string }[] : [];
+    if (!b.ok || b.collections == null) return;
+    const list = el('ul', {}, ...rows.map(x => el('li', {}, el('code', {}, x.name), ` - ${x.why}`)));
+    notRun.replaceChildren(el('details', { open: '' }, el('summary', {}, `Will not run here: ${rows.length} of ${String(b.collections)} collections`),
+      ...(b.list_note ? [el('p', { class: 'meta' }, String(b.list_note))] : []), rows.length ? list : el('p', { class: 'meta' }, 'Every collection runs here.')));
+  };
+  // ST1 and ST2: Check all, the last test and last collected cells of both tables, the Rights read (admin_checks.ts)
+  const checks = instanceChecks({ send, say, draw: () => draw(), lock: c => lock(c), why });
+  // ST5a: an instance added here gets its own schedules and query_text (admin_settings.ts)
+  const settings = instanceSettings({ send, say, draw: () => draw(), lock: c => lock(c), why });
 
+  let cloudNotes: Record<string, string> = {}; // B24p: why a row's cloud block is not used (the latest draw's)
+  let openedFromLink = '';
   async function draw(): Promise<void> {
     editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
     const d = await get<AdminData>('admin/instances');
+    // the role (B24f): below admin the page is read only with the role's words, as it is for the server's own reason
+    // (which comes first): every form and every row action is off and described by the one sentence
+    const role = d.writable ? routeWhy('admin/instances', d.can) : null;
+    if (role) { d.writable = false; d.why_not = role; }
     let inFolder: (r: Row) => boolean = () => true;
     if (scoped) {
       const f = await fleet().catch((e: unknown) => { throw new Error(`the instances of ${tagWords(scoped)} could not be read: ${e instanceof Error ? e.message : String(e)}`); });
@@ -87,6 +128,9 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
     const pageAll = rowsOf(d.page), fileAll = rowsOf(d.file);
     const page = pageAll.filter(inFolder), file = fileAll.filter(inFolder), sources = rowsOf(d.sources), props = rowsOf(d.proposals), audit = rowsOf(d.audit);
     whyNot = d.writable ? '' : String(d.why_not ?? '');
+    cloudNotes = d.cloud_blocks?.notes ?? {};
+    checks.set(d);
+    settings.set(d);
     root.replaceChildren(
       el('h2', {}, 'Instances' + (scoped ? ` - ${tagWords(scoped)}` : '')),
       el('p', { class: 'meta' }, `${file.length} from pgvigil.yaml (read-only), ${page.length} added here, ${props.filter(p => p.state === 'proposed' && !p.gone).length} proposed by the sync sources. `,
@@ -95,10 +139,11 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       scoped ? el('p', { class: 'meta' }, `In view: ${tagWords(scoped)} - the instances added here and those of pgvigil.yaml that are in the folder.`
         + (pageAll.length + fileAll.length > page.length + file.length ? ` Not listed here: ${pageAll.length + fileAll.length - page.length - file.length} instance(s) of other folders (All instances lists them).` : '')) : '',
       fleetWideNote(ctx, 'The sync sources, the proposed servers, the moves of imported servers and the change log are one list') ?? '',
-      // read only on this server: a note, not an error (the page works; the join's w9c)
+      // read only on this server: a note, not an error (the page works)
       d.writable ? '' : el('p', { class: 'meta', role: 'note', id: READ_ONLY_ID }, `Read only: ${d.why_not}.`),
-      status,
+      status, notRun,
       instanceForm(d),
+      checks.control(page, file),
       el('h3', {}, 'Instances added here'),
       // task 406: what the running plans box collects, in words, beside the grid that holds it (only where a SQL Server
       // instance was added here: a PostgreSQL-only list names no SQL Server collection)
@@ -107,9 +152,11 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
         + 'Off for every instance until an admin ticks it here; an instance of pgvigil.yaml takes schedules: mssql_running_plans: 1m in the file. '
         + 'The file\'s global schedules: line for mssql_running_plans comes before this box: 0 turns it off for every instance here, and any other value reads every SQL Server instance here, ticked or not.'),
       grid(page, pageCols, 'No instance was added here yet.'),
+      settings.box,
       el('h3', {}, 'Instances from pgvigil.yaml'),
       el('p', { class: 'meta' }, 'Changed in the file, not here; the collector reads the file when it starts.'),
-      grid(file, [{ key: 'name' }, { key: 'engine' }, { key: 'platform' }, { key: 'tags', wide: true }, { key: 'source' }], 'pgvigil.yaml lists no instance.'),
+      grid(file, checks.fileCols(), 'pgvigil.yaml lists no instance.'),
+      checks.rightsBox,
       el('h3', {}, 'Sync sources'),
       el('p', { class: 'meta' }, 'A source never adds or removes an instance by itself: its new servers are proposed below, a server gone from it is marked gone.'),
       grid(sources, sourceCols, 'No sync source yet.'),
@@ -119,16 +166,25 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       moves.node,
       el('h3', {}, 'Changes (the last 200)'),
       grid(audit, [{ key: 'at', fmt: fmtTime }, { key: 'ui_user', label: 'by' }, { key: 'client' }, { key: 'op' }, { key: 'target' },
-        { key: 'outcome', fmt: v => badge(String(v), v === 'done' ? '' : 'warn') }, { key: 'detail', wide: true }], 'No change yet.'),
+        { key: 'outcome', fmt: v => badge(String(v), v === 'done' ? 'ok' : 'warn') }, { key: 'detail', wide: true }], 'No change yet.'),
     );
     readOnly(d);
+    // ST5b: a link to an instance's Settings (#/admin_instances?settings=<name>, Alerts > Rules' 'Admin > Instances')
+    // opens its panel once, on the first draw after the link
+    const want = new URLSearchParams(location.hash.split('?')[1] ?? '').get('settings');
+    if (want && want !== openedFromLink) {
+      openedFromLink = want;
+      const row = pageAll.find(r => String(r.name) === want);
+      if (row) settings.open(want, String(row.engine));
+    }
   }
 
   // why this server cannot write ('' = it can). A grid draws its rows again at each sort, filter and 'Show more',
-  // through the columns' formats, so each actions cell locks its own buttons (the join's w9e, finding 5): a redraw
+  // through the columns' formats, so each actions cell locks its own buttons: a redraw
   // never brings an enabled write button back under the read-only note
   let whyNot = '';
   function lock(cell: HTMLElement): HTMLElement {
+    for (const b of cell.querySelectorAll<HTMLElement>('button')) b.dataset.need = 'admin';   // the role proof reads it
     if (whyNot) for (const b of cell.querySelectorAll('button, input')) offRead(b, whyNot);
     return cell;
   }
@@ -136,6 +192,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
   // read only: every control that would write (the forms', the rows' actions) is disabled and says why on hover; the
   // grids' own filters and 'Show more' only read, and stay as they are (as ack.ts and alert_rules.ts do)
   function readOnly(d: AdminData): void {
+    for (const c of root.querySelectorAll<HTMLElement>('form button, .actions button')) c.dataset.need = 'admin';
     if (d.writable) return;
     for (const c of root.querySelectorAll('form button, form input, form select, form textarea, .actions button')) offRead(c, d.why_not);
   }
@@ -170,23 +227,64 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
     const auth = select('auth', authOpts('postgres')), platform = select('platform', platOpts('postgres'));
     const login = input('login'), password = el('input', { name: 'password', type: 'password', autocomplete: 'new-password' });
     const options = input('options', { placeholder: 'e.g. TrustServerCertificate=true or sslmode=require' }), tags = input('tags', { placeholder: 'env:prod team:billing', ...(newTag ? { value: newTag } : {}) });
+    // B24p: the Cloud fieldset (collapsed): sent only when it changed, cleared only by its own control; no profile on
+    // the page (a page block reads with the collector host's default chain); off with the switch's words when the
+    // install keeps page blocks off
+    const cb = d.cloud_blocks ?? { on: false, off_words: '', notes: {} };
+    const awsRegion = input('aws_region', { placeholder: 'us-east-2', size: '12' }), awsDB = input('aws_db_instance'), awsCluster = input('aws_cluster');
+    const azSub = input('azure_subscription', { size: '38' }), azGroup = input('azure_resource_group'), azServer = input('azure_server');
+    const azCloud = select('azure_cloud', [['', 'public'], ['usgov', 'US Government'], ['china', 'China']]);
+    const cloudInputs = [awsRegion, awsDB, awsCluster, azSub, azGroup, azServer, azCloud] as (HTMLInputElement | HTMLSelectElement)[];
+    const clearCloud = el('button', { type: 'button', hidden: '' }, 'Clear the cloud blocks');
+    const cloudNote = el('p', { id: 'admin-cloud-note', class: 'muted' },
+      cb.on ? 'The block\'s target must be this instance\'s own host: an RDS endpoint of the DB instance (or of the cluster, for its writer or reader endpoint), or <server>.database.windows.net. Its reads run under the collector host\'s own cloud identity, which checks an AWS block against the endpoint AWS gives for it before its first read.'
+        : `Off: ${cb.off_words}`);
+    // an approved instance's block may carry its discovery source's profile (the page never types one): kept on an edit
+    // while the region stays (the store's rule), said here
+    const profileNote = el('p', { class: 'muted', hidden: '' });
+    const cloudBox = el('details', { class: 'admin-cloud' }, el('summary', {}, 'Cloud (the aws: or azure: block)'), cloudNote, profileNote,
+      el('div', {}, field('AWS region', awsRegion), field('RDS DB instance', awsDB), field('Aurora cluster', awsCluster)),
+      el('div', {}, field('Azure subscription', azSub), field('Resource group', azGroup), field('Logical server', azServer), field('Azure cloud', azCloud)),
+      el('div', {}, clearCloud));
+    for (const c of cloudInputs) { c.setAttribute('aria-describedby', 'admin-cloud-note'); if (!cb.on) c.disabled = true; }
+    const cloudNow = () => cloudInputs.map(c => c.value.trim()).join('\x1f');
+    let cloudWas = cloudNow();
+    const cloudValue = (): Record<string, unknown> | null => {
+      const aws = awsRegion.value.trim() || awsDB.value.trim() || awsCluster.value.trim()
+        ? { region: awsRegion.value.trim(), ...(awsDB.value.trim() ? { db_instance: awsDB.value.trim() } : {}), ...(awsCluster.value.trim() ? { cluster: awsCluster.value.trim() } : {}) } : null;
+      const azure = azSub.value.trim() || azGroup.value.trim() || azServer.value.trim()
+        ? { subscription: azSub.value.trim(), resource_group: azGroup.value.trim(), server: azServer.value.trim(), ...(azCloud.value ? { cloud: azCloud.value } : {}) } : null;
+      return aws || azure ? { aws, azure } : null;
+    };
+    clearCloud.addEventListener('click', async () => {
+      if (!editing) return;
+      const n = editing;
+      if (await act('admin/instances', { op: 'cloud_clear', name: n }, `${n}: its cloud blocks are removed (the collector stops their reads within 15 seconds).`)) reset();
+    });
     const legend = el('legend', {}, 'Add an instance');
     const submit = el('button', { type: 'submit' }, 'Add'), test = el('button', { type: 'button' }, 'Test the connection'), cancel = el('button', { type: 'button', hidden: '' }, 'Cancel the edit');
     engine.addEventListener('change', () => { auth.replaceChildren(...authOpts(engine.value).map(([v, t]) => el('option', { value: v }, t))); platform.replaceChildren(...platOpts(engine.value).map(([v, t]) => el('option', { value: v }, t))); });
     const values = () => ({ engine: engine.value, name: name.value.trim(), host: host.value.trim(), port: port.value.trim(), dbname: dbname.value.trim(), auth: auth.value,
       platform: platform.value, login: login.value.trim(), password: password.value, options: options.value.trim(), tags: tags.value.trim() });
-    const reset = () => { editing = ''; f.reset(); legend.textContent = 'Add an instance'; submit.textContent = 'Add'; cancel.hidden = true; name.disabled = false; engine.disabled = false; };
+    const reset = () => { editing = ''; f.reset(); legend.textContent = 'Add an instance'; submit.textContent = 'Add'; cancel.hidden = true; name.disabled = false; engine.disabled = false; clearCloud.hidden = true; profileNote.hidden = true; cloudWas = cloudNow(); };
     cancel.addEventListener('click', reset);
     test.addEventListener('click', async () => {
       say('Connecting…');
       const v = values();
       const r = await send('admin/instances', editing && !v.password ? { op: 'test', name: editing } : { op: 'test', ...v });
       say(r.ok ? (r.body.ok ? String(r.body.detail) : `The connection failed: ${String(r.body.detail)}`) : `Not tested: ${why(r.body)}`, !(r.ok && r.body.ok));
+      if (r.ok) showNotRun(r.body);
     });
     f.addEventListener('submit', async ev => {
       ev.preventDefault();
       const v = values();
-      const ok = await act('admin/instances', { op: editing ? 'edit' : 'add', ...v, name: editing || v.name }, editing ? `Saved ${editing}.` : `Added ${v.name}: the collector starts on it within 15 seconds.`);
+      const data: Record<string, unknown> = { op: editing ? 'edit' : 'add', ...v, name: editing || v.name };
+      if (cloudNow() !== cloudWas) {
+        const c = cloudValue();
+        if (!c) { say('The Cloud fieldset is empty: its blocks are removed only through "Clear the cloud blocks".', true); return; }
+        data.cloud = c; // the add or edit and its blocks in one call, one transaction (refused together)
+      }
+      const ok = await act('admin/instances', data, editing ? `Saved ${editing}.` : `Added ${v.name}: the collector starts on it within 15 seconds.`);
       if (ok) reset();
     });
     (f as HTMLFormElement & { fill?: (r: Row) => void }).fill = (r: Row) => {
@@ -194,13 +292,21 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       engine.value = String(r.engine); engine.dispatchEvent(new Event('change')); engine.disabled = true;
       name.value = editing; name.disabled = true; host.value = String(r.host ?? ''); port.value = r.port == null ? '' : String(r.port);
       dbname.value = String(r.dbname ?? ''); auth.value = String(r.auth); platform.value = String(r.platform ?? 'auto'); login.value = String(r.login ?? '');
-      password.value = ''; options.value = String(r.options ?? ''); tags.value = String(r.tags ?? ''); name.focus();
+      password.value = ''; options.value = String(r.options ?? ''); tags.value = String(r.tags ?? '');
+      const a = asObj<CloudAWS>(r.aws), z = asObj<CloudAzure>(r.azure);
+      awsRegion.value = a?.region ?? ''; awsDB.value = a?.db_instance ?? ''; awsCluster.value = a?.cluster ?? '';
+      azSub.value = z?.subscription ?? ''; azGroup.value = z?.resource_group ?? ''; azServer.value = z?.server ?? ''; azCloud.value = z?.cloud ?? '';
+      cloudWas = cloudNow(); clearCloud.hidden = !(a || z); if (a || z) cloudBox.setAttribute('open', '');
+      profileNote.textContent = a?.profile ? `This block reads with the AWS profile ${a.profile} (its discovery source's): a save in the same region keeps it; another region, or Clear, removes it.` : '';
+      profileNote.hidden = !a?.profile;
+      name.focus();
       say(`Editing ${editing}: a change of the host, port, database, login or authentication asks for the password again.`);
     };
     formRef = f as HTMLFormElement & { fill?: (r: Row) => void };
     f.append(el('fieldset', {}, legend,
       el('div', {}, field('Engine', engine), field('Name', name), field('Host', host), field('Port', port), field('Database', dbname), field('Platform', platform)),
       el('div', {}, field('Authentication', auth), field('Login', login), field('Password', password), field('Driver options', options), field('Tags (space-separated)', tags)),
+      cloudBox,
       el('div', {}, submit, ' ', test, ' ', cancel)));
     if (!d.writable) for (const c of f.querySelectorAll('input, select, button, textarea')) offRead(c, d.why_not);
     return f;
@@ -223,7 +329,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
 
   const pageCols: Col[] = [
     { key: 'name' }, { key: 'engine' }, { key: 'host' }, { key: 'port', num: true }, { key: 'auth' }, { key: 'tags', wide: true },
-    { key: 'disabled', label: 'state', fmt: v => badge(v ? 'disabled' : 'collected', v ? 'warn' : '') },
+    { key: 'disabled', label: 'state', fmt: v => v ? badge('disabled', 'warn') : 'collected', cls: v => v ? '' : 'status ok' },
     { key: 'running_plans', label: 'running plans', fmt: (v, r) => {
       if (r.engine !== 'sqlserver') return ''; // read on SQL Server only: a PostgreSQL row's cell is empty
       const n = String(r.name);
@@ -239,29 +345,32 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       });
       return lock(el('label', {}, cb, ' each minute'));
     } },
-    { key: 'tested_ok', label: 'last test', fmt: (v, r) => r.tested_at == null ? 'not tested' : `${v ? 'connected' : 'failed'} ${fmtTime(r.tested_at)}` },
-    { key: 'last_collected', label: 'last collected', fmt: fmtTime },
-    { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? '') },
+    // X18: a configured cloud the door uses (no note) is OK; the 'not used' row carries its warning badge
+    { key: 'aws', label: 'cloud', fmt: (_v, r) => cloudCell(r, cloudNotes[String(r.name)]),
+      cls: (_v, r) => (asObj<CloudAWS>(r.aws) || asObj<CloudAzure>(r.azure)) && !cloudNotes[String(r.name)] ? 'status ok' : '' },
+    { key: 'tested_ok', label: 'last test', fmt: (_v, r) => checks.lastTest(String(r.name)) },
+    { key: 'last_collected', label: 'last collected', fmt: (_v, r) => checks.lastCollected(String(r.name)) },
+    { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? ''), cls: (v, r) => r.gone_source || v == null || v === '' ? '' : 'status ok' },
     { key: 'actions', fmt: (_v, r) => {
       const n = String(r.name);
       const test = el('button', { type: 'button', class: 'link', 'aria-label': `Test ${n}` }, 'Test');
       test.addEventListener('click', async () => {
         say(`Connecting to ${n}…`);
         const res = await send('admin/instances', { op: 'test', name: n });
-        if (res.ok) { await draw(); say(res.body.ok ? `${n}: ${String(res.body.detail)}` : `${n}: the connection failed: ${String(res.body.detail)}`, !res.body.ok); } else say(`Not tested: ${why(res.body)}`, true);
+        if (res.ok) { await draw(); say(res.body.ok ? `${n}: ${String(res.body.detail)}` : `${n}: the connection failed: ${String(res.body.detail)}`, !res.body.ok); showNotRun(res.body); } else say(`Not tested: ${why(res.body)}`, true);
       });
       const edit = el('button', { type: 'button', class: 'link', 'aria-label': `Edit ${n}` }, 'Edit');
       edit.addEventListener('click', () => formRef?.fill?.(r));
       const toggle = el('button', { type: 'button', class: 'link', 'aria-label': `${r.disabled ? 'Enable' : 'Disable'} ${n}` }, r.disabled ? 'Enable' : 'Disable');
       toggle.addEventListener('click', () => { void act('admin/instances', { op: r.disabled ? 'enable' : 'disable', name: n }, r.disabled ? `${n} enabled: collected again within 15 seconds.` : `${n} disabled: its collections stop within 15 seconds.`); });
       const rm = removeButton(n, () => { void act('admin/instances', { op: 'remove', name: n }, `${n} removed: its collections stop within 15 seconds; its history stays.`); });
-      return lock(el('span', { class: 'actions' }, test, ' ', edit, ' ', toggle, ' ', rm));
+      return lock(el('span', { class: 'actions' }, test, ' ', edit, ' ', toggle, ' ', rm, ' ', checks.rightsButton(n), ' ', settings.settingsButton(n, String(r.engine))));
     } },
   ];
 
   const sourceCols: Col[] = [
     { key: 'name' }, { key: 'kind' }, { key: 'ref', label: 'reads', wide: true }, { key: 'every_s', label: 'every (min)', num: true, fmt: v => String(Math.round(Number(v) / 60)) },
-    { key: 'enabled', fmt: v => badge(v ? 'on' : 'off', v ? '' : 'warn') }, { key: 'last_ok', label: 'last read', fmt: fmtTime }, { key: 'last_count', label: 'servers', num: true },
+    { key: 'enabled', fmt: v => v ? 'on' : badge('off', 'warn'), cls: v => v ? 'status ok' : '' }, { key: 'last_ok', label: 'last read', fmt: fmtTime }, { key: 'last_count', label: 'servers', num: true },
     { key: 'last_error', label: 'last error', wide: true }, { key: 'last_notes', label: 'not seen', wide: true },
     { key: 'regions', label: 'regions read', wide: true, fmt: (v, r) => r.kind !== 'aws' ? '' : v ? `${String(v)}${r.regions_read_at ? ` (swept ${fmtTime(r.regions_read_at)})` : ''}` : 'swept at the next read' },
     { key: 'tag_keys', label: 'cloud tags taken', wide: true, fmt: (v, r) => ['aws', 'azure', 'gcp'].includes(String(r.kind))
@@ -312,7 +421,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
     const safe = String(r.display_name ?? r.server).replace(/ \((writer|reader|replica|primary|secondary|read_pool)\)$/, '')
       .replace(/[^A-Za-z0-9_.@-]+/g, '-').replace(/^[-._@]+|[-._@]+$/g, '').slice(0, 63);
     const name = input('name', { value: safe, maxlength: '63' });
-    // the first choice is the source's own sign-in; any other is sent as picked (the join's review 3c)
+    // the first choice is the source's own sign-in; any other is sent as picked
     const auth = select('auth', [['', 'as the source signs in'], ...(sql ? [['sql', 'SQL login'], ['entra', 'Entra service principal'], ['entra-identity', 'Entra managed identity (this host\'s own, no secret)'], ['windows', 'Windows account (the service\'s own; off Windows a Kerberos keytab or cache)']] as [string, string][] : [['password', 'PostgreSQL login'], ['pgpass', '.pgpass']] as [string, string][])]);
     const login = input('login', { placeholder: 'empty: the source\'s login' }), pw = el('input', { name: 'password', type: 'password', autocomplete: 'new-password' });
     const test = el('button', { type: 'button', 'aria-label': `Test the connection to ${s}` }, 'Test the connection');
@@ -325,7 +434,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       if (auth.value === 'entra-identity' && pw.value) { say('A managed identity signs in with this host\'s own Azure identity: leave the password empty (the login is a user-assigned identity\'s client id, or empty for the host\'s own).', true); return null; }
       const b: Record<string, unknown> = { proposal_id: id, name: name.value.trim() };
       // a picked Authentication is always sent, a login typed or not: the server takes the source's own login with it when
-      // it fits, or refuses in words naming what is missing - never a silent drop (the join's review 3c)
+      // it fits, or refuses in words naming what is missing - never a silent drop
       if (auth.value) b.auth = auth.value;
       if (login.value.trim()) Object.assign(b, { login: login.value.trim(), password: pw.value });
       for (const [need, cb] of shown) if (cb.checked) b[need] = true;
@@ -375,10 +484,10 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'note', label: 'note', wide: true, fmt: (v, r) => {
       const parts: (HTMLElement | string)[] = [];
       if (r.entra_only) parts.push(badge(String(v ?? 'Entra only'), 'warn'));
-      if (r.serverless) parts.push(badge(String(r.serverless), r.auto_pause ? 'warn' : 'info'));
+      if (r.serverless) parts.push(badge(String(r.serverless), r.auto_pause ? 'warn' : 'ok'));   // the auto-pause check judged it: OK without one
       return parts.length ? el('span', {}, ...parts.flatMap((x, i) => i ? [' ', x] : [x])) : '';
     } },
-    { key: 'state', fmt: (v, r) => r.gone ? badge('gone from the source', 'warn') : badge(String(v), v === 'proposed' ? 'info' : '') },
+    { key: 'state', fmt: (v, r) => r.gone ? badge('gone from the source', 'warn') : String(v ?? ''), cls: (v, r) => r.gone || v == null || v === '' ? '' : 'status ok' },
     { key: 'instance_name', label: 'instance' }, { key: 'last_seen', label: 'last listed by the source', fmt: fmtTime }, { key: 'gone_at', label: 'gone since', fmt: fmtTime },
     { key: 'actions', fmt: (_v, r) => {
       const id = String(r.proposal_id), s = String(r.server);

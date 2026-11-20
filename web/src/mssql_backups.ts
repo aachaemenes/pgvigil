@@ -1,6 +1,6 @@
 // The Backups tab of a SQL Server instance (phase 3 wave G, task 98): per database the last full, differential and
 // log backup, where it ran, and its age AT THE READ against the threshold of its type. A database in an
-// availability group shows the newest backup any monitored replica took. Data from /api/mssql/backups; the lead
+// availability group shows the newest backup any monitored replica took. Data from /api/mssql/backups; the shell
 // wires the tab (router.ts, main.ts).
 //   mssqlBackups               the tab; opened with a database in its address (#/mssqlbackups?i=<id>&db=<name>, the
 //                              fleet page's database link) that database's row is first and marked, and its Last backup
@@ -9,16 +9,17 @@
 //   mssqlBackupsFleetSection   the SQL Server sections of the fleet's Backups page, DBA Dash's root Backups: its Summary
 //                              grid (one row per instance) and its Detail grid (one row per database, Problems or All),
 //                              with the backup findings of every instance in view between them. The same API with no
-//                              instance. main.ts appends it below PostgreSQL's sections (the lead's wiring).
-import { get, Row, rowsOf, Table } from './api';
+//                              instance. main.ts appends it below PostgreSQL's sections (the shell's wiring).
+import { get, post, Row, rowsOf, Table } from './api';
 import { hashParam, hrefWith } from './dbinfo';
 import { fleet, tagsOf } from './fleet';
 import { Ctx } from './router';
 import { mssqlFindingCols, words } from './mssql_hadr';
-import { badge, Col, copyText, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, props, tile } from './ui';
+import { badge, Col, copyText, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, GridMenuAsk, offControl, props, tile } from './ui';
+import { dialogRole, needControl } from './needs';
 
 type Parts = 'databases' | 'findings' | 'limits';
-type FileParts = 'sets' | 'files' | 'writers' | 'roots' | 'findings' | 'read';
+type FileParts = 'sets' | 'files' | 'writers' | 'roots' | 'findings' | 'read' | 'checks' | 'path' | 'check_findings';
 
 // a status is its word and its colour, never the colour alone
 // the word's colour: never red, late amber (red for a full backup), ok green, not judged grey; a date and an age take their status's colour
@@ -26,7 +27,6 @@ const statusCls = (v: unknown) => v === 'never' ? 'crit' : v === 'late' ? 'warn'
 const critIfFull = (v: unknown) => v === 'late' ? 'crit' : statusCls(v);
 const follows = (status: string, full = false) => (v: unknown, r: Row) => v == null || v === '' ? '' : full ? critIfFull(r[status]) : statusCls(r[status]);
 const hours = (v: unknown) => v == null ? '' : Number(v) >= 48 ? fmtNum(Math.round(Number(v) / 2.4) / 10) + ' d' : fmtNum(Math.round(Number(v) * 10) / 10) + ' h';
-const minutes = (v: unknown) => v == null ? '' : fmtSecs(Number(v) * 60);
 // when: the time, and on an availability group the instance whose msdb holds the backup
 const when = (from: string) => (v: unknown, r: Row) => !v ? '' : fmtTime(v) + (r.ag_name && r[from] ? ` (on ${String(r[from])})` : '');
 
@@ -48,16 +48,18 @@ const cols: Col[] = [
   { key: 'database_name', label: 'database' },
   { key: 'recovery_model', label: 'recovery model', fmt: words },
   { key: 'ag_name', label: 'availability group', fmt: (v, r) => !v ? '' : `${String(v)} (${String(r.replicas_monitored ?? 0)} of ${String(r.replicas_total ?? 0)} replicas monitored)`,
-    cls: (_, r) => r.replicas_unseen === true ? 'warn' : '' },
+    cls: (v, r) => !v ? '' : r.replicas_unseen === true ? 'warn' : 'ok' },
   { key: 'not_judged', label: 'judged', fmt: v => v ? `no: ${String(v)}` : 'yes' },
   { key: 'full_status', label: 'full', cls: critIfFull },
   { key: 'full_at', label: 'last full', fmt: when('full_from'), cls: follows('full_status', true) },
-  { key: 'full_age_hours', label: 'full age', num: true, fmt: hours, cls: follows('full_status', true) },
+  // the ages as numbers under their unit, on this tab and the fleet's (a unit in a cell is text in the export, X16; a
+  // fmtSecs '1m 9s' under a unit header too, X15): hours to two places, whole minutes
+  { key: 'full_age_hours', label: 'full age (hours)', num: true, fmt: v => v == null ? '' : fmtNum(v), cls: follows('full_status', true) },
   { key: 'diff_status', label: 'differential', cls: statusCls },
   { key: 'diff_at', label: 'last differential', fmt: when('diff_from'), cls: follows('diff_status') },
   { key: 'log_status', label: 'log', cls: statusCls },
   { key: 'log_at', label: 'last log', fmt: when('log_from'), cls: follows('log_status') },
-  { key: 'log_age_minutes', label: 'log age', num: true, fmt: minutes, cls: follows('log_status') },
+  { key: 'log_age_minutes', label: 'log age (minutes)', num: true, fmt: v => v == null ? '' : fmtNum(Math.round(Number(v))), cls: follows('log_status') },
   { key: 'nul_at', label: 'backup to NUL', fmt: (v, r) => !v ? '' : `${String(r.nul_type ?? '')} ${fmtTime(v)}`, cls: v => v ? 'warn' : '' },
   // DBA Dash's Is Full / Diff / Log Damaged (Detail 15-17): of the newest set of the type (task 301's read)
   ...(['full', 'diff', 'log'] as const).map((t): Col => ({ key: `${t}_damaged`, label: `${typeWord[t]} damaged`, fmt: yesNo, cls: v => v === true ? 'crit' : '' })),
@@ -102,7 +104,7 @@ const lastBackupCols: Col[] = [
   { key: 'write_mb_s', label: 'backup write MB/s', num: true, fmt: v => v == null ? '' : fmtNum(v) },
   { key: 'is_partner', label: 'is partner backup', fmt: yesNo },
   { key: 'partner', label: 'partner' },
-  { key: 'is_damaged', label: 'is damaged', fmt: yesNo, cls: v => v === true ? 'crit' : '' },
+  { key: 'is_damaged', label: 'is damaged', fmt: yesNo, cls: v => v === true ? 'crit' : v === false ? 'status ok' : '' },
   { key: 'has_checksums', label: 'checksum', fmt: yesNo },
   { key: 'is_compressed', label: 'is compressed', fmt: yesNo },
   { key: 'is_password_protected', label: 'password protected', fmt: yesNo },
@@ -130,7 +132,7 @@ const lastBackupCols: Col[] = [
   { key: 'diff_base', label: 'base', fmt: (v, r) => r.backup_type !== 'diff' ? '' : v == null ? 'a full not kept here' : String(v) },
   { key: 'media_password', label: 'media password', fmt: yesNo },
   { key: 'same_volume', label: 'on the database\'s volume', wide: true, fmt: v => v == null ? '' : String(v).replace(/^yes: /, 'yes - '),
-    cls: v => String(v ?? '').startsWith('yes') ? 'warn' : String(v ?? '').startsWith('not judged') ? 'status none' : '' },
+    cls: v => v == null || v === '' ? '' : String(v).startsWith('yes') ? 'warn' : String(v) === 'no' ? 'status ok' : 'status none' },
 ];
 
 // a path whole, with its own Copy button; data-full makes the export and the grid's Copy all take the path alone (ui.ts cellText)
@@ -210,8 +212,9 @@ export async function mssqlBackups(ctx: Ctx): Promise<HTMLElement> {
       ['where the backups went', locErr ? `not read: ${locErr.message}` : !rd?.snapshot_at ? (rd?.status ? `mssql_backup_files ${String(rd.status)}: ${String(rd.note ?? '')}`
         : 'mssql_backup_files has not run on this server yet (hourly; a user in msdb with db_datareader)')
         : `${fmtTime(rd.snapshot_at)} (mssql_backup_files, hourly${rd.status && rd.status !== 'ok' ? `; its last run ${String(rd.status)}: ${String(rd.note ?? '')}` : ''})`],
+      ...(lp ? checkProps(rowsOf(lp.path)[0]) : []),
     ]));
-    const findings = [...rowsOf(d.findings), ...(lp ? rowsOf(lp.findings) : [])];
+    const findings = [...rowsOf(d.findings), ...(lp ? [...rowsOf(lp.findings), ...rowsOf(lp.check_findings)] : [])];
     if (findings.length) sec.append(el('h3', {}, 'Findings'), grid(findings, mssqlFindingCols));
     sec.append(el('h3', {}, 'Databases'));
     if (asked != null) sec.append(el('p', { class: 'meta', id: 'mssql-backups-picked' }, picked
@@ -226,7 +229,10 @@ export async function mssqlBackups(ctx: Ctx): Promise<HTMLElement> {
         + 'A backup to the NUL device is no backup and is listed apart. Full to, differential to, log to: the folder (a URL\'s container) of the newest backup of the type, '
         + 'on whichever monitored replica it ran, and its file count when striped; open a database for every file.'),
       grid(dbs, [{ ...cols[0], fmt: nameCell }, ...cols.slice(1)], 'The last read listed no database.'));
-    if (lp) sec.append(...locationParts(lp, asked ?? undefined, picked != null));
+    if (lp) sec.append(...checkParts(lp, nameCell));
+    // the database's backup and restore history and Verify (task 301b): its own reads, only for the database asked
+    const more = lp && asked != null && picked ? await historyParts(ctx, asked, String(picked.database_name ?? asked)) : [];
+    if (lp) sec.append(...locationParts(lp, asked ?? undefined, picked != null, more));
     else if (locErr) sec.append(errorBox(locErr));
   } catch (e) {
     sec.append(errorBox(e));
@@ -236,7 +242,7 @@ export async function mssqlBackups(ctx: Ctx): Promise<HTMLElement> {
 
 // locationParts: the Last backup panel of the database asked for, then every file of the server's sets (the export's
 // Files sheet), the log writers and the destinations seen.
-function locationParts(lp: Record<FileParts, Table | null>, asked: string | undefined, listed: boolean): HTMLElement[] {
+function locationParts(lp: Record<FileParts, Table | null>, asked: string | undefined, listed: boolean, more: HTMLElement[] = []): HTMLElement[] {
   const out: HTMLElement[] = [];
   const sets = rowsOf(lp.sets), files = rowsOf(lp.files), writers = rowsOf(lp.writers), roots = rowsOf(lp.roots);
   if (asked != null && listed) {
@@ -258,6 +264,7 @@ function locationParts(lp: Record<FileParts, Table | null>, asked: string | unde
       grid(myWriters, writerCols));
     const myRoots = roots.filter(r => r.database_name === asked);
     if (myRoots.length) out.push(el('h3', {}, `Destinations seen: ${asked}`), grid(myRoots, rootCols));
+    out.push(...more);
   }
   out.push(el('h3', { id: 'mssql-backups-files' }, 'Backup files'),
     el('p', { class: 'meta' }, 'Every file of the backups kept above, of every database: each stripe and each mirror, the path whole as msdb holds it.'),
@@ -265,20 +272,279 @@ function locationParts(lp: Record<FileParts, Table | null>, asked: string | unde
   return out;
 }
 
+// ---- task 301b: the three checks, the database's backup and restore history, verify_backup ------------------------
+
+// a check's words in their colour: amber where it is a finding, OK where it judged and found none ('no', 'no (...)',
+// 'present'), grey where it was not read or not judged ('no (unknown)': 0191 L359's words for a recovery model not
+// read); an empty cell none
+const checkCls = (v: unknown) => {
+  const s = String(v ?? '');
+  return s === '' ? '' : s.startsWith('yes') || s === 'the file is gone' || s.startsWith('the folder ') ? 'warn'
+    : s === 'no (unknown)' ? 'status none'
+    : s === 'no' || s.startsWith('no (') || s === 'present' ? 'status ok' : 'status none';
+};
+const checkCols: Col[] = [
+  { key: 'database_name', label: 'database' },
+  { key: 'recovery_model', label: 'recovery model', fmt: words },
+  { key: 'pseudo_simple', label: 'pseudo-simple', wide: true, cls: checkCls },
+  { key: 'file_full', label: 'newest full\'s file', wide: true, cls: checkCls },
+  { key: 'file_diff', label: 'newest differential\'s file', wide: true, cls: checkCls },
+  { key: 'file_log', label: 'newest log\'s file', wide: true, cls: checkCls },
+];
+
+// checkProps: the default backup path (Instance#14) and the checks' read, two lines of the tab's read block
+function checkProps(p: Row | undefined): [string, string | Node][] {
+  if (!p) return [];
+  const run = (at: unknown, status: unknown, note: unknown, what: string) => !at
+    ? (status ? `${what} ${String(status)}: ${String(note ?? '')}` : `${what} has not run on this server yet (hourly)`)
+    : `${fmtTime(at)} (${what}, hourly${status && status !== 'ok' ? `; its last run ${String(status)}: ${String(note ?? '')}` : ''})`;
+  const path = p.default_backup_path ? el('span', {}, el('code', {}, String(p.default_backup_path)), ' - ',
+    el('span', { class: p.reachable === 'no' ? 'warn' : p.reachable == null ? 'status none' : '' }, String(p.default_backup_path_state ?? '')))
+    : String(p.default_backup_path_state ?? 'not read');
+  return [
+    ['default backup path', p.checks_at ? path : run(null, p.checks_status, p.checks_note, 'mssql_backup_checks')],
+    ['backup checks', `${run(p.checks_at, p.checks_status, p.checks_note, 'mssql_backup_checks')}; the files: ${String(p.files_state ?? 'not read')}`],
+    ['backup and restore history', run(p.history_at, p.history_status, p.history_note, 'mssql_backup_history') + (p.restore_state && p.restore_state !== 'read'
+      ? `; the restores: ${String(p.restore_state)} - the restores read before stay` : '')],
+  ];
+}
+
+// checkParts: per database pseudo-simple (Database#39) and whether the newest backups' files are still there (Database#7)
+function checkParts(lp: Record<FileParts, Table | null>, nameCell: (v: unknown) => string | Node): HTMLElement[] {
+  const rows = rowsOf(lp.checks);
+  if (!rows.length) return [];
+  return [el('h3', { id: 'mssql-backups-checks' }, 'Backup checks'),
+    el('p', { class: 'meta' }, 'Pseudo-simple: a database in FULL or BULK_LOGGED recovery whose log cannot be backed up yet (no full or differential backup since '
+      + 'the log chain began): it behaves as SIMPLE until one is taken. An AUTO_CLOSE database is not read (the read would open it) unless the instance '
+      + 'opts in (reads: auto_close_databases). The newest full, differential and log backup\'s file: whether the file msdb names is still there, as the '
+      + 'SQL Server service account sees it (sys.dm_os_file_exists) - read only where the instance opts in (reads: backup_files), disk backups only.'),
+    el('div', { id: 'mssql-backups-checks-grid' }, grid(rows, [{ ...checkCols[0], fmt: nameCell }, ...checkCols.slice(1)]))];
+}
+
+// a restore's type as restorehistory names it
+const restoreTypeWord: Record<string, string> = { D: 'database', F: 'file', G: 'filegroup', I: 'differential', L: 'log', V: 'verify only' };
+const restoreCols: Col[] = [
+  { key: 'restore_at', label: 'restored', fmt: fmtTime },
+  { key: 'destination_database_name', label: 'database' },
+  { key: 'restore_type', label: 'restore type', fmt: v => restoreTypeWord[String(v)] ?? String(v ?? '') },
+  { key: 'user_name', label: 'by' },
+  { key: 'is_replace', label: 'replace', fmt: yesNo },
+  { key: 'is_recovery', label: 'with recovery', fmt: yesNo },
+  { key: 'stop_at', label: 'stop at', fmt: fmtTime },
+  { key: 'source_server', label: 'backup of server' },
+  { key: 'source_database', label: 'backup of database' },
+  { key: 'source_type', label: 'backup type', fmt: v => typeWord[String(v) as keyof typeof typeWord] ?? String(v ?? '') },
+  { key: 'source_finish_at', label: 'backup finished', fmt: fmtTime },
+  { key: 'source_path', label: 'backup file', fmt: pathCell },
+];
+
+interface VerifyOnOff { enabled: boolean; reason?: string }
+interface VerifySet { backup_set_uuid: string; database: string; backup_type: string; finish_utc: string; position: number; has_checksums: boolean; size_bytes: number; paths: string[] | null; not_offered?: string }
+interface VerifyPreview { ok: boolean; reason?: string; statement?: string; set: VerifySet }
+
+const verifyCls = (v: unknown) => v === 'done' ? 'ok' : v === 'failed' ? 'crit' : v === 'started' ? 'status none' : v ? 'warn' : '';
+// the newest verify of the set (the actions log), and Verify where it is on and the set is a disk backup; the cell's
+// words alone go to a copy or the export (data-full)
+const verifyCell = (on: VerifyOnOff, open: (r: Row) => void) => (v: unknown, r: Row) => {
+  const said = v ? `${String(v)} ${fmtTime(r.verify_at)}${r.verify_user ? ` by ${String(r.verify_user)}` : ''}` : 'never';
+  const out = el('span', { 'data-full': said, 'data-verify-uuid': String(r.backup_set_uuid ?? ''), style: 'white-space:nowrap' },
+    el('span', { class: verifyCls(v), title: String(r.verify_detail ?? '') }, said));
+  if (on.enabled && r.device_kind !== 'disk') {
+    out.append(el('span', { class: 'meta', style: 'margin-left:.4rem' }, 'not offered: not a disk backup'));
+  } else if (on.enabled) {
+    const b = el('button', { type: 'button', class: 'act-verify', style: 'font-size:12px;padding:0 .4rem;margin-left:.4rem', title: 'RESTORE VERIFYONLY of this backup' }, 'Verify');
+    b.addEventListener('click', () => open(r));
+    out.append(needControl(b, 'mssql/actions/verify/preview'));   // the role (B24f): a verify is an operator's
+  }
+  return out;
+};
+const historyCols = (verify: Col): Col[] => [
+  // DBA Dash's Last Backup columns that msdb's history holds, in its order (its partner pair is the log-shipping
+  // partner's backup, which a server's own history does not hold)
+  { key: 'database_name', label: 'database' },
+  { key: 'recovery_model', label: 'recovery model', fmt: words },
+  { key: 'backup_type', label: 'type', fmt: (v, r) => (typeWord[String(v) as keyof typeof typeWord] ?? String(v ?? '')) + (r.is_copy_only === true ? ', copy-only' : '') },
+  { key: 'start_at', label: 'start date', fmt: fmtTime },
+  { key: 'finish_at', label: 'finish date', fmt: fmtTime },
+  { key: 'duration_s', label: 'duration', num: true, fmt: fmtSecs },
+  { key: 'size_bytes', label: 'backup size', num: true, fmt: fmtBytes },
+  { key: 'mb_s', label: 'backup MB/s', num: true, fmt: v => v == null ? '' : fmtNum(v) },
+  { key: 'compressed_bytes', label: 'backup size (compressed)', num: true, fmt: fmtBytes },
+  { key: 'saving_pct', label: 'compression saving %', num: true, fmt: v => v == null ? '' : fmtNum(v) },
+  { key: 'write_mb_s', label: 'backup write MB/s', num: true, fmt: v => v == null ? '' : fmtNum(v) },
+  { key: 'is_damaged', label: 'is damaged', fmt: yesNo, cls: v => v === true ? 'crit' : v === false ? 'status ok' : '' },
+  { key: 'has_checksums', label: 'checksum', fmt: yesNo },
+  { key: 'is_compressed', label: 'is compressed', fmt: yesNo },
+  { key: 'is_password_protected', label: 'password protected', fmt: yesNo },
+  { key: 'is_encrypted', label: 'encrypted', fmt: yesNo },
+  { key: 'is_snapshot', label: 'snapshot backup', fmt: yesNo },
+  { key: 'has_bulk_logged_data', label: 'has bulk logged data', fmt: yesNo },
+  { key: 'is_readonly', label: 'readonly', fmt: yesNo },
+  { key: 'is_force_offline', label: 'force offline', fmt: yesNo },
+  { key: 'is_single_user', label: 'single user', fmt: yesNo },
+  { key: 'key_algorithm', label: 'key algorithm' },
+  { key: 'encryptor_type', label: 'encryptor type' },
+  { key: 'compression_algorithm', label: 'compression algorithm' },
+  // pgvigil's own
+  verify,
+  { key: 'path', label: 'to (the first file)', fmt: pathCell },
+  { key: 'family_count', label: 'files', num: true, fmt: v => v == null ? '' : fmtNum(v) },
+  { key: 'position', label: 'position in the file', num: true, fmt: v => v == null ? '' : fmtNum(v) },
+  { key: 'device_kind', label: 'device' },
+  { key: 'user_name', label: 'taken by' },
+  { key: 'machine_name', label: 'machine' },
+  { key: 'set_name', label: 'set name' },
+  { key: 'is_copy_only', label: 'copy-only', fmt: yesNo },
+  { key: 'first_lsn', label: 'first LSN' },
+  { key: 'last_lsn', label: 'last LSN' },
+  { key: 'checkpoint_lsn', label: 'checkpoint LSN' },
+  { key: 'database_backup_lsn', label: 'database backup LSN' },
+  { key: 'differential_base_guid', label: 'base (a differential\'s full)' },
+  { key: 'backup_set_uuid', label: 'backup set' },
+];
+
+// historyParts: the database's Backup history (Verify in each disk row's cell and the grid's right-click menu) and its
+// Restore history. Their own reads; a server without them (an older build) says so in their place.
+async function historyParts(ctx: Ctx, asked: string, dbName: string): Promise<HTMLElement[]> {
+  const orErr = (e: unknown) => e instanceof Error ? e : new Error(String(e));
+  const [h, rs, st] = await Promise.all([
+    get<Record<'history', Table | null>>('mssql/backup_files', { instance: ctx.instance, db: asked, part: 'history' }).catch(orErr),
+    get<Record<'restores', Table | null>>('mssql/backup_files', { instance: ctx.instance, db: asked, part: 'restores' }).catch(orErr),
+    get<{ actions?: Record<string, VerifyOnOff | undefined> }>('mssql/actions/state', { instance: ctx.instance }).catch(orErr),
+  ]);
+  const on: VerifyOnOff = st instanceof Error ? { enabled: false, reason: `the actions door could not be read: ${st.message}` }
+    : st.actions?.verify_backup ?? { enabled: false, reason: 'this server\'s actions door does not offer verify_backup' };
+  const out: HTMLElement[] = [];
+  const box = el('div', { id: 'mssql-backups-history-grid' });
+  let drawn: Row[] = [];
+  const draw = (rows: Row[]) => {
+    drawn = rows;
+    box.replaceChildren(grid(rows, historyCols({ key: 'verify_outcome', label: 'last verify', fmt: verifyCell(on, open) }),
+    'mssql_backup_history has stored no backup of this database.'));
+  };
+  // after a verify was sent: the grid read again, so its last verify cell shows 'started' and later the end
+  const reload = () => {
+    get<Record<'history', Table | null>>('mssql/backup_files', { instance: ctx.instance, db: asked, part: 'history' })
+      .then(x => draw(rowsOf(x.history))).catch((e: unknown) => box.replaceChildren(errorBox(e)));
+  };
+  const open = (r: Row) => { void verifyDialog(ctx, r, dbName, reload); };
+  out.push(el('h3', { id: 'mssql-backups-history' }, `Backup history: ${asked}`),
+    el('p', { class: 'meta' }, 'The newest 10 backups of each type (copy-only apart) in this server\'s msdb, newest first (mssql_backup_history, hourly). '
+      + 'DBA Dash has no history grid: its Last Backup columns that msdb\'s history holds, in its order, then pgvigil\'s own. Last verify: the newest '
+      + 'RESTORE VERIFYONLY sent from pgvigil (the Actions log); Verify reads the backup\'s files on the server and checks them (no database is made).'));
+  if (!on.enabled) out.push(el('p', { class: 'meta', id: 'mssql-backups-verify-off' }, `Verify is off for this instance: ${on.reason ?? 'actions are off for this instance'}`));
+  if (h instanceof Error) box.append(el('p', { class: 'meta' }, `not read: ${h.message}`));
+  else draw(rowsOf(h.history));
+  // the grid's right-click menu (ui.ts askGridMenu; gridtools builds it, this page's line at its end): Verify on a disk
+  // row of this grid only
+  box.addEventListener('pgvigil:gridmenu', e => {
+    const d = (e as CustomEvent<GridMenuAsk>).detail;
+    const uuid = d.td?.parentElement?.querySelector('[data-verify-uuid]')?.getAttribute('data-verify-uuid');
+    if (!on.enabled || !uuid || !d.table || !box.contains(d.table)) return;
+    const r = drawn.find(x => x.backup_set_uuid === uuid);
+    if (r && r.device_kind === 'disk') d.extra.push(['Verify this backup...', () => open(r)]);
+  });
+  out.push(box, el('h3', { id: 'mssql-backups-restores' }, `Restore history: ${asked}`),
+    el('p', { class: 'meta' }, 'The newest 20 restores of each restore type into this database (msdb.dbo.restorehistory, read hourly), with the backup '
+      + 'each restored. Restored and stop at: msdb keeps the server\'s local time with no offset; pgvigil turns it to UTC with the server\'s offset at '
+      + 'the read, so a restore made before the clocks last changed (daylight saving) shows an hour off. Where the login may not read restorehistory, the read block above says so and the restores read before stay.'),
+    el('div', { id: 'mssql-backups-restores-grid' }, rs instanceof Error ? el('p', { class: 'meta' }, `not read: ${rs.message}`)
+      : grid(rowsOf(rs.restores), restoreCols, 'msdb holds no restore into this database (or the login may not read restorehistory).')));
+  return out;
+}
+
+// verifyDialog: the server reads the set (Preview), the dialog shows its files, the size it reads and whether its
+// checksums are checked; the typed database name and a reason send RESTORE VERIFYONLY through the actions login. The
+// verify runs on after the reply: its end goes to the Actions log and the grid's last verify.
+async function verifyDialog(ctx: Ctx, r: Row, dbName: string, after: () => void) {
+  const what = `Verify the ${typeWord[String(r.backup_type) as keyof typeof typeWord] ?? 'backup'} of ${dbName} finished ${fmtTime(r.finish_at)}`;
+  const body = el('div', {}, el('p', { class: 'meta', role: 'status' }, 'Reading the backup set...'));
+  const no = el('button', { type: 'button' }, 'Back');
+  const form = el('form', { method: 'dialog' }, el('h3', {}, what), body);
+  const foot = el('div', { style: 'margin-top:.6rem' }, no);
+  form.append(foot);
+  const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:44rem', 'aria-label': what }, form);
+  let sent = false;
+  dlg.addEventListener('close', () => { dlg.remove(); if (sent) after(); });
+  no.addEventListener('click', () => dlg.close());
+  document.body.append(dlg);
+  dlg.showModal();
+  let p: VerifyPreview;
+  try {
+    p = await post<VerifyPreview>('mssql/actions/verify/preview', { instance_id: ctx.instance, backup_set_uuid: String(r.backup_set_uuid ?? '') });
+  } catch (e) {
+    body.replaceChildren(errorBox(e));
+    return;
+  }
+  const s = p.set, paths = s.paths ?? [];
+  const shown = props([
+    ['database', s.database], ['type', typeWord[s.backup_type as keyof typeof typeWord] ?? s.backup_type], ['finished (UTC)', s.finish_utc],
+    ['backup set', s.backup_set_uuid], ['position in the file', String(s.position)],
+    ['reads', `${fmtBytes(s.size_bytes)} from ${paths.length} file${paths.length === 1 ? '' : 's'} on the server${paths.some(x => x.startsWith('\\\\')) ? ', over the network for a share' : ''}`],
+    ['checks', s.has_checksums ? 'the page checksums (WITH CHECKSUM) and the backup\'s structure' : 'the backup\'s structure only: it was taken without checksums (header-level only)'],
+    ['files', el('div', {}, ...paths.map(x => el('div', {}, pathCell(x))))],
+  ]);
+  if (!p.ok) {
+    body.replaceChildren(el('p', {}, badge('not possible', 'warn'), ' ', p.reason ?? s.not_offered ?? ''), shown);
+    return;
+  }
+  // each field is named by the label that wraps it (WCAG 2.5.3: no aria-label that differs from the visible words)
+  const reason = el('textarea', { rows: '3', maxlength: '500', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
+  const typed = el('input', { type: 'text', placeholder: s.database, autocomplete: 'off' });
+  const go = el('button', { type: 'submit', disabled: '' }, 'Verify');
+  // the role (B24f): the dialog's own check backs the button that opened it
+  const role = dialogRole(go, 'mssql/actions/verify/run');
+  const msg = el('p', { class: 'meta', role: 'status' });
+  const check = () => { if (!role.why) go.disabled = sent || typed.value.trim() !== s.database || reason.value.trim().length < 5; };
+  reason.addEventListener('input', check);
+  typed.addEventListener('input', check);
+  body.replaceChildren(
+    el('p', {}, 'RESTORE VERIFYONLY reads every file of the backup on the server and checks that it could be restored; it makes no database. '
+      + 'It runs on the server after this dialog closes (up to the configured verify_timeout), one at a time per instance; its end goes to the Actions log.'),
+    shown,
+    el('p', { class: 'meta' }, 'The statement (the paths are parameters): ', el('code', {}, p.statement ?? '')),
+    el('label', {}, 'Reason', el('br'), reason), el('br'),
+    el('label', {}, 'Type the database\'s name to confirm ', typed), el('br'),
+    role.note, msg);
+  foot.prepend(go, ' ');
+  reason.focus();
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    if (role.why || sent || go.disabled) return;   // off is off: an Enter in a field submits the form too
+    sent = true; // one send per dialog: a second click, or an edit after the reply, sends nothing
+    go.disabled = true;
+    msg.textContent = 'Sending...';
+    try {
+      const out = await post<{ outcome: string; detail: string }>('mssql/actions/verify/run', {
+        instance_id: ctx.instance, backup_set_uuid: s.backup_set_uuid, shown: s, reason: reason.value, confirm: typed.value.trim(),
+      });
+      msg.replaceChildren(badge(out.outcome, 'ok'), ' ', out.detail || 'the verify runs on the server; its end goes to the Actions log');
+      go.remove();
+      no.textContent = 'Close';
+    } catch (e) {
+      go.remove();
+      msg.replaceChildren(badge('not started', 'crit'), ' ', e instanceof Error ? e.message : String(e));
+      no.textContent = 'Close';
+    }
+  });
+}
+
 // ---- the fleet's Backups page, the SQL Server sections ------------------------------------------------------
 
 type FleetParts = 'by_instance' | 'databases' | 'findings';
 const n0 = (v: unknown) => v == null ? 0 : Number(v);
-const count = (bad = '') => ({ num: true, fmt: (v: unknown) => v == null ? '' : fmtNum(v), cls: (v: unknown) => bad && n0(v) > 0 ? bad : '' });
+// a count judged by its rule (bad over 0) is OK at 0: every cell of a status column carries a status, as DBA Dash's grids do
+const count = (bad = '') => ({ num: true, fmt: (v: unknown) => v == null ? '' : fmtNum(v), cls: (v: unknown) => !bad || v == null ? '' : n0(v) > 0 ? bad : 'ok' });
 // a rate under a header that names its unit ('full MB/s'): the cell is the number, so the export keeps a number (X7)
 const rate = (v: unknown) => v == null ? '' : fmtNum(v);
 // where the thresholds are set, for the Configure control that cannot act here
-const configureWhy = 'Backup thresholds are not set from this page: they are each instance\'s mssql_thresholds in pgvigil.yaml '
-  + '(full_backup_hours, diff_backup_hours, log_backup_minutes, new_database_hours, nul_backup_days, backup_exclude) and reach the repository with the collector.';
+const configureWhy = 'Backup thresholds are not set from this page: they are each instance\'s mssql_thresholds in pgvigil.yaml, or for an instance '
+  + 'added in Admin > Instances its Settings there (full_backup_hours, diff_backup_hours, log_backup_minutes, new_database_hours, nul_backup_days, backup_exclude), '
+  + 'and reach the repository with the collector.';
 
 const byInstanceCols = (ctx: Ctx): Col[] => [
   { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
-  { key: 'findings', fmt: (v, r) => !n0(v) ? '' : badge(`${fmtNum(v)} ${String(r.worst)}`, r.worst === 'critical' ? 'crit' : r.worst === 'warning' ? 'warn' : '') },
+  { key: 'findings', fmt: (v, r) => !n0(v) ? '' : badge(`${fmtNum(v)} ${String(r.worst)}`, r.worst === 'critical' ? 'crit' : r.worst === 'warning' ? 'warn' : 'none') },
   { key: 'databases', ...count() },
   { key: 'full_ok', label: 'full ok', ...count() }, { key: 'full_late', label: 'full late', ...count('crit') },
   { key: 'full_never', label: 'full never', ...count('crit') }, { key: 'full_not_judged', label: 'full not judged', ...count() },
@@ -307,7 +573,7 @@ const byInstanceCols = (ctx: Ctx): Col[] => [
   // no read: the tab's own line; a collection that last failed says its status and note beside its last read
   { key: 'snapshot_at', label: 'read', fmt: (v, r) => !v ? (r.status ? `${String(r.status)}: ${String(r.note ?? '')}` : 'mssql_backups has not run on this server yet')
     : fmtTime(v) + (r.status && r.status !== 'ok' ? ` (last run ${String(r.status)}: ${String(r.note ?? '')})` : ''),
-    cls: (v, r) => !v || (r.status && r.status !== 'ok') ? 'warn' : '' },
+    cls: (v, r) => !v || (r.status && r.status !== 'ok') ? 'warn' : 'ok' },
 ];
 
 export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
@@ -328,11 +594,11 @@ export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
     const [d, loc] = await Promise.all([
       get<Record<FleetParts, Table | null>>('mssql/backups', { problems: problems ? 1 : undefined }),
       // task 301's texts and findings: a store without them still draws the rest
-      get<Record<'by_instance' | 'findings', Table | null>>('mssql/backup_files').catch(() => null),
+      get<Record<'by_instance' | 'findings' | 'check_findings', Table | null>>('mssql/backup_files').catch(() => null),
     ]);
     const texts = new Map(rowsOf(loc?.by_instance ?? null).map(r => [Number(r.instance_id), r]));
     const inst = rowsOf(d.by_instance).filter(keep).map(r => ({ ...texts.get(Number(r.instance_id)), ...r }));
-    const findings = [...rowsOf(d.findings), ...rowsOf(loc?.findings ?? null)].filter(keep);
+    const findings = [...rowsOf(d.findings), ...rowsOf(loc?.findings ?? null), ...rowsOf(loc?.check_findings ?? null)].filter(keep);
     const sum = (k: string) => inst.reduce((a, r) => a + n0(r[k]), 0);
     const noFull = sum('full_late') + sum('full_never'), noLog = sum('log_late') + sum('log_never'), unread = inst.filter(r => !r.snapshot_at).length;
     sec.append(el('div', { class: 'tiles' },
@@ -354,16 +620,10 @@ export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
     if (findings.length) sec.append(el('h3', {}, 'SQL Server backup findings'),
       el('div', { id: 'mssql-backups-fleet-findings' }, grid(findings, [{ key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) }, ...mssqlFindingCols])));
 
-    // the ages as numbers under their unit (the tab writes '16.3 h' / '2.4 d' and '1h 5m'; a unit in a cell is text in
-    // the export, X7): hours to two places, whole minutes; their colours as the tab's
-    const ageNums: Record<string, Partial<Col>> = {
-      full_age_hours: { label: 'full age (hours)', fmt: v => v == null ? '' : fmtNum(v) },
-      log_age_minutes: { label: 'log age (minutes)', fmt: v => v == null ? '' : fmtNum(Math.round(Number(v))) },
-    };
     const fleetCols: Col[] = [
       { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
       { ...cols[0], fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', { db: String(v ?? '') }, Number(r.instance_id)) }, String(v ?? '')) },
-      ...cols.slice(1).map(c => ageNums[c.key] ? { ...c, ...ageNums[c.key] } : c),
+      ...cols.slice(1),
     ];
     const total = sum('databases');
     const pick = el('select', { id: 'mssql-backups-fleet-filter' }, el('option', { value: 'problems' }, 'Problems'), el('option', { value: 'all' }, 'All')) as HTMLSelectElement;

@@ -16,7 +16,7 @@
 import { fleet } from './fleet';
 import { installGridTools } from './gridtools';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, rootTabs, window_ } from './router';
-import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName } from './tz';
+import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName, zonedToUtc } from './tz';
 import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, readWindowWords, showMenu } from './ui';
 import { cutReads } from './api';
 import { readRows } from './export_colours';
@@ -29,13 +29,16 @@ import type { LookCache, PageSheet } from './export_page';
 export type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
 export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date' | 'bool' | 'days' | 'day';   // bool: v 1 or 0, written as an Excel boolean (P3)   // days: a count of days the page writes 'n days'   // day: a date alone (v its Excel serial, stamp 'YYYY-MM-DD')
 export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string;   // link: the screen draws the cell as a link   // head: a heading inside a sheet (written in the header row's style)   // stamp: a time's local text for the CSV
+  raw?: string;   // a text cell's own value where the screen collapses its whitespace (a line break, a tab): the JSON and SQL forms write it
   per?: string;   // a size per a time ('381.5 MB / day': kind 'bytes', per 'day')
   dp?: number;   // (X13) a grid sheet's number shown with the decimals its column shows on the page: '0.0' for 1 (a share: '0%' for 0); the value stays exact
   look?: Look;   // the cell's look as the page's own CSS paints it (export_colours.ts, export_page.ts): when set, the file writes it and nothing else
   runs?: { text: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number }[];   // rich text: words in their own colours (a dot's run before a cell's words)
   jump?: number;   // the page sheet: a link to grid k's own sheet ('{sheet}' in the words is its name)
   fmt?: string;   // the page sheet (E2-15, F2): the number format that shows the value as the page's words ('#,##0.0', a size's unit, the page's date form)
-  sheets?: number[] }   // the page sheet: '{sheet:k}' in the words is grid k's sheet name
+  sheets?: number[];   // the page sheet: '{sheet:k}' in the words is grid k's sheet name
+  grp?: boolean;   // (X7) the page's figure groups its thousands ('1,672.00'): its column's fixed decimals grouped ('#,##0.00')
+  bare?: Pick<Cell, 'v' | 'kind' | 'stamp' | 'per'> & { text: string } }   // (X15) a status cell's figure without its status word: what a grid sheet writes (gridSection)
 // Look: a cell's look in the file: its fill and text colour ('RRGGBB'), weight, slant, underline, size in points, wrapped
 // words, a thick left border in a colour (a tile's stripe)
 export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string; valign?: 'top' | 'middle'; halign?: 'right' | 'center' }   // valign: as the page aligns the cell (a cell with a look and none: top)
@@ -66,7 +69,7 @@ const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'stamp' | 'per'> {
   if (text === '') return { v: '', kind: 'text' };
-  // (P3, the lead 22:34) a boolean the page writes as its yes / no or true / false: an Excel boolean on a grid sheet
+  // (P3) a boolean the page writes as its yes / no or true / false: an Excel boolean on a grid sheet
   // (DBA Dash's file: TRUE / FALSE cells); the page sheet keeps the page's words (export_page.ts gridBlock)
   if (typeof raw === 'boolean' && [raw ? 'yes' : 'no', String(raw)].includes(text.toLowerCase())) return { v: raw ? 1 : 0, kind: 'bool' };
   // (X9) a cell the page writes as yes or no whatever lies under it (a count shown 'no' when it is zero): the boolean of the word
@@ -128,6 +131,10 @@ export function bareNumber(text: string): Pick<Cell, 'v' | 'kind'> | undefined {
 
 // the locale's grouping and decimal characters, learnt from fmtNum (',' and '.' in en-US, U+202F and ',' in fr-FR)
 const sep = (() => { const t = fmtNum(1234567.5); return { group: t[1], dec: t[t.length - 2] }; })();
+// grouped: a page figure written with the locale's thousands separator ('1,672.00'; fr-FR '1 672,00', its narrow space
+// read as a space); a figure the page writes ungrouped ('1672.5', a port '5432') is not
+const groupRe = new RegExp('\\d' + (/\s/.test(sep.group) ? '[\\s\\u202f\\u00a0]' : sep.group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) + '\\d{3}(?!\\d)');
+const grouped = (t: string) => groupRe.test(t);
 // digitsOf: a number as the locale wrote it, back to JavaScript's form ('1,234.5' or '1 234,5' -> '1234.5'); '' = not one
 function digitsOf(t: string): string {
   const d = t.split(sep.group).join('').split(sep.dec).join('.').replace(/[\s\u202f\u00a0']/g, '');
@@ -307,7 +314,17 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
   const rows = trs.map((tr, i) => [...tr.children].map((td, j) => {
     const t = text(td);
     const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
-    const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
+    // a text whose words the screen collapsed ('line1\nline2' shows 'line1 line2'): its own value kept beside them
+    const own = typeof raw === 'string' && t !== '' && raw !== t && norm(raw) === t ? { raw } : {};
+    const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), ...own, status: statusOf(td), link: linkOf(td), text: t };
+    // (X15) a status cell that writes its status word after its figure ('463.71 warning', '92 % critical'; the screen keeps
+    // the word for a reader who cannot tell the colours apart): the grid sheet writes the figure, its status the fill (an
+    // activity mark ' *' goes with the word, or alone on a cell with no word: '0 *'); the CSV, which has no fill, keeps
+    // the page's words
+    if (c.status && typeof c.v === 'string' && raw !== undefined) {
+      const fig = /^(.*?)(?: \*(?: (?:ok|warning|critical))?| (?:ok|warning|critical))$/.exec(t);
+      if (fig) { const n = typed(raw, fig[1]); if (typeof n.v === 'number') c.bare = { ...n, text: fig[1] }; }
+    }
     // a status cell's model holds its level (the fleet Summary's 0 / 1 / 2), not its figure: words that are a bare number
     // are that number ('3' collection errors; on DBA Dash 4.25.0 '3' collections at warning or critical), as DBA Dash
     // writes its 'DBA Dash Errors (24hrs)' / 'Collection Health'
@@ -612,7 +629,10 @@ export function shown(c: Cell): string {
   // '-0.0')
   if (c.dp !== undefined) {
     const x = c.kind === 'pct' ? n * 100 : n;
-    return (x < 0 ? '-' : '') + Math.abs(x).toFixed(c.dp) + (c.kind === 'pct' ? '%' : '');
+    // a grouped column ('#,##0' ..) is drawn with its thousands separators: measured with them
+    const t = Math.abs(x).toFixed(c.dp), [ip, fp] = t.split('.');
+    const body = c.grp ? ip.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fp !== undefined ? '.' + fp : '') : t;
+    return (x < 0 ? '-' : '') + body + (c.kind === 'pct' ? '%' : '');
   }
   switch (c.kind) {
     case 'date': return (c.stamp ?? '').slice(0, 16);
@@ -698,7 +718,7 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
   };
   // (X13) a grid sheet's number under its column's decimals as the page shows them: '0', '0.0' .. (a share: Excel's '0%')
   const fmtFor = (c: Cell) => c.fmt && typeof c.v === 'number' ? st.code(c.fmt)
-    : c.dp !== undefined && typeof c.v === 'number' ? (c.kind === 'pct' ? 9 : st.code(c.dp ? '0.' + '0'.repeat(c.dp) : '0')) : fmtOf(c);
+    : c.dp !== undefined && typeof c.v === 'number' ? (c.kind === 'pct' ? ([9, 167, 10][c.dp] ?? 10) : st.code((c.grp ? '#,##' : '') + (c.dp ? '0.' + '0'.repeat(c.dp) : '0'))) : fmtOf(c);
   const styleOf = (c: Cell) => c.look ? st.look(fmtFor(c), c.look) : st.id(fmtFor(c), c.status, !!c.head, c.link);
   // a row's height: as tall as its largest font and, for a cell that wraps (a header the page wraps, a long text the page
   // shows on several lines, a card's line), as its lines at the column's width (each line measured as the width rule
@@ -766,7 +786,12 @@ const sizeUnit = (n: number) => { let i = 0; for (let a = Math.abs(n); a >= 1024
 // rich runs, the page sheet's formats and jumps stay out
 // a dot's glyph (export_page.ts withDot: its own coloured run before the words) goes with its run: the cell keeps the words
 const dotless = (c: Cell): string | number => typeof c.v === 'string' && c.runs?.length === 2 && c.v === c.runs[0].text + c.runs[1].text ? c.runs[1].text : c.v;
-const plainCell = (c: Cell): Cell => ({ v: dotless(c), kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}), ...(c.per ? { per: c.per } : {}) });
+// (X7) a decimal read straight from the page's figure keeps whether that figure groups its thousands (a size, a duration
+// or a rate converted to its column's unit later is a figure of another unit: never grouped)
+const plainCell = (cell: Cell): Cell => {
+  const c: Cell = cell.bare ? { ...cell, ...cell.bare } : cell;   // (X15) the figure of a status cell that writes its word after it
+  return { v: dotless(c), kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}), ...(c.per ? { per: c.per } : {}), ...((c.kind === 'dec' || c.kind === 'int') && typeof c.v === 'number' && grouped(c.text) ? { grp: true } : {}) };
+};
 // gridSection: a section as its grid sheet holds it. X7: a size column in ONE unit - its largest value's, as the page
 // writes it - every size cell converted and unrounded, the unit in the header ('size (GB)'); a millisecond column the same
 // with its time unit ('took (s)'). X8: a seconds column is numbers - in its one unit, or in seconds when the page mixes
@@ -792,13 +817,36 @@ export function gridSection(s: Section): Section {
   const decimals = (j: number) => {
     const decs = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number' && c.kind === 'dec');
     const k = Math.max(-1, ...decs.map(c => decimalsOf(c.text, c.v) ?? -1));
-    if (k >= 0 && k <= 6) for (const c of decs) c.dp = k;
+    // the page's grouping carried, as its colours and decimals are: a column whose figures group their thousands is grouped
+    // under its fixed decimals, '#,##0' .. '#,##0.000' (DBA Dash writes General); an ungrouped column stays ungrouped
+    // a column of no decimals (DB Space at 0 places) also holds the figures that are whole numbers (typed int: a size of a
+    // whole number of MB): one column, one format - '0' or '#,##0' for all of them; with decimals, an int keeps General
+    const whole = k === 0 ? rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number' && c.kind === 'int') : [];
+    const all = [...decs, ...whole];
+    const grp = k >= 0 && k <= 3 && all.some(c => c.grp);
+    for (const c of all) if (grp) c.grp = true; else delete c.grp;
+    if (k >= 0 && k <= 6) for (const c of all) c.dp = k;
     // (a chart's share holds its fraction as text, not the page's percent: only a column of the page's own percents)
     const pcts = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number' && c.kind === 'pct');
     if (pcts.length && pcts.every(c => / ?%$/.test(norm(c.text)) && decimalsOf(c.text) === 0)) for (const c of pcts) c.dp = 0;
   };
   for (let j = 0; j < ncol; j++) {
     const nums = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number');
+    // (X14) a percent column the page writes as bare figures (its header names the percent: 'free %', 'signal wait %'):
+    // the shares Excel's percent format draws, as DBA Dash writes every '%' column (13.4 -> 0.134 under '0.0%'), under
+    // the decimals the page shows (0, 1, 2: '0%', '0.0%', '0.00%')
+    // a column that mixes them with shares already typed ('12 %' badges beside a bare '0': tempdb's max growth %): one
+    // format for the column, the most decimals any of its figures shows
+    if (j < cols.length && cols[j].includes('%') && nums.some(c => c.kind === 'int' || c.kind === 'dec')) {
+      const k = Math.min(Math.max(0, ...nums.filter(c => ['int', 'dec', 'pct'].includes(c.kind)).map(c => decimalsOf(c.text, c.kind === 'pct' ? undefined : c.v) ?? 0)), 2);
+      for (const c of nums) if (c.kind === 'int' || c.kind === 'dec') { c.v = (c.v as number) / 100; c.kind = 'pct'; c.dp = k; } else if (c.kind === 'pct') c.dp = k;
+    }
+    // (X8) a date column's cell with no date in it ('none in the last 7 days', 'never'): empty, as DBA Dash leaves a date
+    // with no value; the page keeps its words. A date with a note in brackets after it (an availability group's backup
+    // '<time> (on SQL02)', a password's '<time> (expired)', a first read '(inside the range)') keeps the page's words:
+    // the date and its note are both the cell's
+    const dated = (t: string) => { const m = /^(.+?) \([^()]+\)$/.exec(t); return !!m && !!(shownTime(m[1]) ?? dayCell(m[1])); };
+    if (nums.some(c => c.kind === 'date' || c.kind === 'day')) for (const r of rows) { const c = r[j]; if (c && typeof c.v === 'string' && c.v !== '' && !dated(c.v)) { c.v = ''; c.kind = 'text'; } }
     const largest = (k: Kind, per = false) => nums.filter(c => c.kind === k && !!c.per === per).reduce<Cell | undefined>((a, c) => !a || Math.abs(c.v as number) > Math.abs(a.v as number) ? c : a, undefined);
     // a size per day: the unit the column's figures show most (zero left out of the count; a tie: the largest's)
     const rate = nums.filter(c => c.kind === 'bytes' && c.per);
@@ -907,7 +955,7 @@ export function workbook(meta: Meta, given: Section[], page?: PageSheet): { name
     ...secs.map((s, i) => ({ name: names[i], head: s.cols, rows: s.rows, data: true, ...(page && s.heads ? { heads: s.heads } : {}), ...(page ? { freeze: 1 } : {}) })),
     ...(page ? [] : [{ name: 'About', head: ['Item', 'Value'], rows: about, data: false }])];
   const all = sheets.map(sh => sh.name);
-  // (P1, the lead 22:34) every grid sheet is one Excel table over the grid, an empty grid's too (P2: its header and one
+  // (P1) every grid sheet is one Excel table over the grid, an empty grid's too (P2: its header and one
   // empty row), as DBA Dash writes each sheet
   let tables = 0;
   for (const sh of sheets) if (sh.data) sh.table = ++tables;
@@ -968,23 +1016,48 @@ export function workbook(meta: Meta, given: Section[], page?: PageSheet): { name
 // duration in seconds, a size in bytes, a share in percent), a time as the screen shows it (the display time zone's clock); a text cell
 // that a spreadsheet would read as a formula (= + - @ tab CR first) gets a leading apostrophe (OWASP CSV injection).
 export function csv(s: Section): string {
+  // rawValue's value, and three rules of the CSV's own: a time as the screen's clock (a spreadsheet reads it as a time),
+  // a boolean as the page's word, a text a spreadsheet would read as a formula with a leading apostrophe
   const val = (c: Cell): string => {
-    if (typeof c.v === 'number') {
-      if (c.kind === 'date' || c.kind === 'day') return c.stamp ?? '';
-      if (c.kind === 'bool') return c.text;   // the CSV keeps the page's word for a boolean
-      if (c.kind === 'secs') return String(Math.round(c.v * 86400 * 1000) / 1000);
-      if (c.kind === 'msecs') return String(c.v);   // the milliseconds, as the raw value
-      if (c.kind === 'pct') return String(Math.round(c.v * 1e12) / 1e10);   // the percent figure (the cell holds the share): 12.5, not 0.125; ten decimals kept
-      return String(c.v);
-    }
+    const r = rawValue(c);
+    if (r === null) return '';
+    if (typeof c.v === 'number' && (c.kind === 'date' || c.kind === 'day')) return c.stamp ?? '';
+    if (typeof r === 'boolean') return c.text;   // the CSV keeps the page's word for a boolean
+    if (typeof r === 'number') return String(r);
     // a cell that starts with = + - @ TAB CR, or with 's before one, gets one more ' (as the server's inventory CSV and
-    // its import's undo: task 312, review P M-6 - "'=x" written as it is read back as =x)
-    return /^'*[=+\-@\t\r]/.test(c.v) ? "'" + c.v : c.v;
+    // its import's undo: task 312 - "'=x" written as it is read back as =x)
+    return /^'*[=+\-@\t\r]/.test(r) ? "'" + r : r;
   };
   const q = (v: string) => /[",\r\n]|^\s|\s$/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   // a stored sample's file starts with its mark, a line of its own above the header; a list cut to its part's reach
   // says what it read on the next line
   return '﻿' + [...(s.sample ? [q(s.sample)] : []), ...(s.read ? [q(s.read)] : []), s.cols.map(q).join(','), ...s.rows.map(r => r.map(c => q(val(c))).join(','))].join('\r\n') + '\r\n';
+}
+
+// rawValue: a cell's own value for the CSV, JSON and SQL forms (task GM; one function for the three): an empty cell null;
+// a number the number - a size in bytes, a duration in seconds (a millisecond column in milliseconds), a percent the
+// figure the page shows (12.5, never the 0.125 a workbook's percent format holds), a count of days the days; a time ISO
+// 8601 with the display zone's offset at that instant ('2026-11-14T17:00:00-08:00'); anything else the words as shown
+// (a yes / no cell is a 'bool', a day a 'day': typed() and the page read them). The workbook writes Excel's own forms instead (docs/export.md says
+// which, per form).
+export function rawValue(c: Cell): string | number | boolean | null {
+  if (c.v === '') return null;
+  if (typeof c.v !== 'number') return c.v;
+  switch (c.kind as string) {
+    case 'date': return c.stamp ? isoOf(c.stamp) : c.text;
+    case 'day': return c.stamp ?? c.text;
+    case 'bool': return c.v === 1;
+    case 'secs': return Math.round(c.v * 86400 * 1000) / 1000;
+    case 'pct': return Math.round(c.v * 1e12) / 1e10;
+    default: return c.v;   // int, dec, bytes (a size per a time too), nsecs (seconds already), msecs, days
+  }
+}
+// isoOf: a time the screen writes on the display zone's clock ('YYYY-MM-DD HH:MM:SS') with that zone's offset at it
+function isoOf(s: string): string {
+  const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)$/.exec(s);
+  if (!m) return s;
+  const o = offsetMin(zonedToUtc(+m[1], +m[2], +m[3], +m[4], +m[5], +m[6])), a = Math.abs(o), two = (n: number) => String(n).padStart(2, '0');
+  return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${o < 0 ? '-' : '+'}${two(Math.floor(a / 60))}:${two(a % 60)}`;
 }
 
 // ---- zip (the .xlsx container and the CSV bundle) ---------------------------------------------------------
@@ -1078,7 +1151,7 @@ export function exportName(m: Meta, ext: string): string {
   return `${safe(m.instance)}_${safe(m.tab)}_${fileStamp(m.from)}_${fileStamp(m.to)}.${ext}`;
 }
 
-function save(blob: Blob, name: string) {
+export function save(blob: Blob, name: string) {
   const a = el('a', { href: URL.createObjectURL(blob), download: name });
   a.hidden = true;
   document.body.append(a);
@@ -1089,11 +1162,12 @@ function save(blob: Blob, name: string) {
 
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-// oneFile: a workbook of one grid or one chart (its sheet, then 'About'), named
-// <instance>_<tab>_<sheet>_<from>_<to>.xlsx
+// oneName: a one-grid file's name, <instance>_<tab>_<sheet>_<from>_<to>.<ext> (the workbook's and every Export file form's)
+const oneName = (m: Meta, sec: Section, ext: string) => `${safe(m.instance)}_${safe(m.tab)}_${safe(sheetNames([sec.name], [], [sec.within], [!!sec.own])[0])}_${fileStamp(m.from)}_${fileStamp(m.to)}.${ext}`;
+// oneFile: a workbook of one grid or one chart (its sheet, then 'About')
 async function oneFile(m: Meta, sec: Section): Promise<string> {
   const z = await zip(workbook(m, [sec]), m.at);
-  const name = `${safe(m.instance)}_${safe(m.tab)}_${safe(sheetNames([sec.name], [], [sec.within], [!!sec.own])[0])}_${fileStamp(m.from)}_${fileStamp(m.to)}.xlsx`;
+  const name = oneName(m, sec, 'xlsx');
   save(new Blob([z], { type: XLSX }), name);
   return name;
 }
@@ -1108,12 +1182,26 @@ export async function exportSection(sec: Section, ctx: Ctx = parse()): Promise<s
 // export reads it (the same heading, cells, colours, hidden columns); an empty grid (its note) is a sheet of its header
 // row. name: the sheet's name instead of the heading's.
 export async function exportGrid(g: Element, name?: string, ctx: Ctx = parse()): Promise<string> {
+  const { m, sec } = await gridRead(g, ctx);
+  return oneFile(m, name ? { ...sec, name } : sec);
+}
+// gridRead: the grid g as a section and its window's meta (task GM's one read for Export Excel and Export file; named
+// apart from gridSection, the X7 grid sheet)
+async function gridRead(g: Element, ctx: Ctx): Promise<{ m: Meta; sec: Section }> {
   const m = await metaOf(ctx);
   const root = g.closest('dialog') ?? document.getElementById('main') ?? document.body;
-  const found = walk(root, m.tab, true).find(f => f.el === g)?.sec
+  const sec = walk(root, m.tab, true).find(f => f.el === g)?.sec
     ?? (g.tagName === 'TABLE' && g.classList.contains('grid') ? { name: m.tab, ...readGrid(g as HTMLTableElement) } : undefined);
-  if (!found) throw new Error('no grid here');
-  return oneFile(m, name ? { ...found, name } : found);
+  if (!sec) throw new Error('no grid here');
+  return { m, sec };
+}
+// saveGridAs: one grid in another form (the grid menu's Export file, gridwriters.ts): read as exportGrid reads it (the
+// shown rows in the shown order, the hidden columns left out, an empty grid's header) and saved under the workbook's name
+export async function saveGridAs(g: Element, ext: string, write: (sec: Section, m: Meta) => Blob, ctx: Ctx = parse()): Promise<string> {
+  const { m, sec } = await gridRead(g, ctx);
+  const name = oneName(m, sec, ext);
+  save(write(sec, m), name);
+  return name;
 }
 
 // chartSection: a chart's numbers as a sheet (its Export Excel's and the page export's numbers sheet): a time as a time,
@@ -1135,7 +1223,7 @@ export function chartSection(title: string, n: ChartNumbers): Section {
     return d ? { ...d, text: t } : { v: t, kind: 'text', text: t };
   };
   const rows = n.rows.map(r => r.map(cell)), cols = [...n.cols];
-  // (the lead 13:44 (3)) the series one axis draws (one formatter) share its unit: the largest value's, as the axis shows it,
+  // the series one axis draws (one formatter) share its unit: the largest value's, as the axis shows it,
   // named in each series' header ('erp (GB)', 'postgres (GB)'), not a unit per series
   for (const f of new Set(fmts.filter((x): x is ((v: number) => string) => !!x))) {
     const js = cols.map((_, j) => j).filter(j => fmts[j] === f);
@@ -1165,7 +1253,7 @@ export type AttentionBox = HTMLElement & { pgvItems?: () => { item: string; valu
 const STATUS_WORD: Record<Status, string> = { ok: 'OK', warn: 'Warning', crit: 'Critical', none: 'N/A', ack: 'Acknowledged' };
 // itemSection: tiles, a property card or the Needs attention lines as an Item | Value | Status table, the Status cell in
 // its named pair (a value without a status: its Status cell empty)
-// (the lead 13:44, X7-X9 on these sheets) each Value cell is typed by its own content, as Excel types cells: a time the page
+// (X7-X9 on these sheets) each Value cell is typed by its own content, as Excel types cells: a time the page
 // shows -> a date cell, a bare number -> a number (no 'Number Stored as Text'), yes / no -> a boolean; a value with a unit
 // (a size, a duration, a rate) or with words stays the page's text (About says so), and so does a version ('collation
 // version' '2.39': a number in its looks, not one in its meaning)
@@ -1270,33 +1358,6 @@ export async function pageBook(ctx: Ctx, r: HTMLElement | null, tab: string, wai
   return { items, found, names: sheetNames(secs.map(s => s.name), [], secs.map(s => s.within), secs.map(s => !!s.own)) };
 }
 
-// tell: a word in the grid's own count line for a moment (ui.ts grid: the 'n of m rows' line above it)
-function tell(g: Element, what: string) {
-  const count = g.closest('.grid-box')?.querySelector('.filter-count');
-  if (!count) return;
-  const before = count.textContent;
-  count.textContent = what;
-  window.setTimeout(() => { if (count.textContent === what) count.textContent = before; }, 2500);
-}
-
-// the grid's menu (ui.ts sends 'pgvigil:gridmenu' with its items): Export Excel after the copies, where DBA Dash's grid
-// menu has it (Copy, then Export Excel)
-let menuOn = false;
-function installGridExport() {
-  if (menuOn || typeof document === 'undefined') return;
-  menuOn = true;
-  document.addEventListener('pgvigil:gridmenu', e => {
-    const d = (e as CustomEvent<{ table?: HTMLTableElement; items?: [string, () => void][] }>).detail;
-    if (!d?.table || !Array.isArray(d.items)) return;
-    const t = d.table;
-    let at = 0;
-    d.items.forEach((it, i) => { if (/^Copy\b/.test(it[0])) at = i + 1; });
-    d.items.splice(at, 0, ['Export Excel', () => {
-      void exportGrid(t).then(n => tell(t, 'Exported ' + n), (x: unknown) => tell(t, 'Export failed: ' + (x instanceof Error ? x.message : String(x))));
-    }]);
-  });
-}
-
 // summaryExport: the fleet Summary's Export to Excel drop-down (DBA Dash's Summary toolbar): Export Summary (the
 // instance grid) or Export Test Summary (the grid of tests), each a workbook of that grid alone
 function summaryExport(ctx: Ctx, root: () => HTMLElement | null, note: HTMLElement): HTMLElement {
@@ -1329,7 +1390,6 @@ async function chartsDrawn(r: Element | null): Promise<void> {
 // start with the bar: they answer the grids' own menu and touch nothing until asked.
 export function exportButtons(ctx: Ctx, root: () => HTMLElement | null = () => document.getElementById('main')): HTMLElement {
   installGridTools();
-  installGridExport();   // after the tools: its line goes after their copies
   const note = el('span', { class: 'meta', role: 'status' });
   const run = async (b: HTMLButtonElement, kind: 'xlsx' | 'csv') => {
     b.disabled = true; note.textContent = '';

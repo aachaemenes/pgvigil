@@ -28,14 +28,14 @@
 #     B3 mssql_blocking_findings: 'an implicit transaction blocking' on session H1 and none on H2; 'sessions in
 #        implicit transactions' naming session I1; 'a lead blocker' on H1's statement (the hour's blocked wait over a
 #        minute) and none on H2's; pgvigil.findings holds as many source 'mssql_blocking' rows as mssql_blocking_findings,
-#        more than 0 (the release join's arm, 0190).
+#        more than 0 (the release migration's arm, 0190).
 #  C. the PostgreSQL twin: in a scratch database a non-superuser role's session updates a row in an open transaction
 #     and goes idle (the head), a second session's update of that row waits on it; `collect -once activity`; the hand
 #     read: the head 'idle in transaction', the waiter's pg_blocking_pids = the head.
 #  D. `pgvigil serve` of this tree (the web bundle rebuilt) with four instances: sqlbox (actions_dsn, actions: [kill]),
 #     sqlbox-ro (the same server, no actions_dsn), pgbox (actions_dsn: a role in pg_signal_backend), pgbox-ro (none):
 #     D1 GET /api/mssql/running: H1's row with is_implicit_tran true and no headshare part; with part=headshare the
-#        function's rows [the part moved apart after review s177b-1];
+#        function's rows [the part moved apart later];
 #     D2 refused without the actions login, each 409 and one audit row with outcome refused: a kill of H1 on sqlbox-ro,
 #        a terminate of the PostgreSQL head on pgbox-ro; both sessions still there.
 #  E. headless Chromium, signed in:
@@ -48,7 +48,7 @@
 #        below or right of the first view scrolled in: 'Lead blockers over the range' at the top (blocking-mssql-share-*)
 #        and the sessions grid's first Kill button in the middle (blocking-mssql-kill-*) [after s177b-proof4]; each
 #        checked in view: below the sticky header and tab band, inside the window, the button inside its grid's
-#        scroll box and of non-zero size [after review s177b-2];
+#        scroll box and of non-zero size [added later];
 #     E2 sqlbox-ro: every Kill button aria-disabled with a title naming actions_dsn, and a click opens no dialog;
 #        pgbox-ro: every Terminate button disabled with a title naming actions_dsn;
 #     E3 sqlbox at= the first snapshot: no Kill button anywhere and the line 'Kill acts on the newest snapshot only';
@@ -60,17 +60,17 @@
 #        kill|done|H2|KILL H2, kill|done|V1|KILL V1 (each with its reason and the UI user) and terminate|done|<head pid>.
 #        The outcome is read from the dialog's line that starts done / not done / refused / failed (the PostgreSQL
 #        dialog's line has no status role) [after s177b-proof3];
-#        Each dialog names the login the server read for the session (the application's) [after review s177b-1];
+#        Each dialog names the login the server read for the session (the application's) [added later];
 #     E6 'kill this head' on H2 again (the page still shows the snapshot from before the kill): the dialog says not
-#        possible and offers no form (the session is gone) [after review s177b-1];
+#        possible and offers no form (the session is gone) [added later];
 #     E7 the same page with the browser's clock 10 minutes on: no Kill button and the line 'Kill waits for a newer
-#        snapshot' (the newest snapshot is past 5 minutes old, DBA Dash's KillRecencyWindow) [after review s177b-1].
+#        snapshot' (the newest snapshot is past 5 minutes old, DBA Dash's KillRecencyWindow) [added later].
 # NOT PROVEN HERE: the Kill guard's refusal of a session id given to a new session (read in the code: the preview's
 #   login time against the row's; an id is not reused on demand); Kill's absence on a head that is not the holder or
 #   whose row is not in the read (read in the code, killable()); B2's 'longest wait' against the newest (the waits only
 #   grow between the two reads); a kill on Azure SQL or a Managed Instance; a MARS session's implicit flag over several requests;
 #   'a lead blocker' over a full hour of real traffic (the proof's hour holds two snapshots); the Findings tab's page
-#   itself (B3 reads the release join's arm in pgvigil.findings, 0190, not the rendered tab).
+#   itself (B3 reads the release migration's arm in pgvigil.findings, 0190, not the rendered tab).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
@@ -274,8 +274,8 @@ for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && b
 kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve.log" >&2; fail "D: serve exited"; }
 printf '{"username":"%s","password":"%s"}' "$USR" "$UPW" > "$TMPD/login.json"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "D: the UI login"
-curl -s -b "$TMPD/cj" "$U/api/mssql/running?instance=$SB" > "$TMPD/run.json"
-curl -s -b "$TMPD/cj" "$U/api/mssql/running?instance=$SB&part=headshare" > "$TMPD/hs.json"
+curl -s -b "$TMPD/cj" "$U/api/mssql/running?instance=$SB&own=1" > "$TMPD/run.json"
+curl -s -b "$TMPD/cj" "$U/api/mssql/running?instance=$SB&part=headshare&own=1" > "$TMPD/hs.json"
 api=$(python3 - "$TMPD/run.json" "$H1" "$TMPD/hs.json" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1]))

@@ -8,7 +8,7 @@ import (
 
 // The stored samples: each decodes, names its own tool, kit, version, capture date and test server, holds rows, and
 // holds nothing the deny-list names (the generic words always; the environment's own words when DenyEnv is set, as
-// the capture and the box runs set it); together they stay under MaxBytes.
+// the capture and the lab runs set it); together they stay under MaxBytes.
 func TestStoredSamples(t *testing.T) {
 	tools := Tools()
 	if len(tools) == 0 {

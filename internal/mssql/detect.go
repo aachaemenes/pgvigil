@@ -51,6 +51,19 @@ type Info struct {
 	// instance's tag pool:<name> gives it (the runner sets it; the view of the pool's figures names no pool)
 	ServiceObjective string
 	PoolTag          string
+	// task 301b (the runner sets them from the instance's configuration): the two opt-ins of mssql_backup_checks, and
+	// the file check's own pool (openBackupFilePool; never the collection's, which Connect caps at one connection),
+	// from which it takes its short-lived connections
+	ReadAutoCloseDatabases bool
+	CheckBackupFiles       bool
+	BackupFilePool         *sql.DB
+	// LinkedServerTest: the instance carries the tag pgvigil:linkedserver-test (the runner sets it): its linked
+	// servers' connections are tested (mssql_linkedserver_test, task 409)
+	LinkedServerTest bool
+	// IdentityWarnPct, IdentityCritPct: the identity rule's lines from the instance's mssql_thresholds
+	// (identity_warn_pct, identity_crit_pct; the runner sets them, 0 = the defaults)
+	IdentityWarnPct float64
+	IdentityCritPct float64
 }
 
 // detectSQL: on Azure SQL Database (engine edition 5) the database is the instance and VIEW DATABASE STATE is the right

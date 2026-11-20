@@ -10,6 +10,11 @@
 // an acknowledged job reads 'acknowledged' in place of critical / warning where the rule broken is the last failure's
 // (DBA Dash 4.24.1 AgentJobStatus: status 5 for TimeSinceLastFailure / LastFail when AckDate > LastFailed; a count rule
 // stays). The view gives the first rule broken only, so a count rule behind a last-failure rule is not seen here.
+// B9-10 / B9-11: 'running now' (since when: SQL Agent's running_since, pg_cron / pgAgent's run without an end) and the
+// last finished run's time from the status part; 'failure rate 7 days' from the stats part (the hours' failed /
+// (failed + succeeded), a cancel a failure as 0149 counts it), 'reading...' / 'being built' / 'not read: <why>' until it
+// is in, never 0; Show gains the last run failed or succeeded, running now, a failure rate over 50 % and disabled; 'Jobs
+// by instance' above the grid counts them per instance, each count a link that sets Show and the instance.
 // jobsReportFleetView (jobsreport.ts) draws it above PostgreSQL's schedule checks.
 import { AckData, jobAckCell, jobAcks, loadAckSafe } from './ack';
 import { get, Row, rowsOf, Table } from './api';
@@ -59,6 +64,9 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     const acked = (r: Row) => { const a = jobAcks(ad).get(`${String(r.instance_id)}|${String(r.job_name)}`); return !!a && r.last_failed_at != null && String(a.seen_state) === String(r.last_failed_at); };
     // acknowledged in DBA Dash's sense: the job's status is the acknowledgement's, not critical / warning
     const ackd = (r: Row) => (r.status === 'crit' || r.status === 'warn') && acked(r) && ackRule(r);
+    // the measured cells carry the job's status, as DBA Dash colours its Job Name and Last Failed (the status column
+    // stays): the row's status, acknowledged blue, or N/A where the job has none; a cell with no value stays plain
+    const rowCls = (r: Row) => ackd(r) ? 'status none ack' : statusCls(r.status) || 'status none';
     const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
     const crit = rows.filter(r => r.status === 'crit' && !ackd(r)).length, warn = rows.filter(r => r.status === 'warn' && !ackd(r)).length, ackN = rows.filter(acked).length;
     sec.append(el('div', { class: 'tiles' },
@@ -91,16 +99,19 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
             tile('cancelled', fmtNum(c.cancelled ?? 0), Number(c.cancelled) > 0 ? 'crit' : '')),
           grid(runs, [
             { key: 'start_time', label: 'start', fmt: fmtTime }, { key: 'duration_s', label: 'took', num: true, fmt: dur },
-            { key: 'outcome', cls: v => v === 'failed' || v === 'cancelled' ? 'status crit' : v === 'succeeded' ? 'status ok' : '' },
+            { key: 'outcome', cls: v => v === 'failed' || v === 'cancelled' ? 'status crit' : v === 'succeeded' ? 'status ok' : v == null || v === '' ? '' : 'status none' },
             { key: 'failed_step', label: 'step that failed' }, { key: 'message', fmt: oneLine },
           ], 'No run of this job in the last 7 days.'));
         requestAnimationFrame(() => { if (h.isConnected) h.focus(); });
       } catch (e) { if (mine === pickSeq) hist.replaceChildren(el('h3', {}, title), errorBox(e)); }
     };
 
-    // the four columns of the stats part: filled IN PLACE when it answers (the grid is not drawn again, so a sort, a
+    // the columns of the stats part: filled IN PLACE when it answers (the grid is not drawn again, so a sort, a
     // filter or a hidden column the reader set stays); the values go into the rows too, for the sort and the export
     let stats: Map<string, Row> | null = null, statsWhy = '';
+    // the failure rate of 7 days: the hours' failed over failed + succeeded; null with no finished run in them
+    const rateOf = (t: Row) => t.failed_7d == null || t.ok_7d == null || Number(t.failed_7d) + Number(t.ok_7d) === 0 ? null
+      : Number(t.failed_7d) / (Number(t.failed_7d) + Number(t.ok_7d));
     const statFmt: Record<string, (v: unknown) => string> = {};
     const statText = (k: string, r: Row) => statsWhy ? `not read: ${statsWhy}` : !stats ? 'reading...' : r._stats_building ? 'being built' : statFmt[k](r[k]);
     const statCol = (k: string, label: string, fmt: (v: unknown) => string): Col => {
@@ -112,29 +123,34 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
       { key: 'instance', fmt: (v, r) => el('a', { href: instHref(r) }, String(v ?? '')) },
       { key: 'platform' },
       { key: 'scheduler', fmt: scheduler },
-      { key: 'job_name', label: 'job', fmt: (v, r) => { const b = el('button', { type: 'button', class: 'link', 'aria-label': `History of ${String(v)} on ${String(r.instance)}` }, String(v ?? '')); b.addEventListener('click', () => { void pick(r); }); return b; } },
-      { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn') },
+      { key: 'job_name', label: 'job', fmt: (v, r) => { const b = el('button', { type: 'button', class: 'link', 'aria-label': `History of ${String(v)} on ${String(r.instance)}` }, String(v ?? '')); b.addEventListener('click', () => { void pick(r); }); return b; }, cls: (_v, r) => rowCls(r) },
+      { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
+      { key: 'running_since', label: 'running now', fmt: v => v == null ? '' : el('span', {}, badge('running', ''), ` since ${fmtTime(v)}`) },
       { key: 'category' },
       { key: 'description', wide: true },
-      { key: 'status', cls: (v, r) => ackd(r) ? '' : statusCls(v), fmt: (v, r) => ackd(r)
+      { key: 'status', cls: (v, r) => ackd(r) ? 'status none ack' : statusCls(v) || (v == null || v === '' ? '' : 'status none'), fmt: (v, r) => ackd(r)
         ? el('span', {}, badge('acknowledged', ''), r.reason ? ` ${String(r.reason)}` : '')
         : el('span', {}, badge(statusWords[String(v)] ?? String(v ?? ''), v === 'crit' ? 'crit' : v === 'warn' ? 'warn' : v === 'ok' ? 'ok' : ''),
           r.reason ? ` ${String(r.reason)}` : '', acked(r) ? ' (acknowledged)' : '') },
-      { key: 'last_failed_at', label: 'last failure', fmt: (v, r) => v == null ? noneIn(r) : fmtTime(v) },
-      { key: 'last_run_failed', label: 'last run failed', fmt: (v, r) => v ? (acked(r) ? 'yes' : badge('yes', 'crit')) : 'no', cls: (v, r) => v && !acked(r) ? 'status crit' : '' },
-      { key: '_since_fail', label: 'since last failure (minutes)', num: true, fmt: sinceCell('last_failed_at') },
+      { key: 'last_failed_at', label: 'last failure', fmt: (v, r) => v == null ? noneIn(r) : fmtTime(v), cls: (v, r) => v == null ? '' : rowCls(r) },
+      { key: 'last_run_failed', label: 'last run failed', fmt: (v, r) => v ? (acked(r) ? 'yes' : badge('yes', 'crit')) : 'no', cls: (v, r) => !v ? 'status ok' : acked(r) ? 'status none ack' : 'status crit' },
+      { key: '_since_fail', label: 'since last failure (minutes)', num: true, fmt: sinceCell('last_failed_at'), cls: (_v, r) => r.last_failed_at == null ? '' : rowCls(r) },
       { key: 'failed_step', label: 'failed step', fmt: (v, r) => v == null ? '' : `${String(r.failed_step_id)} ${String(v)}` },
       { key: 'last_succeeded_at', label: 'last success', fmt: (v, r) => v == null ? noneIn(r) : fmtTime(v) },
       { key: '_since_ok', label: 'since last success (minutes)', num: true, fmt: sinceCell('last_succeeded_at') },
+      { key: 'last_secs', label: 'last run took', num: true, fmt: dur },
       { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(r.instance_id), String(r.job_name), r.last_failed_at, redraw, undefined, names.get(Number(r.instance_id))) },
-      { key: 'fail_24h', label: 'failed 24 h', num: true, cls: (v, r) => Number(v) > 0 && !acked(r) ? 'status warn' : '' },
+      { key: 'fail_24h', label: 'failed 24 h', num: true, cls: (v, r) => !(Number(v) > 0) ? 'status ok' : acked(r) ? 'status none ack' : 'status warn' },
       statCol('ok_24h', 'succeeded 24 h', v => v == null ? '' : fmtNum(v)),
-      { key: 'fail_7d', label: 'failed 7 days', num: true, cls: (v, r) => Number(v) > 0 && !acked(r) ? 'status warn' : '' },
+      { key: 'fail_7d', label: 'failed 7 days', num: true, cls: (v, r) => !(Number(v) > 0) ? 'status ok' : acked(r) ? 'status none ack' : 'status warn' },
       statCol('ok_7d', 'succeeded 7 days', v => v == null ? '' : fmtNum(v)),
       { key: 'step_fail_24h', label: 'failed steps 24 h', num: true },
       { key: 'step_fail_7d', label: 'failed steps 7 days', num: true },
       statCol('max_secs_7d', 'longest 7 days', dur),
       statCol('avg_secs_7d', 'average 7 days', dur),
+      // the cell's value is the percent (_rate_pct), so the export writes a share under Excel's percent format; _rate,
+      // the fraction, stays for the filter and the counts (X16: never '5.6 %' as text)
+      statCol('_rate_pct', 'failure rate 7 days', v => v == null ? 'no finished run' : `${fmtNum(Number(v))} %`),
       { key: 'level', label: 'judged at', fmt: (v, r) => {
         const text = v === 'default' ? 'default (DBA Dash\'s)' : String(v ?? '');
         const b = el('button', { type: 'button', class: 'link', 'aria-label': `${text}: the thresholds of ${String(r.job_name)} on ${String(r.instance)}` }, text);
@@ -151,9 +167,15 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     ];
     // DBA Dash's default (CustomReportView.cs ResetStatusFilter): a view of one instance lists every job; more, the
     // critical, the warning and the acknowledged
-    const pickSel = el('select', { id: 'job-status-filter' }, el('option', { value: 'problems' }, 'Critical, warning and acknowledged'), el('option', { value: 'all' }, 'All')) as HTMLSelectElement;
+    const shows: [string, string][] = [['problems', 'Critical, warning and acknowledged'], ['all', 'All'],
+      ['lastfail', 'Last run failed or cancelled'], ['lastok', 'Last run succeeded'], ['running', 'Running now'],
+      ['failrate', 'Failure rate over 50 % (7 days)'], ['disabled', 'Disabled']];
+    const pickSel = el('select', { id: 'job-status-filter' }, ...shows.map(([v, t]) => el('option', { value: v }, t))) as HTMLSelectElement;
     pickSel.value = new Set(ids).size > 1 ? 'problems' : 'all';
     const said = el('span', { id: 'job-status-count', role: 'status' });
+    // the instance a 'Jobs by instance' link set (null = every instance in view), said beside Show with a way back
+    let instFilter: number | null = null;
+    const instSaid = el('span', {});
     const box = el('div', { id: 'job-status-grid' });
     // a sort or a filter the reader set before the stats answered: the grid's own draw runs again after the fill (a
     // filter box's input event; it keeps the sort and the filters)
@@ -162,34 +184,127 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     box.addEventListener('input', () => { touched = true; }, true);
     const draw = () => {
       touched = false;
-      const shown = pickSel.value === 'all' ? rows : rows.filter(r => r.status === 'crit' || r.status === 'warn' || acked(r));
-      said.textContent = `${fmtNum(shown.length)} of ${fmtNum(rows.length)} jobs`;
-      box.replaceChildren(grid(shown, cols, pickSel.value === 'all' ? 'No job on the instances in view.' : 'No critical, warning or acknowledged job on the instances in view.'));
+      const base = instFilter == null ? rows : rows.filter(r => Number(r.instance_id) === instFilter);
+      const where = instFilter == null ? 'on the instances in view' : `on ${names.get(instFilter) ?? 'this instance'}`;
+      let shown: Row[], empty: string, extra = '';
+      switch (pickSel.value) {
+        case 'all': shown = base; empty = `No job ${where}.`; break;
+        case 'lastfail': shown = base.filter(r => r.last_run_failed === true); empty = `No job ${where} whose last run failed or was cancelled.`; break;
+        case 'lastok': shown = base.filter(r => r.last_outcome === 'succeeded'); empty = `No job ${where} whose last run succeeded.`; break;
+        case 'running': shown = base.filter(r => r.running_since != null); empty = `No job ${where} runs now.`; break;
+        case 'disabled': shown = base.filter(r => r.enabled === false); empty = `No disabled job ${where}.`; break;
+        case 'failrate': {
+          // never a 0 for a rate not read: the filter says why it shows nothing
+          if (!stats) { shown = []; empty = statsWhy ? `The failure rate was not read: ${statsWhy}` : 'The failure rate is still being read.'; break; }
+          shown = base.filter(r => r._rate != null && Number(r._rate) > 0.5);
+          const b = base.filter(r => r._stats_building).length;
+          if (b) extra = `; ${fmtNum(b)} not judged: their hours are being built`;
+          empty = `No job ${where} failed more than half its finished runs in the last 7 days.`;
+          break;
+        }
+        default: shown = base.filter(r => r.status === 'crit' || r.status === 'warn' || acked(r)); empty = `No critical, warning or acknowledged job ${where}.`;
+      }
+      said.textContent = `${fmtNum(shown.length)} of ${fmtNum(base.length)} jobs${extra}`;
+      if (instFilter == null) instSaid.replaceChildren();
+      else {
+        const back = el('button', { type: 'button', class: 'link' }, 'every instance');
+        back.addEventListener('click', () => { instFilter = null; draw(); });
+        instSaid.replaceChildren(` on ${names.get(instFilter) ?? ''} (`, back, ')');
+      }
+      box.replaceChildren(grid(shown, cols, empty));
     };
     pickSel.addEventListener('change', draw);
-    sec.append(el('h3', {}, 'Job status'),
-      el('p', { class: 'meta' }, el('label', { for: 'job-status-filter' }, 'Show '), pickSel, ' ', said),
+    // B9-11: the counts per instance, each a link that sets Show and the instance (the over-50 % count waits for the
+    // stats part, as its column does)
+    // the over-50 % cell is built by its own fmt from the state at hand (a sort or a filter draws it again and gets the
+    // link too); fillRates redraws the cells already on the page when the stats answer, and _rate50 carries the count
+    // for the sort (null until read, or while every job of the instance is being built)
+    let rateCells: [number, HTMLElement][] = [];
+    const rateWords = (id: number) => {
+      if (statsWhy) return `not read: ${statsWhy}`;
+      if (!stats) return 'reading...';
+      const rs = rows.filter(r => Number(r.instance_id) === id), b = rs.filter(r => r._stats_building).length;
+      if (b && b === rs.length) return 'being built';
+      return fmtNum(rs.filter(r => r._rate != null && Number(r._rate) > 0.5).length) + (b ? ` (${fmtNum(b)} being built)` : '');
+    };
+    const goTo = (id: number, show: string) => {
+      instFilter = id; pickSel.value = show; draw();
+      const h = document.getElementById('job-status-head');
+      if (h) { h.scrollIntoView({ block: 'start' }); h.focus(); }
+    };
+    const countCell = (show: string, label: string) => (v: unknown, r: Row) => {
+      if (!Number(v)) return '0';
+      // the name starts with the words shown (WCAG 2.5.3 label in name: a voice user says what is on the screen)
+      const shown = fmtNum(v);
+      const b = el('button', { type: 'button', class: 'link', 'aria-label': `${shown} ${label} on ${String(r.instance)}: show them` }, shown);
+      b.addEventListener('click', () => goTo(Number(r.instance_id), show));
+      return b;
+    };
+    const perInst: Row[] = [...new Set(rows.map(r => Number(r.instance_id)))].map(id => {
+      const rs = rows.filter(r => Number(r.instance_id) === id);
+      return { instance_id: id, instance: names.get(id) ?? String(rs[0]?.instance ?? id), lastfail: rs.filter(r => r.last_run_failed === true).length,
+        lastok: rs.filter(r => r.last_outcome === 'succeeded').length, running: rs.filter(r => r.running_since != null).length };
+    });
+    const byInstance = grid(perInst, [
+      { key: 'instance', fmt: (v, r) => el('a', { href: instHref({ ...r, engine: inView.find(x => Number(x.instance_id) === Number(r.instance_id))?.engine }) }, String(v ?? '')) },
+      { key: 'lastfail', label: 'last run failed or cancelled', num: true, fmt: countCell('lastfail', 'jobs whose last run failed or was cancelled') },
+      { key: 'lastok', label: 'last run succeeded', num: true, fmt: countCell('lastok', 'jobs whose last run succeeded') },
+      { key: 'running', label: 'running now', num: true, fmt: countCell('running', 'jobs running now') },
+      { key: '_rate50', label: 'failure rate over 50 % (7 days)', num: true, fmt: (_v, r) => {
+        const id = Number(r.instance_id), cell = el('span', {}, rateCell(id));
+        rateCells.push([id, cell]);
+        return cell;
+      } },
+    ], 'No job on the instances in view.');
+    function rateCell(id: number): Node {
+      const words = rateWords(id);
+      const n = stats && !statsWhy ? rows.filter(r => Number(r.instance_id) === id && r._rate != null && Number(r._rate) > 0.5).length : 0;
+      if (!(n > 0)) return document.createTextNode(words);
+      const b = el('button', { type: 'button', class: 'link', 'aria-label': `${words} - jobs failing over half their runs on ${names.get(id) ?? ''}: show them` }, words);
+      b.addEventListener('click', () => goTo(id, 'failrate'));
+      return b;
+    }
+    const fillRates = () => {
+      for (const p of perInst) {
+        const id = Number(p.instance_id), rs = rows.filter(r => Number(r.instance_id) === id);
+        p._rate50 = !stats || statsWhy || rs.every(r => r._stats_building) ? null : rs.filter(r => r._rate != null && Number(r._rate) > 0.5).length;
+      }
+      rateCells = rateCells.filter(([, cell]) => cell.isConnected);
+      for (const [id, cell] of rateCells) cell.replaceChildren(rateCell(id));
+    };
+    sec.append(el('h3', {}, 'Jobs by instance'),
+      el('p', { class: 'meta' }, 'Per instance in view: the jobs whose last run failed or was cancelled (a cancel counts as a failure, as in DBA Dash), whose last run succeeded, '
+        + 'that run now, and whose failure rate over the last 7 days is over half their finished runs. Each count opens those jobs in the grid below.'),
+      byInstance,
+      el('h3', { id: 'job-status-head', tabindex: '-1' }, 'Job status'),
+      el('p', { class: 'meta' }, el('label', { for: 'job-status-filter' }, 'Show '), pickSel, instSaid, ' ', said),
       el('p', { class: 'meta' }, `Every job of the instances in view, ${engineJobs}, judged by its thresholds (the job, its instance or the root); with none set, `
         + 'DBA Dash\'s default: critical when the last run failed or a run failed in the last 60 minutes, warning when a run failed in the last 7 days. As in DBA Dash a '
         + 'cancelled run counts as a failure and a disabled job is not judged. The 24-hour and 7-day counts are fixed windows, not the page\'s range. The last failure and '
         + 'success are looked for back as far as the longest threshold in force (7 days at least); a job whose last run failed shows that failure however old. The '
         + 'succeeded, longest and average columns are read from the hourly statistics as DBA Dash reads its own: an hour counts when it started within 24 hours or 7 days, '
         + 'the average is the average of each hour\'s average, both in whole seconds, as DBA Dash; \'being built\' while an instance\'s hours of the 7 days are not built yet. '
-        + 'Pick a job for its history below.'),
+        + 'The failure rate is the failed runs (a cancel a failure) over the finished runs of the same hours. Running now is the newest read\'s. Pick a job for its history below.'),
       ...(ackOffP ? [ackOffP] : []), box, hist);
     draw();
     const byKey = new Map(rows.map(r => [key(r), r]));
     get<Record<'stats', Table | null>>('jobsreport', { part: 'stats', ids: ids.join(',') || '0' })
       .then(x => {
-        stats = new Map(rowsOf(x.stats).map(r => [key(r), r]));
-        for (const [k, r] of byKey) { const t = stats.get(k); for (const c of Object.keys(statFmt)) r[c] = t?.[c] ?? null; r._stats_building = t?.building === true; }
+        stats = new Map(rowsOf(x.stats).map(r => {
+          r._rate = rateOf(r);
+          r._rate_pct = r._rate == null ? null : Math.round(Number(r._rate) * 1000) / 10;
+          return [key(r), r];
+        }));
+        for (const [k, r] of byKey) { const t = stats.get(k); for (const c of Object.keys(statFmt)) r[c] = t?.[c] ?? null; r._rate = t?._rate ?? null; r.failed_7d = t?.failed_7d ?? null; r._stats_building = t?.building === true; }
       }, e => { statsWhy = e instanceof Error ? e.message : String(e); })
       .finally(() => {
         for (const sp of box.querySelectorAll<HTMLElement>('[data-stat]')) {
           const r = byKey.get(sp.dataset.row ?? '');
           if (r) sp.textContent = statText(sp.dataset.stat ?? '', r);
         }
-        if (touched) box.querySelector<HTMLInputElement>('input.filter')?.dispatchEvent(new Event('input'));
+        fillRates();
+        if (pickSel.value === 'failrate') draw();   // the filter's rows wait for the rate
+        else if (touched) box.querySelector<HTMLInputElement>('input.filter')?.dispatchEvent(new Event('input'));
       });
   } catch (e) {
     sec.append(el('h3', {}, 'Job status'), errorBox(e));

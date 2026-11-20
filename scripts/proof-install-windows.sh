@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proof of the Windows installer on the Windows sandbox over SSH (this machine's CLAUDE.local.md names it:
+# Proof of the Windows installer on the Windows sandbox over SSH (the machine's local config names it:
 # host winsandbox, the share ~/winsandbox/shared = \\host.lan\Data in the guest, the guest reaches containers
 # on the SQL sandbox's compose network by name). A mock release server (pgvigil_<V>_windows_amd64.exe built
 # here plus SHA256SUMS and install.ps1) and a PostgreSQL 16 repository run as throwaway containers on that

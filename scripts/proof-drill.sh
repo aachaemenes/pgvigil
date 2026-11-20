@@ -3,7 +3,7 @@
 #   A. every read function answers for every demo object: each database of each instance, each table the tables
 #      collection holds, each job, each index the indexes collection holds.
 #   B. the API (/api/drill/db, table, job, index) answers 200 for each of them and 400 for a bad parameter, through
-#      `pgvigil serve` (needs the routes: the lead's join; before it "NOT PROVEN (B)", or PGVIGIL_BIN = a wired build).
+#      `pgvigil serve` (needs the routes in web.go; without them "NOT PROVEN (B)", or PGVIGIL_BIN = a wired build).
 #   C. a render check: a headless Chromium opens a database, a table, a job and an index page of two instances with
 #      the range w=7d; each page draws its heading and its breadcrumb, whose links keep w=7d (needs the routes and the
 #      bundle wired, and chromium and node; else "NOT PROVEN (C)"; PGVIGIL_PROOF_NO_RENDER=1 skips it where a chromium
@@ -19,13 +19,13 @@
 #     come back through drill_table_checks of their table. Every job of job_report: drill_job 1 row; the jobs with a
 #     failure in 7 days have at least one drill_job_runs row with failed true. Every present index_state row:
 #     drill_index returns its problem, with drop_sql and undo_sql set. At least one table has a statement naming it.
-#     [review fold, expected before the rerun: every present row whose problem is not 'unused' carries its finding text
+#     [also expected: every present row whose problem is not 'unused' carries its finding text
 #      (index_findings joined by name); an unused one may not (the finding waits for 10 MB and 7 days)]
 #     No function raises.
 #  B. every URL of A: 200; db=0, rel=x, idx missing, scheduler 'Bad!': 400 with the parameter's name in the error.
 #  C. the four pages of an on-prem and an RDS instance: the h2 starts with Database / Table / Job / Index, the breadcrumb
 #     nav holds the instance link, and for table and index pages a database link; every breadcrumb href carries w=7d.
-#     [review fold, expected before the rerun: the job page's breadcrumb reads "<instance> > Jobs > <job>"; on the first
+#     [also expected: the job page's breadcrumb reads "<instance> > Jobs > <job>"; on the first
 #      table page the range picker set to 24h leaves the page on the same table (the hash keeps db= and rel=, w=24h)]
 #  The last line says PASS only when A, B and C all ran; otherwise "PASS (A only; B, C not proven)".
 set -euo pipefail
@@ -114,7 +114,7 @@ echo "--- B. the API"
 U="http://127.0.0.1:$PORT/api"
 code() { curl -s -o "$WORK/body" -w '%{http_code}' "$1"; }
 if [[ "$(code "$U/drill/db?instance=1&db=1")" = 404 ]] && grep -q 'no such endpoint' "$WORK/body"; then
-  echo "NOT PROVEN (B): this binary has no /api/drill routes yet (the lead wires them at the join)"
+  echo "NOT PROVEN (B): this binary has no /api/drill routes yet (they are wired in web.go)"
   B_DONE=0
 else
   R="w=7d"; n=0

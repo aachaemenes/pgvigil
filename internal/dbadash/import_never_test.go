@@ -12,11 +12,11 @@ import (
 )
 
 // TestPgvigilInstanceNeverRead runs the import's instance step against a migrated pgvigil repository (skipped without
-// PGVIGIL_IMPORT_TEST_REPO, a DSN its owner may write; the join fold's box run sets it to a throwaway database). A row
+// PGVIGIL_IMPORT_TEST_REPO, a DSN its owner may write; a lab box sets it to a throwaway database). A row
 // Admin > Instances made and no read reached - whatever the platform the page gave it - takes DBA Dash's version, and
 // its platform only when the page left it 'auto'; its first_seen moves to that first read (0122's admin_first_read);
-// a row already read is used as it is; a name stored as PostgreSQL is a skip (the join's w9e, finding 4; pgvigil
-// import dbadash itself is not run end to end here: its proof needs a DBA Dash repository on Windows).
+// a row already read is used as it is; a name stored as PostgreSQL is a skip (pgvigil import dbadash itself is not
+// run end to end here: its proof needs a DBA Dash repository on Windows).
 func TestPgvigilInstanceNeverRead(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_IMPORT_TEST_REPO")
 	if dsn == "" {

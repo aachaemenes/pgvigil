@@ -20,8 +20,8 @@
 -- instance DBA Dash's 'n/m' counts and compression algorithms).
 -- mssql_hadr_cursor is 0083's with one more pair of sources ('backup_sets', 'backup_sets_mark'); its other arms are
 -- 0083's line for line (internal/repo TestHADRCursor0140Is0083PlusBackupSets).
--- For the lead's join (never here): the pgvigil.findings arm of mssql_backup_loc_findings and purge()'s line for
--- mssql_backup_roots_seen (400 days at least), scripts/inv-301-join-lines.sql.
+-- For the release migration (never here): the pgvigil.findings arm of mssql_backup_loc_findings and purge()'s line for
+-- mssql_backup_roots_seen (400 days at least).
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_backup_sets (
   instance_id            int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -610,7 +610,7 @@ SELECT r.instance_id, 'info', 'a backup destination not seen before', r.database
                 WHERE o.instance_id = r.instance_id AND o.database_name = r.database_name AND o.backup_type = r.backup_type
                   AND (o.first_seen, coalesce(o.first_set_id, 0)) < (r.first_seen, coalesce(r.first_set_id, 0)));
 
--- mssql_backup_loc_db: per instance and database the fleet's and the tab's added cells (the lead's join into
+-- mssql_backup_loc_db: per instance and database the fleet's and the tab's added cells (joined into
 -- sqlMSSQLBackups): '<type>_to' = the folder (a URL's container) of the newest set of the type, ', n files' when
 -- striped, ', mirrored' when mirrored; full_to_copy_only / full_to_snapshot: the marks of the full shown there (F2: from
 -- the stored set, never from mssql_backup_state); and DBA Dash's Detail flags of that set (Is Full Damaged .. Log

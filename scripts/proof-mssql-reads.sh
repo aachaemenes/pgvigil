@@ -18,7 +18,7 @@
 #                            PGVIGIL_CHROMIUM_FLAGS: more flags for Chromium (--no-sandbox where it runs as root).
 #   PGVIGIL_NO_MSSQL=1       the parts that need no SQL Server only (the migration, D on stored rows, G, X, Y): no
 #                            container, no login; the last line says so and is NOT the proof's PASS.
-# The binary must carry the routes /api/mssql/properties, /waitinfo, /procs and /indexlocks (the lead's wiring in
+# The binary must carry the routes /api/mssql/properties, /waitinfo, /procs and /indexlocks (the wiring in
 # web.go): the proof stops at its first API read when it does not. Part S also needs the bundle built from this tree
 # ('npm run build' in web/: the binary embeds internal/web/dist).
 # The proof makes, and drops on every exit path: its own repository database (pgvigil_p4s2_reads_<n>), on the SQL
@@ -26,12 +26,11 @@
 # containers. On an existing sandbox it changes no server setting; on its own container it sets max server memory
 # once, to show a real change in the history.
 #
-# Expected (written before the first run; revised with the review fold of 2026-11-11, before the first run that
-# reached a SQL Server):
+# Expected (written before the first run; revised on 2026-11-11, before the first run that reached a SQL Server):
 #  M. the whole migration chain applies on PostgreSQL 13 (a fresh database of a postgres:13 container): migrate exits
 #     0, the newest schema version equals the one of the main repository, and 0084's five functions exist there.
-#  A. mssql_properties as the monitoring login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE): 42
-#     properties are stored (7 of them task 301c's network rows, proof-mssql-properties-network.sh), and each of 33 values equals sa's own read of its source, taken beside the collector's:
+#  A. mssql_properties as the monitoring login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE): 43
+#     properties are stored (7 of them task 301c's network rows, proof-mssql-properties-network.sh; 1 task 301b's default backup path), and each of 33 values equals sa's own read of its source, taken beside the collector's:
 #     sys.dm_os_sys_info (logical CPUs, sockets, cores per socket, hyperthread ratio, NUMA nodes, soft NUMA,
 #     affinity, max workers, virtual machine, physical MB, memory model), sys.dm_os_schedulers (VISIBLE ONLINE,
 #     VISIBLE OFFLINE), SERVERPROPERTY (edition, version, level, collation, clustered, Always On, machine, server
@@ -142,13 +141,13 @@
 #     described types and 7 families with LCK_M_ first; after a wait sample of 6,000 ms (LCK_M_U) and 300 ms
 #     (WRITELOG) over one 60 s read and a schedulers row of 4 are put in by hand: 100 and 25 ms/sec for the first,
 #     5 and 1.25 for the second.
-#  P. the API on the server's rows: /api/mssql/properties holds the 42 properties and the changes (none on a shared
+#  P. the API on the server's rows: /api/mssql/properties holds the 44 rows (the 43 properties and task 301b's reachable row) and the changes (none on a shared
 #     sandbox, where no setting is changed); /api/mssql/procs lists the proof's procedure with executions 11 (7 + 4)
 #     and executions per minute = 11 x 60 / the covered seconds; db=<its database's id> keeps only that database's
 #     two procedures; db_id= and object= give the procedure's two reads. /api/mssql/indexlocks lists the clustered
 #     index with the stored sums; db= keeps that database's rows.
 #  S. (only with PGVIGIL_SHOTS) in a headless Chromium at 1600 wide, in the light and the dark theme, each page is
-#     found by its grid's column names, never by position: Properties shows 42 rows with the logical CPUs a number
+#     found by its grid's column names, never by position: Properties shows 44 rows with the logical CPUs a number
 #     and the power plan's cell 'not read' on a Linux host; Procedures shows the proof's procedure with 11
 #     executions under dbo, and its name opens it read by read (2 reads); Index locks shows PK_pv_lock on pv_lock
 #     with at least 1 row lock wait, 1 escalation attempt and 1 escalation; Waits shows the forced lock wait's type with both
@@ -210,7 +209,7 @@ cleanup() {
   for p in "$SRV_PID" "$GRANT_PID" "$HOLD_PID" "$CHR_PID"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
   [ -n "$CHR_PID" ] && { wait "$CHR_PID" 2>/dev/null || true; }   # Chromium writes its profile folder until it is gone
   if [ -n "$MADE_CT" ]; then
-    docker rm -f "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2   # only the container this run made
+    docker rm -fv "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2   # only the container this run made
   else
     # on a sandbox that stays: the sorting session outlives its docker client
     [ -n "$SORTING" ] && kill_sort
@@ -220,7 +219,7 @@ cleanup() {
       sq "IF SUSER_ID('$l') IS NOT NULL DROP LOGIN [$l];" >/dev/null 2>&1 || echo "CLEANUP: login $l not dropped" >&2
     done
   fi
-  [ -n "$MADE_PG13" ] && { docker rm -f "$PG13" >/dev/null 2>&1 || echo "CLEANUP: container $PG13 not removed" >&2; }
+  [ -n "$MADE_PG13" ] && { docker rm -fv "$PG13" >/dev/null 2>&1 || echo "CLEANUP: container $PG13 not removed" >&2; }
   [ -n "$MADE_REPO" ] && { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; }
   rm -rf "$WORK" || echo "CLEANUP: $WORK not removed" >&2
   exit $rc
@@ -312,7 +311,7 @@ else
   [ "$V13" = "13|$VMAIN" ] || fail "M: PostgreSQL major|schema version $V13, want 13|$VMAIN"
   F13=$(p13 "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname in ('import_mssql_properties', 'import_mssql_procstats', 'import_mssql_indexlocks', 'mssql_tempdb_page_kind', 'mssql_reads_purge')" "pgvigil_p4s2_pg13_$SUF")
   [ "$F13" = 5 ] || fail "M: $F13 of 0084's 5 functions exist on PostgreSQL 13"
-  docker rm -f "$PG13" >/dev/null 2>&1 && MADE_PG13=
+  docker rm -fv "$PG13" >/dev/null 2>&1 && MADE_PG13=
   echo "M: OK (schema version $VMAIN on PostgreSQL 13)"; M_NOTE="M"
 fi
 
@@ -323,7 +322,7 @@ U=http://127.0.0.1:$PORT/api
 for _ in $(seq 1 40); do curl -fs "$U/health" >/dev/null 2>&1 && break; sleep 0.25; done
 curl -fs "$U/health" >/dev/null || { cat "$WORK/serve.log" >&2; fail "the UI did not serve"; }
 for r in properties waitinfo procs indexlocks; do
-  [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/$r?instance=1")" != 404 ] || fail "the binary has no route /api/mssql/$r (the lead's wiring in web.go)"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/$r?instance=1")" != 404 ] || fail "the binary has no route /api/mssql/$r (the wiring in web.go)"
 done
 win() { echo "from=$(date -u -d '-6 hours' +%FT%TZ)&to=$(date -u -d '+1 minute' +%FT%TZ)"; }
 # objs <file> <part>: the part's rows as objects
@@ -404,7 +403,7 @@ fi
 NPROP=$(q "select count(*) from pgvigil.mssql_property where instance_id=$iid")
 echo "  $checked values checked (33 against sa's reads, the per cent, the power plan); $NPROP properties stored; max server memory, % of the machine: $(pv max_memory_pct)"
 [ "$checked" = 35 ] || [ "$HOSTP" != Linux ] || fail "A: $checked values checked, want 35 (33 against sa, the per cent, the power plan's note)"
-[ "$NPROP" = 42 ] || fail "A: $NPROP properties stored, want 42 (35 + task 301c's seven network rows)"
+[ "$NPROP" = 43 ] || fail "A: $NPROP properties stored, want 43 (35 + task 301c's seven network rows + task 301b's default backup path)"
 [ "$(q "select count(*) from pgvigil.mssql_property_change where instance_id=$iid")" = 0 ] || fail "A: the first read logged a change"
 # the three values that are shown and never logged move by themselves (tempdb may grow between two reads): their
 # 'since' is left out of the comparisons
@@ -759,7 +758,7 @@ fi
 echo "--- P. the API"
 W=$(win)
 curl -fs "$U/mssql/properties?instance=$iid" > "$WORK/props.json" || fail "P: /api/mssql/properties"
-[ "$(objs "$WORK/props.json" properties | jq 'length')" = 42 ] || fail "P: the properties part has $(objs "$WORK/props.json" properties | jq 'length') rows"
+[ "$(objs "$WORK/props.json" properties | jq 'length')" = 44 ] || fail "P: the properties part has $(objs "$WORK/props.json" properties | jq 'length') rows"
 [ "$(objs "$WORK/props.json" changes | jq 'length')" = "$(q "select count(*) from pgvigil.mssql_property_change where instance_id=$iid")" ] || fail "P: the changes part"
 [ "$(objs "$WORK/props.json" state | jq -r '.[0].collection')" = mssql_properties ] || fail "P: the state part"
 curl -fs "$U/mssql/procs?instance=$iid&$W" > "$WORK/procs.json" || fail "P: /api/mssql/procs"
@@ -782,7 +781,7 @@ if [ -n "${PGVIGIL_SHOTS:-}" ]; then
   echo "--- S. the pages in a headless Chromium, both themes, 1600 wide"
   # the binary embeds internal/web/dist: a bundle built before the pages existed serves none of them. The bundle is
   # saved first and searched as a file: under pipefail 'curl | grep -q' fails whenever grep finds its match and
-  # leaves before curl has written the whole body (158's run 2 failed so on a served, correct bundle)
+  # leaves before curl has written the whole body (it fails so on a served, correct bundle)
   curl -fs "http://127.0.0.1:$PORT/app.js" -o "$WORK/app.js" || fail "S: the UI serves no app.js"
   grep -q 'max executions /min' "$WORK/app.js" || fail "S: the served bundle has no Procedures page: run 'npm run build' in web/ before the proof (the binary embeds internal/web/dist)"
   mkdir -p "$PGVIGIL_SHOTS"
@@ -861,7 +860,7 @@ for (const theme of ['light', 'dark']) {
   check(await go(`#/mssqlproperties?i=${a.iid}&w=6h`, 'property'), T + 'Properties rendered');
   const p = await pv(`const t = gridOf('property'); return { n: rowsOf(t).length, cpu: text(t, rowWith(t, 'property', 'Logical CPUs'), 'value'), plan: text(t, rowWith(t, 'property', 'Power plan'), 'value') };`);
   // on a Linux host the power plan is not read and the cell says so; elsewhere it names a plan
-  check(p.n === 42 && /^[\d,.\s]+$/.test(p.cpu ?? '') && (a.linux ? p.plan === 'not read' : !!p.plan && p.plan !== 'not read'), T + `Properties: ${p.n} rows, logical CPUs '${p.cpu}', power plan '${p.plan}'`);
+  check(p.n === 44 && /^[\d,.\s]+$/.test(p.cpu ?? '') && (a.linux ? p.plan === 'not read' : !!p.plan && p.plan !== 'not read'), T + `Properties: ${p.n} rows, logical CPUs '${p.cpu}', power plan '${p.plan}'`);
   await shot('properties', theme);
 
   check(await go(`#/mssqlprocs?i=${a.iid}&w=6h`, 'total duration (sec)'), T + 'Procedures rendered');

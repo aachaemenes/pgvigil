@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // The Summary of the SQL Server instances: one row per instance and status group, read from the findings the
@@ -27,7 +28,8 @@ WITH inst AS (
          ('agent', ARRAY['mssql_services']), ('dbmail', ARRAY['mssql_services']), ('dumps', ARRAY['mssql_services']),
          ('qs', ARRAY['mssql_querystore']), ('audit', ARRAY['mssql_audit']),
          ('checkdb', ARRAY['mssql_checks']), ('logspace', ARRAY['mssql_checks']), ('corruption', ARRAY['mssql_checks']),
-         ('alerts', ARRAY['mssql_checks']), ('identity', ARRAY['mssql_identity']), ('elasticpool', ARRAY['mssql_pool'])
+         ('alerts', ARRAY['mssql_checks']), ('identity', ARRAY['mssql_identity']), ('elasticpool', ARRAY['mssql_pool']),
+         ('custom', ARRAY['mssql_custom'])
 ), runs AS (
   -- the last run of each of the group's collections (collection_dates keeps one row per collection): old = older
   -- than three of its intervals, the rule of the daily check 'collection stale' ($1 the intervals, $2 the age for
@@ -52,19 +54,34 @@ WITH inst AS (
   -- collection of the group is skipped on this kind of server; never = nothing ran yet
   SELECT instance_id, key, read_at, err,
          -- Elastic Pool Storage where mssql_pool never ran is n/a, not 'not yet': most servers are in no pool, and a
-         -- store from before mssql_pool holds no run of it
+         -- store from before mssql_pool holds no run of it; Custom Checks too where mssql_custom never ran (the file has
+         -- no SQL Server check: the collection connects to no instance for it, ST6), or where no check has been listed
+         -- for the instance within two of its cadences (none of the file reaches it, or the file's last SQL Server
+         -- check was taken out: custom_findings' own rule) - DBA Dash's N/A, never an OK of nothing; a last run that
+         -- failed (a fence refusal, a connection) is 'failed' with its reason, never n/a
          -- Disk on Azure SQL Database is n/a (B2a): mssql_storage reads the database's files there, and the platform has no volumes
          CASE WHEN key = 'disk' AND EXISTS (SELECT 1 FROM pgvigil.instances x WHERE x.instance_id = runs.instance_id AND x.platform = 'azuresqldb') THEN 'n/a'
-              WHEN fresh > 0 THEN 'ok' WHEN old > 0 THEN 'stale' WHEN failed > 0 THEN 'failed' WHEN skipped > 0 OR key = 'elasticpool' THEN 'n/a' ELSE 'never' END AS state
+              WHEN key = 'custom' AND failed = 0 AND NOT EXISTS (
+                SELECT 1 FROM pgvigil.custom_checks cc WHERE cc.instance_id = runs.instance_id AND cc.is_present
+                   AND cc.snapshot_at >= now() - make_interval(secs => greatest(2 * cc.every_secs, 300))) THEN 'n/a'
+              WHEN fresh > 0 THEN 'ok' WHEN old > 0 THEN 'stale' WHEN failed > 0 THEN 'failed' WHEN skipped > 0 OR key IN ('elasticpool', 'custom') THEN 'n/a' ELSE 'never' END AS state
     FROM runs
 ), f AS (
   SELECT instance_id, severity, setting, value, detail,
          CASE source WHEN 'mssql_running' THEN 'blocking' WHEN 'mssql_xe' THEN 'events'
                      -- DBA Dash's Log Shipping and Mirroring columns apart from Availability Groups (task P08)
-                     WHEN 'mssql_hadr' THEN CASE WHEN setting LIKE 'log shipping%' THEN 'logship' WHEN setting LIKE 'mirroring%' THEN 'mirroring' ELSE 'availability' END
+                     -- (0143's log shipping findings do not start with 'log shipping': by their words;
+                     -- nor do five of its eight mirroring findings start with 'mirroring' - 'the mirroring witness is
+                     -- disconnected', 'the principal of a mirrored database changed' ...: by the word 'mirror', which no
+                     -- availability group, cluster, log shipping or replication finding's name holds)
+                     WHEN 'mssql_hadr' THEN CASE WHEN setting LIKE '%log shipping%' OR setting LIKE 'a log-shipped database%'
+                                                      OR setting IN ('log restores are behind', 'a database has been restoring for days') THEN 'logship'
+                                                 WHEN setting LIKE '%mirror%' THEN 'mirroring' ELSE 'availability' END
                      -- a volume's free space is DBA Dash's Drive Space (task 176); the files and the version store its File Space
                      -- DBA Dash's % Max Size apart (a file at or within one growth of its max size, task P08)
                      WHEN 'mssql_storage' THEN CASE WHEN setting = 'a volume under 10 % free' THEN 'disk' WHEN setting LIKE '%max size%' THEN 'pctmax' ELSE 'filespace' END
+                     -- task 407: a SQL Server volume full within 30 days is DBA Dash's Drive Space too; no other storage depth arm has a cell
+                     WHEN 'mssql_storage_depth' THEN 'disk'
                      -- DBA Dash's Backup FULL, DIFF and LOG columns apart (task P08): a log or a differential finding by its
                      -- name ('backups not judged' by its detail), any other backup finding is FULL's
                      WHEN 'mssql_jobs' THEN CASE WHEN NOT (setting ILIKE '%backup%' OR value = 'mssql_backups') THEN 'jobs'
@@ -86,7 +103,8 @@ WITH inst AS (
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage' FROM pgvigil.mssql_storage_findings
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_backup_loc' FROM pgvigil.mssql_backup_loc_findings
           -- task 304 (0147): the log chain broken is Backup LOG's
-          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_restore' FROM pgvigil.mssql_restore_findings) u
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_restore' FROM pgvigil.mssql_restore_findings
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage_depth' FROM pgvigil.mssql_storage_depth_findings WHERE check_name = 'a volume full within 30 days') u
    WHERE severity IN ('critical', 'warning')
 ), started AS (
   SELECT m.instance_id, m.started_at FROM pgvigil.mssql_instance m JOIN inst USING (instance_id)
@@ -221,9 +239,21 @@ WITH inst AS (
                          || coalesce(', critical over ' || trim_scale(ps.critical * 100) || ' %', '') || ')'] END,
          ps.minute
     FROM inst i LEFT JOIN LATERAL pgvigil.mssql_pool_storage_status(i.instance_id) ps ON true
+  UNION ALL
+  -- Custom Checks (ST6b; DBA Dash's CustomCheckStatus, the worst of its custom check's rows): the instance's custom
+  -- findings - a status check's rows at Status 1 / 2 (DBA Dash's custom check), a threshold crossed, a failed or late
+  -- check (custom_findings, 0269)
+  SELECT st.instance_id, 'custom', true,
+         count(cf.instance_id) FILTER (WHERE cf.severity = 'critical')::int, count(cf.instance_id) FILTER (WHERE cf.severity = 'warning')::int, NULL::text,
+         coalesce((array_agg(cf.setting || coalesce(': ' || nullif(cf.value, ''), '') ORDER BY cf.severity, cf.setting)
+                   FILTER (WHERE cf.instance_id IS NOT NULL))[1:12], '{}'),
+         NULL::timestamptz
+    FROM st LEFT JOIN pgvigil.custom_findings cf ON cf.instance_id = st.instance_id
+   WHERE st.key = 'custom'
+   GROUP BY st.instance_id
 )
-SELECT c.instance_id, c.key, st.state, c.sampled, coalesce(c.critical, 0) AS critical, coalesce(c.warning, 0) AS warning,
-       c.value, c.detail, st.read_at, st.err, c.since
+SELECT c.instance_id AS "instance_id@inst", c.key, st.state, c.sampled, coalesce(c.critical, 0) AS critical, coalesce(c.warning, 0) AS warning,
+       c.value, c.detail AS "detail@fsummary", st.read_at, st.err, c.since
   FROM cell c JOIN st USING (instance_id, key)
  ORDER BY 1, 2`
 
@@ -250,13 +280,23 @@ SELECT d.instance_id, count(*)::int AS n,
  WHERE d.is_present AND NOT d.is_template
  GROUP BY d.instance_id`
 
-// The Summary's Snapshot Age and Collection Errors (24hrs) columns for every instance of either engine (DBA Dash's
-// SnapshotAgeStatus and CollectionErrorStatus, task P08): the youngest and the oldest last run of the instance's
-// collections that run there and last ended well (not disabled, not skipped, not failed) in seconds, how many of them are
-// stale (older than three intervals, at least 300 s; $2 when no interval is known: the daily check 'collection
-// stale') and how many failed at their last run, and the errors collection_log holds for the last 24 hours. $1 the
-// intervals as the daily checks read them.
-const sqlSummaryCollect = `
+// The Summary's Snapshot Age and Collection Health columns for every instance of either engine (DBA Dash's
+// SnapshotAgeStatus, task P08, and 4.25.0's CollectionHealthStatus, B6.1): the youngest and the oldest last run of the
+// instance's collections that run there and last ended well (not disabled, not skipped, not failed) in seconds, how
+// many of them are stale (older than three intervals, at least 300 s; $2 when no interval is known: the daily check
+// 'collection stale'), and Collection Health's ch_level / ch_n / ch_detail / ch_all_na from
+// pgvigil.collection_health_summary (0166 - the page and the Summary read one judgement). $1 the intervals as the
+// daily checks read them. A repository before 0166 (a 'serve' started on a store not yet migrated: only 'run' refuses
+// a schema behind the binary) reads sqlSummaryCollectPre0166: ch_missing true, the cell N/A in words, the other cells
+// still read.
+var sqlSummaryCollect = strings.NewReplacer("{ch}", sqlSummaryCH, "{chjoin}", sqlSummaryCHJoin).Replace(sqlSummaryCollectBase)
+var sqlSummaryCollectPre0166 = strings.NewReplacer("{ch}", sqlSummaryCHNone, "{chjoin}", "").Replace(sqlSummaryCollectBase)
+
+const sqlSummaryCH = `max(h.level) AS ch_level, max(h.n) AS ch_n, max(h.collections) AS ch_detail, bool_and(h.all_na) AS ch_all_na, false AS ch_missing`
+const sqlSummaryCHNone = `NULL::int AS ch_level, NULL::int AS ch_n, NULL::text AS ch_detail, NULL::boolean AS ch_all_na, true AS ch_missing`
+const sqlSummaryCHJoin = `LEFT JOIN pgvigil.collection_health_summary($1::jsonb) h ON h.instance_id = i.instance_id`
+
+const sqlSummaryCollectBase = `
 WITH c AS (
   SELECT c.instance_id, c.collection, c.status, c.snapshot_at,
          coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS iv
@@ -266,20 +306,21 @@ WITH c AS (
 SELECT i.instance_id,
        -- the ages count from runs that ended well only: log_collection moves snapshot_at on a failed run too, and a
        -- collection failing for days is not a young one (DBA Dash's collection dates move on success); Collection
-       -- Errors shows the failing ones
+       -- Health shows the failing ones
        (min(greatest(0, extract(epoch FROM now() - c.snapshot_at))) FILTER (WHERE c.status = 'ok' AND c.iv IS DISTINCT FROM 0))::bigint AS age_min_secs,
        (max(greatest(0, extract(epoch FROM now() - c.snapshot_at))) FILTER (WHERE c.status = 'ok' AND c.iv IS DISTINCT FROM 0))::bigint AS age_max_secs,
        count(*) FILTER (WHERE c.status NOT IN ('skipped', 'error') AND c.iv IS DISTINCT FROM 0
                           AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END))::int AS stale,
-       count(*) FILTER (WHERE c.status = 'error' AND c.iv IS DISTINCT FROM 0)::int AS failing,
-       coalesce(array_agg(c.collection || CASE WHEN c.status = 'error' THEN ': the last run failed' ELSE ': stale, the last run ' || to_char(c.snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC' END
-                          ORDER BY c.status <> 'error', c.collection)
-                FILTER (WHERE c.iv IS DISTINCT FROM 0 AND (c.status = 'error' OR (c.status <> 'skipped'
-                          AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END)))), '{}') AS detail,
-       (SELECT count(*) FROM pgvigil.collection_log l
-         WHERE l.instance_id = i.instance_id AND l.status = 'error' AND l.snapshot_at > now() - interval '24 hours')::int AS errors_24h
+       -- the stale collections, one line each (the Snapshot Age cell's detail); the failing ones are Collection Health's
+       -- (ch_detail), which honours an acknowledgement itself
+       coalesce(array_agg(c.collection || ': stale, the last run ' || to_char(c.snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC'
+                          ORDER BY c.collection)
+                FILTER (WHERE c.status NOT IN ('skipped', 'error') AND c.iv IS DISTINCT FROM 0
+                          AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END)), '{}') AS detail,
+       {ch}
   FROM pgvigil.instances i
   LEFT JOIN c ON c.instance_id = i.instance_id
+  {chjoin}
  WHERE i.is_active
  GROUP BY i.instance_id`
 
@@ -297,16 +338,21 @@ SELECT k.key, k.label, k.unit, k.warn_default, k.crit_default, k.max_value,
 // database state of the PostgreSQL ones (the Summary column both engines share), the collection ages and errors of
 // every instance and the root's uptime and memory dump thresholds.
 func (s *Server) MSSQLSummary(w http.ResponseWriter, r *http.Request) {
-	exp, err := json.Marshal(s.expected)
+	exp, err := json.Marshal(s.expectedNow())
 	if err != nil {
 		s.reply(w, r, nil, err)
 		return
+	}
+	collectSQL := sqlSummaryCollect
+	var have bool
+	if err := s.pool.QueryRow(r.Context(), `SELECT to_regprocedure('pgvigil.collection_health_summary(jsonb)') IS NOT NULL`).Scan(&have); err == nil && !have {
+		collectSQL = sqlSummaryCollectPre0166
 	}
 	s.multiPart(w, r, []part{
 		{"cells", sqlMSSQLSummaryCells, []any{string(exp), DefaultStaleSecs}},
 		{"servers", sqlMSSQLSummaryServers, nil},
 		{"pgdb", sqlPGDatabaseState, nil},
-		{"collect", sqlSummaryCollect, []any{string(exp), DefaultStaleSecs}},
+		{"collect", collectSQL, []any{string(exp), DefaultStaleSecs}},
 		{"roots", sqlSummaryRoots, nil},
 	})
 }

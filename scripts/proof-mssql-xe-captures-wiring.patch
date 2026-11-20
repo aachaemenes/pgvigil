@@ -1,0 +1,123 @@
+diff --git c/cmd/pgvigil/main.go i/cmd/pgvigil/main.go
+index be6b258c..afefc386 100644
+--- c/cmd/pgvigil/main.go
++++ i/cmd/pgvigil/main.go
+@@ -132,6 +132,8 @@ func runMSSQLXE(args []string) error {
+ 	drop := fs.Bool("drop", false, "with -print: the script that drops the sessions instead")
+ 	id := fs.String("install-id", "main", "the install id in the session names (pgvigil_<install id>_<capture>): 1 to 20 lower-case letters and digits")
+ 	form := fs.String("form", mssql.XEFormServer, "server (SQL Server), rds (Amazon RDS for SQL Server), azuresqlmi, azuresqldb or cloudsql (Google Cloud SQL)")
++	captures := fs.String("captures", "", "the optional captures instead of the four sessions (task 411): waits,warnings,warncounts,modules or all")
++	text := fs.String("text", "", "with -captures, required: the instance's query_text - full, normalized or none (none leaves the statement text action out)")
+ 	if err := fs.Parse(args); err != nil {
+ 		return err
+ 	}
+@@ -142,6 +144,23 @@ func runMSSQLXE(args []string) error {
+ 	if *drop {
+ 		script, err = mssql.XEDropScript(*id, *form)
+ 	}
++	if *captures != "" {
++		var list []string
++		if *captures != "all" {
++			list = strings.Split(*captures, ",")
++		}
++		switch {
++		case *drop:
++			script, err = mssql.XECapturesDropScript(*id, *form, list)
++		case *text == "":
++			return errors.New("-captures needs -text full, normalized or none: the instance's query_text (the XE captures tab prints the script with the instance's own policy and settings)")
++		default:
++			// the CLI reads no repository: the script carries the defaults and says so in its header
++			set := mssql.DefaultXECaptureSettings()
++			set.Origin = mssql.XECaptureDefaultsOrigin
++			script, err = mssql.XECapturesScript(*id, *form, *text, list, set)
++		}
++	}
+ 	if err != nil {
+ 		return err
+ 	}
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 957ed06a..255e1b54 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -282,6 +282,8 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/audit", s.MSSQLAudit)
+ 	api.HandleFunc("GET /api/mssql/security", s.MSSQLSecurity)
+ 	api.HandleFunc("POST /api/mssql/security/config", s.MSSQLSecurityConfigWrite)
++	api.HandleFunc("GET /api/mssql/xecaptures", s.MSSQLXECaptures)
++	api.HandleFunc("POST /api/mssql/xecaptures/config", s.MSSQLXECapturesConfigWrite)
+ 	api.HandleFunc("GET /api/mssql/xe", s.MSSQLXE)
+ 	api.HandleFunc("GET /api/mssql/xe/deadlock", s.MSSQLXEDeadlock)
+ 	api.HandleFunc("GET /api/mssql/xe/deadlock.xdl", s.MSSQLXEDeadlockXDL)
+diff --git c/web/src/main.ts i/web/src/main.ts
+index 23dec992..4be5532c 100644
+--- c/web/src/main.ts
++++ i/web/src/main.ts
+@@ -48,7 +48,7 @@ import { perfSummaryView } from './perfsummary';
+ import { performanceView } from './performance';
+ import { mssqlSummary } from './mssql_summary';
+ import { mssqlWaitsView } from './mssql_waits';
+-import { mssqlBlocked, mssqlSlow, mssqlAgEvents } from './mssql_xe';
++import { mssqlBlocked, mssqlSlow, mssqlAgEvents, mssqlXEWaits, mssqlXEWarnings, mssqlXEModules, mssqlXECaptures } from './mssql_xe';
+ import { mssqlDeadlocksView } from './mssql_deadlocks';
+ import { hasAvailability, mssqlAgView, mssqlAvailability, mssqlLogShippingView, mssqlMirroringView } from './mssql_hadr';
+ import { mssqlBackups, mssqlBackupsFleetSection } from './mssql_backups';
+@@ -104,7 +104,7 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
+ // a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
+ const mssqlPages: Record<string, Render> = {
+   summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
+-  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
++  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_xewaits: mssqlXEWaits, mssql_xewarnings: mssqlXEWarnings, mssql_xemodules: mssqlXEModules, mssql_xecaptures: mssqlXECaptures, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
+   jobstimeline: jobsTimelineView,
+   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
+   mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
+@@ -127,6 +127,7 @@ const mssqlTabRuns: Record<string, string[]> = {
+   drives: ['mssql_storage'], dbspace: ['mssql_storage'], dbfiles: ['mssql_storage'], driveperf: ['mssql_fileio'],
+   rp_props: ['mssql_reports'], rp_failed: ['mssql_reports'], rp_roles: ['mssql_reports'], rp_services: ['mssql_reports'], rp_pwage: ['mssql_reports'], rp_tables: ['mssql_reports'],
+   mssqlsecurity: ['mssql_security'],
++  mssql_xewaits: ['mssql_xe_captures'], mssql_xewarnings: ['mssql_xe_captures'], mssql_xemodules: ['mssql_xe_captures'], mssql_xecaptures: ['mssql_xe_captures'],
+ };
+ for (const [tab, cols] of Object.entries(mssqlTabRuns)) {
+   const page = mssqlPages[tab];
+diff --git c/web/src/mssql_deadlocks.ts i/web/src/mssql_deadlocks.ts
+index b354f5ea..8ccadf62 100644
+--- c/web/src/mssql_deadlocks.ts
++++ i/web/src/mssql_deadlocks.ts
+@@ -5,6 +5,7 @@
+ // victim's details, and the processes and resources as grids (the picture's text form).
+ // Data: /api/mssql/xe (state, findings, deadlocks), /api/mssql/xe/deadlock and deadlock.xdl, /api/blocking/history.
+ import { get, Row, rowsOf, Table } from './api';
++import { xeLossNote } from './mssql_xe';
+ import { lineChart } from './chart';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
+@@ -127,6 +128,8 @@ export async function mssqlDeadlocksView(ctx: Ctx): Promise<HTMLElement> {
+       { key: 'severity', fmt: sevBadge }, { key: 'check_name', label: 'finding' }, { key: 'object', wide: true }, { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime },
+     ]));
+     sec.append(stateLine(rowsOf(st.state).find(r => r.capture === 'deadlocks')));
++    const lost = await xeLossNote(ctx, 'deadlocks').catch(() => null);
++    if (lost) sec.append(lost);
+     const rows = rowsOf(dl.deadlocks);
+     const trend = rowsOf(tr.deadlock_trend);
+     // the rate from the trend (every deadlock of its window, not the list's newest 500); the trend reads at most 7 days
+diff --git c/web/src/router.ts i/web/src/router.ts
+index 65c413fb..720d3af7 100644
+--- c/web/src/router.ts
++++ i/web/src/router.ts
+@@ -123,7 +123,7 @@ export const instanceGroups: TabGroup[] = [
+ // never offered for it, and the other way round). Summary and Findings are shared: both read by instance.
+ export const mssqlInstanceTabs: Record<string, string> = {
+   summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_waiting: 'Waiting tasks', mssql_deadlocks: 'Deadlocks',
+-  mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', mssqlbackups: 'Backups', mssqlrestore: 'Restore chain', mssqljobs: 'Jobs',
++  mssql_blocked: 'Blocked reports', mssql_xewaits: 'Waits over the threshold', mssql_xewarnings: 'Query warnings', mssql_xemodules: 'Procedure runs', mssql_xecaptures: 'XE captures', findings: 'Findings', availability: 'Availability', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', mssqlbackups: 'Backups', mssqlrestore: 'Restore chain', mssqljobs: 'Jobs',
+   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlazure: 'Azure', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
+   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
+   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlsecurity: 'Security', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
+@@ -135,7 +135,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
+   drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', collectorerrors: 'Collector errors',
+ };
+ export const mssqlInstanceGroups: TabGroup[] = [
+-  { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
++  { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'mssql_xewaits', 'mssql_xewarnings', 'mssql_xemodules', 'mssql_xecaptures', 'findings'] },
+   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlsecurity', 'mssqlactions'] },
+   { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectorerrors'] },
+   { key: 'hadr', name: 'HA/DR', tabs: ['mssqlbackups', 'mssqlrestore', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'availability'] },

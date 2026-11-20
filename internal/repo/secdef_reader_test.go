@@ -19,7 +19,7 @@ import (
 // branch takes no reader grant back - and it answers one bigint position, STABLE, no write, from mssql_jobs_cursor,
 // mssql_qs_store and mssql_qs_plan, tables the reader SELECTs anyway: 0083; found by reportrole-g1). A new one fails
 // here until it is read and listed with its reason; the list holds signatures, so a new overload of a listed name
-// (admin_inventory(text)) fails too (the code review of REPORT ROLE, part B). Needs a migrated repository:
+// (admin_inventory(text)) fails too. Needs a migrated repository:
 // PGVIGIL_REPO_TEST_DSN.
 func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
@@ -33,7 +33,7 @@ func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
-	// read and listed at the join of REPORT ROLE with 206 and 310 (j14, 11-14): alert_contact_routes (0136) checks
+	// read and listed with REPORT ROLE, 206 and 310 together: alert_contact_routes (0136) checks
 	// session_user - a member of pgvigil_alerter or the schema's owner, else 'is not the alert sender' - and the report
 	// login is refused when it is a member of any role but pgvigil_reader (reportrole.go storeCheckSQL), so a report
 	// gets an error, never a contact's address; dbadash_import_stored and dbadash_import_target (0134) are STABLE
@@ -44,7 +44,17 @@ func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 		"alert_log_partition(timestamp with time zone)": true, "mssql_hadr_cursor(integer, text)": true,
 		"alert_contact_routes()": true,
 		"dbadash_import_stored(integer, text, timestamp with time zone, timestamp with time zone)": true,
-		"dbadash_import_target(jsonb)": true}
+		"dbadash_import_target(jsonb)": true,
+		// ST5a, 0263: a page instance's name and its own schedules and query_text, STABLE, no secret, from admin_instances,
+		// which the reader SELECTs anyway; SECURITY DEFINER for the collector's login, which has no SELECT
+		"admin_instance_settings()": true,
+		// 0300: apply_roles takes the reader's EXECUTE back from the Parquet export's door
+		// (export_run_record, export_off: 0256, granted in 0300) and the agent door (the seven
+		// agent_investigation_*: 0268, granted in 0300) - owner-only there, then granted to pgvigil_exporter
+		// and pgvigil_investigator - so the nine left this list; and findings_history_partition (0154: the history's month
+		// partition, DDL as the owner, its guard the alerter or the owner) is on apply_roles' owner-only list there, never
+		// on this one
+	}
 	// the signature without the schema (oidvectortypes: argument types as format_type writes them), whatever the
 	// connection's search_path
 	rows, err := conn.Query(ctx, `SELECT p.proname || '(' || oidvectortypes(p.proargtypes) || ')' FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace

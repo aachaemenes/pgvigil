@@ -189,7 +189,10 @@ func TestEngine(t *testing.T) {
 	}}
 	ok.Instances = append(ok.Instances,
 		Instance{Name: "ms-act", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "job_start", "job_stop"}},
-		Instance{Name: "ms-act-none", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "file:/run/secrets/ms-act"})
+		Instance{Name: "ms-act-none", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "file:/run/secrets/ms-act"},
+		// task 301b: RESTORE VERIFYONLY through the door (off unless named here)
+		Instance{Name: "ms-verify", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "verify_backup"},
+			Reads: &Reads{AutoCloseDatabases: true, BackupFiles: true}})
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("a valid two-engine config was rejected: %v", err)
 	}
@@ -249,5 +252,38 @@ func TestInlinePassword(t *testing.T) {
 		if got := inlinePassword(dsn); got != want {
 			t.Errorf("inlinePassword(%q) = %v; want %v", dsn, got, want)
 		}
+	}
+}
+
+// A site that disabled mssql_cpu (the counters' old home) or mssql_counters keeps sys.dm_os_performance_counters
+// unread: the counters and the daily catalogue are off; the per-database counters follow mssql_activity only (task
+// 401).
+func TestCounterOptOut(t *testing.T) {
+	c := &Config{}
+	for _, off := range []string{"mssql_cpu", "mssql_counters"} {
+		in := Instance{Disabled: []string{off}}
+		for _, col := range []string{"mssql_counters", "mssql_counter_catalog"} {
+			if got := c.Interval(in, col, time.Hour); got != 0 {
+				t.Fatalf("disabled %s: %s runs every %v", off, col, got)
+			}
+		}
+		if got := c.Interval(in, "mssql_counters_db", time.Hour); got != time.Hour {
+			t.Fatalf("disabled %s: mssql_counters_db %v, want 1h", off, got)
+		}
+	}
+	if got := c.Interval(Instance{Disabled: []string{"mssql_activity"}}, "mssql_counters_db", time.Hour); got != 0 {
+		t.Fatalf("disabled mssql_activity: mssql_counters_db runs every %v", got)
+	}
+}
+
+// A kind on a DMV column is refused in words (the collector's arithmetic for a DMV column is its own); a DMV column
+// with no kind passes.
+func TestCounterEditsDMVKind(t *testing.T) {
+	err := validateCounterEdits("root", CounterEdits{Add: []CounterRef{{Object: "sys.dm_os_schedulers", Counter: "yield_count", Kind: "rate"}}})
+	if err == nil || !strings.Contains(err.Error(), "is a DMV column: its kind is fixed by pgvigil") {
+		t.Fatalf("a kind on a DMV column: %v", err)
+	}
+	if err := validateCounterEdits("root", CounterEdits{Add: []CounterRef{{Object: "sys.dm_os_schedulers", Counter: "yield_count"}}}); err != nil {
+		t.Fatalf("a DMV column with no kind: %v", err)
 	}
 }

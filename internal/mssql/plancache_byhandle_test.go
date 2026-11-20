@@ -166,14 +166,14 @@ func TestMaskPlanXML(t *testing.T) {
 	if got := MaskPlanXML(""); got != "" {
 		t.Errorf("empty: %q", got)
 	}
-	// review 20261114-173221 finding 4: a mask that ran past an attribute's quote broke the XML, and one stopped at
+	// a mask that ran past an attribute's quote broke the XML, and one stopped at
 	// &quot;'s ';' and kept the secret
 	wrap := func(stmt string) string {
 		return `<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>` +
 			`<StmtSimple StatementText="` + stmt + `" StatementId="1" QueryPlanHash="0x01"/></Statements></Batch></BatchSequence></ShowPlanXML>`
 	}
 	for _, c := range []struct{ name, stmt, secret string }{
-		// a -P outside a sqlcmd, bcp, osql or isql command line is no password (415's review: 'a -Pct' is arithmetic)
+		// a -P outside a sqlcmd, bcp, osql or isql command line is no password ('a -Pct' is arithmetic)
 		{"sqlcmd -P at the end of a statement", `EXEC xp_cmdshell &apos;sqlcmd -S . -U sa -Ps3cretF`, "s3cretF"},
 		{"net use in xp_cmdshell", `EXEC xp_cmdshell &apos;net use \\h\s pass1&apos;`, "pass1"},
 		{"Pwd in double quotes in a connection string", `SELECT * FROM OPENROWSET(&apos;SQLNCLI&apos;, &apos;Server=x;Uid=u;Pwd=&quot;s3cretD&quot;;&apos;, &apos;SELECT 1&apos;)`, "s3cretD"},
@@ -233,7 +233,7 @@ func TestPlanStatsUsed(t *testing.T) {
 	}
 }
 
-// TestPlanConfirm: the evict's typed code is SHA-256 over the whole handle (the lead's call after proof H10 on 2022:
+// TestPlanConfirm: the evict's typed code is SHA-256 over the whole handle (chosen after proof H10 on 2022:
 // a handle's last 8 digits are zero padding, 00000000 for nearly every plan); two handles that share their object id
 // and differ only past it get different codes; the case of the digits and the 0x do not matter.
 func TestPlanConfirm(t *testing.T) {

@@ -40,7 +40,8 @@ import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { closeRange, rangePicker } from './rangepicker';
 import { fmt, fmtClock } from './tz';
-import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, tagPages, window_, drillHome } from './router';
+import { groupOf, groupsFor, href, isLive, isMssql, onAddressNoted, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, tagPages, window_, drillHome } from './router';
+import { resolveView, setMailRender } from './views';
 import { mssqlRunningView } from './mssql_running';
 import { runningView } from './running';
 import { runningFleet } from './running_fleet';
@@ -48,15 +49,18 @@ import { perfSummaryView } from './perfsummary';
 import { performanceView } from './performance';
 import { mssqlSummary } from './mssql_summary';
 import { mssqlWaitsView } from './mssql_waits';
-import { mssqlBlocked, mssqlSlow, mssqlAgEvents } from './mssql_xe';
+import { mssqlBlocked, mssqlSlow, mssqlAgEvents, mssqlXEWaits, mssqlXEWarnings, mssqlXEModules, mssqlXECaptures } from './mssql_xe';
 import { mssqlDeadlocksView } from './mssql_deadlocks';
-import { hasAvailability, mssqlAvailability } from './mssql_hadr';
+import { hasAvailability, mssqlAgView, mssqlAvailability, mssqlLogShippingView, mssqlMirroringView } from './mssql_hadr';
+import { geoReplBlock, hasGeoRepl } from './georepl';
+import { cloudReplicasBlock, hasCloudReplicas } from './cloud_replicas';
 import { mssqlBackups, mssqlBackupsFleetSection } from './mssql_backups';
 import { mssqlRestore } from './mssql_restore';
 import { mssqlJobs } from './mssql_jobs';
 import { jobsPgView } from './jobs_pg';
 import { pgDeadlocksView } from './pg_deadlocks';
 import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
+import { mssqlMaintenanceView } from './mssql_maintenance';
 import { mssqlRowVersionsView } from './mssql_rowversions';
 import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
 import { mssqlQueryStoreView } from './mssql_querystore';
@@ -65,6 +69,7 @@ import { hasPool, mssqlPoolView } from './pools';
 import { azureSummaryView, mssqlAzureView } from './azuredb';
 import { mssqlPropertiesView } from './mssql_properties';
 import { mssqlAuditView } from './mssql_audit';
+import { mssqlSecurityView } from './mssql_security';
 import { mssqlChecksFleetView, mssqlChecksView } from './mssql_checks';
 import { pgDbOptionsFleetView, pgDbOptionsView } from './pg_dboptions';
 import { mssqlErrorLogView, mssqlDefaultTraceView, mssqlSysHealthView } from './mssql_errorlog';
@@ -80,6 +85,7 @@ import { installTreeMenu } from './treemenu';
 import { installFileDrop, toolsButton } from './filedrop';
 import { retentionView } from './retention';
 import { dropMenu, el, fmtBytes } from './ui';
+import { roleLine, setWho } from './needs';
 import { cutWords, exportButtons } from './export';
 import { mailButton, mailRenderBoot, reportMailView } from './reportmail';
 import { connectionsView } from './connections';
@@ -88,12 +94,19 @@ import { diffView } from './diff';
 import { tableSizeView } from './tablesize';
 import { dbFilesView, dbSpaceView, drivePerfView, drivesView, pgTempView } from './drives';
 import { collectionDatesView } from './collectiondates';
+import { collectorErrorsView } from './collectorerrors';
+import { mssqlErrorFleetView } from './mssql_errorfleet';
+import { collectionHealthView } from './collection_health';
+import { collectionPerfView } from './collectionperf';
 import { collectorView } from './collector';
 import { aboutLink, aboutView } from './about';
 import { adminInstancesView } from './admin_instances';
 import { adminApplicationsView } from './applications';
+import { adminCountersView } from './metrics';
+import { adminProtectionView } from './admin_protection';
 import { reportPages } from './reports';
 import { customReportsView } from './customreports';
+import { agentsOn, investigationsView } from './investigate';
 import { communityView } from './community';
 import { instanceFrame } from './instheader';
 
@@ -101,27 +114,31 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
 // a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
 const mssqlPages: Record<string, Render> = {
   summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
-  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
-  jobstimeline: jobsTimelineView,
-  availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
-  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
-  drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
+  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_xewaits: mssqlXEWaits, mssql_xewarnings: mssqlXEWarnings, mssql_xemodules: mssqlXEModules, mssql_xecaptures: mssqlXECaptures, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
+  jobstimeline: jobsTimelineView, custom: customView,
+  availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); s.append(await geoReplBlock(c).catch(() => document.createElement('span'))); s.append(await cloudReplicasBlock(c).catch(() => document.createElement('span'))); return s; },
+  mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
+  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
+  drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, collectionhealth: collectionHealthView, collectionperf: collectionPerfView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlazure: mssqlAzureView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
   mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
-  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
-  mssqlerrorlog: mssqlErrorLogView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
+  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlsecurity: mssqlSecurityView, mssqlchecks: mssqlChecksView,
+  schema: c => schemaView(c.instance!, c),   // A26-PG's tab: the same page, its SQL Server reply (q_schema.go)
+  mssqlerrorlog: mssqlErrorLogView, mssqlerrors: mssqlErrorFleetView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
   customreports: customReportsView, community: communityView,
   ...reportPages,
 };
 // the SQL Server tabs whose own read says nothing when their collection was skipped on the instance (a platform rule
 // such as Azure SQL Database's, a missing right): the page opens with the collector's own reason (GET /api/mssql/state)
 const mssqlTabRuns: Record<string, string[]> = {
-  mssqlstorage: ['mssql_storage'], mssqlfiles: ['mssql_storage'], rowversions: ['mssql_versionstore'], jobstimeline: ['mssql_jobs'],
+  mssqlstorage: ['mssql_storage'], mssqlfiles: ['mssql_storage'], rowversions: ['mssql_versionstore'], jobstimeline: ['mssql_jobs'], mssqlmaintenance: ['mssql_maintenance', 'mssql_jobs'],
   mssqlcpu: ['mssql_cpu'], mssqlazure: ['mssql_azuredb_resources', 'mssql_azuredb_governance'], mssqlconnections: ['mssql_activity'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
   drives: ['mssql_storage'], dbspace: ['mssql_storage'], dbfiles: ['mssql_storage'], driveperf: ['mssql_fileio'],
   rp_props: ['mssql_reports'], rp_failed: ['mssql_reports'], rp_roles: ['mssql_reports'], rp_services: ['mssql_reports'], rp_pwage: ['mssql_reports'], rp_tables: ['mssql_reports'],
+  mssqlsecurity: ['mssql_security'],
+  mssql_xewaits: ['mssql_xe_captures'], mssql_xewarnings: ['mssql_xe_captures'], mssql_xemodules: ['mssql_xe_captures'], mssql_xecaptures: ['mssql_xe_captures'],
 };
 for (const [tab, cols] of Object.entries(mssqlTabRuns)) {
   const page = mssqlPages[tab];
@@ -163,9 +180,9 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
 };
 const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
 const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, ...reportPages, admin: adminView };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, investigations: investigationsView, instances, dms, disks, storage, mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, collectionhealth: collectionHealthView, collectionperf: collectionPerfView, mssqlerrors: mssqlErrorFleetView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, admin_counters: adminCountersView, admin_backupages: adminProtectionView, ...reportPages, admin: adminView };
 const instancePages: Record<string, Render> = {
-  summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
+  summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication: async c => { const s = await replication(c); s.append(await cloudReplicasBlock(c).catch(() => document.createElement('span'))); return s; }, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
   host: async c => { const s = await hostView(c); s.append(await capacitySection(c)); return s; },   // the Capacity section (Serverless v2) under the host's own
   storage: storageView, backups: backupsView, pgbackups: pgBackupsView, pgstate: pgStateView, corruption: c => corruptionView(c.instance!),
@@ -186,7 +203,7 @@ const instancePages: Record<string, Render> = {
   connections: connectionsView, dbchanges: c => dbChangesView(c),
   customreports: customReportsView, community: communityView,
   ...reportPages,
-  drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, pgtemp: pgTempView, collectiondates: collectionDatesView,
+  drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, pgtemp: pgTempView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, collectionhealth: collectionHealthView, collectionperf: collectionPerfView,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms', 'jobs', 'running']);
@@ -327,6 +344,7 @@ function showLogin(message = '') {
     btn.disabled = true; err.hidden = true;
     try {
       session = await post<Session>('login', { username: user.value.trim(), password: pass.value });
+      setWho(session); sessionRead = true;
       pass.value = '';
       loginShown = false;
       document.body.classList.remove('signin');
@@ -344,6 +362,7 @@ function showLogin(message = '') {
 async function signOut() {
   try { await post('logout'); } catch { /* the session is gone either way */ }
   session = { login: true };
+  setWho({ login: false });
   forget();
   showLogin('Signed out.');
 }
@@ -406,12 +425,19 @@ function rangeNote(ctx: Ctx, gen: number): HTMLElement {
   return note;
 }
 
+// sessionRead: GET /api/session answered at least once with this tab's session (a 5xx or a lost network leaves it
+// false); the session is read again at a Refresh and at every render until it has (the header's role and the pages'
+// role checks follow it)
+let sessionRead = false;
 async function render(force = false) {
   window.clearTimeout(timer);
   timer = undefined;
+  if (force || !sessionRead) {
+    try { session = await get<Session>('session'); setWho(session); sessionRead = true; } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
+  }
   const gen = ++generation;
   dropMenu();   // a grid's copy menu never outlives the page it was opened on (a 30 s refresh included)
-  const ctx = parse();
+  let ctx = parse();
   // the cut reads said under the range bar are this draw's, of this window's length (api.ts)
   const w0 = window_(ctx);
   startReads(Date.parse(w0.to) - Date.parse(w0.from));
@@ -436,7 +462,7 @@ async function render(force = false) {
   const offStrip = new Set<string>();
   if (ctx.instance && isMssql(engine)) {
     // the Availability tab only where one of its collections has stored a read (an imported server keeps it: its line says why it is not read)
-    if (!imported && !(await hasAvailability(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
+    if (!imported && !(await hasAvailability(ctx.instance).catch(() => false)) && !(await hasGeoRepl(ctx.instance).catch(() => false)) && !(await hasCloudReplicas(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
     // the Elastic pool tab in the strip only where the database is in a pool now (an imported server has no pgvigil read
     // of it); its page stays one of the scope's (a link, the tree, the a11y walk)
     // asked only of an Azure SQL Database: no other kind of server is ever in an elastic pool (one request saved per render)
@@ -450,19 +476,30 @@ async function render(force = false) {
   // the Azure Summary (B2a) in the root strip only where the fleet holds an Azure SQL Database (DBA Dash shows it under
   // its Azure node); the page stays one of the root's (a link, the tree)
   if (!ctx.instance && !(await fleet().catch(() => null))?.instances.some(r => r.platform === 'azuresqldb')) offStrip.add('azuresummary');
+  // the Investigations tab only where the agent door is on (agents.enabled; read once per page load)
+  if (!ctx.instance && !(await agentsOn())) offStrip.add('investigations');
   const pages = ctx.instance ? (isMssql(engine) ? mssqlPages : instancePages) : rootPages;
   // a page of the other engine (an old link, a tree click from another instance) opens this instance's Summary
   if (ctx.instance && !pages[ctx.tab]) {
     ctx.tab = 'summary';
     history.replaceState(null, '', href(ctx, { tab: 'summary' }));   // the address says the page shown, so a reload does not repeat the fallback
   }
+  // a saved view (views.ts), before the page draws: view= loads its layouts; on entering a page (another
+  // tab, instance or tag before it, or the first render) with no view= and none of its keys, the user's default view is
+  // written into the address and read again here, so the page draws once, as the view says
+  try {
+    // gen === generation: a render the reader left while its view reads were out writes nothing
+    if (await resolveView(ctx, `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}` !== shownPath, () => gen === generation)) { ctx = parse(); shownPage = location.hash; }
+  } catch { /* the view store failed: the page draws from its address alone */ }
+  if (gen !== generation) return;
 
   // the strip: the tabs of the page's group only (the scope's main tabs, or a tree folder's), the folder named first
   const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
   // under a tag a folder's strip is the tag folder's own (TAGTREE / TAGALL; router.ts tagPages): every root page but one of an
   // engine the tag's instances lack - the page shown keeps its tab (an old link still opens it)
-  const tagFleet = ctx.tag && !ctx.instance && group.key !== 'main' ? await fleet().catch(() => null) : null;
-  const inTagStrip = tagFleet ? new Set(tagPages(group, new Set(tagFleet.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => isMssql(r.engine) ? 'sqlserver' : 'postgres')))) : null;
+  const tagFleet = ctx.tag && !ctx.instance ? await fleet().catch(() => null) : null;
+  const tagEngines = tagFleet ? new Set(tagFleet.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => isMssql(r.engine) ? 'sqlserver' : 'postgres')) : null;
+  const inTagStrip = tagEngines && group.key !== 'main' ? new Set(tagPages(group, tagEngines)) : null;
   const strip = group.tabs.filter(k => tabs[k] && (!offStrip.has(k) || k === ctx.tab) && (!inTagStrip || inTagStrip.has(k) || k === ctx.tab));
   // a folder's strip starts with the way back to the scope's main tabs; the strip is named for a screen reader
   $('tabs').setAttribute('aria-label', group.name ? group.name + ' pages' : 'Main pages');
@@ -470,8 +507,11 @@ async function render(force = false) {
     ...(group.name ? [el('a', { href: href(ctx, { tab: 'summary' }), class: 'tab-back' }, 'Summary'), el('span', { class: 'tab-group', 'aria-hidden': 'true' }, '/ ' + group.name + ':')] : []),
     // every page keeps the tag (TAGALL; what a page holds for the whole repository it says so: fleet.ts fleetWideNote)
     ...strip.map(k => el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '', ...(k === ctx.tab || k === drillHome[ctx.tab] ? { 'aria-current': 'page' } : {}) }, tabs[k])));   // a drill page marks its home tab
-  // every page of the scope, for a check that walks them all (scripts/a11y-check.mjs)
-  $('tabs').dataset.all = JSON.stringify(Object.keys(tabs).map(k => href(ctx, { tab: k })));
+  // every page of the scope, for a check that walks them all (scripts/a11y-check.mjs, wording-walk.mjs); under a tag only
+  // what its folder offers, by the strip's own rule (every main page; a folder's pages but one of an engine the tag's
+  // instances lack; the page shown), so a walk under a PostgreSQL-only tag never opens a SQL Server-only page by address
+  const offTag = tagEngines ? new Set(rootGroups.filter(g => g.key !== 'main').flatMap(g => g.tabs.filter(k => !tagPages(g, tagEngines).includes(k)))) : null;
+  $('tabs').dataset.all = JSON.stringify(Object.keys(tabs).filter(k => !offTag || !offTag.has(k) || k === ctx.tab).map(k => href(ctx, { tab: k })));
 
   const bar = $('bar');
   const refresh = el('button', { type: 'button', title: 'Read everything again' }, 'Refresh');
@@ -488,7 +528,9 @@ async function render(force = false) {
   if (session.login && session.user) {
     const out = el('button', { type: 'button', class: 'link' }, 'Sign out');
     out.addEventListener('click', () => { void signOut(); });
-    bar.append(el('span', { class: 'meta' }, session.user), out);
+    // the role beside the name (B24f): what this user may change, said where it signs out; a control that is off for
+    // the role points at this sentence (needs.ts)
+    bar.append(roleLine() ?? el('span', { class: 'meta' }, session.user), out);
   }
 
   // the instance's header and its band's dot (task 177 D29), read beside the page; a failure there leaves them out
@@ -551,6 +593,7 @@ async function render(force = false) {
   // page keeps the place
   const path = `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}`;
   if (path !== shownPath) { shownPath = path; window.scrollTo(0, 0); }
+  window.dispatchEvent(new CustomEvent('pgvigil:drawn'));   // the View control counts a view's layouts that found no grid
   void statusLine(ctx, livePage);
   const live = ctx.instance ? liveInstance : liveRoot;
   if (live.has(ctx.tab) && isLive(ctx) && !ctx.at && refreshSecs() > 0) {
@@ -564,6 +607,8 @@ installFileDrop();
 setTreeHidden(treeHiddenSaved());
 $('show-tree').addEventListener('click', () => setTreeHidden(false));
 window.addEventListener('hashchange', () => { if (!loginShown) void render(); });
+// a page that writes its own keys (router.ts noteAddress) stays the page on screen: no 'Loading...' at the next refresh
+onAddressNoted(() => { shownPage = location.hash; });
 // the tab row sticks under the header: the header's height and the tab row's (each wraps on a narrow window) are kept
 // in --head-h and --tabs-h, so the row sits under the header and a focused control is scrolled clear of both
 const headEl = document.querySelector('header'), tabsEl = document.getElementById('tabs');
@@ -577,9 +622,9 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && ti
 // a hidden tab's mark: the fleet's status every 60 s (task 191); none on the sign-in form or with auto refresh Off
 watchHiddenTab(() => loginShown || refreshSecs() === 0);
 // a schedule's headless render (task 171): the render key leaves the address before the first render
-mailRenderBoot();
+setMailRender(mailRenderBoot());   // and a render takes no saved view (views.ts): the schedule's address alone
 // the first load asks who holds this session; a 401 shows the sign-in form before any page
 (async () => {
-  try { session = await get<Session>('session'); } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
+  try { session = await get<Session>('session'); setWho(session); sessionRead = true; } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
   void render();
 })();

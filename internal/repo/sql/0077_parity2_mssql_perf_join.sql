@@ -1,4 +1,4 @@
--- 0077: the join of parity2's SQL Server collectors (task 119, migration 0074), built from 0068's definitions (never
+-- 0077: the wiring migration of parity2's SQL Server collectors (task 119, migration 0074), built from 0068's definitions (never
 -- edited by hand): pgvigil.findings re-created with one more arm, mssql_perf_findings (the TempDB layout, CPU and
 -- scheduler pressure, low memory, memory grant waits, slow data reads and slow log writes; each maps its check_name and
 -- object to setting and value, with no suggested value and no platform list), and purge() re-created with 0074's
@@ -142,7 +142,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the corruption column (0023): checksums off, ignore_checksum_failure on, a corruption event in 24 h, amcheck damage
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.corruption_findings WHERE setting <> 'zero_damaged_pages'
     UNION ALL
-    -- the plans slice (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
+    -- the plan findings (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.plan_findings
     UNION ALL
     -- the indexes collection (0030): invalid and duplicate indexes (warning), redundant and unused ones (info)

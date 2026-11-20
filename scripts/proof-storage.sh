@@ -29,7 +29,7 @@
 #     'volume under 10 % free|warning|/young'; inst 2 'volume under 10 % free|critical|rds:storage'; nothing for 3 and 4.
 #     database_growth(inst 1): db 'grow' 10 GiB, +1 GiB/day over 10 days -> growth_7d about 1 GiB, days_to_double about 10;
 #     db 'new' with 2 hours of history -> growth NULL. storage_findings rows = storage_checks rows.
-#     [review s2-45 fold, expected before the rerun: db 'new' is seeded as 3 points 1 hour apart (the count passes, the
+#     [added later, expected before the rerun: db 'new' is seeded as 3 points 1 hour apart (the count passes, the
 #      span does not); inst 1 gains /resv 100 GiB, 90 used, 5 free (5 GiB reserved), +1 GiB/day -> headroom 5 GiB,
 #      days_until_full 5.0 -> 'volume full within 30 days|critical|/resv' and 'volume under 10 % free|warning|/resv';
 #      inst 5 (rds, autoscaling at its maximum: allocated = max = 100 GiB, 5 free, flat) -> autoscaling true,

@@ -6,7 +6,7 @@
 --   2. job_report: per job its last run, the runs, failures, average and maximum duration over 7 and 30 days,
 --      the failures in a row, the last run against the average of the others, and the missed schedule
 --   3. job_report_checks (the overview's "jobs report" check, the Summary column Jobs) and job_report_findings
---      (the ten columns the join UNIONs into pgvigil.findings)
+--      (the ten columns 0040 UNIONs into pgvigil.findings)
 --   4. retention: nothing new (job_runs is already purged by start_time; a job row stays while present)
 --
 -- The rules:
@@ -164,5 +164,5 @@ SELECT c.instance_id, c.severity, c.check_name AS setting, c.object AS value, tr
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 4. retention: no new table; pgvigil.purge() already deletes job_runs by start_time (0009) and keeps its
---    shape (the join takes nothing from here).
+--    shape (0040 takes nothing from here).
 -- ---------------------------------------------------------------------------------------------------------

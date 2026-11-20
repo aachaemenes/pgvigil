@@ -25,7 +25,7 @@ func TestParseUnit(t *testing.T) {
 }
 
 // The purge's env file: what the purge unit names (README's deploy/pgvigil-purge.service: EnvironmentFile=), README's
-// place beside the config when the unit is gone or the file is there too (review w9d finding 3).
+// place beside the config when the unit is gone or the file is there too.
 func TestPurgeEnvFiles(t *testing.T) {
 	dir := t.TempDir()
 	def := filepath.Join(dir, "pgvigil-purge.env")
@@ -47,7 +47,7 @@ func TestPurgeEnvFiles(t *testing.T) {
 	}
 }
 
-// TestUnitEnvExtra (the join review w9e, finding 9, and its fold's review): the unit's other environment sources and
+// TestUnitEnvExtra: the unit's other environment sources and
 // the drop-ins that change what the service runs, as systemctl show prints them, are refused by name; the installer's
 // own env file alone, unrelated variables and an unrelated drop-in pass.
 func TestUnitEnvExtra(t *testing.T) {

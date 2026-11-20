@@ -21,11 +21,11 @@
 #     summary line; alert_log holds one 'sent' row per channel - mail, teams, slack, pd - each with n_firing >= 1 and
 #     the finding's key among its keys; no 'failed' or 'refused' row. The providers' answers behind 'sent': SMTP 250,
 #     Teams 202, Slack 200 'ok', PagerDuty 202 'success' (any other answer is a failed send).
-#  R. [review 20261111-092630 B1] the instance read again (the sandbox's real autovacuum is on: the finding leaves the
+#  R. the instance read again (the sandbox's real autovacuum is on: the finding leaves the
 #     view); pass R0 only stamps the finding missing (exit 0, nothing sent: a missing finding is held until a collection
 #     newer than that stamp); the instance read once more; pass R: exit 0, one 'sent' row per channel with
 #     n_resolved >= 1 and the finding's key; alert_state's four rows of the finding cleared with recovery_sent_at set.
-#  C. [review 20261111-092424 B1] the finding staged again and a pass (four 'sent' rows firing it), then the instance
+#  C. the finding staged again and a pass (four 'sent' rows firing it), then the instance
 #     deactivated and up to two passes (a first may only stamp it): pd's row 'sent' with n_resolved >= 1 and the key (PagerDuty's incident resolved); mail,
 #     teams and slack one 'cleared' row each with the key (recorded, nothing sent: nothing was fixed).
 #  Before F: the staged finding is the instance's only critical one (else other findings would page too: fail first).

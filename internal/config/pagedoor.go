@@ -21,6 +21,22 @@ type Doors struct {
 	// PageInstanceReads turns on Community tools and custom reports for the instances added in Admin > Instances.
 	// Off by default.
 	PageInstanceReads bool `yaml:"page_instance_reads"`
+	// SlackActions turns on the Slack door (task 403b K5): Acknowledge and Mute 1 h on a Slack bot's posts, POST
+	// /api/slack/actions outside the UI login, for the apps listed under slack_apps:. Off by default.
+	SlackActions bool `yaml:"slack_actions"`
+	// PageCloudBlocks lets an instance of Admin > Instances (added on the page or approved from discovery) carry an
+	// aws: or azure: block (task B24p): its cloud reads run under THIS collector host's own cloud identity, so they
+	// are an admin's opt-in here (the locked-down default). Off by default: every page block is dropped
+	// (its reason logged and on the page) and the instance keeps collecting.
+	PageCloudBlocks bool `yaml:"page_cloud_blocks"`
+	// PageAWSProfiles are the AWS profiles a page block may name (a discovered instance's source
+	// profile); empty (the default) = none, the host's default chain only.
+	PageAWSProfiles []string `yaml:"page_aws_profiles"`
+	// PrometheusMetrics turns on GET /metrics on serve (B24d): every active instance's newest figures in the Prometheus
+	// text format, read with a signed-in session or metrics.token. Off by default; off, /metrics answers 404 with
+	// web.MetricsOff. What it opens: server names, engines, platforms, versions, every figure (tags and database names
+	// when metrics.tags / metrics.databases are on), to everyone who reads that Prometheus and its remote_write targets.
+	PrometheusMetrics bool `yaml:"prometheus_metrics"`
 }
 
 // PageReadsOff is the refusal while the switch is off.

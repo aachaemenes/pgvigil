@@ -98,7 +98,7 @@ func tagOps(args []string, reset bool) ([]tagOp, error) {
 			return nil, fmt.Errorf("%q: the key must be lower-case letters, digits, '_', '.' or '-' (1..40)", a)
 		}
 		// task 310: the applications page sets the key (0136 refuses a new override row); -reset still clears an older
-		// store's row, which the tag view ignores but which would otherwise stay for good (review A, m9)
+		// store's row, which the tag view ignores but which would otherwise stay for good
 		if op.Key == "application" && !op.Reset {
 			return nil, fmt.Errorf("%q: the key application is set on Admin > Applications (an application assigned to the server or its databases), not with pgvigil tag", a)
 		}

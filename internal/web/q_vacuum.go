@@ -28,7 +28,7 @@ SELECT r.kind, r.pid, r.datname,
        r.is_auto, r.is_wraparound, coalesce(r.phase, CASE WHEN r.wait_event_type = 'Lock' THEN 'waiting for its lock' END) AS phase,
        r.heap_blks_total, r.heap_blks_scanned, r.scanned_pct, r.heap_blks_vacuumed, r.index_vacuum_count,
        r.indexes_total, r.indexes_processed, r.dead_tuples, r.sample_blks_total, r.sample_blks_scanned,
-       r.elapsed_secs, r.wait_event_type, r.wait_event, r.blocking_pids, r.query, r.snapshot_at
+       r.elapsed_secs, r.wait_event_type, r.wait_event, r.blocking_pids, r.query AS "query@stmt", r.snapshot_at
   FROM pgvigil.vacuum_running r
  WHERE r.instance_id = $1
  ORDER BY r.kind = 'worker', r.elapsed_secs DESC NULLS LAST`
@@ -54,13 +54,13 @@ SELECT w.datname, w.allow_conn, w.xid_age, w.xid_freeze_pct, w.mxid_age, w.mxid_
  ORDER BY w.xid_age DESC NULLS LAST, w.datname`
 
 const sqlVacuumHolders = `
-SELECT h.holder, h.name, h.datname, h.xmin_age, h.catalog_xmin_age, h.active, h.since, h.detail, h.snapshot_at
+SELECT h.holder AS "holder@holder", h.name, h.datname, h.xmin_age, h.catalog_xmin_age, h.active, h.since, h.detail AS "detail@holderdetail", h.snapshot_at
   FROM pgvigil.vacuum_xmin_holders h
  WHERE h.instance_id = $1
  ORDER BY greatest(h.xmin_age, h.catalog_xmin_age) DESC NULLS LAST
  LIMIT 20`
 
-const sqlVacuumHistory = `SELECT * FROM pgvigil.vacuum_history($1, $2, $3)`
+const sqlVacuumHistory = `SELECT * FROM pgvigil.vacuum_history($1, $2, $3) /* text: detail=stmt */`
 
 const sqlVacuumChecks = `
 SELECT c.severity, c.check_name, c.object, c.at, c.detail

@@ -184,13 +184,13 @@ func TestEntraIdentitySourceOnAStore(t *testing.T) {
 	                               WHERE i.name = $1`, inst).Scan(&auth, &state, &login); err != nil || auth != "entra-identity" || state != "approved" {
 		t.Fatalf("the approved row: auth %q, proposal %q, %v", auth, state, err)
 	}
-	// the proposal's SQL login (admin1) is never the managed identity's (the wire review's blocker 2)
+	// the proposal's SQL login (admin1) is never the managed identity's
 	if login != nil {
 		t.Fatalf("the managed identity's row holds the login %q, want none (the host's own identity)", *login)
 	}
 }
 
-// On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it), the join's review 3e: a proposal keeps the
+// On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it), a proposal keeps the
 // platform word its cloud gave when it is one of its engine's (admin_read_rows), and the approve gives the instance
 // that platform - a Cloud SQL for SQL Server proposal is 'cloudsql', never 'auto' - while a proposal with none stays
 // 'auto' until the first read.
@@ -250,7 +250,7 @@ func TestProposalPlatformOnAStore(t *testing.T) {
 			t.Fatalf("%s approved as platform %q (page) / %q (instances); want %q", c.server, pa, pi, c.want)
 		}
 	}
-	// the import path (the review wire2 6): a proposal read first without a platform (as a store's row from before 3e
+	// the import path: a proposal read first without a platform (as a store's row from before 3e
 	// was), then with one, then with another - the stored row follows each read through import_admin_proposals' INSERT
 	// and its ON CONFLICT
 	started := time.Now().Add(-time.Hour)

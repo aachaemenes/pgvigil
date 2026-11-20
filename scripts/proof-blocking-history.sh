@@ -7,7 +7,7 @@
 # part D chromium and node:
 #   PGVIGIL_REPO_DSN   a superuser connection to the PostgreSQL sandbox in KEYWORD form (host=... user=...), no dbname
 #   PGVIGIL_BIN        the binary (default bin/pgvigil), built from a tree whose Deadlocks tab renders mssql_deadlocks.ts
-#                      (the lead's wiring) and whose bundle is current
+#                      (the wiring) and whose bundle is current
 # The proof makes, and drops on every exit path: its own repository database and its own scratch database on the
 # PostgreSQL sandbox (one table), its own SQL Server database (three tables) and one SQL Server login (VIEW SERVER
 # STATE, VIEW ANY DEFINITION; random suffix and password); its own pgvigil serve and Chromium, stopped by their pids.
@@ -59,8 +59,8 @@
 #     <mode>', each session box with the first line of its statement ('BEGIN TRAN; UPDATE dbo.dl_'), and a Save XML
 #     link whose file starts with <deadlock>. The PostgreSQL Running queries tab shows the Blocking history with
 #     the tiles 4 captures and B's count with blocking, and a chain row of the head's pid; its xmin section lists the head.
-#  E. a lock queue (review 2026-11-10: each waiter names the holder AND every waiter ahead of it, which made a path
-#     walk grow as 2^n): a head holds ACCESS EXCLUSIVE on a table in an open transaction and 20 sessions queue for the
+#  E. a lock queue (each waiter names the holder AND every waiter ahead of it, which once made a path walk grow as
+#     2^n): a head holds ACCESS EXCLUSIVE on a table in an open transaction and 20 sessions queue for the
 #     same lock; one more capture: one chain headed by the head with 20 victims, 20 direct, depth 1, 20 blocked in the
 #     capture; blocking_chains names the same head for the same 20 waiters; blocking_history_chains over the proof's
 #     window returns in under 2 s.

@@ -5,24 +5,28 @@
 //   pgStateView             one instance's Server state tab: the role and timeline with every role change, the crash
 //                           restarts from the log with Acknowledge, pg_stat_statements' state, uptime and the amcheck age
 //                           per database, each with its thresholds
-//   pgReplicationFleetView  the fleet Replication page: the clusters by system identifier, one row per link, Patroni's
-//                           members where its REST port answered, the fleet's role changes
+//   pgReplicationFleetView  the fleet Replication page: the clusters by system identifier, one row per member, each
+//                           cluster's physical links from both sides (task 371: pgvigil.pg_repl_link_health - the
+//                           sending server's sender beside the standby's own receiver, the links expected and absent,
+//                           each link's one finding), Patroni's members where its REST port answered, the role changes
 //   pgThresholdsView        the fleet Thresholds page: every key at the root, a tag, an instance or a database
-//   pgBaseBackupsFleetSection  the base-backup section of the fleet Backups root (the join adds it to backups.ts)
+//   pgBaseBackupsFleetSection  the base-backup section of the fleet Backups root (main.ts adds it to the root)
 // Every write goes through a dialog that says what it changes; the server answers done or the reason it refused.
 import { get, Row, rowsOf, Table } from './api';
 import { AckBody, AckData, ackDialog, ackWhy, loadAckSafe, offBeside, seatWhy, writeButton } from './ack';
+import { needControl, needWords } from './needs';
 import { Ctx, href } from './router';
 import { fleet, fleetWideNote, inTagScope, tagsOf, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
+import { pgBackupDestFleet, pgBackupDestFleetCols, pgBackupDestSection } from './pg_backup_dest';
 
 type Parts<K extends string> = Record<K, Table | null>;
 
-const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
-const yes = (v: unknown, bad = false) => v == null ? '' : v === true ? badge('yes', bad ? 'crit' : 'ok') : badge('no', bad ? '' : 'warn');
+const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
+const yes = (v: unknown, bad = false) => v == null ? '' : v === true ? badge('yes', bad ? 'crit' : 'ok') : badge('no', bad ? 'ok' : 'warn');
 const num = (v: unknown) => v == null || v === '' ? NaN : Number(v);
 const hours = (v: unknown) => isNaN(num(v)) ? '' : num(v) < 48 ? `${fmtNum(v)} h` : `${(num(v) / 24).toFixed(1)} d`;
-const stateBadge = (v: unknown) => badge(String(v ?? ''), v === 'ok' ? 'ok' : v === 'error' ? 'crit' : v === 'running' || v === 'no_binary' ? 'warn' : '');
+const stateBadge = (v: unknown) => badge(String(v ?? ''), v === 'ok' ? 'ok' : v === 'error' ? 'crit' : v === 'running' || v === 'no_binary' ? 'warn' : 'none');
 
 function instLink(ctx: Ctx, name: unknown, id: unknown, tab: string): Node {
   return el('a', { href: href(ctx, { tab, instance: Number(id), tag: undefined }) }, String(name ?? ''));
@@ -57,12 +61,16 @@ export function thresholdDialog(key: Row, place: ThresholdPlace, current: Row | 
   const save = el('button', { type: 'submit' }, 'Set'), inherit = el('button', { type: 'button' }, 'Inherit'), back = el('button', { type: 'button' }, 'Back');
   // nothing of this level's own to end: Inherit is off with that reason beside it (it already inherits)
   if (!own) offBeside(inherit, 'this level has no threshold of its own: it already inherits the level above');
+  // the role (B24f): a threshold needs admin - below it both are off, described by one sentence of the dialog's
+  // (one note, not one per button)
+  const roleP = el('p', { class: 'meta off-reason' }, needWords('pg/thresholds'));
+  needControl(save, 'pg/thresholds', { note: roleP }); needControl(inherit, 'pg/thresholds', { note: roleP });
   const what = `${String(key.label)} at ${place.where}. A ${dir === 'over' ? 'value past' : 'value under'} the warning is a warning, past the critical a critical; an empty box is not judged at this level. Inherit ends this level's own row, so the level above applies. Who and when are kept.`;
   const form = el('form', { method: 'dialog' }, el('h3', {}, `Threshold: ${String(key.key)}`), el('p', {}, what),
     el('p', { class: 'meta' }, `In force now: ${current ? thresholdLine({ ...current, unit: u, direction: dir }) : 'the default'}; built-in default: ${thresholdLine({ warn: key.warn_default, crit: key.crit_default, unit: u, direction: dir, level: 'default' })}.`),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, `Warning ${dir} (${u}) `, warn)),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, `Critical ${dir} (${u}) `, crit)),
-    msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', back));
+    roleP, msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', back));
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:36rem', 'aria-label': `Threshold ${String(key.key)}` }, form);
   let done = false;
   const close = () => { dlg.close(); dlg.remove(); if (done) after(); };
@@ -119,7 +127,7 @@ async function thresholdsSection(rows: Row[], instanceId: number, name: string, 
       const b = el('button', { type: 'button', class: 'link', 'aria-label': `Change ${String(v)} for ${name}` }, 'Change');
       if (note) offBeside(b, why, note);
       else b.addEventListener('click', () => thresholdDialog(k, { level: 'instance', instance_id: instanceId, where: `the instance ${name}` }, rows.find(x => x.key === v), after));
-      return b;
+      return needControl(b, 'pg/thresholds', { can: ad.can });
     } },
   ];
   return el('section', {}, el('h3', {}, 'Thresholds'), el('p', { class: 'meta' }, 'Set here for this instance; the Thresholds page sets them for the fleet, a tag or a database.'), note ?? '', grid(rows, cols, 'No threshold keys (the repository is older than 0103).'));
@@ -147,6 +155,40 @@ const backupCols: Col[] = [
 ];
 
 const checkCols: Col[] = [{ key: 'severity', fmt: sev }, { key: 'check_name', label: 'check' }, { key: 'object' }, { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime }];
+
+// Patroni (task 376, 0144): the read's line, a member's columns and its one-line form on the fleet page. A member that
+// is down (gone from the cluster, or listed in a state that does not serve) stays listed for 7 days, marked down.
+function patroniLine(p: Row): string {
+  if (p.ok !== true) return `${String(p.url)}: ${String(p.message ?? 'no answer')}`;
+  const parts = [`${String(p.url)}${p.configured === true ? ' (the patroni: block)' : ''}`, `leader ${p.leader == null ? 'none' : String(p.leader)}`];
+  if (p.paused === true) parts.push(`paused since ${fmtTime(p.paused_since)}`);
+  if (p.cluster_ok === false) parts.push(`${String(p.message ?? '/cluster failed')}: this member's own state only`);
+  return parts.join(', ');
+}
+const patroniDown = (r: Row) => r.down_since != null ? badge(`down: ${String(r.down_reason ?? '')}`, 'crit') : '';
+// a member's state is a status: down = the critical badge; every other member serves (0144's patroni_state_up: running,
+// streaming, in archive recovery) = OK, the down check judged it
+const patroniMemberCols: Col[] = [{ key: 'member' }, { key: 'role' }, { key: 'state', fmt: (v, r) => r.down_since != null ? patroniDown(r) : v == null ? '' : badge(String(v), 'ok') },
+  { key: 'host' }, { key: 'port', num: true }, { key: 'timeline', num: true },
+  { key: 'lag_bytes', label: 'lag', num: true, fmt: (v, r) => v == null ? String(r.lag_text ?? '') : fmtBytes(v) },
+  { key: 'pending_restart', label: 'pending restart', fmt: (v, r) => v === true ? badge(String(r.pending_restart_reason ?? 'yes'), 'warn') : '' },
+  { key: 'dcs_age_s', label: 'DCS last seen', num: true, fmt: (v, r) => v == null ? '' : `${fmtSecs(v)} before the read${r.failsafe_active === true ? ' (failsafe mode holds the leader)' : ''}` },
+  { key: 'api_ok', label: 'own API', fmt: (v, r) => v == null ? '' : v === true ? String(r.version ?? 'ok') : badge(String(r.api_message ?? 'no answer'), 'warn'),
+    cls: v => v === true ? 'status ok' : '' },   // X18: the API answered = OK
+  { key: 'snapshot_at', label: 'seen', fmt: fmtTime }];
+// patroniSection: the Patroni block of one instance - the read's line, the checks of its cluster (pg_patroni_checks)
+// and its members - or null where the instance has no Patroni read. ONE renderer for the two pages that show it: the
+// Server state tab and the Replication tab (where the Summary's Replication cell lands: that cell counts Patroni's
+// checks, so its landing page names them).
+export function patroniSection(patroni: Row[], patroniChecks: Row[]): HTMLElement | null {
+  if (!patroni.length) return null;
+  return el('section', {}, el('h3', {}, 'Patroni'), el('p', { class: 'meta' }, patroniLine(patroni[0])),
+    patroniChecks.length ? grid(patroniChecks, checkCols) : null,
+    grid(patroni.filter(r => r.member != null), patroniMemberCols, 'No member listed.'));
+}
+const patroniMemberText = (m: Row): string => [String(m.member), String(m.role ?? ''), m.down_since != null ? `DOWN (${String(m.down_reason ?? '')})` : String(m.state ?? ''),
+  m.lag_bytes != null ? `lag ${fmtBytes(m.lag_bytes)}` : '', m.pending_restart === true ? 'pending restart' : '',
+  m.dcs_age_s != null && Number(m.dcs_age_s) > 60 ? `DCS ${fmtSecs(m.dcs_age_s)} ago` : '', m.failsafe_active === true ? 'failsafe' : ''].filter(x => x).join(' ');
 
 export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
   const id = ctx.instance!;
@@ -185,6 +227,7 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
           ['threshold', thresholdLine({ warn: rep.warn_min, crit: rep.crit_min, unit: 'minutes', direction: 'over', level: rep.threshold_level })],
         ])));
     }
+    out.push(await pgBackupDestSection(id, name, ad, () => void draw()));
     out.push(await thresholdsSection(rowsOf(d.thresholds), id, name, () => void draw(), ad));
     box.replaceChildren(...out);
   };
@@ -194,12 +237,17 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
 
 // pgBaseBackupsFleetSection: every self-managed instance's base backups by tool and every standby's replay.
 export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
-  const [d, ids] = await Promise.all([get<Parts<'tools' | 'replay'>>('pg/backups/fleet', {}), tagIds(ctx)]);
+  const [d, ids, dest] = await Promise.all([get<Parts<'tools' | 'replay'>>('pg/backups/fleet', {}), tagIds(ctx), pgBackupDestFleet().catch(() => new Map<number, Row>())]);
   const keep = (r: Row) => !ids || ids.has(Number(r.instance_id));
   const tools = rowsOf(d.tools).filter(keep), rep = rowsOf(d.replay).filter(keep);
+  // task 302: where the backups go, for EVERY PostgreSQL instance in scope (an rsync, cp or wal-g server has no tool row)
+  const where = [...dest.values()].filter(keep);
+  // 'rules': the worst finding of the row's checks; OK only where they judged it (judged: 0141's base backup age rules
+  // read a tool whose state is ok, read in the last day, with an age threshold set), N/A ('none') where they did not -
+  // not read, no binary, running, an error or a read older than a day, no threshold
   const cols: Col[] = [
     { key: 'instance', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgbackups') }, { key: 'tool' }, { key: 'name', label: 'stanza / server' },
-    { key: 'state', fmt: stateBadge }, { key: 'worst', label: 'rules', fmt: v => v == null ? badge('ok', 'ok') : sev(v) },
+    { key: 'state', fmt: stateBadge }, { key: 'worst', label: 'rules', fmt: (v, r) => v != null ? sev(v) : r.judged === true ? badge('ok', 'ok') : badge(r.state === 'not_read' ? 'not read' : 'not judged', 'none') },
     { key: 'last_label', label: 'last backup' }, { key: 'last_type', label: 'kind' }, { key: 'last_age_h', label: 'age', num: true, fmt: hours },
     { key: 'full_age_h', label: 'full age', num: true, fmt: hours }, { key: 'last_db_size_bytes', label: 'size', num: true, fmt: fmtBytes },
     { key: 'wal_since_bytes', label: 'WAL since', num: true, fmt: fmtBytes }, { key: 'message', wide: true },
@@ -213,6 +261,9 @@ export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> 
   return el('section', {}, el('h2', {}, 'Base backups (pgBackRest, barman)'),
     el('p', { class: 'meta' }, `${tools.length} tool read(s) on ${new Set(tools.map(t => t.instance_id)).size} instance(s); ${rep.length} standby(s).`),
     grid(tools, cols, 'No self-managed server names pgBackRest or barman in its archive_command or restore_command.'),
+    el('h3', {}, 'Where the backups go'),
+    grid(where, [{ key: 'instance', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgbackups') }, ...pgBackupDestFleetCols,
+      { key: 'secret_seen', label: 'a credential in the command', fmt: v => v === true ? badge('yes (not stored)', 'warn') : '' }], 'No PostgreSQL instance in scope.'),
     el('h3', {}, 'Standbys: replay'), grid(rep, rcols, 'No standby read yet.'));
 }
 
@@ -221,7 +272,7 @@ export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> 
 const changeCols = (ctx: Ctx, withInstance: boolean): Col[] => [
   ...(withInstance ? [{ key: 'instance', fmt: (v: unknown, r: Row) => instLink(ctx, v, r.instance_id, 'pgstate') } as Col] : []),
   { key: 'changed_at', label: 'when', fmt: fmtTime }, { key: 'changed_at_source', label: 'time from' },
-  { key: 'change', fmt: v => badge(String(v), v === 'promotion' || v === 'demotion' ? 'warn' : v === 'another cluster' ? 'crit' : '') },
+  { key: 'change', fmt: v => badge(String(v), v === 'promotion' || v === 'demotion' ? 'warn' : v === 'another cluster' ? 'crit' : 'none') },
   { key: 'from_role', label: 'from' }, { key: 'to_role', label: 'to' }, { key: 'from_timeline', label: 'timeline before', num: true }, { key: 'to_timeline', label: 'timeline', num: true },
   { key: 'postmaster_restarted', label: 'restarted', fmt: v => v ? 'yes' : 'no' },
   { key: 'held_secs', label: 'role held for', num: true, fmt: v => v == null ? 'since before the first read' : fmtSecs(v) },
@@ -233,7 +284,7 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
   const box = el('div');
   const draw = async () => {
     const [d, ad, f] = await Promise.all([
-      get<Parts<'role' | 'changes' | 'crashes' | 'crash_state' | 'stmt' | 'uptime' | 'amcheck' | 'patroni' | 'checks' | 'thresholds'>>('pg/state', { instance: id }),
+      get<Parts<'role' | 'changes' | 'crashes' | 'crash_state' | 'stmt' | 'uptime' | 'amcheck' | 'patroni' | 'patroni_checks' | 'checks' | 'thresholds'>>('pg/state', { instance: id }),
       loadAckSafe(['acks']), fleet()]);
     const name = String(f.instances.find(r => Number(r.instance_id) === id)?.name ?? id);
     const role = rowsOf(d.role)[0], cs = rowsOf(d.crash_state)[0], st = rowsOf(d.stmt)[0], up = rowsOf(d.uptime)[0];
@@ -252,13 +303,8 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
     ]) : el('p', { class: 'meta' }, 'Not read yet (the rolechange collection, every minute).')));
     const ch = rowsOf(d.changes);
     out.push(el('section', {}, el('h3', {}, `Role changes (${ch.length})`), grid(ch, changeCols(ctx, false), 'No role change seen since pgvigil first read the server.')));
-    const pat = rowsOf(d.patroni).filter(r => r.member != null);
-    if (rowsOf(d.patroni).length) {
-      const p0 = rowsOf(d.patroni)[0];
-      out.push(el('section', {}, el('h3', {}, 'Patroni'), el('p', { class: 'meta' }, p0.ok ? `${String(p0.url)}: scope ${String(pat[0]?.scope ?? '')}` : `${String(p0.url)}: ${String(p0.message ?? 'no answer')}`),
-        grid(pat, [{ key: 'member' }, { key: 'role' }, { key: 'state' }, { key: 'host' }, { key: 'port', num: true }, { key: 'timeline', num: true },
-          { key: 'lag_bytes', label: 'lag', num: true, fmt: (v, r) => v == null ? String(r.lag_text ?? '') : fmtBytes(v) }], 'No member listed.')));
-    }
+    const patroni = patroniSection(rowsOf(d.patroni), rowsOf(d.patroni_checks));
+    if (patroni) out.push(patroni);
     // crashes
     const crashes = rowsOf(d.crashes);
     // the grid's Acknowledge buttons share one reason when they are off - a server that writes nothing at all, or on
@@ -311,7 +357,7 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
           if (thrOffP) offBeside(b, thrWhy, thrOffP);
           else b.addEventListener('click', () => thresholdDialog(amKey, { level: 'database', instance_id: id, datname: String(v), where: `the database ${String(v)} of ${name}` },
             { warn: r.warn_days, crit: r.crit_days, level: r.threshold_level }, () => void draw()));
-          return b;
+          return needControl(b, 'pg/thresholds', { can: ad.can });
         } }], 'No database read yet.')));
     out.push(await thresholdsSection(rowsOf(d.thresholds), id, name, () => void draw(), ad, thrOffP));
     box.replaceChildren(...out);
@@ -323,9 +369,12 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
 // ---- fleet Replication page ------------------------------------------------------------------------------
 
 export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
-  const [d, ids] = await Promise.all([get<Parts<'links' | 'patroni' | 'changes'>>('pg/replication', {}), tagIds(ctx)]);
+  const [d, ids] = await Promise.all([get<Parts<'links' | 'patroni' | 'changes' | 'hadr_links' | 'subscriptions' | 'publications'>>('pg/replication', {}), tagIds(ctx)]);
   const keep = (r: Row) => !ids || ids.has(Number(r.instance_id));
   const links = rowsOf(d.links).filter(keep), pat = rowsOf(d.patroni).filter(keep), ch = rowsOf(d.changes).filter(keep);
+  // a link is in scope when either side is (its sending server or its standby)
+  const keepLink = (r: Row) => !ids || ids.has(Number(r.sending_id)) || ids.has(Number(r.standby_id));
+  const hlinks = rowsOf(d.hadr_links).filter(keepLink), hadrRead = d.hadr_links != null;
   const clusters = new Map<string, Row[]>();
   for (const r of links) {
     const k = String(r.system_identifier ?? `instance ${String(r.instance_id)}`);
@@ -333,10 +382,10 @@ export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
   }
   const cols: Col[] = [
     { key: 'instance', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'replication') },
-    { key: 'role', fmt: v => badge(String(v), v === 'primary' ? 'ok' : '') }, { key: 'timeline_id', label: 'timeline', num: true },
+    { key: 'role', fmt: v => badge(String(v), v === 'primary' ? 'ok' : 'none') }, { key: 'timeline_id', label: 'timeline', num: true },
     { key: 'role_since', label: 'role since', fmt: fmtTime },
     { key: 'has_receiver', label: 'fed by', fmt: (v, r) => r.role === 'primary' ? '' : v ? `streaming from ${String(r.sender_host ?? '?')}` : 'restore_command (file shipping)' },
-    { key: 'sync_state', label: 'sync', fmt: v => v == null ? '' : badge(String(v), v === 'sync' || v === 'quorum' ? 'ok' : '') },
+    { key: 'sync_state', label: 'sync', fmt: v => v == null ? '' : badge(String(v), v === 'sync' || v === 'quorum' ? 'ok' : 'none') },
     { key: 'sender_state', label: 'sender' },
     { key: 'replay_lag_bytes', label: 'replay lag', num: true, fmt: (v, r) => v == null ? '' : `${fmtBytes(v)}${r.replay_lag_secs != null ? `, ${fmtSecs(Math.round(num(r.replay_lag_secs)))}` : ''}` },
     { key: 'replay_delay_secs', label: 'replay delay', num: true, fmt: v => v == null ? '' : fmtSecs(Math.round(num(v))) },
@@ -346,19 +395,111 @@ export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
   ];
   const out: HTMLElement[] = [el('h2', {}, 'Replication'),
     el('p', { class: 'meta' }, `${clusters.size} cluster(s) by system identifier, ${links.length} member(s) in the fleet. A standby's sender row is the primary's pg_stat_replication row named by the standby's cluster_name or instance name, or its slot.`)];
+  const shown = new Set<Row>();
   for (const [k, rows] of clusters) {
     const pri = rows.filter(r => r.role === 'primary');
+    const own = hlinks.filter(r => String(r.system_identifier ?? '') === k);
+    own.forEach(r => shown.add(r));
     out.push(el('section', {}, el('h3', {}, `${String(rows[0].cluster ?? 'cluster')} (system ${k})`),
       el('p', { class: 'meta' }, pri.length === 1 ? `primary ${String(pri[0].instance)}, ${rows.length - 1} standby(s)` : pri.length ? `${pri.length} primaries: a split cluster or a standby not yet read` : 'no primary in the fleet'),
-      grid(rows, cols)));
+      grid(rows, cols),
+      ...(hadrRead ? [el('h4', {}, `Links (${own.length})`), grid(own, linkCols(ctx), 'No physical link seen in this cluster in the last 7 days.')] : [])));
   }
   if (!clusters.size) out.push(el('p', { class: 'meta' }, 'No instance read by the rolechange collection yet.'));
+  const rest = hlinks.filter(r => !shown.has(r));
+  if (rest.length) out.push(el('section', {}, el('h3', {}, `Links outside the clusters above (${rest.length})`),
+    el('p', { class: 'meta' }, 'A link whose sending server or standby the rolechange collection has not read (no system identifier to group it by).'),
+    grid(rest, linkCols(ctx))));
+  if (!hadrRead) out.push(el('p', { class: 'meta' }, 'The link rows (both sides of each standby) are not served by this server yet.'));
+  // logical replication (task 373: pgvigil.pg_logical_status): one row per subscription, its publisher's walsender beside it
+  if (d.subscriptions != null) {
+    const subs = rowsOf(d.subscriptions).filter(r => !ids || ids.has(Number(r.instance_id)) || ids.has(Number(r.publisher_id)));
+    out.push(el('section', {}, el('h3', {}, `Logical subscriptions (${subs.length})`),
+      el('p', { class: 'meta' }, 'Each subscription on its subscriber, its apply worker and counters, and its publisher\'s walsender (the slot) where the publisher is monitored.'),
+      grid(subs, subscriptionCols(ctx), 'No logical subscription in the fleet.')));
+  }
+  // the publications per database of each publisher (task 373: pgvigil.pg_logical_pubs)
+  if (d.publications != null) {
+    const pubs = rowsOf(d.publications).filter(keep);
+    out.push(el('section', {}, el('h3', {}, `Publications (${pubs.length})`),
+      el('p', { class: 'meta' }, 'Each publication per database of a publisher: a database is read when it is the connected one or a logical slot decodes it.'),
+      grid(pubs, [{ key: 'instance', label: 'publisher', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'replication') },
+        { key: 'pubname', label: 'publication', fmt: (v, r) => `${String(r.datname ?? '')}.${String(v ?? '')}` },
+        { key: 'all_tables', label: 'all tables', fmt: v => yes(v) },
+        { key: 'table_count', label: 'tables', num: true },
+        { key: 'operations' },
+        { key: 'read_at', label: 'read', fmt: fmtTime }], 'No publication read in the fleet.')));
+  }
   if (pat.length) out.push(el('section', {}, el('h3', {}, 'Patroni'),
     grid(pat, [{ key: 'scope' }, { key: 'instance', label: 'read through', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgstate') }, { key: 'ok', label: 'answered', fmt: v => yes(v) },
-      { key: 'member_list', label: 'members', wide: true, fmt: v => Array.isArray(v) ? v.map((m: Row) => `${String(m.member)} ${String(m.role)} ${String(m.state)}${m.lag_bytes != null ? ` lag ${fmtBytes(m.lag_bytes)}` : ''}`).join('; ') : '' },
+      { key: 'leader', fmt: (v, r) => r.ok !== true ? '' : v == null ? badge('none', 'crit') : String(v),
+        cls: (v, r) => r.ok === true && v != null ? 'status ok' : '' },   // X18: a named leader = OK
+      { key: 'paused', fmt: v => v === true ? badge('paused', 'warn') : '' },
+      { key: 'judges', label: 'checks', fmt: v => v === true ? 'judged here' : '' },
+      { key: 'member_list', label: 'members', wide: true, fmt: v => Array.isArray(v) ? v.map((m: Row) => patroniMemberText(m)).join('; ') : '' },
       { key: 'message', wide: true }, { key: 'snapshot_at', label: 'read', fmt: fmtTime }])));
   out.push(el('section', {}, el('h3', {}, `Role changes (${ch.length})`), grid(ch, changeCols(ctx, true), 'No role change seen in the fleet.')));
   return el('div', {}, ...out);
+}
+
+// linkCols: one physical link per row (pg_repl_link_health) - the sending server's view (its pg_stat_replication row)
+// beside the standby's own (its WAL receiver and what it has received and not replayed), then the link's one finding.
+function linkCols(ctx: Ctx): Col[] {
+  // the colour follows the link's finding when it has one (a 'receiver down' fed by restore_command is a warning, a
+  // paused replay critical), else the status word
+  const linkState = (v: unknown, r: Row) => {
+    const t = String(v ?? '');
+    const bySev = r.severity === 'critical' ? 'crit' : r.severity === 'warning' ? 'warn' : '';
+    // X18: a link state no finding and no rule names is N/A
+    return badge(t, bySev || (t.startsWith('down') ? 'crit' : t.startsWith('missing') || t === 'replay paused' || t === 'sending server not read' ? 'warn' : t.startsWith('streaming') ? 'ok' : 'none'));
+  };
+  const bytes = (v: unknown) => v == null ? '' : fmtBytes(v);
+  return [
+    // the link's lag and its year are charted on the sending server's Replication tab (task 375: one series read, no chart here)
+    { key: 'link', label: 'link', fmt: (v, r) => {
+      const t = String(r.application_name ?? r.standby ?? v ?? '') + (r.slot_name ? ` (slot ${String(r.slot_name)})` : '');
+      return r.sending_id == null ? t : instLink(ctx, t, r.sending_id, 'replication');
+    } },
+    { key: 'sending', label: 'from', fmt: (v, r) => r.sending_id == null ? String(r.sender_host ?? '') : instLink(ctx, v, r.sending_id, 'replication') },
+    { key: 'standby', label: 'to', fmt: (v, r) => r.standby_id == null ? String(r.client_addr ?? '') : instLink(ctx, v, r.standby_id, 'replication') },
+    { key: 'status', fmt: linkState },
+    { key: 'sync_state', label: 'sync', fmt: v => v == null ? '' : badge(String(v), v === 'sync' || v === 'quorum' ? 'ok' : '') },
+    { key: 'sender_state', label: 'sender' },
+    { key: 'sender_lag_bytes', label: 'not replayed (sender)', num: true, fmt: bytes },
+    { key: 'sender_lag_secs', label: 'replay_lag', num: true, fmt: v => v == null ? '' : fmtSecs(Math.round(num(v))) },
+    { key: 'receiver_status', label: 'receiver', fmt: (v, r) => r.standby_id == null ? '' : v == null ? (r.has_receiver === false ? badge('none', 'warn') : '') : String(v),
+      cls: (v, r) => r.standby_id != null && v != null ? 'status ok' : '' },   // X18: a receiver present = OK
+    { key: 'standby_lag_bytes', label: 'not replayed (standby)', num: true, fmt: bytes },
+    { key: 'min_apply_delay_ms', label: 'apply delay', num: true, fmt: v => v == null || num(v) === 0 ? '' : fmtSecs(Math.round(num(v) / 1000)) },
+    { key: 'last_seen', label: 'sender last seen', fmt: fmtTime },
+    { key: 'check_name', label: 'finding', fmt: (v, r) => v == null ? '' : el('span', {}, sev(r.severity), ' ', String(v)) },
+    { key: 'detail', wide: true },
+  ];
+}
+
+// subscriptionCols: one logical subscription per row (pg_logical_status).
+function subscriptionCols(ctx: Ctx): Col[] {
+  const counters = (v: unknown) => {
+    if (v == null || typeof v !== 'object') return '';
+    return Object.entries(v as Record<string, unknown>).filter(([, n]) => Number(n) > 0).map(([k, n]) => `${k.replace(/^confl_/, '')} ${String(n)}`).join(', ');
+  };
+  return [
+    { key: 'instance', label: 'subscriber', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'replication') },
+    { key: 'subname', label: 'subscription', fmt: (v, r) => `${String(r.datname ?? '')}.${String(v ?? '')}` },
+    { key: 'enabled', fmt: v => v == null ? '' : v ? badge('enabled', 'ok') : badge('disabled', 'warn') },
+    { key: 'worker_pid', label: 'apply worker', fmt: (v, r) => r.in_recovery ? 'standby: not run here' : v == null ? badge('none', r.enabled ? 'crit' : 'none') : `pid ${String(v)}`,
+      cls: (v, r) => r.in_recovery ? 'status none' : v != null ? 'status ok' : '' },   // X18: a standby's = N/A, a running worker = OK
+    { key: 'publications' },
+    { key: 'rels_ready', label: 'tables ready' },
+    { key: 'apply_errors', label: 'apply errors', num: true },
+    { key: 'sync_errors', label: 'sync errors', num: true },
+    { key: 'conflicts', label: 'conflicts', fmt: counters },
+    { key: 'silent_secs', label: 'last message', num: true, fmt: v => v == null ? '' : `${fmtSecs(Math.round(num(v)))} ago` },
+    { key: 'publisher', fmt: (v, r) => r.publisher_id == null ? '' : instLink(ctx, v, r.publisher_id, 'replication') },
+    { key: 'sender_lag_bytes', label: 'not applied (publisher)', num: true, fmt: v => v == null ? '' : fmtBytes(v) },
+    { key: 'check_name', label: 'finding', fmt: (v, r) => v == null ? '' : el('span', {}, sev(r.severity), ' ', String(v)) },
+    { key: 'detail', wide: true },
+  ];
 }
 
 // ---- fleet Thresholds page -------------------------------------------------------------------------------
@@ -396,7 +537,7 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
       : `Thresholds are read only here: ${rootWhy}`);
     const out: HTMLElement[] = [el('h2', {}, 'Thresholds' + (scoped ? ` - ${tagWords(scoped)}` : '')),
       el('p', { class: 'meta' }, 'State thresholds: the root applies to every instance, a tag to its instances (the first of an instance\'s tags in sort order that has a row), an instance to itself, a database to one database (amcheck). The nearest level wins; with none, the built-in default. Three keys judge SQL Server instances too: uptime (the Summary\'s Instance Uptime: a root or tag row set here colours every SQL Server Uptime cell under it as well), connect_time (the Collector\'s slow connect: a root or tag row reaches SQL Server instances under it) and crash (the Summary\'s Memory Dump - Crash restarts on a scope with no SQL Server instance: SQL Server\'s memory dumps, PostgreSQL\'s crash restarts).')];
-    // under a tag folder its scope lines stand just under the heading (the review of rel-tagall #8: before the levels and the form)
+    // under a tag folder its scope lines stand just under the heading (before the levels and the form)
     if (ids) {
       const left = rowsAll.length - rows.length;
       out.splice(1, 0, el('p', { class: 'meta' }, `In view: ${tagWords(scoped!)} - the levels that reach one of its ${fmtNum(ids.size)} instance(s): the root, a tag one of them carries, one of its instances or their databases.`
@@ -414,7 +555,7 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
         const b = el('button', { type: 'button', class: 'link', 'aria-label': `${txt}: change ${String(v)} at the root` }, txt);
         if (rootOffP) offBeside(b, rootWhy, rootOffP);
         else b.addEventListener('click', () => thresholdDialog(r, { level: 'root', where: 'the root (every instance)' }, own ? { ...own } : undefined, () => void draw()));
-        return b;
+        return needControl(b, 'pg/thresholds', { can: ad.can });
       } },
     ];
     out.push(el('section', {}, el('h3', {}, 'Keys'), rootOffP ?? '', grid(keys, keyCols)));
@@ -455,6 +596,7 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
       const own = rows.find(x => x.key === k.key && x.level === l && (l === 'tag' ? x.tag === place.tag : Number(x.instance_id) === place.instance_id && (l !== 'database' || x.datname === place.datname)));
       thresholdDialog(k, place, own, () => void draw());
     });
+    needControl(open, 'pg/thresholds', { can: ad.can });
     out.push(el('section', {}, el('h3', {}, 'A tag, an instance or a database'), el('p', {}, kSel, ' ', lSel, ' ', pSel, ' ', db, ' ', open, openSaid)));
     const rowCols: Col[] = [
       { key: 'label', label: 'threshold' }, { key: 'level' },

@@ -6,7 +6,7 @@ import (
 )
 
 // TestFirstStartSpread: a loop's first run after a start falls at a random offset in min(interval, 5 min) (the M0
-// measurement, the lead's decision 11-14): the minute collections of every instance spread over their whole minute and
+// measurement): the minute collections of every instance spread over their whole minute and
 // the 5-minute ones over 5 minutes - not all inside the first 10 s, where a collector's CPU queues every connect
 // (about 2.4 ms of it per PostgreSQL connect with TLS) - while an hourly or daily collection still runs within 5 min.
 func TestFirstStartSpread(t *testing.T) {

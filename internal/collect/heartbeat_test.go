@@ -338,8 +338,8 @@ func TestSeenDue(t *testing.T) {
 }
 
 // TestWatchdogStarting: serve says 'starting' from the moment it decides to run the watchdog until the alerts login and
-// the repository answered (up to 40 s) - the Collector page says so instead of 'not this process' (task 201 DONE-2,
-// the review of the merges' finding 2); the goroutine then moves it on to 'on' or 'off: <why>'.
+// the repository answered (up to 40 s) - the Collector page says so instead of 'not this process' (task 201 DONE-2);
+// the goroutine then moves it on to 'on' or 'off: <why>'.
 func TestWatchdogStarting(t *testing.T) {
 	defer watchdog.Store("")
 	SetWatchdogStarting()
@@ -436,7 +436,7 @@ func TestConnectTimeoutDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	start = time.Now()
-	if c, err := connectCounted(ctx, "bh2", cfg); err == nil {
+	if c, err := connectCounted(ctx, config.Instance{Name: "bh2"}, cfg); err == nil {
 		_ = c.Close(ctx)
 		t.Fatal("connectCounted: connected to a server that never answers")
 	}
@@ -507,7 +507,7 @@ func TestNoAnswer(t *testing.T) {
 		{"no answer in time", hung, true},
 		{"the instance's connect marked (InstanceConnect)", &connectError{fmt.Errorf("connect t1: %w", refused)}, true},
 		{"an end of stream in the handshake", fmt.Errorf("x: %w", io.EOF), true},
-		// review part E's nit 8: a stopped container's alias (SV) fails at the name - pgconn joins the resolver's error
+		// a stopped container's alias (SV) fails at the name - pgconn joins the resolver's error
 		{"a name that does not resolve", fmt.Errorf("failed to connect to `user=x database=`: hostname resolving error: %w",
 			errors.Join(&net.DNSError{Err: "no such host", Name: "target2", IsNotFound: true})), true},
 		{"3D000", &pgconn.PgError{Code: "3D000"}, false},
@@ -680,7 +680,7 @@ func TestConnectTimed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2, err := connectCounted(ctx, "slow2", cfg)
+	c2, err := connectCounted(ctx, config.Instance{Name: "slow2"}, cfg)
 	if err != nil {
 		t.Fatalf("connectCounted: %v", err)
 	}
@@ -689,7 +689,7 @@ func TestConnectTimed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c3, err := connectCounted(ctx, "slow3", bad); err == nil {
+	if c3, err := connectCounted(ctx, config.Instance{Name: "slow3"}, bad); err == nil {
 		_ = c3.Close(ctx)
 		t.Fatal("connectCounted: connected to port 1")
 	}
@@ -720,5 +720,21 @@ func TestConnTookFloor(t *testing.T) {
 	}
 	if got := connTook(time.Now().Add(-2 * time.Second)); got < 2*time.Second {
 		t.Errorf("connTook of a 2 s connect: %v, want 2 s or more", got)
+	}
+}
+
+// TestBeatSaysItSends (B6.2 part c #3): each beat says whether its run sends alerts (the run's alerts: list names a
+// channel), as 'sends_alerts' in the beat's JSON - 'alert sender idle' reads only the live runs that do
+func TestBeatSaysItSends(t *testing.T) {
+	for _, sends := range []bool{true, false} {
+		h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{},
+			info: HeartbeatInfo{Version: "test", SendsAlerts: sends}}
+		body, err := json.Marshal(h.take())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := fmt.Sprintf(`"sends_alerts":%v`, sends); !strings.Contains(string(body), want) {
+			t.Errorf("SendsAlerts %v: the beat %s lacks %s", sends, body, want)
+		}
 	}
 }

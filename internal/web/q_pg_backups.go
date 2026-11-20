@@ -1,7 +1,7 @@
 package web
 
-// The PostgreSQL twins of DBA Dash's backup, role-change and state cells (task 162; migration 0103). The join wires the
-// routes in Handler:
+// The PostgreSQL twins of DBA Dash's backup, role-change and state cells (task 162; migration 0103). Handler wires the
+// routes:
 //	GET  /api/pg/backups            s.PgBackups           one instance: the base backups by tool, the file-fed replay, the thresholds
 //	GET  /api/pg/backups/fleet      s.PgBackupsFleet      every instance's base-backup status and standby replay
 //	GET  /api/pg/state              s.PgState             one instance: role changes, crashes, the statement store, uptime, amcheck age
@@ -34,6 +34,13 @@ SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
   FROM pgvigil.pg_backups_checks c JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND c.check_group = '` + g + `'`})
 	}
+	// task 376 (0144): Patroni's checks - no leader, a member down, paused, a pending restart, the DCS not reached, the
+	// REST API not answering - on the instance that judges the cluster (pg_patroni_clusters); the Summary's Replication
+	// column
+	overviewChecks = append(overviewChecks, struct{ name, sql string }{"patroni", `
+SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
+  FROM pgvigil.pg_patroni_checks c JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active`})
 }
 
 // sqlPgThresholdsFor is the value in force for each key an instance takes (a database level is the amcheck part's).
@@ -92,6 +99,9 @@ SELECT b.instance_id, b.instance, b.tool, b.name, b.state, coalesce(b.status_mes
        b.last_age_h, b.last_db_size_bytes, b.last_repo_bytes, b.wal_since_bytes, b.full_stopped_at, b.full_age_h, b.full_warn_h, b.full_crit_h, b.backup_count,
        (SELECT CASE WHEN bool_or(c.severity = 'critical') THEN 'critical' WHEN count(*) > 0 THEN 'warning' END
           FROM pgvigil.pg_backups_checks c WHERE c.instance_id = b.instance_id AND c.check_group = 'base backups' AND c.object = b.name) AS worst,
+       -- judged: the base backup age rules of pg_backups_checks read this row (a state ok, read in the last day, an age
+       -- threshold set); a row with no finding is OK on the page only then
+       (b.state = 'ok' AND b.read_at > now() - interval '1 day' AND coalesce(b.full_warn_h, b.full_crit_h, b.any_warn_h, b.any_crit_h) IS NOT NULL) AS judged,
        b.read_at
   FROM pgvigil.pg_base_backup_status b
  ORDER BY (b.state <> 'ok') DESC, b.full_age_h DESC NULLS FIRST, b.instance`
@@ -137,10 +147,28 @@ const sqlPgAmcheckAge = `
 SELECT datname, last_ok_at, age_days, last_run_at, last_status, amcheck_runs_any, warn_days, crit_days, threshold_level
   FROM pgvigil.pg_amcheck_age WHERE instance_id = $1 ORDER BY age_days DESC NULLS FIRST, datname`
 
+// sqlPgPatroniOf: the instance's Patroni read and its members - those listed now, and those down (gone from the
+// cluster or not running) seen in the last 7 days (0144).
 const sqlPgPatroniOf = `
-SELECT m.member, m.scope, m.role, m.state, m.host, m.port, m.timeline, m.lag_bytes, m.lag_text, m.api_url, m.snapshot_at, p.url, p.ok, p.message
-  FROM pgvigil.pg_patroni_read p LEFT JOIN pgvigil.pg_patroni_members m ON m.instance_id = p.instance_id AND m.is_present
- WHERE p.instance_id = $1 ORDER BY m.member`
+SELECT m.member, m.scope, m.role, m.state, m.host, m.port, m.timeline, m.lag_bytes, m.lag_text, m.api_url, m.snapshot_at, m.is_present,
+       m.pending_restart, m.pending_restart_reason, m.pending_restart_since, m.dcs_last_seen,
+       round(extract(epoch FROM m.snapshot_at - m.dcs_last_seen))::bigint AS dcs_age_s, m.failsafe_active, m.paused AS member_paused,
+       m.api_ok, m.api_message, m.version, m.down_since, m.down_reason,
+       p.url, p.ok, p.message, p.configured, p.cluster_ok, p.paused, p.paused_since, p.leader, p.no_leader_since, p.last_ok_at, p.snapshot_at AS read_at
+  FROM pgvigil.pg_patroni_read p
+  LEFT JOIN pgvigil.pg_patroni_members m ON m.instance_id = p.instance_id
+        AND (m.is_present OR (m.down_since IS NOT NULL AND m.snapshot_at > now() - interval '7 days'))
+ WHERE p.instance_id = $1 ORDER BY m.is_present DESC, m.member`
+
+// sqlPgPatroniChecksFor: the Patroni checks of the instance's cluster, wherever the cluster is judged.
+const sqlPgPatroniChecksFor = `
+SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
+  FROM pgvigil.pg_patroni_checks c
+ WHERE c.instance_id = $1
+    OR c.instance_id IN (SELECT k.instance_id FROM pgvigil.pg_patroni_clusters k
+                           JOIN pgvigil.pg_patroni_read p ON p.instance_id = $1 AND coalesce(k.scope, '') = coalesce(p.scope, '')
+                                                         AND coalesce(k.system_identifier, '') = coalesce(p.system_identifier, ''))
+ ORDER BY CASE c.severity WHEN 'critical' THEN 0 ELSE 1 END, c.check_name, c.object`
 
 // PgState is one instance's server state (the Server state tab).
 func (s *Server) PgState(w http.ResponseWriter, r *http.Request) {
@@ -158,6 +186,7 @@ func (s *Server) PgState(w http.ResponseWriter, r *http.Request) {
 		{"uptime", sqlPgUptime, []any{id}},
 		{"amcheck", sqlPgAmcheckAge, []any{id}},
 		{"patroni", sqlPgPatroniOf, []any{id}},
+		{"patroni_checks", sqlPgPatroniChecksFor, []any{id}},
 		{"checks", sqlPgChecksFor, []any{id, []string{"crashes", "statement store", "uptime", "amcheck age"}}},
 		{"thresholds", sqlPgThresholdsFor, []any{id, []string{"uptime", "crash", "amcheck_age"}}},
 	})
@@ -171,12 +200,28 @@ SELECT system_identifier, cluster, instance_id, instance, role, timeline_id, rol
  ORDER BY system_identifier NULLS LAST, role, instance`
 
 const sqlPgPatroniFleet = `
-SELECT p.instance_id, i.name AS instance, p.url, p.ok, p.message, p.scope, p.members, p.snapshot_at,
+SELECT p.instance_id, i.name AS instance, p.url, p.ok, p.message, p.scope, p.members, p.snapshot_at, p.configured, p.cluster_ok, p.paused,
+       p.paused_since, p.leader, p.no_leader_since,
+       EXISTS (SELECT 1 FROM pgvigil.pg_patroni_clusters k WHERE k.instance_id = p.instance_id) AS judges,
        (SELECT json_agg(json_build_object('member', m.member, 'role', m.role, 'state', m.state, 'host', m.host, 'port', m.port, 'timeline', m.timeline,
-                                          'lag_bytes', m.lag_bytes, 'lag_text', m.lag_text) ORDER BY m.member)
-          FROM pgvigil.pg_patroni_members m WHERE m.instance_id = p.instance_id AND m.is_present) AS member_list
+                                          'lag_bytes', m.lag_bytes, 'lag_text', m.lag_text, 'is_present', m.is_present, 'down_since', m.down_since,
+                                          'down_reason', m.down_reason, 'pending_restart', m.pending_restart, 'pending_restart_reason', m.pending_restart_reason,
+                                          'dcs_age_s', round(extract(epoch FROM m.snapshot_at - m.dcs_last_seen))::bigint, 'failsafe_active', m.failsafe_active,
+                                          'api_ok', m.api_ok, 'version', m.version) ORDER BY m.is_present DESC, m.member)
+          FROM pgvigil.pg_patroni_members m WHERE m.instance_id = p.instance_id
+           AND (m.is_present OR (m.down_since IS NOT NULL AND m.snapshot_at > now() - interval '7 days'))) AS member_list
   FROM pgvigil.pg_patroni_read p JOIN pgvigil.instances i ON i.instance_id = p.instance_id AND i.is_active
  ORDER BY p.scope NULLS LAST, i.name`
+
+// sqlPgHadrLinks is each replication link from both of its sides (0141 / 0150's pg_repl_link_health: the sender's
+// row, the standby's own read, the link's check); pg_backups.ts draws the link grid from this part.
+const sqlPgHadrLinks = `SELECT source, sending_id, sending, link, application_name, client_addr, slot_name, system_identifier, standby_id, standby, status, sender_state, sync_state, sender_lag_bytes, sender_flush_bytes, sender_lag_secs, receiver_status, sender_host, has_receiver, standby_lag_bytes, min_apply_delay_ms, replay_paused, last_seen, checked_at, standby_read_at, check_name, severity, finding_id, detail FROM pgvigil.pg_repl_link_health ORDER BY system_identifier NULLS LAST, sending NULLS LAST, link`
+
+// sqlPgSubscriptions is every logical subscription with its publisher's side and its check (0141's pg_logical_status).
+const sqlPgSubscriptions = `SELECT instance_id, instance, datname, subname, enabled, in_recovery, publications, slot_name, worker_pid, last_msg_at, silent_secs, sync_workers, rels_ready, apply_errors, sync_errors, conflicts, disabled_since, read_at, publisher_id, publisher, sender_state, sender_lag_bytes, sender_lag_secs, severity, check_name, detail FROM pgvigil.pg_logical_status ORDER BY instance, datname, subname`
+
+// sqlPgPublications is every publication the logical collection read (0141's pg_logical_pubs).
+const sqlPgPublications = `SELECT p.instance_id, i.name AS instance, p.datname, p.pubname, p.all_tables, p.operations, p.table_count, p.read_at FROM pgvigil.pg_logical_pubs p JOIN pgvigil.instances i ON i.instance_id = p.instance_id AND i.is_active WHERE p.is_present ORDER BY i.name, p.datname, p.pubname`
 
 // PgReplicationFleet is the fleet Replication page.
 func (s *Server) PgReplicationFleet(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +229,9 @@ func (s *Server) PgReplicationFleet(w http.ResponseWriter, r *http.Request) {
 		{"links", sqlPgLinks, nil},
 		{"patroni", sqlPgPatroniFleet, nil},
 		{"changes", sqlPgRoleChanges, []any{nil}},
+		{"hadr_links", sqlPgHadrLinks, nil},
+		{"subscriptions", sqlPgSubscriptions, nil},
+		{"publications", sqlPgPublications, nil},
 	})
 }
 

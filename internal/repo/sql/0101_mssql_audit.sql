@@ -28,7 +28,7 @@
 --                        audit, action, login, database, schema, object and outcome.
 --   mssql_audit_status   the Summary cell 'audit' (the columns of mssql_health_status).
 --   mssql_audit_findings instance_id, severity, check_name, object, at, detail (the arm for pgvigil.findings and
---                        the two partition parents for purge() are the join's):
+--                        the two partition parents for purge() are 0110's):
 --     'an audit is defined and not started'           warning, per audit
 --     'an audit failed'                               critical, per audit (a runtime or target failure, or switched
 --                                                     on and not among the audits the server runs)

@@ -3,7 +3,7 @@
 // quoted name, a literal or a number as ...), the most frequent first, each with its count, first and last seen and
 // the raw rows under it on a click; the events per level; and the largest single temporary files with their time,
 // database and user. Data from /api/logs/groups and /api/logs/groups/rows (q_log_groups.go). The shell mounts
-// logsGroupedView(ctx) (the lead's wiring: a 'grouped' sub-tab of Logs); the level filter lives in the panel.
+// logsGroupedView(ctx) (the shell's wiring: a 'grouped' sub-tab of Logs); the level filter lives in the panel.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid, tile } from './ui';

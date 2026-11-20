@@ -34,7 +34,7 @@
 #       14.10 -> behind 14, EOL 2026-11-12, not passed, 0 months
 #       13.5 -> EOL passed, behind 18, release date unknown
 #       18.7 -> newer than the table;  9.6 (90624) -> not known
-#  [review 1 fold, expected before the rerun:]
+#  [expected before the rerun:]
 #  A2. on PostgreSQL 15+ a second target database created with the ICU provider (icu_locale en-US): its collation row
 #      reads provider i, locale en-US (the ICU locale, not datcollate), recorded_version not NULL and = actual_version
 #  B2. an Aurora patch (aurora_version 16.4.2 -> 16.4.3, the number unchanged) writes 'aurora patch', not 'rebuild';
@@ -45,9 +45,8 @@
 #  E. (LAB=1) the Aurora cluster: platform aurora, engine aurora-postgresql, an engine_version 17.x, aurora_version
 #     set, aws_read_at set, at least one upgrade target, the pending maintenance rows listed (zero is a valid
 #     answer: printed), no collector_error (status ok)
-#  [run 1 graded: the row matched; the check compared a boolean concatenated into text with 't', which renders
-#   'true': the four checks that concatenate a boolean now compare with 'true'.
-#   Run 2 graded: B's seed lands after run 1's real read, so the import rightly records it as a downgrade
+#  [a boolean concatenated into text renders 'true', not 't': the four checks that concatenate a boolean compare
+#   with 'true'. B's seed lands after the first collect's real read, so the import rightly records it as a downgrade
 #   (<server_version> -> 18.2, applied at the seeded start) before the patch row; B expects both rows]
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}

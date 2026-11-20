@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -56,6 +57,9 @@ const (
 // Door is the pair of connection strings an action uses on one monitored server (resolved).
 type Door struct {
 	Monitor string // the instance's monitoring login (dsn)
+	// Secret is the monitoring login's password_secret (task B24e): its login and password set on the parsed config at
+	// each connect (secrets.FillPG), never in a string; nil = none
+	Secret  *secrets.Ref
 	Actions string // the actions login (actions_dsn); "" = no actions on this instance
 	// Configured says actions_dsn is set in the config, so an empty Actions means it did not resolve
 	// (an unset variable or an unreadable file), not that the instance has none.
@@ -87,9 +91,9 @@ func DoorsFromConfig(cfg *config.Config) map[string]Door {
 	m := map[string]Door{}
 	for _, in := range cfg.Instances {
 		if in.Engine == config.EngineSQLServer {
-			continue // its door is internal/mssql's (kill, job_start, job_stop)
+			continue // its door is internal/mssql's (kill, job_start, job_stop, job_enable, job_disable)
 		}
-		m[in.Name] = Door{Monitor: in.DSN(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != ""}
+		m[in.Name] = Door{Monitor: in.DSN(), Secret: in.SecretRef(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != ""}
 	}
 	return m
 }
@@ -139,10 +143,14 @@ func refused(format string, a ...any) Result {
 	return Result{Outcome: Refused, Detail: fmt.Sprintf(format, a...)}
 }
 
-// connect opens a short-lived connection that cannot hang on a busy server.
-func connect(ctx context.Context, dsn, app string) (*pgx.Conn, error) {
+// connect opens a short-lived connection that cannot hang on a busy server; sec is the login's password_secret (B24e;
+// nil = none), filled on the parsed config.
+func connect(ctx context.Context, dsn string, sec *secrets.Ref, app string) (*pgx.Conn, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
+		return nil, err
+	}
+	if err := secrets.FillPG(ctx, cfg, dsn, sec); err != nil {
 		return nil, err
 	}
 	if cfg.ConnectTimeout == 0 || cfg.ConnectTimeout > 10*time.Second {
@@ -170,7 +178,7 @@ func Execute(ctx context.Context, d Door, r Request) Result {
 	}
 
 	// 1. the target as the monitoring login sees it
-	mon, err := connect(ctx, d.Monitor, "pgvigil-actions-check")
+	mon, err := connect(ctx, d.Monitor, d.Secret, "pgvigil-actions-check")
 	if err != nil {
 		return refused("the monitoring login could not connect to check the target: %v", err)
 	}
@@ -212,7 +220,7 @@ SELECT a.backend_start, a.usename, a.application_name, a.backend_type, coalesce(
 	}
 
 	// 2. the signal, through the actions login
-	act, err := connect(ctx, d.Actions, "pgvigil-actions")
+	act, err := connect(ctx, d.Actions, nil, "pgvigil-actions")
 	if err != nil {
 		res.Outcome, res.Detail = Failed, fmt.Sprintf("the actions login could not connect: %v", err)
 		return res

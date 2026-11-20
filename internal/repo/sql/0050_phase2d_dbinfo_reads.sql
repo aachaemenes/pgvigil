@@ -1,4 +1,4 @@
--- 0050: the join 49 review's two read shapes, re-created from 0046's bodies (a frozen file is never edited).
+-- 0050: two read shapes, re-created from 0046's bodies (a frozen file is never edited).
 -- dbinfo(): the growth of every database came from one LATERAL per database over the instance's whole 30-day
 -- database_sizes window (dbid only a filter on the (instance_id, snapshot_at) index: a 500-database server visits the
 -- window 500 times); it is now one aggregate over the window grouped by dbid. The function also takes an optional

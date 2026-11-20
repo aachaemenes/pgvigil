@@ -41,7 +41,7 @@ func fileSet() (*doorSet, pageDoorsConfig) {
 }
 
 func build(file *doorSet, prev *doorSet, c pageDoorsConfig, page []config.PageInstance, gen int64) *doorSet {
-	all, _ := config.Merge(c.file, page, c.queryText)
+	all, _ := config.Merge(c.file, page, c.queryText, config.CounterEdits{})
 	return pageDoors(file, prev, c, all, page, gen)
 }
 
@@ -364,7 +364,7 @@ func TestPageOffWordsOnBothEngines(t *testing.T) {
 // the actions' superuser read never hands pgx an empty string (it would sign in from serve's own environment)
 func TestSuperusersRefuseAnEmptyDSN(t *testing.T) {
 	a := &Actions{suCache: map[string]suEntry{}}
-	if su, err := a.superusers(context.Background(), "x", " "); err == nil || su != nil || !strings.Contains(err.Error(), "empty string") {
+	if su, err := a.superusers(context.Background(), "x", " ", nil); err == nil || su != nil || !strings.Contains(err.Error(), "empty string") {
 		t.Errorf("an empty dsn: %v %v", su, err)
 	}
 }
@@ -390,5 +390,68 @@ func TestPlanButtonsPageDoor(t *testing.T) {
 	ds.DefaultQT = "none"
 	if qt := ds.queryText("p"); qt != "none" {
 		t.Errorf("the default policy: %q", qt)
+	}
+}
+
+// The door set of a generation (ST5a): a page instance's own query_text holds whether its read door opens or not (a
+// door shut by the switch, a disabled row), and every merged page instance carries its intervals for the stale check;
+// expectedNow puts them beside pgvigil.yaml's, never over one of the file's.
+func TestPageDoorsSettings(t *testing.T) {
+	cred := credFile(t, "host=192.0.2.1 user=mon dbname=postgres")
+	settings := `{"schedules": {"statements": 60, "activity": 0}, "query_text": "none"}`
+	page := []config.PageInstance{
+		{Name: "p-open", Engine: config.EnginePostgres, DSNRef: cred, Auth: "password", SettingsRaw: []byte(settings)},
+		{Name: "p-off", Engine: config.EnginePostgres, DSNRef: cred, Auth: "password", Disabled: true, SettingsRaw: []byte(settings)},
+		{Name: "p-plain", Engine: config.EnginePostgres, DSNRef: cred, Auth: "password"},
+		{Name: "pgfile", Engine: config.EnginePostgres, DSNRef: cred, Auth: "password", SettingsRaw: []byte(settings)},
+	}
+	for _, reads := range []bool{true, false} {
+		file, c := fileSet()
+		c.reads = reads
+		c.intervals = func(in config.Instance) map[string]int {
+			return map[string]int{"statements": int(in.Schedules["statements"].Seconds())}
+		}
+		ds := build(file, nil, c, page, 7)
+		for name, want := range map[string]string{"p-open": "none", "p-off": "none", "p-plain": "normalized", "pgfile": "full"} {
+			if got := ds.QueryText[name]; got != want {
+				t.Errorf("reads %t: %s's query_text %q, want %q", reads, name, got, want)
+			}
+		}
+		if got := ds.Expected["p-open"]["statements"]; got != 60 {
+			t.Errorf("reads %t: p-open's statements interval %d, want 60", reads, got)
+		}
+		if _, ok := ds.Expected["p-off"]; ok {
+			t.Errorf("reads %t: a disabled page instance has intervals (it is not merged)", reads)
+		}
+		if _, ok := ds.Expected["pgfile"]; ok {
+			t.Errorf("reads %t: a page row of a file instance's name has intervals (the file's stand)", reads)
+		}
+	}
+
+	s := &Server{log: discardLog(), expected: Expected{Defaults: map[string]int{"statements": 300}, Builtin: map[string]int{"statements": 300},
+		Instances: map[string]map[string]int{"pgfile": {"statements": 600}}}}
+	t.Cleanup(func() { doorSets.Delete(s) })
+	if e := s.expectedNow(); e.Instances["pgfile"]["statements"] != 600 || len(e.Instances) != 1 {
+		t.Errorf("no door set: %v", e.Instances)
+	}
+	s.storeDoors(&doorSet{Gen: 3, Expected: map[string]map[string]int{"p-open": {"statements": 60}, "pgfile": {"statements": 1}}})
+	e := s.expectedNow()
+	if e.Instances["p-open"]["statements"] != 60 || e.Instances["pgfile"]["statements"] != 600 || e.Defaults["statements"] != 300 {
+		t.Errorf("with the page's: %v (want p-open 60 beside pgfile's own 600)", e.Instances)
+	}
+	if s.expected.Instances["p-open"] != nil {
+		t.Error("expectedNow wrote into the file's map")
+	}
+
+	// pgvigil mcp (no door watcher): the page's intervals its own watcher keeps (page_intervals.go)
+	m := &Server{log: discardLog(), expected: Expected{Defaults: map[string]int{"activity": 60}, Builtin: map[string]int{"activity": 60},
+		Instances: map[string]map[string]int{"pgfile": {"activity": 120}}}}
+	t.Cleanup(func() { pageIntervalSets.Delete(m) })
+	if e := m.expectedNow(); len(e.Instances) != 1 {
+		t.Errorf("mcp before its first read: %v", e.Instances)
+	}
+	keepPageIntervals(m, map[string]map[string]int{"p-a": {"activity": 0}, "pgfile": {"activity": 1}})
+	if e := m.expectedNow(); e.Instances["p-a"]["activity"] != 0 || len(e.Instances["p-a"]) != 1 || e.Instances["pgfile"]["activity"] != 120 {
+		t.Errorf("mcp with the page's: %v (want p-a's activity off beside pgfile's own 120)", e.Instances)
 	}
 }

@@ -1,0 +1,109 @@
+diff --git c/internal/mssql/mssql.go i/internal/mssql/mssql.go
+index be9bd5b4..187a537a 100644
+--- c/internal/mssql/mssql.go
++++ i/internal/mssql/mssql.go
+@@ -542,6 +542,16 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+ 			}
+ 			return seq, found, cerr
+ 		})
++	} else if sc, ok := c.(SettingsCollector); ok {
++		// a collection whose reads depend on the repository's settings (task 408): the settings first; a failed read of
++		// them reads every part the login has the right for (nil settings), never nothing
++		lctx, lcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
++		raw, lerr := r.MSSQLSettings(lctx, instanceID, sc.SettingsFunc())
++		lcancel()
++		if lerr != nil {
++			raw = nil
++		}
++		rows, err = sc.RunWithSettings(sctx, conn, info, raw)
+ 	} else {
+ 		rows, err = c.Run(sctx, conn, info)
+ 	}
+diff --git c/internal/repo/repo.go i/internal/repo/repo.go
+index fb9ed265..8224a891 100644
+--- c/internal/repo/repo.go
++++ i/internal/repo/repo.go
+@@ -476,6 +476,19 @@ func IsDeadlock(err error) bool {
+ 	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
+ }
+ 
++// MSSQLSettings returns the settings a SQL Server collection reads by (task 408): pgvigil.<fn>(instance_id), fn an
++// import_ function of the collection (0159's import_mssql_security_parts), as JSON.
++func (r *Repo) MSSQLSettings(ctx context.Context, instanceID int, fn string) ([]byte, error) {
++	if !validIdent(fn) {
++		return nil, fmt.Errorf("settings function %q is not a valid identifier", fn)
++	}
++	var b []byte
++	if err := r.pool.QueryRow(ctx, fmt.Sprintf(`SELECT pgvigil.%s($1)::text`, fn), instanceID).Scan(&b); err != nil {
++		return nil, fmt.Errorf("%s: %w", fn, err)
++	}
++	return b, nil
++}
++
+ // LogCursor returns how far a log source was read for an instance (false: never).
+ func (r *Repo) LogCursor(ctx context.Context, instanceID int, source string) (time.Time, bool, error) {
+ 	var t *time.Time
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 79e5baa0..957ed06a 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -280,6 +280,8 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/sessionsets", s.SessionSets)
+ 	api.HandleFunc("GET /api/memory", s.Memory)
+ 	api.HandleFunc("GET /api/mssql/audit", s.MSSQLAudit)
++	api.HandleFunc("GET /api/mssql/security", s.MSSQLSecurity)
++	api.HandleFunc("POST /api/mssql/security/config", s.MSSQLSecurityConfigWrite)
+ 	api.HandleFunc("GET /api/mssql/xe", s.MSSQLXE)
+ 	api.HandleFunc("GET /api/mssql/xe/deadlock", s.MSSQLXEDeadlock)
+ 	api.HandleFunc("GET /api/mssql/xe/deadlock.xdl", s.MSSQLXEDeadlockXDL)
+diff --git c/web/src/main.ts i/web/src/main.ts
+index 6f6893a2..23dec992 100644
+--- c/web/src/main.ts
++++ i/web/src/main.ts
+@@ -65,6 +65,7 @@ import { hasPool, mssqlPoolView } from './pools';
+ import { azureSummaryView, mssqlAzureView } from './azuredb';
+ import { mssqlPropertiesView } from './mssql_properties';
+ import { mssqlAuditView } from './mssql_audit';
++import { mssqlSecurityView } from './mssql_security';
+ import { mssqlChecksFleetView, mssqlChecksView } from './mssql_checks';
+ import { pgDbOptionsFleetView, pgDbOptionsView } from './pg_dboptions';
+ import { mssqlErrorLogView, mssqlDefaultTraceView, mssqlSysHealthView } from './mssql_errorlog';
+@@ -113,7 +114,7 @@ const mssqlPages: Record<string, Render> = {
+   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
+   mssqlqs: mssqlQueryStoreView,
+   counters: metricsView,
+-  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
++  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlsecurity: mssqlSecurityView, mssqlchecks: mssqlChecksView,
+   mssqlerrorlog: mssqlErrorLogView, mssqlerrors: mssqlErrorFleetView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
+   customreports: customReportsView, community: communityView,
+   ...reportPages,
+@@ -125,6 +126,7 @@ const mssqlTabRuns: Record<string, string[]> = {
+   mssqlcpu: ['mssql_cpu'], mssqlazure: ['mssql_azuredb_resources', 'mssql_azuredb_governance'], mssqlconnections: ['mssql_activity'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
+   drives: ['mssql_storage'], dbspace: ['mssql_storage'], dbfiles: ['mssql_storage'], driveperf: ['mssql_fileio'],
+   rp_props: ['mssql_reports'], rp_failed: ['mssql_reports'], rp_roles: ['mssql_reports'], rp_services: ['mssql_reports'], rp_pwage: ['mssql_reports'], rp_tables: ['mssql_reports'],
++  mssqlsecurity: ['mssql_security'],
+ };
+ for (const [tab, cols] of Object.entries(mssqlTabRuns)) {
+   const page = mssqlPages[tab];
+diff --git c/web/src/router.ts i/web/src/router.ts
+index c4050f1d..65c413fb 100644
+--- c/web/src/router.ts
++++ i/web/src/router.ts
+@@ -126,7 +126,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
+   mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', mssqlbackups: 'Backups', mssqlrestore: 'Restore chain', mssqljobs: 'Jobs',
+   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlazure: 'Azure', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
+   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
+-  mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
++  mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlsecurity: 'Security', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
+   mssqlqueries: 'Queries',
+   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health', mssqlerrors: 'SQL Server errors',
+   // the instance's Reports folder (reports.ts)
+@@ -136,7 +136,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
+ };
+ export const mssqlInstanceGroups: TabGroup[] = [
+   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
+-  { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },
++  { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlsecurity', 'mssqlactions'] },
+   { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectorerrors'] },
+   { key: 'hadr', name: 'HA/DR', tabs: ['mssqlbackups', 'mssqlrestore', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'availability'] },
+   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },

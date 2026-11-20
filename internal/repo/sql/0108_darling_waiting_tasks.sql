@@ -32,7 +32,7 @@
 -- The PostgreSQL twin reads what pgvigil already samples (0002's activity_sample: wait event, blockers, the leader of
 -- a parallel worker); the lock's target relation is not sampled, and the page says so.
 --
--- The join's lines are in 0110 (this file was 0112 on its branch and took 0108 so that 0110 runs after it): the arm
+-- Its wiring lines are in 0110 (this file was 0112 on its branch and took 0108 so that 0110 runs after it): the arm
 --   'mssql_waiting' in pgvigil.findings over mssql_waiting_findings, and 'mssql_waiting_summary', 'mssql_waiting_tasks'
 --   on purge()'s month-partition parents.
 

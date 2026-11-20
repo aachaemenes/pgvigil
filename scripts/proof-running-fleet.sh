@@ -60,7 +60,7 @@
 #    characters; the status line begins 'Blocked sessions: 2'.
 # G. Pages C, D and F render in the dark theme too (the same row counts); with PGVIGIL_SHOTS the screenshots of the
 #    fleet page, P1's page, the viewer open, M's page and two demo instances' pages are saved in both themes.
-# [review fold, expected before the rerun]
+# [added later, expected before the rerun]
 # H. M also has a snapshot at S - 3 h (one session, nothing blocked); the newest stays S, so A is unchanged.
 #    H1. P1's page at S: 109 (an IO wait whose stale blocking_pids names 100) has an empty 'blocked by' cell.
 #    H2. From P1's page at S-60 s: Later moves the address to at= S; Latest leaves no at= in the address.

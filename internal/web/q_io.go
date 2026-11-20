@@ -239,7 +239,7 @@ func (s *Server) IO(w http.ResponseWriter, r *http.Request) {
 		{"checkpoint_totals", sqlIOCheckpointTotals, []any{id, from, to, db}},
 		{"checkpoint_causes", sqlIOCheckpointCauses, []any{id, from, to}},
 		{"checkpoint_log", sqlIOCheckpointLog, []any{id, from, to}},
-		{"statements", `SELECT * FROM pgvigil.top_statements_by($1, $2, $3, 'io', 20)`, []any{id, from, to}},
+		{"statements", `SELECT * FROM pgvigil.top_statements_by($1, $2, $3, 'io', 20) /* text: query=stmt */`, []any{id, from, to}},
 		{"findings", sqlIOFindings, []any{id}},
 	})
 }

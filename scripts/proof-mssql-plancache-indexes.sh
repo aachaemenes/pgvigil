@@ -10,8 +10,8 @@
 #   PGVIGIL_MSSQL_CONTAINER  an existing SQL Server sandbox container (PGVIGIL_MSSQL_ADDR, MSSQL_SA_PASSWORD). NOT set:
 #                            the proof starts its own (MSSQL_IMAGE, default mcr.microsoft.com/mssql/server:2022-latest)
 #                            with a throwaway sa password made here, and removes it at the end.
-# The binary must carry the routes /api/mssql/plancache and /api/mssql/indexes (the lead's wiring in web.go).
-# It makes, and drops on every exit path the shell can catch: its repository database (pgvigil_s150_<n>), on the SQL
+# The binary must carry the routes /api/mssql/plancache and /api/mssql/indexes (the wiring in web.go).
+# It makes, and drops on every exit path the shell can catch: its repository database (pgvigil_pci_<n>), on the SQL
 # Server two databases and two logins (random suffix and passwords), its own container. No server setting is changed.
 #
 # Expected (written before the first run):
@@ -51,10 +51,10 @@
 #     K1:15,K1:5,K1:2,K3:7,K1:3,K2:10 (a statement new after a CUT read and compiled before it gives nothing, then its
 #     difference; one compiled after it its whole count; lower counters give their whole count), read rows with
 #     1,1,2,2 keys and capped f,t,f,f; the late read changes nothing.
-#     [Added with the review fold, before the run that had it: K4, compiled before the cut read and run once, its run
+#     [Added before the run that had it: K4, compiled before the cut read and run once, its run
 #     ending after that read's clock, gives its whole count 1; the samples are K1:15,K1:5,K1:2,K3:7,K4:1,K1:3,K2:10
 #     and the read rows 1,1,3,2.]
-#  R. the index rules on imported rows (a 30-day window), written with the review fold before its first run: the kept
+#  R. the index rules on imported rows (a 30-day window), written before its first run: the kept
 #     index of a key subset with no read (A1) is never called unused (its rule is 'same leading column', no text); the
 #     subset's text merges [c] into A1 with DROP_EXISTING, then disables B1; in a chain A2 < B2 < C2, A2's text merges
 #     [q] into B2 and B2 (itself kept for A2) has no text; a merge into a keeper with MIXED compression gives no text;
@@ -62,7 +62,7 @@
 #     with no text; a merge into a unique keeper with IGNORE_DUP_KEY = ON keeps it ON; an index of an AUTO_CLOSE
 #     database is not judged ('the usage window is not known: AUTO_CLOSE is on'); a second read with lower counters
 #     makes the window 'usage counters reset' and not judged; both databases have their read cursor.
-#  P. the API: /api/mssql/plancache and /api/mssql/indexes answer with exactly their parts (10 and 8 names); an
+#  P. the API: /api/mssql/plancache and /api/mssql/indexes answer with exactly their parts (10 and 9 names); an
 #     unknown part is refused with 400. Step A also holds CPU and duration in ms to PostgreSQL's rounding of sa's
 #     rise, and C and D hold the workload's own numbers (4 seeks, 1 write, 20,000 modifications).
 #  NOT PROVEN HERE: SQL Server 2016-2019 (proof-mssql-versions.sh runs the SQL Server proofs on them once this proof
@@ -74,10 +74,10 @@ for t in psql curl jq ss docker; do command -v $t >/dev/null || { echo "FAIL: $t
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SUF=$RANDOM
 WORK=$(mktemp -d); CFG=$WORK/cfg.yaml; OUT=$WORK/out
-REPO_DB=pgvigil_s150_$SUF
+REPO_DB=pgvigil_pci_$SUF
 DPC=pvpc_$SUF; DQS=pvqs_$SUF
-L1=pgv_s150_$SUF; L2=pgv_s150bare_$SUF
-N=proof-s150-$SUF; NB=proof-s150bare-$SUF
+L1=pgv_pci_$SUF; L2=pgv_pcibare_$SUF
+N=proof-pci-$SUF; NB=proof-pcibare-$SUF
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 P1=$(pw); P2=$(pw)
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -113,7 +113,7 @@ echo "--- the SQL Server"
 if [ -n "$CT" ]; then
   ADDR=${PGVIGIL_MSSQL_ADDR:-localhost:1433}; : "${MSSQL_SA_PASSWORD:?the sa password of the sandbox}"
 else
-  CT=pgv-s150-mssql-$SUF; MSSQL_SA_PASSWORD=$(pw); export MSSQL_SA_PASSWORD
+  CT=pgv-pci-mssql-$SUF; MSSQL_SA_PASSWORD=$(pw); export MSSQL_SA_PASSWORD
   MPORT=$(freeport 22433 22499) || fail "no free port for the SQL Server container"; ADDR=127.0.0.1:$MPORT
   MADE_CT=1
   docker run -d --name "$CT" -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD -p "127.0.0.1:$MPORT:1433" "${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}" >/dev/null || fail "docker run"
@@ -180,7 +180,7 @@ PORT=$(freeport 18340 18380) || fail "no free port for the UI"
 U=http://127.0.0.1:$PORT/api
 for _ in $(seq 1 40); do curl -fs "$U/health" >/dev/null 2>&1 && break; sleep 0.25; done
 for r in plancache indexes; do
-  [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/$r?instance=$iid")" != 404 ] || fail "the binary has no route /api/mssql/$r (the lead's wiring in web.go)"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/$r?instance=$iid")" != 404 ] || fail "the binary has no route /api/mssql/$r (the wiring in web.go)"
 done
 DBID=$(sq "SELECT DB_ID('$DPC')")
 curl -fs "$U/mssql/plancache?instance=$iid&$(win)&db=$DBID" > "$WORK/pc.json" || fail "A: /api/mssql/plancache"
@@ -274,7 +274,7 @@ echo "--- X. imported rows"
 NOW=$(date -u +%s)
 UT() { date -u -d "@$((NOW - $1))" +%FT%TZ; }
 LT_() { date -u -d "@$((NOW - $1 - 28800))" +%FT%T; }
-xp=$(q "select pgvigil.ensure_instance('proof-s150-x-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+xp=$(q "select pgvigil.ensure_instance('proof-pci-x-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
 pimp() { q "select pgvigil.import_mssql_plancache($xp, '$(UT "$1")', ('[{\"kind\":\"state\",\"server_utc\":\"$(UT "$1")\",\"server_start\":\"2026-01-01T00:00:00Z\",\"server_local\":\"$(LT_ "$1")\",\"capped\":$2}' || '$3' || ']')::jsonb)" >/dev/null; }
 srow() { echo ",{\"kind\":\"stmt\",\"plan_handle\":\"0x06$1\",\"stmt_start\":0,\"stmt_end\":-1,\"creation_time\":\"$(LT_ "$3")\",\"query_key\":\"$2\",\"database_id\":5,\"database_name\":\"appdb\",\"execution_count\":$4,\"worker_us\":$(($4 * 100))${5:+,\"last_execution\":\"$(LT_ "${5:-0}")\",\"last_elapsed_us\":${6:-0}}}"; }
 pimp 1500 false "$(srow 01 K1 4000 10)"
@@ -290,7 +290,7 @@ GOT=$(q "select string_agg(statements || '/' || capped, ',' order by snapshot_at
 echo "X: OK"
 
 echo "--- R. the index rules on imported rows"
-xi=$(q "select pgvigil.ensure_instance('proof-s150-r-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+xi=$(q "select pgvigil.ensure_instance('proof-pci-r-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
 D30=$(date -u -d '-30 days' +%FT%TZ)
 # ix <object> <index id> <name> <keys json> <includes json> <reads> [extra fields]
 ix() { echo ",{\"kind\":\"index\",\"database_name\":\"$DBN\",\"database_id\":7,\"object_id\":$1,\"index_id\":$2,\"schema_name\":\"dbo\",\"table_name\":\"t$1\",\"index_name\":\"$3\",\"index_type\":\"NONCLUSTERED\",\"key_columns\":$4,\"include_columns\":$5,\"user_seeks\":$6,\"user_updates\":0,\"compression\":\"NONE\",\"table_created\":\"$D30\",\"table_modified\":\"$D30\"${7:-}}"; }
@@ -324,7 +324,8 @@ G=$(q "select judged || '|' || usage_reason from pgvigil.mssql_index_db_status w
 echo "R: OK"
 
 echo "--- P. the API's parts"
-declare -A PARTS=([plancache]="databases duplicates findings health reads series singles state top totals" [indexes]="databases findings indexes missing state stats statsdbs verdicts")
+declare -A PARTS=([plancache]="databases duplicates findings health reads series singles state top totals" [indexes]="databases findings heaps indexes missing state stats statsdbs verdicts")
+# (indexes: heaps since D404's 1ca3e07db, internal/web/q_mssql_indexes.go; the list keys come sorted)
 for r in plancache indexes; do
   curl -fs "$U/mssql/$r?instance=$iid&$(win)" > "$WORK/p.json" || fail "P: /api/mssql/$r"
   [ "$(jq -r 'keys | join(" ")' "$WORK/p.json")" = "${PARTS[$r]}" ] || fail "P: /api/mssql/$r parts $(jq -r 'keys | join(" ")' "$WORK/p.json"), want ${PARTS[$r]}"

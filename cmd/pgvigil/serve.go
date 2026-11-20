@@ -30,6 +30,7 @@ import (
 //
 //	pgvigil serve -config pgvigil.yaml [-listen 127.0.0.1:8080] [-dsn env:PGVIGIL_UI_DSN] [-open]
 //	              [-tls-cert pgvigil.crt -tls-key pgvigil.key] [-no-login] [-session-hours 12]
+//	              Windows: [-tls-thumbprint <hex> | -tls-subject <dns name>] [-tls-store LocalMachine\My]   (task B24n)
 //
 // -dsn names the UI's repository login (pgvigil_reader + pgvigil_auth); without it the repository
 // DSN of the config is used. The UI login (pgvigil.ui_users) is on unless -no-login, which a loopback
@@ -42,6 +43,10 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	dsn := fs.String("dsn", "", "UI connection string (or env:NAME / file:path); default the config's repository dsn")
 	tlsCert := fs.String("tls-cert", "", "PEM certificate (with -tls-key): serve HTTPS")
 	tlsKey := fs.String("tls-key", "", "PEM private key (with -tls-cert)")
+	// task B24n: a certificate from the Windows store, its key used where it sits (certstore_windows.go)
+	tlsThumb := fs.String("tls-thumbprint", "", "Windows: serve HTTPS with the certificate of this thumbprint in -tls-store")
+	tlsSubject := fs.String("tls-subject", "", "Windows: serve HTTPS with the newest valid certificate for this DNS name in -tls-store (renewals followed hourly)")
+	tlsStore := fs.String("tls-store", `LocalMachine\My`, "Windows: the certificate store -tls-thumbprint and -tls-subject read")
 	noLogin := fs.Bool("no-login", false, "serve without the UI login (allowed on a loopback listen only)")
 	open := fs.Bool("open", false, "open the UI in an app-mode browser window (Edge or Chrome, its own window) once it listens; the default browser when neither is found")
 	sessionHours := fs.Int("session-hours", 12, "hours a login stays valid")
@@ -87,17 +92,29 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if useTLS && (*tlsCert == "" || *tlsKey == "") {
 		return errors.New("-tls-cert and -tls-key go together")
 	}
+	useStore := *tlsThumb != "" || *tlsSubject != ""
+	if useStore && (useTLS || (*tlsThumb != "" && *tlsSubject != "")) {
+		return errors.New("-tls-thumbprint, -tls-subject and -tls-cert / -tls-key name a certificate each: give one")
+	}
+	useTLS = useTLS || useStore
 	loopback := host == "127.0.0.1" || host == "localhost" || host == "::1"
 	if !loopback {
 		if !useTLS {
-			return fmt.Errorf("a listen on %s is reachable from other machines and needs -tls-cert and -tls-key ('pgvigil cert' writes a self-signed pair)", *listen)
+			return fmt.Errorf("a listen on %s is reachable from other machines and needs -tls-cert and -tls-key ('pgvigil cert' writes a self-signed pair), or on Windows -tls-thumbprint or -tls-subject", *listen)
 		}
 		if *noLogin {
 			return errors.New("-no-login is allowed on a loopback listen (127.0.0.1, localhost, ::1) only")
 		}
 	}
 	var tlsCfg *tls.Config
-	if useTLS {
+	switch {
+	case useStore:
+		get, err := storeServerTLS(ctx, log, *tlsStore, *tlsThumb, *tlsSubject)
+		if err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
+		tlsCfg = &tls.Config{GetCertificate: get, MinVersion: tls.VersionTLS12}
+	case useTLS:
 		pair, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
 		if err != nil {
 			return fmt.Errorf("tls: %w", err)
@@ -106,6 +123,21 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	if *noLogin {
 		log.Warn("serve runs without the UI login: anyone who reaches this loopback port reads the repository", "listen", *listen)
+	}
+	// B24d: doors.prometheus_metrics - the start checks (a token under 32 bytes or none under -no-login ends serve) and
+	// one WARN naming what is open, as -no-login does, until the site profile (task 330) lists the door
+	var promCfg *web.MetricsConfig
+	if cfg.Doors.PrometheusMetrics {
+		m := cfg.Metrics
+		promCfg = &web.MetricsConfig{Token: m.Token, CacheSeconds: m.CacheSeconds, Databases: m.Databases, MaxDatabases: m.MaxDatabases,
+			IncludeDatabases: m.IncludeDatabases, Tags: m.Tags}
+		warns, err := web.CheckMetricsToken(promCfg, !*noLogin)
+		for _, w := range warns {
+			log.Warn(w)
+		}
+		if err != nil {
+			return &configError{err} // exit 3: a unit with RestartPreventExitStatus=3 does not loop on it
+		}
 	}
 	// bind first: the accepted Host values follow the bound port (-listen 127.0.0.1:0 picks one, as demo does)
 	ln, err := net.Listen("tcp", *listen)
@@ -118,6 +150,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	// never delays serve, and an empty connection string never reaches a connect (without an alerts_dsn it is the
 	// repository serve itself reads, -dsn included: checked above). A failing channel is backed off as the collector's
 	// own alert loop backs it off (collect.ChannelBackoff).
+	// TEXT-NOW: the watchdog's alert sends follow the file's query_text policies from their first pass (srv.TextPolicy,
+	// which adds the page instances, replaces this once the web server is open)
+	alerts.SetTextPolicy(alerts.PolicyOfConfig(cfg.QueryText, queryTextByName(cfg)))
 	if ast, aerr := alerts.LoadFile(*path); aerr == nil && len(ast.Channels) > 0 {
 		adsn := ast.DSN()
 		if adsn == "" {
@@ -161,20 +196,60 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if loopback {
 		hosts = web.LoopbackHosts(strconv.Itoa(ln.Addr().(*net.TCPAddr).Port))
 	}
+	// task CQ (487): actions.via queue - serve connects to no monitored server: every instance's dsn, actions_dsn and
+	// explain_dsn is blanked before anything reads them (no door, plan gate or admin door resolves one), Admin >
+	// Instances' credentials are not resolved either (doors.page_instance_reads off here: the collector's), serve keeps
+	// no audit login (the collector that runs a request writes its audit), and SetQueue below refuses a collector login
+	logDSN := cfg.Repository.DSN()
+	if cfg.Actions.Queue() {
+		qcfg := *cfg
+		qcfg.Instances = make([]config.Instance, len(cfg.Instances))
+		for i, in := range cfg.Instances {
+			in.DSNRaw, in.ActionsDSNRaw, in.ExplainDSNRaw = "", "", ""
+			qcfg.Instances[i] = in
+		}
+		qcfg.Doors.PageInstanceReads = false
+		cfg, logDSN = &qcfg, ""
+		log.Info("serve sends its actions and community runs through the repository (actions.via queue): it connects to no monitored server")
+		log.Warn("queue mode: serve holds no write login to the repository, so acknowledgements, alert-rule edits, applications, Admin > Instances, custom reports and scheduled report mail are off (docs/queue.md)")
+	}
 	srv, err := web.Open(ctx, log, d, web.Options{Expected: expectedIntervals(cfg), Hosts: hosts, Login: !*noLogin, TLS: useTLS,
-		SessionTTL: time.Duration(*sessionHours) * time.Hour,
-		Actions:    &web.ActionsConfig{LogDSN: cfg.Repository.DSN(), Doors: actions.DoorsFromConfig(cfg)},
-		Tags:       web.TagsUI{GroupBy: cfg.UI.GroupBy, EnvOrder: cfg.UI.EnvOrder}, Version: versionLine(),
-		Reports: &web.ReportsConfig{Raw: cfg.ReportsDSNRaw, DSN: cfg.ReportsDSN()}})
+		ReadyzWithoutLogin: cfg.Web.ReadyzWithoutLogin, // B6.4: the probes (web/probes.go)
+		SessionTTL:         time.Duration(*sessionHours) * time.Hour,
+		Actions:            &web.ActionsConfig{LogDSN: logDSN, Doors: actions.DoorsFromConfig(cfg)},
+		Tags:               web.TagsUI{GroupBy: cfg.UI.GroupBy, EnvOrder: cfg.UI.EnvOrder}, Version: versionLine(),
+		Reports: &web.ReportsConfig{Raw: cfg.ReportsDSNRaw, DSN: cfg.ReportsDSN()}, Agents: cfg.Agents.Enabled})
 	if err != nil {
 		_ = ln.Close()
 		return err
 	}
 	defer srv.Close()
+	srv.EnableMetrics(promCfg)
+	srv.SetViewEditors(cfg.Views.SharedEditors) // who may write shared views (pgvigil.yaml views.shared_editors)
+	if cfg.Actions.Queue() {
+		if err := srv.SetQueue(ctx, d); err != nil { // serve's own login (-dsn when given), the one its UI pool uses
+			_ = ln.Close()
+			return &configError{err}
+		}
+	}
 	// REPORT ROLE: one WARN when a custom report on the store cannot run here (no reports_dsn, or its login fails the
 	// check); serve starts either way and the page says the same words
 	if why := srv.StoreReportsOff(ctx); why != "" {
 		log.Warn("custom reports on the store are off", "reason", why)
+	}
+	// task 403b K5: the Slack door (doors.slack_actions and slack_apps: in the file), off by default. serve reads only
+	// the door's part of the file and its apps' signing secrets (never the channels, whose tokens are not on serve);
+	// with the switch on, a fault there stops serve with its reason, and the door needs the UI login's users
+	door, derr := alerts.LoadSlackDoor(*path)
+	if derr != nil {
+		return derr
+	}
+	if door != nil {
+		if *noLogin {
+			return errors.New("doors.slack_actions needs the UI login (a click writes as the pgvigil user its Slack user maps to): serve without -no-login, or turn the door off")
+		}
+		web.SetSlackDoor(door)
+		log.Info("the Slack door is on", "path", alerts.SlackPath, "apps", strings.Join(door.AppIDs(), ","))
 	}
 	pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}, Hypo: map[string]bool{}, DefaultQueryText: cfg.QueryText}
 	for _, in := range cfg.Instances {
@@ -184,15 +259,33 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		pc.Hypo[in.Name] = in.HypoIndex
 	}
 	srv.SetPlans(pc)
+	// TEXT-NOW: serve's alert sends follow each instance's query_text policy as its doors hold it now (page instances too)
+	alerts.SetTextPolicy(srv.TextPolicy)
+	// task 414: the histogram and fragmentation switches of the file's SQL Server instances (off by default)
+	idc := web.IndexDepthConfig{Gates: map[string]web.IndexDepthGate{}}
+	for _, in := range cfg.Instances {
+		if in.Engine == config.EngineSQLServer {
+			idc.Gates[in.Name] = web.IndexDepthGate{Histogram: in.Histogram, StatsDSN: in.StatsDSN(), StatsConfigured: strings.TrimSpace(in.StatsDSNRaw) != "",
+				Fragmentation: in.IndexFragmentation}
+		}
+	}
+	srv.SetIndexDepth(idc)
 	doors := map[string]mssql.Door{}
 	for _, in := range cfg.Instances {
 		if in.Engine == config.EngineSQLServer {
-			doors[in.Name] = mssql.Door{Monitor: in.DSN(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != "", Allow: in.Actions,
+			doors[in.Name] = mssql.Door{Monitor: in.DSN(), Secret: in.SecretRef(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != "", Allow: in.Actions,
 				Platform: in.Platform} // task 406: plan_evict is not offered on Azure SQL Database
 		}
 	}
 	srv.SetMSSQLActions(doors)
-	dbadash.SetRepositories(cfg.DBADash) // the imported servers' live screens (task 168) read the repositories through serve
+	// task 301b: verify_backup's bound, and the verifies a stopped serve left with no end row (now, then hourly)
+	srv.SetVerifyTimeout(cfg.VerifyTimeout.Duration)
+	if err := srv.SweepVerifies(ctx); err != nil {
+		log.Warn("actions: the verifies left by a stopped serve were not swept", "err", err)
+	}
+	go srv.VerifySweepsHourly(ctx)
+	dbadash.SetRepositories(cfg.DBADash)              // the imported servers' live screens (task 168) read the repositories through serve
+	dbadash.SetQueryText(dbadash.ConfigTextMode(cfg)) // IMPORTMASK: serve's history import stores under each instance's query_text
 	// task 161: a PostgreSQL instance's job actions (job_stop, job_start) are on only where its actions: list names them
 	pgJobs := map[string][]string{}
 	for _, in := range cfg.Instances {
@@ -210,6 +303,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	go srv.RunInstanceSync(ctx)
 	// the read doors of each inventory generation (pgvigil.yaml's, and Admin > Instances' when doors.page_instance_reads
 	// is on), after every Set* call above: serve alone watches (demo and mcp keep the file's doors)
+	// ST5a: Admin > Instances' Settings (serve_settings.go), before the watcher's first set
+	srv.SetPageSettings(pageSettingsConfig(cfg))
 	go srv.WatchDoors(ctx, log, cfg, web.DoorEvery)
 	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender); the Daily checks
 	// mail's block is applied by the same loop, at its start
@@ -232,6 +327,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	select {
 	case <-ctx.Done():
+		srv.StopVerifies(30 * time.Second) // task 301b: a running verify's end row ('cut by shutdown') before serve goes
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return hs.Shutdown(sctx)
@@ -255,17 +351,8 @@ func expectedIntervals(cfg *config.Config) web.Expected {
 		e.Builtin[c.Name] = int(c.Default / time.Second)
 	}
 	for _, in := range cfg.Instances {
-		m := map[string]int{}
-		for _, c := range all {
-			// a collection of another engine, or one gated off by the instance's config (no aws: block), never
-			// writes a row: 0 keeps the stale check from flagging the row an earlier build left behind
-			if skip, _ := engines.Gated(in, c.Name); skip {
-				m[c.Name] = 0
-				continue
-			}
-			m[c.Name] = int(cfg.Interval(in, c.Name, c.Default) / time.Second)
-		}
-		e.Instances[in.Name] = m
+		// ST5a: the rule a page instance's intervals follow too (serve_settings.go)
+		e.Instances[in.Name] = instanceIntervals(cfg, in)
 	}
 	return e
 }

@@ -80,7 +80,7 @@ BEGIN
     VALUES (v_name, v_eng, coalesce(nullif(p_payload->>'platform', ''), 'auto'), v_ref, p_payload->>'auth', btrim(p_payload->>'host'),
             nullif(p_payload->>'port', '')::int, nullif(p_payload->>'dbname', ''), nullif(p_payload->>'login', ''), nullif(p_payload->>'options', ''), coalesce(v_tags, '{}'),
             coalesce(nullif(p_payload->>'source', ''), 'page'), p_at, v_user, p_at, v_user);
-    -- active from the add (the join's review, finding 1): a failed connect is recorded for an active row only
+    -- active from the add: a failed connect is recorded for an active row only
     -- (0118's import_connect_failure), and ensure_instance runs only after a connect that succeeded, so a name added
     -- again after a remove, or added while its server is down, would be silent until its server answers. A name
     -- never collected gets its row here (the page's platform, 'auto' until the first read that connects writes the
@@ -97,7 +97,7 @@ BEGIN
   ELSIF v_op IN ('disable', 'enable') THEN
     UPDATE pgvigil.admin_instances SET disabled = (v_op = 'disable'), updated_at = p_at, updated_by = v_user WHERE name = v_name;
     -- a disabled instance leaves the fleet pages' stale and failing checks (they read is_active); enable makes it
-    -- active again at once (the join's review, finding 1: waiting for the next run's ensure_instance left an
+    -- active again at once (waiting for the next run's ensure_instance left an
     -- instance enabled while its server is down silent - no failed connect recorded, no 'server unreachable'); a
     -- row that is missing is made as the add makes it. admin_keep_removed holds nothing: the page row is not disabled.
     IF v_op = 'disable' THEN
@@ -116,7 +116,7 @@ BEGIN
       ON CONFLICT (name) DO UPDATE SET removed_at = EXCLUDED.removed_at, removed_by = EXCLUDED.removed_by;
     UPDATE pgvigil.instances SET is_active = false WHERE name = v_name;
     -- a row the add made and no read ever reached (no version, no SQL Server read, nothing but failed connects) goes
-    -- with the page's row, so the name can be added again with the other engine (the join's w9e, finding 1); its
+    -- with the page's row, so the name can be added again with the other engine; its
     -- 'connect:' rows go with it (ON DELETE CASCADE). A read in flight cannot make it again, active: admin_keep_removed
     -- holds an insert for 5 minutes.
     DELETE FROM pgvigil.instances i

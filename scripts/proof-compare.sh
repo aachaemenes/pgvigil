@@ -31,7 +31,7 @@
 #     106|86400|partial|600||||(max_ratio NULL)   (its first delta ends in the baseline's second half: no ratio)
 #     105|2400|not run|||||(max_ratio NULL)   the last row (NULL ratios sort last, by total time)
 #     The order: 102 first (29,018), 101, 104, 103, 106, 105.
-#  [review fold, expected before the rerun: 104 reseeded 1 -> 30 an hour (A 104|720|ok|24|30.00|...), 106 added
+#  [expected before the rerun: 104 reseeded 1 -> 30 an hour (A 104|720|ok|24|30.00|...), 106 added
 #   ('partial'); B, F and G below read the cache that refresh_compare_findings fills.]
 #  [first run, B failed on 105: the view's window (now()-24h) is not aligned to T, so the 1-day baseline caught a sliver of
 #   105's first delta (k=23) and read a ratio of thousands. The fix in 0054: a baseline counts only when a delta of the
@@ -51,14 +51,14 @@
 #  F. the cache rows aged to 3 hours: compare_findings for X reads 0 rows (a stale refresh fires nothing).
 #  G. the cache of X emptied, import_compare(X, now(), the collector's state row): the cache holds 2 rows again and
 #     compare_state reads 2 findings; emptied again, import_compare(X, now() - 3 hours, ...): 0 rows (a historical
-#     import does not refresh). [The lead's decision 2026-11-09: the refresh is the compare collection's own, no longer
+#     import does not refresh). [The refresh is the compare collection's own, no longer
 #     the session_sets import's.]
-#  H. [join review fold, expected before the run] 600 quiet statements (2001..2600) seeded ahead of the real regressions:
+#  H. [expected before the run] 600 quiet statements (2001..2600) seeded ahead of the real regressions:
 #     1 call an hour all 8 days at 1 page a call, then 100,000 pages a call in the last 24 hours (a pages-a-call ratio of
 #     100,000, above 102's 29,018, at 24 calls a day: under the 1,000-call gate). refresh_compare_findings(X) still
 #     returns 2 and compare_findings for X is still exactly 101 and 102 (the gate is applied to every row, not to a
 #     top-500-by-ratio cut). The control: the first 500 rows of statement_compare(X, ..., 500) hold 0 rows that pass the
-#     gate (the shape the review found: a cap before the gate dropped both regressions).
+#     gate (a cap before the gate would drop both regressions).
 set -euo pipefail
 : "${PGVIGIL_REPO_DSN:?}"
 BIN=${PGVIGIL_BIN:-bin/pgvigil}

@@ -1,0 +1,253 @@
+diff --git c/README.md i/README.md
+index 4edb9208..4bbae8cb 100644
+--- c/README.md
++++ i/README.md
+@@ -189,7 +189,7 @@ The frontend is TypeScript under `web/`, built into `internal/web/dist/` (commit
+ 
+ A site that runs DBA Dash for SQL Server sees DBA Dash's instances and its Summary statuses beside the PostgreSQL fleet, read from the DBA Dash repository with a read-only login (SELECT on four tables, no procedure; [docs/dbadash.md](docs/dbadash.md)): a `dbadash:` list in the configuration names each repository, the collector reads it every 5 minutes, the tree gains a folder per repository with a node per SQL Server instance and the DBADash tab shows the statuses in DBA Dash's own words with a change history. Through this door pgvigil collects nothing from SQL Server: DBA Dash is that product there, and a repository that is unreachable or refuses the login shows as not read with the reason.
+ 
+-SQL Server is an engine of its own: an instance says `engine: sqlserver`, a least-privilege login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE, a user in msdb with db_datareader; never sysadmin) runs thirty-two read-only collections, nothing of one engine runs on the other, and a SQL Server instance has its own tabs (Summary, Performance, Running queries, Slow queries, Waits, Deadlocks, Blocked reports, Findings; under HA/DR Availability and Backups; under Performance Metrics, CPU, Memory, File IO, Query Store, Procedures and Index locks; under Storage Storage, Database files, Row versions and TempDB; under Jobs Jobs and the Jobs timeline; under Configuration Configuration, Properties and the Actions log). A collection the server's kind or the login's rights do not allow is skipped with the reason. The login, the configuration and what is not there yet: [docs/sqlserver.md](docs/sqlserver.md).
++SQL Server is an engine of its own: an instance says `engine: sqlserver`, a least-privilege login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE, a user in msdb with db_datareader; never sysadmin) runs thirty-five read-only collections, nothing of one engine runs on the other, and a SQL Server instance has its own tabs (Summary, Performance, Running queries, Slow queries, Waits, Deadlocks, Blocked reports, Findings; under HA/DR Availability and Backups; under Performance Metrics, CPU, Memory, File IO, Query Store, Procedures and Index locks; under Storage Storage, Database files, Row versions and TempDB; under Jobs Jobs and the Jobs timeline; under Configuration Configuration, Properties and the Actions log). A collection the server's kind or the login's rights do not allow is skipped with the reason. The login, the configuration and what is not there yet: [docs/sqlserver.md](docs/sqlserver.md).
+ 
+ | Collection | Cadence | Source | Page |
+ |---|---|---|---|
+@@ -197,6 +197,7 @@ SQL Server is an engine of its own: an instance says `engine: sqlserver`, a leas
+ | mssql_traceflags | hourly | DBCC TRACESTATUS(-1), with the history of each flag | [jobs](docs/jobs.md) |
+ | mssql_services | 5 min | sys.dm_server_services, Agent's sessions, Database Mail's queue, sys.dm_server_memory_dumps | [sqlserver](docs/sqlserver.md) |
+ | mssql_requests | 1 min | sessions, requests and blocking chains from the DMVs, or sp_WhoIsActive where a DBA installed it | [running](docs/sqlserver-running.md) |
++| mssql_sessions | 1 min | sessions and requests by user / system (the server's is_user_process over every session) and status, the waiting tasks of user sessions; the Connections page's groups by login, status, interface, client address and isolation come from mssql_activity's 5-minute read | [sqlserver](docs/sqlserver.md) |
+ | mssql_waits | 1 min | sys.dm_os_wait_stats (Azure SQL Database: sys.dm_db_wait_stats, not proven: task 165) as the difference between two reads | [running](docs/sqlserver-running.md) |
+ | mssql_xe | 1 min | Extended Events sessions the DBA created from pgvigil's script: deadlocks, blocked-process reports, slow batches, attentions, AlwaysOn_health | [xe](docs/sqlserver-xe.md) |
+ | mssql_ag, mssql_mirroring, mssql_fci | 1 min | availability groups, database mirroring (proven on a real pair: scripts/proof-mssql-mirroring.sh), a failover cluster instance's nodes (not proven: no Windows cluster) | [hadr](docs/sqlserver-hadr.md) |
+diff --git c/docs/sqlserver.md i/docs/sqlserver.md
+index 07ebfbd1..0a77db4b 100644
+--- c/docs/sqlserver.md
++++ i/docs/sqlserver.md
+@@ -57,7 +57,7 @@ Not proven by these runs: a Windows host on any version, an edition other than D
+ 
+ ## Collections
+ 
+-Forty-one collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
++Forty-two collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+ 
+ | collection | every | reads | needs | Azure SQL Database | page |
+ | --- | --- | --- | --- | --- | --- |
+@@ -65,6 +65,7 @@ Forty-one collections; `mssql_checks` and `mssql_identity` are on [day-one check
+ | `mssql_traceflags` | 1 hour | the trace flags on globally (`DBCC TRACESTATUS(-1)`) and their history | any login | not run | [jobs and configuration history](jobs.md) |
+ | `mssql_services` | 5 min | is SQL Server Agent running, is Database Mail started, the memory dump files | VIEW SERVER STATE | not run | this page |
+ | `mssql_requests` | 1 min | what runs now and who blocks whom | VIEW SERVER STATE | runs | [running queries](sqlserver-running.md) |
++| `mssql_sessions` | 1 min | sessions and requests by user / system (the server's `is_user_process` over every session) and status, the waiting tasks of user sessions (benign waits left out); pgvigil's own sessions counted apart | VIEW SERVER STATE | not run | the Connections page's Sessions and requests |
+ | `mssql_waits` | 1 min | the wait counters, as the difference between two reads | VIEW SERVER STATE | runs (the database's own waits) | [running queries](sqlserver-running.md) |
+ | `mssql_waiting_tasks` | 1 min | every task of every waiting request (`sys.dm_os_waiting_tasks` with `sys.dm_exec_requests`, PerformanceMonitor's read), its resource decoded to database, object and index, and the THREADPOOL waiters | VIEW SERVER STATE | runs (VIEW DATABASE STATE; not proven there) | the Waiting tasks tab |
+ | `mssql_xe` | 1 min | the Extended Events sessions a DBA created from pgvigil's script: deadlocks, blocked-process reports, slow batches, cancelled requests, availability group events | VIEW SERVER STATE | runs (database-scoped sessions) | [Extended Events](sqlserver-xe.md) |
+diff --git c/docs/upgrade.md i/docs/upgrade.md
+index 4d40737e..35ad5793 100644
+--- c/docs/upgrade.md
++++ i/docs/upgrade.md
+@@ -97,6 +97,10 @@ what happens in the other order, and what the project's own proof showed (`scrip
+   counts the imports taken again per collection over 24 hours ('retried after a deadlock'). `pgvigil dbadash import`
+   makes each batch's months before the batch and takes a batch ended by a deadlock again (its line and the Migrate
+   page's import result say `retried N time(s) after a deadlock`). Nothing to do by hand.
++- **The SQL Server Connections page counts every session.** Its totals counted the sessions over 50 (PerformanceMonitor's
++  rule); from this version they count every session, background being the system sessions (the server's
++  `is_user_process` flag, one rule on the whole page), so on the same server the total and background read higher
++  after the upgrade. Reads stored before it keep their numbers.
+ - **Files and stored rows.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no
+   migration changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and
+   after.
+diff --git c/internal/mssql/activity.go i/internal/mssql/activity.go
+index 6d40fa37..8ee08ab6 100644
+--- c/internal/mssql/activity.go
++++ i/internal/mssql/activity.go
+@@ -48,33 +48,84 @@ func (activityCollector) Applies(in Info) (bool, string) {
+ 	return true, ""
+ }
+ 
+-// activitySessionsSQL: the totals (grp 'total', the sessions over 50) and the user sessions per program, host and database.
+-// A session that is not a user session over 50 with a program name has no group key and falls in the NULL group of
+-// each set, which activityRows drops.
+-const activitySessionsSQL = `SELECT 'sessions' AS kind,
+-  CASE WHEN GROUPING(x.gp) = 0 THEN N'program' WHEN GROUPING(x.gh) = 0 THEN N'host' WHEN GROUPING(x.gd) = 0 THEN N'database' ELSE N'total' END AS grp,
+-  CAST(COALESCE(x.gp, x.gh, x.gd) AS nvarchar(256)) AS name,
++// activitySessionsSQL: one read of sys.dm_exec_sessions grouped by GROUPING SETS (task 413's one read):
++//   - the total over ALL sessions (the Connections page's one user / system rule: background = the
++//     system sessions, is_user_process = 0; before 413 the total counted sessions over 50, PerformanceMonitor's rule);
++//   - per program, host and database, the user sessions with a program name that are not pgvigil's own
++//     (PerformanceMonitor's SessionStatsCollector groups): any other session has no key there and falls in the NULL
++//     group of the set, which activityRows drops;
++//   - kind 'session_by' (0163's mssql_session_by): every session per login, per status x user / system, per network
++//     interface and per client address of its physical connection (sys.dm_exec_connections, parent_connection_id IS
++//     NULL in the join: a MARS session counted once; a session with no connection, a system one, has NULL there: a
++//     bucket of its own, kept) and per isolation level; of login, interface and address the 50 largest names, the rest
++//     summed in one row whose is_other is 1 (the set's own column, so a NULL name and the rest stay apart).
++//
++// OPTION (RECOMPILE): a plan of the session and connection DMVs compiled at a few sessions and reused at thousands ran
++// 44 s CPU-bound on SQL Server 2017 (a lab run: 193 ms at 32 sessions, 43,967 ms reused at 5,037, 293 ms
++// recompiled) - a connection surge would cost every read; one compile per 5-minute read.
++const activitySessionsSQL = `WITH b AS (
++  SELECT s.session_id, s.status, CAST(s.is_user_process AS int) AS is_user_process, s.last_request_end_time, s.database_id,
++         s.cpu_time, s.reads, s.writes, s.logical_reads, s.login_time, s.login_name, s.transaction_isolation_level,
++         c.net_transport, c.protocol_type, c.client_net_address,
++         CASE WHEN s.is_user_process = 1 AND ISNULL(s.program_name, N'') <> N''
++                   AND s.program_name <> ISNULL(PROGRAM_NAME(), N'') AND s.program_name NOT LIKE N'pgvigil%' THEN 1 ELSE 0 END AS mine,
++         s.program_name, s.host_name
++    FROM sys.dm_exec_sessions s
++    LEFT JOIN sys.dm_exec_connections c ON c.session_id = s.session_id AND c.parent_connection_id IS NULL),
++k AS (
++  SELECT b.*,
++         CAST(b.login_name AS nvarchar(128)) AS lg,
++         CAST(CASE WHEN b.is_user_process = 1 THEN N'user ' ELSE N'system ' END + b.status AS nvarchar(60)) AS st,
++         CAST(CASE WHEN b.net_transport IS NULL THEN NULL ELSE b.net_transport + N' / ' + ISNULL(b.protocol_type, N'?') END AS nvarchar(80)) AS itf,
++         CAST(b.client_net_address AS nvarchar(48)) AS addr,
++         CAST(CASE b.transaction_isolation_level WHEN 0 THEN N'unspecified' WHEN 1 THEN N'read uncommitted' WHEN 2 THEN N'read committed'
++                   WHEN 3 THEN N'repeatable read' WHEN 4 THEN N'serializable' WHEN 5 THEN N'snapshot' END AS nvarchar(30)) AS iso
++    FROM b),
++n AS (
++  SELECT k.*, COUNT(*) OVER (PARTITION BY k.lg) AS lg_n, COUNT(*) OVER (PARTITION BY k.itf) AS itf_n,
++         COUNT(*) OVER (PARTITION BY k.addr) AS addr_n
++    FROM k),
++x AS (
++  SELECT n.*,
++         CASE WHEN n.mine = 1 THEN n.program_name END AS gp,
++         CASE WHEN n.mine = 1 THEN n.host_name END AS gh,
++         CASE WHEN n.mine = 1 THEN DB_NAME(n.database_id) END AS gd,
++         CASE WHEN DENSE_RANK() OVER (ORDER BY n.lg_n DESC, n.lg) > 50 THEN 1 ELSE 0 END AS lg_o,
++         CASE WHEN DENSE_RANK() OVER (ORDER BY n.itf_n DESC, n.itf) > 50 THEN 1 ELSE 0 END AS itf_o,
++         CASE WHEN DENSE_RANK() OVER (ORDER BY n.addr_n DESC, n.addr) > 50 THEN 1 ELSE 0 END AS addr_o
++    FROM n),
++y AS (
++  SELECT x.*, CASE WHEN x.lg_o = 0 THEN x.lg END AS lg_k, CASE WHEN x.itf_o = 0 THEN x.itf END AS itf_k,
++         CASE WHEN x.addr_o = 0 THEN x.addr END AS addr_k
++    FROM x)
++SELECT
++  CASE WHEN GROUPING(y.lg_o) = 0 OR GROUPING(y.st) = 0 OR GROUPING(y.itf_o) = 0 OR GROUPING(y.addr_o) = 0 OR GROUPING(y.iso) = 0
++       THEN 'session_by' ELSE 'sessions' END AS kind,
++  CASE WHEN GROUPING(y.lg_o) = 0 OR GROUPING(y.st) = 0 OR GROUPING(y.itf_o) = 0 OR GROUPING(y.addr_o) = 0 OR GROUPING(y.iso) = 0 THEN NULL
++       WHEN GROUPING(y.gp) = 0 THEN N'program' WHEN GROUPING(y.gh) = 0 THEN N'host' WHEN GROUPING(y.gd) = 0 THEN N'database'
++       ELSE N'total' END AS grp,
++  CASE WHEN GROUPING(y.lg_o) = 0 THEN N'login' WHEN GROUPING(y.st) = 0 THEN N'status' WHEN GROUPING(y.itf_o) = 0 THEN N'interface'
++       WHEN GROUPING(y.addr_o) = 0 THEN N'address' WHEN GROUPING(y.iso) = 0 THEN N'isolation' END AS dimension,
++  CAST(CASE WHEN GROUPING(y.lg_o) = 0 THEN y.lg_k WHEN GROUPING(y.st) = 0 THEN y.st WHEN GROUPING(y.itf_o) = 0 THEN y.itf_k
++            WHEN GROUPING(y.addr_o) = 0 THEN y.addr_k WHEN GROUPING(y.iso) = 0 THEN y.iso
++            ELSE COALESCE(y.gp, y.gh, y.gd) END AS nvarchar(256)) AS name,
++  CASE WHEN GROUPING(y.lg_o) = 0 THEN y.lg_o WHEN GROUPING(y.itf_o) = 0 THEN y.itf_o WHEN GROUPING(y.addr_o) = 0 THEN y.addr_o ELSE 0 END AS is_other,
+   CAST(COUNT(*) AS bigint) AS sessions,
+-  CAST(SUM(CASE WHEN x.status = N'running' THEN 1 ELSE 0 END) AS bigint) AS running,
+-  CAST(SUM(CASE WHEN x.status = N'sleeping' THEN 1 ELSE 0 END) AS bigint) AS sleeping,
+-  CAST(SUM(CASE WHEN x.status = N'dormant' THEN 1 ELSE 0 END) AS bigint) AS dormant,
+-  CAST(SUM(CASE WHEN x.is_user_process = 0 THEN 1 ELSE 0 END) AS bigint) AS background,
+-  CAST(SUM(CASE WHEN x.status = N'sleeping' AND x.is_user_process = 1
+-                 AND x.last_request_end_time < DATEADD(MINUTE, -30, SYSDATETIME()) THEN 1 ELSE 0 END) AS bigint) AS idle_30min,
+-  CAST(COUNT(DISTINCT x.database_id) AS bigint) AS databases,
+-  SUM(CAST(x.cpu_time AS bigint)) AS cpu_ms, SUM(CAST(x.reads AS bigint)) AS reads, SUM(CAST(x.writes AS bigint)) AS writes,
+-  SUM(CAST(x.logical_reads AS bigint)) AS logical_reads
+-FROM (SELECT s.status, CAST(s.is_user_process AS int) AS is_user_process, s.last_request_end_time, s.database_id,
+-             s.cpu_time, s.reads, s.writes, s.logical_reads,
+-             CASE WHEN u.mine = 1 THEN s.program_name END AS gp,
+-             CASE WHEN u.mine = 1 THEN s.host_name END AS gh,
+-             CASE WHEN u.mine = 1 THEN DB_NAME(s.database_id) END AS gd
+-        FROM sys.dm_exec_sessions s
+-       CROSS APPLY (SELECT CASE WHEN s.is_user_process = 1 AND ISNULL(s.program_name, N'') <> N''
+-                                 AND s.program_name <> ISNULL(PROGRAM_NAME(), N'') AND s.program_name NOT LIKE N'pgvigil%'
+-                                THEN 1 ELSE 0 END AS mine) u
+-       WHERE s.session_id > 50) x
+-GROUP BY GROUPING SETS ((x.gp), (x.gh), (x.gd), ())`
++  CAST(SUM(y.is_user_process) AS bigint) AS user_sessions,
++  CAST(SUM(1 - y.is_user_process) AS bigint) AS system_sessions,
++  CAST(SUM(CASE WHEN y.status = N'running' THEN 1 ELSE 0 END) AS bigint) AS running,
++  CAST(SUM(CASE WHEN y.status = N'sleeping' THEN 1 ELSE 0 END) AS bigint) AS sleeping,
++  CAST(SUM(CASE WHEN y.status = N'dormant' THEN 1 ELSE 0 END) AS bigint) AS dormant,
++  CAST(SUM(1 - y.is_user_process) AS bigint) AS background,
++  CAST(SUM(CASE WHEN y.status = N'sleeping' AND y.is_user_process = 1
++                 AND y.last_request_end_time < DATEADD(MINUTE, -30, SYSDATETIME()) THEN 1 ELSE 0 END) AS bigint) AS idle_30min,
++  CAST(COUNT(DISTINCT y.database_id) AS bigint) AS databases,
++  SUM(CAST(y.cpu_time AS bigint)) AS cpu_ms, SUM(CAST(y.reads AS bigint)) AS reads, SUM(CAST(y.writes AS bigint)) AS writes,
++  SUM(CAST(y.logical_reads AS bigint)) AS logical_reads,
++  CONVERT(varchar(33), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), MAX(y.login_time)), 126) + 'Z' AS newest_login
++FROM y
++GROUP BY GROUPING SETS ((y.gp), (y.gh), (y.gd), (), (y.lg_o, y.lg_k), (y.st), (y.itf_o, y.itf_k), (y.addr_o, y.addr_k), (y.iso))
++OPTION (RECOMPILE)`
+ 
+ // activityTempdbSQL: the sessions holding tempdb (sp_PressureDetector's allocations and current pages, in KB), the 20
+ // largest by allocations; the last request's end in UTC.
+@@ -139,12 +190,13 @@ func (activityCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]col
+ 	return out, nil
+ }
+ 
+-// activityRows keeps the totals row and the group rows with a name (a group's NULL key holds the sessions that are
+-// not counted per group).
++// activityRows keeps the totals row, the group rows with a name (a program, host or database group's NULL key holds
++// the sessions that are not counted per group) and every 'session_by' row (its NULL name is a bucket of its own: the
++// sessions without a connection, an address or a login).
+ func activityRows(rows []collect.Row) []collect.Row {
+ 	out := make([]collect.Row, 0, len(rows))
+ 	for _, r := range rows {
+-		if r["grp"] != "total" && r["name"] == nil {
++		if r["kind"] != "session_by" && r["grp"] != "total" && r["name"] == nil {
+ 			continue
+ 		}
+ 		out = append(out, r)
+diff --git c/internal/mssql/activity_test.go i/internal/mssql/activity_test.go
+index a4b4f41b..b150af56 100644
+--- c/internal/mssql/activity_test.go
++++ i/internal/mssql/activity_test.go
+@@ -45,6 +45,15 @@ func TestActivityRows(t *testing.T) {
+ 	if len(got) != 3 || got[0]["grp"] != "total" || got[1]["name"] != "app1" || got[2]["name"] != "web01" {
+ 		t.Fatalf("activityRows = %v", got)
+ 	}
++	// task 413: a 'session_by' row's NULL name is a bucket of its own (the sessions without a connection) and is kept
++	by := activityRows([]collect.Row{
++		{"kind": "session_by", "dimension": "interface", "name": nil, "sessions": int64(42)},
++		{"kind": "session_by", "dimension": "interface", "name": "TCP / TSQL", "sessions": int64(9)},
++		{"kind": "sessions", "grp": "program", "name": nil, "sessions": int64(30)},
++	})
++	if len(by) != 2 || by[0]["name"] != nil || by[1]["name"] != "TCP / TSQL" {
++		t.Fatalf("activityRows (session_by) = %v", by)
++	}
+ }
+ 
+ // sp_PressureDetector's CPU details: only the columns the server has, in its order; none = no statement.
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 08c96650..e114a600 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -407,6 +407,7 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/dbio", s.MSSQLDBIO)               // task 407
+ 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
+ 	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
++	api.HandleFunc("GET /api/mssql/sessions", s.MSSQLSessions) // task 413 (q_mssql_sessions.go)
+ 	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
+ 	api.HandleFunc("GET /api/mssql/counteradmin", s.MSSQLCounterAdmin)
+ 	s.post(api, "POST /api/mssql/counteradmin", needAdmin, s.MSSQLCounterAdminWrite)
+diff --git c/web/src/mssql_perf.ts i/web/src/mssql_perf.ts
+index a8f13fc5..05792a0c 100644
+--- c/web/src/mssql_perf.ts
++++ i/web/src/mssql_perf.ts
+@@ -4,6 +4,7 @@
+ // mssql_tempdb hourly). Every chart shares the range's time axis.
+ import { get, Row, rowsOf, Table } from './api';
+ import { lineChart } from './chart';
++import { mssqlSessionsPart } from './mssql_sessions';
+ import { Ctx, href, rangeLabel, window_ } from './router';
+ import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
+ import { waitDocs } from './doclinks';
+@@ -625,8 +626,9 @@ export async function mssqlConnectionsView(ctx: Ctx): Promise<HTMLElement> {
+   const s = rowsOf(d.summary)[0], series = rowsOf(d.series);
+   const sec = el('section', {}, el('h2', {}, `Connections (${rangeLabel(ctx)})`));
+   if (!s) { sec.append(empty('sessions', 'mssql_activity', 'every 5 minutes')); return sec; }
+-  sec.append(el('p', { class: 'meta' }, 'From sys.dm_exec_sessions every 5 minutes: the totals count the sessions over 50; the groups count the user sessions over 50 '
+-    + 'with a program name, pgvigil\'s own left out (PerformanceMonitor\'s Sessions and Sessions by Application). Waiting for memory: the requests '
++  sec.append(el('p', { class: 'meta' }, 'From sys.dm_exec_sessions every 5 minutes: the totals count every session, background being the system sessions '
++    + '(the server\'s is_user_process flag, the one rule of this page; PerformanceMonitor counts the sessions over 50); the groups count the user sessions '
++    + 'with a program name, pgvigil\'s own left out (PerformanceMonitor\'s Sessions by Application). Waiting for memory: the requests '
+     + 'whose wait type names memory at the requests read nearest the sessions read.'));
+   sec.append(el('h3', {}, `Sessions (${fmtTime(s.snapshot_at)})`), el('div', { class: 'tiles' },
+     tile('connections', fmtNum(s.sessions)), tile('running', fmtNum(s.running)), tile('sleeping', fmtNum(s.sleeping)),
+@@ -649,6 +651,7 @@ export async function mssqlConnectionsView(ctx: Ctx): Promise<HTMLElement> {
+   sec.append(el('h3', {}, 'Sessions by application'), grid(rowsOf(d.applications), cols('application'), 'No user session with a program name at the newest read.'));
+   sec.append(el('h3', {}, 'Sessions by host'), grid(rowsOf(d.hosts), cols('host'), 'No user session with a host name at the newest read.'));
+   sec.append(el('h3', {}, 'Sessions by database'), grid(rowsOf(d.databases), cols('database'), 'No user session at the newest read.'));
++  sec.append(await mssqlSessionsPart(ctx)); // task 413
+   sec.append(el('p', { class: 'meta' }, 'The sessions running now: ', el('a', { href: href(ctx, { tab: 'mssql_running' }) }, 'Running queries'), '.'));
+   return sec;
+ }

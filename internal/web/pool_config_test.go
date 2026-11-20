@@ -3,8 +3,8 @@ package web
 import "testing"
 
 // TestUIPoolConfig reads the UI pool's configuration as Open builds it (uiPoolConfig): every session setting serve
-// sends at connect, plan_cache_mode = force_custom_plan among them (the join review d10b, finding b1: the proof's
-// PREPARE rows set the mode themselves and cannot see this pool), and the pool's size.
+// sends at connect, plan_cache_mode = force_custom_plan among them (the proof's PREPARE rows set the mode
+// themselves and cannot see this pool), and the pool's size.
 func TestUIPoolConfig(t *testing.T) {
 	cfg, err := uiPoolConfig("host=127.0.0.1 port=5432 user=pgvigil_ui dbname=pgvigil pool_max_conns=20", Options{})
 	if err != nil {

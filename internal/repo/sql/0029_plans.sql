@@ -6,7 +6,7 @@
 --                    monitoring login, and from EXPLAIN ANALYZE through the actions door. plan_text is the plan
 --                    as captured (what the viewer draws); plan is its JSON form (EXPLAIN's own, or the text plan
 --                    parsed by internal/plans), what the rules read. A current table: one row per plan_key,
---                    updated in place; purge() deletes the rows not seen for the retention days (the join adds the
+--                    updated in place; purge() deletes the rows not seen for the retention days (0044 adds the
 --                    line).
 --   plan_nodes(p)    every node of a JSON plan with its path ('0', '0.1', ...) and its parent's node type
 --   plan_rules(p)    the plan rules over one JSON plan: estimates off by 10x, a spill to disk (sort, hash, hash
@@ -15,7 +15,7 @@
 --                    parallel workers planned but not launched, a CTE scanned twice; each row with why it matters
 --   plan_rule_hits   the rules of every stored plan (the Plan page reads one plan's)
 --   plan_findings    the rules of the last 7 days' plans per instance and rule, in pgvigil.findings' ten columns
---                    (the join unions it in)
+--                    (0044 unions it in)
 --   actions_log      gains the action 'explain_analyze' (no pid: the statement and the database instead), and
 --                    import_actions_log reads the two new columns
 -- Rules that need actual numbers (rows, loops, spills, heap fetches, JIT and trigger times, launched workers) are

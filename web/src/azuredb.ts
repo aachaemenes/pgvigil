@@ -18,12 +18,14 @@ const tone: Record<string, string> = { ok: 'ok', warning: 'warn', critical: 'cri
 // a numeric column: sorted and filtered as a number (ui.ts grid)
 const n = (key: string, label: string, fmt: (v: unknown) => string = num): Col => ({ key, label, fmt, num: true });
 
-type Parts = Record<'tier' | 'summary' | 'minutes' | 'gaps', Table | null>;
+type Parts = Record<'tier' | 'summary' | 'minutes' | 'hours' | 'gaps', Table | null>;
 
 export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
   const [d, st] = await Promise.all([get<Parts>('mssql/azuredb', { instance: ctx.instance, ...window_(ctx) }),
     get<{ state: Table | null }>('mssql/state', { instance: ctx.instance, collections: 'mssql_azuredb_resources,mssql_azuredb_governance' }).catch(() => null)]);
-  const tier = rowsOf(d.tier)[0], sum = rowsOf(d.summary)[0], minutes = rowsOf(d.minutes), gaps = rowsOf(d.gaps);
+  const tier = rowsOf(d.tier)[0], sum = rowsOf(d.summary)[0], minutes = rowsOf(d.minutes), hours = rowsOf(d.hours), gaps = rowsOf(d.gaps);
+  // a window over a day reads its hours (B2a-N2: built hours and edge minutes, the summary's numbers)
+  const byHour = Number(sum?.minutes ?? 0) > 1440 || minutes.length >= 1440;
   const skipped = rowsOf(st?.state).filter(r => r.status === 'skipped');
   const sec = el('section', {}, el('h2', {}, 'Azure SQL Database'));
   if (!tier || (tier.tier_read_at == null && tier.resources_read_at == null)) {
@@ -75,14 +77,26 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('h3', {}, 'How the samples spread'), el('p', { class: 'meta' }, 'The count of 15-second samples in each band of the limit (DBA Dash\'s histograms).'),
       grid(rows, [{ key: 'bucket', label: 'band' }, n('cpu', 'CPU'), n('data', 'data IO'), n('log', 'log write'), ...(dtu ? [n('dtu', 'DTU')] : [])]));
   }
-  // DBA Dash's Azure DB tab draws the figures over time: the window's minutes (at most a day of them), oldest first
-  const asc = [...minutes].reverse();
+  // DBA Dash's Azure DB tab draws the figures over time: the window's minutes (at most a day of them), or past a day
+  // its hours, oldest first
+  const asc = [...(byHour ? hours : minutes)].reverse();
   sec.append(el('div', { class: 'charts' },
     lineChart('Resource use (% of the limit)', asc, [{ key: 'avg_cpu_percent', label: 'CPU avg %' }, { key: 'avg_data_io_percent', label: 'data IO avg %' },
       { key: 'avg_log_write_percent', label: 'log write avg %' }, ...(dtu ? [{ key: 'avg_dtu_percent', label: 'DTU avg %' }] : [])], v => fmtNum(v) + ' %'),
     lineChart('Largest 15-second sample (% of the limit)', asc, [{ key: 'max_cpu_percent', label: 'CPU max %' }, { key: 'max_data_io_percent', label: 'data IO max %' },
       { key: 'max_log_write_percent', label: 'log write max %' }, ...(dtu ? [{ key: 'max_dtu_percent', label: 'DTU max %' }] : [])], v => fmtNum(v) + ' %')));
-  sec.append(el('h3', {}, 'Minutes'), el('p', { class: 'meta' }, 'Newest first, at most a day; each the average of its 15-second rows, the maximum their largest.'),
+  if (byHour) sec.append(el('h3', {}, 'Hours'), el('p', { class: 'meta' }, 'Newest first (UTC hours); each the average of its 15-second rows, the maximum their largest; ' +
+      'an hour at an edge of the window counts only its minutes inside it (marked partial).'),
+    grid(hours, [
+      { key: 'hour', fmt: fmtTime }, n('minutes', 'minutes'), { key: 'partial', label: '', fmt: v => v === true ? 'partial' : '' }, n('samples', 'samples'),
+      n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct),
+      n('avg_data_io_percent', 'data IO avg', pct), n('max_data_io_percent', 'data IO max', pct),
+      n('avg_log_write_percent', 'log write avg', pct), n('max_log_write_percent', 'log write max', pct),
+      n('avg_memory_usage_percent', 'memory', pct),
+      ...(dtu ? [n('avg_dtu_percent', 'DTU avg', pct), n('max_dtu_percent', 'DTU max', pct)] : []),
+      n('max_worker_percent', 'workers', pct), n('max_session_percent', 'sessions', pct),
+    ], 'No hour in the window.'));
+  else sec.append(el('h3', {}, 'Minutes'), el('p', { class: 'meta' }, 'Newest first, at most a day; each the average of its 15-second rows, the maximum their largest.'),
     grid(minutes, [
       { key: 'minute', fmt: fmtTime }, n('samples', 'samples'),
       n('avg_cpu_percent', 'CPU avg', pct), n('max_cpu_percent', 'CPU max', pct),
@@ -114,7 +128,7 @@ export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
       'the minutes by their 15-second samples; a maximum is the largest sample), the share of samples at 70 % and over, and its PRIMARY data files ' +
       'against their max size (DBA Dash\'s % Max Size: warning over 80 %, critical over 90 %; stale when the files were read over 3 hours ago). ' +
       'Sorted as DBA Dash sorts it, the most unused DTUs first. Not as DBA Dash: the four histograms show as the share of samples at 70 % and over ' +
-      '(the instance\'s Azure tab has them whole), and a window over a day reads the minutes (DBA Dash reads hourly rows there; pgvigil has no hourly rollup yet).'));
+      '(the instance\'s Azure tab has them whole), and a long window reads its built hours and its edge minutes (the minutes\' numbers exactly; DBA Dash rounds a window over a day to hours).'));
   const name = (v: unknown, r: Row) => el('a', { href: href(ctx, { instance: Number(r.instance_id), tag: undefined, tab: 'mssqlazure' }) }, String(v));
   sec.append(grid(rows, [
     { key: 'instance', label: 'database (instance)', fmt: name }, { key: 'service_objective', label: 'tier', fmt: (v, r) => v == null ? (r.tier_read ? '' : el('span', { class: 'meta' }, 'not read')) : String(v) },

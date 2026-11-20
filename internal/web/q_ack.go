@@ -46,7 +46,7 @@ SELECT l.at, l.ui_user, l.client, l.op, l.kind, l.ack_id, l.instance_name AS ins
 
 // sqlAckSuppressed: the sends a mute, silence or blackout held, last held in the window
 const sqlAckSuppressed = `
-SELECT x.last_at, x.first_at, x.passes, x.channel, x.instance_id, x.instance_name AS instance, x.severity, x.source, x.setting, x.value,
+SELECT x.last_at, x.first_at, x.passes, x.channel, x.instance_id AS "instance_id@inst", x.instance_name AS instance, x.severity, x.source, x.setting AS "setting@fcheck", x.value AS "value@fvalue",
        x.ack_id, a.kind AS held_by, a.created_by, coalesce(a.match_text, a.check_key, a.tag, a.instance_name) AS rule
   FROM pgvigil.ack_suppressed x
   JOIN pgvigil.acks a USING (ack_id)
@@ -95,7 +95,7 @@ SELECT o.*, coalesce(t.tags, '{}'::text[]) AS tags,
   LEFT JOIN LATERAL (SELECT a.kind, a.ack_id FROM pgvigil.acks a
                       WHERE a.ack_id = pgvigil.ack_hold($1, o.instance, coalesce(t.tags, '{}'), o.finding_key, o.source, o.setting, o.value)) h ON true
  ORDER BY CASE o.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, o.first_sent_at DESC
- LIMIT 500`
+ LIMIT 500 /* text: instance_id=inst, setting=fcheck, value=fvalue */`
 
 // sqlAckAttention: per active instance, the last 15 minutes before $1: blocking (PostgreSQL: distinct sessions seen
 // waiting on a lock; SQL Server: blocked process reports), deadlocks (PostgreSQL: pg_stat_database's counter risen;
@@ -232,17 +232,14 @@ SELECT i.instance_id, i.name AS instance, i.engine,
        AND h.snapshot_at > $1::timestamptz - interval '15 minutes' AND h.snapshot_at <= $1
      ORDER BY h.snapshot_at DESC LIMIT 1) hm ON true
   LEFT JOIN LATERAL (
-    SELECT count(*) AS blocking, round(max(x.waited)::numeric, 1) AS longest_wait_s FROM (
-      SELECT extract(epoch FROM max(a.snapshot_at) - min(a.snapshot_at)) AS waited
-        FROM pgvigil.activity_sample a
-       WHERE i.engine = 'postgres' AND a.instance_id = i.instance_id AND a.wait_event_type = 'Lock'
-         AND a.snapshot_at > $1::timestamptz - interval '1 hour' AND a.snapshot_at <= $1
-       GROUP BY a.pid, a.backend_start, a.query_start) x
+    -- blocking in WAITS over the last hour (0165), as the calendar counts them
+    SELECT count(*) AS blocking, round(max(w.wait_ms) / 1000.0, 1) AS longest_wait_s
+      FROM pgvigil.pg_block_waits(i.instance_id, $1::timestamptz - interval '1 hour', $1) w
+     WHERE i.engine = 'postgres'
     UNION ALL
-    SELECT count(*), round(max(b.wait_ms) / 1000.0, 1)
-      FROM pgvigil.mssql_blocked_reports b
-     WHERE i.engine = 'sqlserver' AND b.instance_id = i.instance_id
-       AND b.event_at > $1::timestamptz - interval '1 hour' AND b.event_at <= $1
+    SELECT count(*), round(max(w.wait_ms) / 1000.0, 1)
+      FROM pgvigil.mssql_block_waits(i.instance_id, $1::timestamptz - interval '1 hour', $1) w
+     WHERE i.engine = 'sqlserver'
      ORDER BY 1 DESC LIMIT 1) bl ON true
   LEFT JOIN LATERAL (
     SELECT coalesce(sum(greatest(d.hi - d.lo, 0)), 0)::bigint AS deadlocks, NULL::timestamptz AS last_deadlock_at FROM (
@@ -255,6 +252,7 @@ SELECT i.instance_id, i.name AS instance, i.engine,
     SELECT count(*), max(k.event_at) FROM pgvigil.mssql_deadlocks k
      WHERE i.engine = 'sqlserver' AND k.instance_id = i.instance_id
        AND k.event_at > $1::timestamptz - interval '1 hour' AND k.event_at <= $1
+       AND NOT pgvigil.mssql_deadlock_is_monitors(k.instance_id, k.processes)   -- (0165) the monitor's own, every victim its reads
      ORDER BY 1 DESC LIMIT 1) dl ON true
   LEFT JOIN LATERAL (
     SELECT a.ack_id, a.created_by, a.until FROM pgvigil.acks a
@@ -268,7 +266,7 @@ SELECT i.instance_id, i.name AS instance, i.engine,
 // one channel - a channel in quiet hours or with a higher minimum sends one episode later, under its own first send -
 // the most of any channel) and the sends. A finding never sent (no channel, or below every rule) has no row.
 const sqlAckSeen = `
-SELECT c.source, c.setting, c.value, min(c.first_seen) AS first_seen, max(c.last_seen) AS last_seen,
+SELECT c.source, c.setting AS "setting@fcheck", c.value AS "value@fvalue", min(c.first_seen) AS first_seen, max(c.last_seen) AS last_seen,
        max(c.episodes) AS occurrences, sum(c.sends)::bigint AS sends
   FROM (SELECT s.channel, s.source, s.setting, s.value, min(s.first_sent_at) AS first_seen, max(s.last_sent_at) AS last_seen,
                count(*) AS episodes, sum(s.send_count) AS sends
@@ -299,7 +297,7 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	exp, err := json.Marshal(s.expected)
+	exp, err := json.Marshal(s.expectedNow())
 	if err != nil {
 		s.reply(w, r, nil, err)
 		return
@@ -323,6 +321,8 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
 	if why != "" {
 		out["reason"] = why
 	}
+	// what the session's role may do (B24f): beside writable / reason, which stay the server's own
+	out["can"] = s.roleCan(r)
 	out["user"] = ""
 	if s.auth != nil {
 		out["user"] = s.sessionUser(r)
@@ -406,6 +406,14 @@ func (s *Server) ackWrite(w http.ResponseWriter, r *http.Request, op string) {
 	var in ackBody
 	if err := json.Unmarshal(raw, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("body: %w", err))
+		return
+	}
+	// a fleet-wide, tag-wide or open-ended mute, silence or blackout needs admin (configuration others live with); an
+	// operator mutes or blacks out ONE instance, or mutes one alert (finding_key),
+	// with an end at most 7 days away (openEnded). The body's scope is read here, before the instance lookup and the
+	// door's scope
+	one := in.InstanceID > 0 || (in.Kind == "mute" && in.FindingKey != "")
+	if op == "add" && (in.Kind == "mute" || in.Kind == "silence" || in.Kind == "blackout") && (!one || in.Tag != "" || openEnded(in.StartsAt, in.Until, time.Now())) && !s.roleOK(w, r, needAdmin, "a fleet-wide or open-ended mute") {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)

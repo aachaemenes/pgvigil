@@ -1,4 +1,4 @@
--- 0040: the wave B join for the job report (0027: per job the runs over 7 and 30 days, the schedule's next run
+-- 0040: wires in the job report (0027: per job the runs over 7 and 30 days, the schedule's next run
 -- and prior due from the collector's own pg_cron parser, job_report and its checks). The findings view gains
 -- the job report rules (failing repeatedly, a run over twice its average, a missed schedule); purge() is
 -- unchanged in substance (0027 adds columns on jobs and an index on job_runs, no table: job_runs is already

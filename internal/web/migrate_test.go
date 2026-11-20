@@ -84,7 +84,7 @@ func TestMoveAddCheck(t *testing.T) {
 		{"an instance name of 17 characters", "sql", "", "linux", with(func(s *moveServer) { s.Host = `SQL01\` + strings.Repeat("A", 17) }), "not 1 to 16"},
 		{"a name ending in a dot", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql01." }), "not a host name"},
 		{"an IPv6 address alone", "sql", "", "linux", with(func(s *moveServer) { s.Host = "fe80::1" }), ""},
-		// review 206h: an IPv6 address with SQL Server's ',port' (the page took it for a name); spaces around the ',';
+		// an IPv6 address with SQL Server's ',port' (the page took it for a name); spaces around the ',';
 		// an unclosed bracket; a port in the host against another in the port field; a 254-byte name of 127 letters
 		{"an IPv6 address and ',port'", "sql", "", "linux", with(func(s *moveServer) { s.Host = "fe80::1,1433" }), ""},
 		{"tcp: an IPv6 address and ',port'", "sql", "", "linux", with(func(s *moveServer) { s.Host = "tcp:2001:db8::5,1433" }), ""},
@@ -107,7 +107,7 @@ func TestMoveAddCheck(t *testing.T) {
 	}
 }
 
-// TestMoveAddWindows (reviews 206d 1 / 206e 3): the Windows sign-in only when serve runs as the gMSA gmsa: names, never
+// TestMoveAddWindows: the Windows sign-in only when serve runs as the gMSA gmsa: names, never
 // the machine account; the host here is PGVHOST.
 func TestMoveAddWindows(t *testing.T) {
 	ok := moveServer{Server: "SQL01", DBADashIDs: []int{1}, Host: "sql01", Name: "sql01"}
@@ -152,7 +152,7 @@ func TestMoveLines(t *testing.T) {
 		{"/etc/pgvigil/pgvigil.yaml", "corp", []int{3}, &at, "linux", "pgvigil import dbadash -config /etc/pgvigil/pgvigil.yaml -repo corp -instance 3 -to 2026-11-14T18:00:00.0000005Z"},
 		{`C:\Program Files\pgvigil\pgvigil.yaml`, "it's", []int{1}, nil, "windows", `pgvigil import dbadash -config 'C:\Program Files\pgvigil\pgvigil.yaml' -repo 'it''s' -instance 1`},
 		{"", "corp", []int{1}, nil, "linux", "pgvigil import dbadash -config pgvigil.yaml -repo corp -instance 1"},
-		// review 206d 15: a POSIX shell's quoting off Windows ('it''s' there is two words)
+		// a POSIX shell's quoting off Windows ('it''s' there is two words)
 		{"/srv/my pgvigil/pgvigil.yaml", "it's", []int{1}, nil, "linux", `pgvigil import dbadash -config '/srv/my pgvigil/pgvigil.yaml' -repo 'it'\''s' -instance 1`},
 	} {
 		if got := moveCommand(c.cfg, c.repo, c.ids, c.cf, c.goos); got != c.want {
@@ -240,7 +240,7 @@ func TestMoveMigrateOnAStore(t *testing.T) {
 	b := map[string]any{"server": srvB, "dbadash_ids": []int{33}, "host": "tcp:" + strings.ToLower(srvB), "port": "14330", "name": nameB}
 
 	// Windows on this serve: refused before anything is written
-	// review 206f 12: the words of this serve's own OS and account, not Linux's alone
+	// the words of this serve's own OS and account, not Linux's alone
 	winWhy := windowsOff(thisWin(""))
 	if w := add("windows", a); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), winWhy) || files() != 0 {
 		t.Fatalf("a Windows add on %s: %d %s, %d file(s); want 400 with the words and no file", "linux", w.Code, w.Body.String(), files())
@@ -264,7 +264,7 @@ func TestMoveMigrateOnAStore(t *testing.T) {
 			t.Fatalf("credential file %s: mode %v (%v), want 0600", e.Name(), fi.Mode().Perm(), err)
 		}
 	}
-	// review 206f 8: each move's own file, holding its own host, port and sign-in
+	// each move's own file, holding its own host, port and sign-in
 	for _, c := range []struct{ name, at string }{{nameA, "@" + strings.ToLower(strings.Split(srvA, `\`)[0]) + ":1433/prod"}, {nameB, "@" + strings.ToLower(srvB) + ":14330"}} {
 		var ref string
 		if err := pool.QueryRow(ctx, `SELECT dsn_ref FROM pgvigil.admin_instances WHERE name = $1`, c.name).Scan(&ref); err != nil {
@@ -368,7 +368,7 @@ SELECT i.instance_id, x.n, x.r, '{ring_buffer}', $2 FROM pgvigil.instances i, (V
 	if w := hist("count", "nobody-"+fmt.Sprint(sfx)); w.Code != http.StatusNotFound {
 		t.Fatalf("a count of a server not moved: %d %s; want 404", w.Code, w.Body.String())
 	}
-	// review 206f 3: the job in serve. A run held elsewhere (a CLI run) is the click's 409 in the store's words; then the
+	// the job in serve. A run held elsewhere (a CLI run) is the click's 409 in the store's words; then the
 	// click's 202, its job in the list ending failed (the repository's dsn resolves to nothing), the move's run ended
 	// failed by the import itself
 	_, raw, err := s.callMove(ctx, map[string]any{"op": "run", "ui_user": "cli:t206", "client": "test", "name": nameA})
@@ -402,7 +402,7 @@ SELECT i.instance_id, x.n, x.r, '{ring_buffer}', $2 FROM pgvigil.instances i, (V
 		t.Fatalf("the move's run after the job: %q (%v), want t206|failed|true", got, err)
 	}
 	s.closeMoveJobs()
-	// review 206f 6: the dispatcher (the door's checks, an unknown repository or op) and the GET without a repository
+	// the dispatcher (the door's checks, an unknown repository or op) and the GET without a repository
 	s.auth = newAuth(func(context.Context, string) (string, error) { return "h", nil }, false, time.Hour)
 	tok, err := s.auth.issue("t206", "h")
 	if err != nil {
@@ -457,7 +457,7 @@ SELECT i.instance_id, x.n, x.r, '{ring_buffer}', $2 FROM pgvigil.instances i, (V
 	if w := tick("coffee"); w.Code != http.StatusBadRequest {
 		t.Fatalf("a tick of an unknown step: %d, want 400", w.Code)
 	}
-	// review 206d 14: a tick names a server moved from THIS repository
+	// a tick names a server moved from THIS repository
 	if w := tickIn("other-"+repo, "xe_dropped"); w.Code != http.StatusNotFound {
 		t.Fatalf("a tick through another repository: %d %s, want 404", w.Code, w.Body.String())
 	}
@@ -470,7 +470,7 @@ SELECT i.instance_id, x.n, x.r, '{ring_buffer}', $2 FROM pgvigil.instances i, (V
 	}
 }
 
-// TestMoveCountsAndOutcome (reviews 206d 5, 7, 8): a server DBA Dash lists twice has its sources summed and its stored
+// TestMoveCountsAndOutcome: a server DBA Dash lists twice has its sources summed and its stored
 // rows once; the job's inserts are summed over its InstanceIDs at each read; an InstanceID DBA Dash no longer holds is
 // a note, never a partial.
 func TestMoveCountsAndOutcome(t *testing.T) {
@@ -507,7 +507,7 @@ func TestMoveCountsAndOutcome(t *testing.T) {
 	}
 }
 
-// TestAgentLines (review 206f 4): a DBA Dash service may be stopped only when every active server it collects is ready
+// TestAgentLines: a DBA Dash service may be stopped only when every active server it collects is ready
 // to switch; each waiting server is named once; a service with no active server may be stopped (each removed in DBA
 // Dash after its move).
 func TestAgentLines(t *testing.T) {

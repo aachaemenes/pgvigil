@@ -17,12 +17,14 @@ import { lineChart } from './chart';
 import { fmtMetric } from './alert_rules';
 import { exportButtons } from './export';
 import { loadAckSafe, AckData, offBeside, writeButton } from './ack';
+import { needControl } from './needs';
 import { whatIsThis } from './sqlview';
+import { withMark } from './own';
 
 interface AlertPageData { card: Table | null; occurrences: Table | null; sends: Table | null; notes: Table | null }
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
-const statusBadge = (v: unknown) => badge(String(v ?? ''), v === 'open' ? 'crit' : v === 'resolved' ? 'ok' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
+const statusBadge = (v: unknown) => badge(String(v ?? ''), v === 'open' ? 'crit' : v === 'resolved' ? 'ok' : 'none');
 const list = (v: unknown): string => Array.isArray(v) && v.length ? v.join(', ') : '';
 
 // hashParam: one parameter of the page's own address
@@ -67,11 +69,12 @@ function instanceLinks(ctx: Ctx, instanceId: number, engine: unknown, win: { fro
   const range = win ? { from: win.from, to: win.to } : { preset: '1h' };
   const mk = (tab: string, label: string, over: Partial<Ctx> = {}) => el('a', { href: href(ctx, { tab, instance: instanceId, range, ...over }) }, label);
   const links: HTMLElement[] = [mk('summary', 'Summary'), mk('findings', 'Findings'), mk('counters', 'Metrics'), mk('performance', 'Performance')];
-  if (engine === 'sqlserver') links.push(mk('mssql_running', 'Running queries'), mk('mssql_waits', 'Waits'), mk('mssql_blocked', 'Blocked reports'));
+  // Running queries opens with pgvigil's own sessions shown (B24 OWN): the session an alert names is never hidden one click later
+  if (engine === 'sqlserver') links.push(mk('mssql_running', 'Running queries', { own: true }), mk('mssql_waits', 'Waits'), mk('mssql_blocked', 'Blocked reports'));
   else {
     // the running queries at the firing: the activity snapshot nearest the first send
     const at = win && firedAt != null ? { at: new Date(Date.parse(String(firedAt))).toISOString() } : {};
-    links.push(mk('activity', 'Running queries', at), mk('waits', 'Waits'), mk('logs', 'Logs'));
+    links.push(mk('activity', 'Running queries', { ...at, own: true }), mk('waits', 'Waits'), mk('logs', 'Logs'));
     if (String(source ?? '').includes('vacuum') || String(source ?? '') === 'pg_gather') links.push(mk('vacuum', 'Vacuum'), mk('config', 'Configuration'));
   }
   const out = el('p', { class: 'meta' }, win ? 'The instance at the firing: ' : 'The instance now: ');
@@ -135,7 +138,9 @@ const msCols = ['session_id', 'blocking_session_id', 'head_session_id', 'status'
 function liveGrid(rows: Row[], keys: string[], empty: string, idleLast: boolean): HTMLElement {
   if (idleLast) rows = [...rows.filter(r => r.state !== 'idle'), ...rows.filter(r => r.state === 'idle')];
   const have = keys.filter(k => rows.some(r => k in r));
-  const cols: Col[] = have.map(k => ({ key: k, ...(/query|statement/.test(k) ? { wide: true } : {}) }));
+  // the session id carries the 'pgvigil' mark on pgvigil's own rows (the reads ask own=1)
+  const cols: Col[] = have.map(k => ({ key: k, ...(/query|statement/.test(k) ? { wide: true } : {}),
+    ...(k === 'pid' || k === 'session_id' ? { fmt: (v: unknown, r: Row) => withMark(String(v ?? ''), r) } : {}) }));
   const g = grid(rows.slice(0, 20), cols, empty);
   return rows.length > 20 ? el('div', {}, g, el('p', { class: 'meta' }, `${rows.length - 20} more not shown: the instance's running queries page at that time holds them all.`)) : g;
 }
@@ -186,8 +191,9 @@ function evidence(instanceId: number, engine: unknown, win: { from: string; to: 
     return el('p', { class: 'meta' }, `The snapshot of ${fmtTime(snap)}` + (at ? (Math.abs(gap) > 15 ? `, ${gap} minutes before the first send: the activity collection read nothing nearer (the snapshot may say little of the firing).` : `, ${gap} minute(s) before the first send.`) : '.'));
   };
   (ms
-    ? get<{ rows: Table | null }>('mssql/running', { instance: instanceId, at }).then(d => { const rows = rowsOf(d.rows); return el('div', {}, said(rows[0]?.snapshot_at), liveGrid(rows, msCols, 'No request was running in that snapshot.', false)); })
-    : get<{ sessions: Table | null; snapshot_at?: unknown }>('activity', { instance: instanceId, at }).then(d => el('div', {}, said(d.snapshot_at), liveGrid(rowsOf(d.sessions), pgCols, 'No session in that snapshot.', true))))
+    // own=1 (B24 OWN): an alert's evidence shows every session, pgvigil's own included
+    ? get<{ rows: Table | null }>('mssql/running', { instance: instanceId, at, own: 1 }).then(d => { const rows = rowsOf(d.rows); return el('div', {}, said(rows[0]?.snapshot_at), liveGrid(rows, msCols, 'No request was running in that snapshot.', false)); })
+    : get<{ sessions: Table | null; snapshot_at?: unknown }>('activity', { instance: instanceId, at, own: 1 }).then(d => el('div', {}, said(d.snapshot_at), liveGrid(rowsOf(d.sessions), pgCols, 'No session in that snapshot.', true))))
     .then(g => live.replaceChildren(title, g))
     .catch((e: unknown) => live.replaceChildren(title, errorBox(e)));
   return box;
@@ -303,7 +309,7 @@ export async function alertPageView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'channel' },
     { key: 'kind' },
     { key: 'destination', wide: true },
-    { key: 'outcome', fmt: v => badge(String(v ?? ''), v === 'sent' ? 'ok' : v === 'failed' || v === 'refused' ? 'crit' : v === 'capped' ? 'warn' : '') },
+    { key: 'outcome', fmt: v => badge(String(v ?? ''), v === 'sent' ? 'ok' : v === 'failed' || v === 'refused' ? 'crit' : v === 'capped' ? 'warn' : 'none') },
     { key: 'n_firing', label: 'new', num: true },
     { key: 'n_repeat', label: 'repeated', num: true },
     { key: 'n_resolved', label: 'resolved', num: true },
@@ -335,8 +341,8 @@ function dismissBar(door: AckData, key: string, dismissed: Row | undefined, inst
   const said = el('span', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const bar = el('div', { class: 'seg' });
   // by the alert's own instance: on a demo serve the door writes for the demo's instances and for no other
-  if (dismissed) bar.append(writeButton(door, 'Undismiss', 'Undismiss this alert', () => { void dismissEnd(key, said, redraw); }, { instance: instanceId, name }));
-  else bar.append(writeButton(door, 'Dismiss', 'Dismiss this alert with a reason', () => dismissDialog([key], redraw), { instance: instanceId, name }));
+  if (dismissed) bar.append(writeButton(door, 'Undismiss', 'Undismiss this alert', () => { void dismissEnd(key, said, redraw); }, { instance: instanceId, name, route: 'alerts/dismiss' }));
+  else bar.append(writeButton(door, 'Dismiss', 'Dismiss this alert with a reason', () => dismissDialog([key], redraw), { instance: instanceId, name, route: 'alerts/dismiss' }));
   return el('div', {}, bar, said);
 }
 
@@ -361,7 +367,7 @@ export function dismissDialog(keys: string[], after: () => void) {
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const sel = el('select', { 'aria-label': 'reason' }, ...dismissReasons.map(r => el('option', { value: r }, r)), el('option', { value: '' }, 'another reason ...'));
   const other = el('input', { type: 'text', maxlength: '500', 'aria-label': 'another reason', style: 'width:100%' });
-  const ok = el('button', { type: 'submit' }, 'Dismiss'), no = el('button', { type: 'button' }, 'Back');
+  const ok = needControl(el('button', { type: 'submit' }, 'Dismiss'), 'alerts/dismiss'), no = el('button', { type: 'button' }, 'Back');
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   // a typed reason wins over the list's pick: the text box is always there to be typed in
   const reason = () => (other.value.trim() || sel.value).trim();

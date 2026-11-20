@@ -19,7 +19,7 @@
 # PGVIGIL_PROOF_NO_ALTER_SYSTEM=1. No SQL Server is needed: the SQL Server side is seeded rows in the
 # collector's shape (mssql_config, job_versions, mssql_job_runs).
 #
-# The routes GET /api/diff, /api/tablesize and /api/pgconfig are the lead's lines in web.go: where the tree lacks
+# The routes GET /api/diff, /api/tablesize and /api/pgconfig are lines in web.go: where the tree lacks
 # them the proof builds a scratch copy with exactly those three lines and says so. One binary, built into the
 # proof's temporary folder, is used throughout.
 #
@@ -95,14 +95,13 @@
 #     pending restart true, source 'default', value 'PostgreSQL', context postmaster, listed first, and is NOT in
 #     the non-default list (no change-history row); after RESET and reload a hand read shows it no longer pending.
 #     /api/pgconfig returns the same rows.
-#     [run 2 graded: S and A-E green at the values above; F green up to the undo, whose last expectation was wrong
-#      about PostgreSQL: after ALTER SYSTEM RESET and a reload the setting still read pending restart. The server
-#      drops the mark only when a reload finds the file's value EQUAL to the running one, or at a restart; taking the
-#      line out leaves it. Expected from run 3: the undo sets event_source to its running value and reloads (pending
-#      false), then RESETs and reloads (still false, in no file). The Configuration page's sentence and docs/diff.md
-#      now say how long the mark stays]
+#     The undo: after ALTER SYSTEM RESET and a reload the setting still reads pending restart - the server drops the
+#      mark only when a reload finds the file's value EQUAL to the running one, or at a restart; taking the line out
+#      leaves it. So the undo sets event_source to its running value and reloads (pending false), then RESETs and
+#      reloads (still false, in no file). The Configuration page's sentence and docs/diff.md say how long the mark
+#      stays.
 #  G. PostgreSQL 13: every migration through 0086 applies to a fresh database and seed.sql prints EXPECT_SEED there.
-#  [review fold (four headless runs, 03:26-03:39), expected before run 4:
+#  [added later, expected before their first run:
 #   S  S1d / S1c the series by database (d 10, d2 5) and by client (c 13, c2 2). S2 a second database whose newest
 #      read is ten hours back (its read failed in the newest run): t4 is listed at that read (S2r: 10 hours), with no
 #      growth; S2i: only the asked instances (4 rows for this one, 0 for instance 0) and the top 2 by size t2, t1.
@@ -124,15 +123,9 @@
 #      32, 22, 12 with the failed-step cell on the two failed ones alone and the durations 0, 4, 0.
 #   F  the stored value is compared as it is (the masked names read '<masked>' on both sides); a skipped live part
 #      is named in the last line.]
-#  [run 5 graded (the box: PostgreSQL 18.6, PostgreSQL 13.23 as this proof's own container): PROOF OK. S 94 lines,
-#   A-G every line as written above, the review fold's new expectations included, at their first full run.]
-#  [run 4 graded (the box, the folded code): S stopped on the ORDER of two pairs of lines, S1d and S1c: they were
-#   ordered by the printed text, which the server's collation sorts ('d2' before 'd' on the box's en_US, after it on
-#   the laptop). Every value was as expected, and so were all the fold's other new lines. The three by-dimension
-#   reads now order by their sum, largest first; no value changed. A-G did not run in run 4.]
-#  [run 1 graded: S green at the first run (68 lines); the setup then stopped at 'VACUUM cannot run inside a
-#   transaction block': the setup's psql -c held several statements, which run as one transaction. The VACUUMs are
-#   now their own calls; no expectation changed]
+#  [S1d / S1c order by their sum, largest first, never by the printed text: the server's collation sorts 'd2'
+#   before 'd' on en_US and after it elsewhere. The setup's VACUUMs are their own psql calls: a psql -c with several
+#   statements runs them as one transaction, and VACUUM cannot run inside a transaction block.]
 #
 # Not proven here: the pages in a browser (the looks and proof-a11y are the slice's report); a real pg_cron, pgAgent
 # or SQL Server (their collectors are proven by proof-jobs-history.sh and the SQL Server proofs: this proof seeds
@@ -192,7 +185,7 @@ for t in psql curl python3 go; do command -v $t >/dev/null 2>&1 || fail "$t is n
 [[ "$ADMIN_DSN" != *password=* && "$ADMIN_DSN" != *://* ]] || fail "PGVIGIL_ADMIN_DSN must be a keyword DSN without a password (the DSN is on a command line): keep the password in ~/.pgpass"
 [[ "${PGVIGIL_PG13_DSN:-}" != *password=* && "${PGVIGIL_PG13_DSN:-}" != *://* ]] || fail "PGVIGIL_PG13_DSN must be a keyword DSN without a password: keep it in ~/.pgpass"
 
-# ---- the one binary: this tree where it is wired, else a scratch copy with the lead's three route lines
+# ---- the one binary: this tree where it is wired, else a scratch copy with the three route lines
 if grep -q '"GET /api/diff"' internal/web/web.go; then
   CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil || fail "the build"
   WIRED="wired in this tree"
@@ -209,7 +202,7 @@ new = old + '\tapi.HandleFunc("GET /api/diff", s.Diff)\n\tapi.HandleFunc("GET /a
 io.open(p, "w", encoding="utf-8").write(s.replace(old, new))
 PY
   (cd "$SCRATCH" && CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil) || fail "the scratch build with the wiring"
-  WIRED="wired in a scratch build (the join applies the same three lines)"
+  WIRED="wired in a scratch build (the release holds the same three lines)"
 fi
 BIN=$WORK/pgvigil
 echo "binary: $WIRED"

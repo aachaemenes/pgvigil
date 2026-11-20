@@ -4,7 +4,7 @@
 --   database_extensions          one row per extension installed in a database
 --   extension_history            what changed between two reads, like instance_setting_history
 --   ext_version_lt               a version comparison that reads 1.10 above 1.9
---   extension_findings           the extension rules, in pgvigil.findings' columns (the join unions it in)
+--   extension_findings           the extension rules, in pgvigil.findings' columns (0038 unions it in)
 --   extension_fleet              per instance and extension: available, preloaded, installed where, outdated where
 
 CREATE TABLE IF NOT EXISTS pgvigil.instance_extensions (

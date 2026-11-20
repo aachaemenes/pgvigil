@@ -3,16 +3,17 @@
 // and shrinks, DBCC commands with who ran them, DDL) and System health (sp_server_diagnostics' four components as
 // system_health recorded them, with PerformanceMonitor's System Events: the corruption and contention counter charts,
 // the memory broker, memory node OOM, scheduler monitor and significant-wait grids of the events read beside them,
-// task 177 D15). Each says what its reader could read: a missing right is shown as such, never as a failure. Data from /api/mssql/errorlog, /defaulttrace and /syshealth; the lead wires the tabs (router.ts, main.ts).
+// task 177 D15). Each says what its reader could read: a missing right is shown as such, never as a failure. Data from /api/mssql/errorlog, /defaulttrace and /syshealth; the shell wires the tabs (router.ts, main.ts).
 import { get, Row, rowsOf, Table } from './api';
 import { waitingLink } from './darling_waiting';
 import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
+import { errorCell, waitDocs } from './doclinks';
 
 type Part = Table | null;
 const text = (v: unknown) => v == null ? '' : String(v);
-const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const ms = (v: unknown) => v == null ? '' : fmtNum(v) + ' ms';
 const mb = (v: unknown) => v == null ? '' : fmtNum(v) + ' MB';
 
@@ -63,9 +64,9 @@ function readerNote(t: Part, reader: string): HTMLElement {
 
 const lineCols: Col[] = [
   { key: 'log_at', label: 'when', fmt: fmtTime },
-  { key: 'severity', num: true, fmt: v => v == null ? '' : String(v), cls: v => Number(v) >= 20 ? 'crit' : Number(v) >= 17 ? 'warn' : '' },
-  { key: 'error_number', label: 'error', num: true, fmt: v => v == null ? '' : String(v) },
-  { key: 'class', fmt: v => v === 'corruption' ? badge('corruption', 'crit') : text(v) },
+  { key: 'severity', num: true, fmt: v => v == null ? '' : String(v), cls: v => v == null ? '' : Number(v) >= 20 ? 'crit' : Number(v) >= 17 ? 'warn' : 'status none' },
+  { key: 'error_number', label: 'error', num: true, fmt: errorCell },
+  { key: 'class', fmt: v => v === 'corruption' ? badge('corruption', 'crit') : text(v), cls: v => v == null || v === '' || v === 'corruption' ? '' : 'status none' },
   { key: 'message', label: 'line', wide: true },
   { key: 'process' },
   { key: 'matched', label: 'matched', fmt: (v, r) => (Array.isArray(v) ? v.join(', ') : '') + (r.custom === true ? ' (own)' : '') },
@@ -142,20 +143,20 @@ export async function mssqlErrorLogView(ctx: Ctx): Promise<HTMLElement> {
 
 const growthSummaryCols: Col[] = [
   { key: 'database_name', label: 'database' }, { key: 'kind' }, { key: 'events', num: true },
-  { key: 'slow', label: 'over 1 s', num: true, cls: v => Number(v) > 0 ? 'warn' : '' },
+  { key: 'slow', label: 'over 1 s', num: true, cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'warn' : 'status ok' },
   { key: 'worst_ms', label: 'slowest', num: true, fmt: ms }, { key: 'total_ms', label: 'total time', num: true, fmt: ms },
   { key: 'size_mb', label: 'size change', num: true, fmt: mb }, { key: 'last_at', label: 'last', fmt: fmtTime },
 ];
 const growthCols: Col[] = [
-  { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'kind', fmt: v => text(v).includes('shrink') ? badge(text(v), 'warn') : text(v) },
+  { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'kind', fmt: v => text(v).includes('shrink') ? badge(text(v), 'warn') : text(v), cls: v => v == null || v === '' || String(v).includes('shrink') ? '' : 'status ok' },
   { key: 'database_name', label: 'database' }, { key: 'file_name', label: 'file' },
-  { key: 'duration_ms', label: 'took', num: true, fmt: ms, cls: v => Number(v) > 1000 ? 'warn' : '' },
+  { key: 'duration_ms', label: 'took', num: true, fmt: ms, cls: v => v == null ? '' : Number(v) > 1000 ? 'warn' : 'status ok' },
   { key: 'size_change_mb', label: 'size change', num: true, fmt: mb },
   { key: 'program_name', label: 'program' }, { key: 'login_name', label: 'login' }, { key: 'session_id', label: 'session', num: true },
 ];
 const disruptive = new Set(['DBCC FREEPROCCACHE', 'DBCC FREESYSTEMCACHE', 'DBCC DROPCLEANBUFFERS', 'DBCC WRITEPAGE']);
 const dbccSummaryCols: Col[] = [
-  { key: 'command', fmt: v => disruptive.has(text(v)) ? badge(text(v), 'warn') : text(v) }, { key: 'runs', num: true },
+  { key: 'command', fmt: v => disruptive.has(text(v)) ? badge(text(v), 'warn') : text(v), cls: v => v == null || v === '' || disruptive.has(String(v)) ? '' : 'status ok' }, { key: 'runs', num: true },
   { key: 'logins' }, { key: 'databases' }, { key: 'first_at', label: 'first', fmt: fmtTime }, { key: 'last_at', label: 'last', fmt: fmtTime },
 ];
 const dbccCols: Col[] = [
@@ -197,8 +198,8 @@ export async function mssqlDefaultTraceView(ctx: Ctx): Promise<HTMLElement> {
 
 // ---- System health
 
-const stateBadge = (v: unknown) => badge(text(v), v === 'ERROR' ? 'crit' : v === 'WARNING' ? 'warn' : v === 'CLEAN' ? 'ok' : '');
-const flag = (v: unknown) => Number(v) > 0 ? 'crit' : '';
+const stateBadge = (v: unknown) => badge(text(v), v === 'ERROR' ? 'crit' : v === 'WARNING' ? 'warn' : v === 'CLEAN' ? 'ok' : 'none');
+const flag = (v: unknown) => v == null || v === '' ? '' : Number(v) > 0 ? 'crit' : 'status ok';   // a zero count was read: OK
 
 const systemCols: Col[] = [
   { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'state', fmt: stateBadge },
@@ -213,7 +214,7 @@ const systemCols: Col[] = [
 ];
 const qpCols: Col[] = [
   { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'state', fmt: stateBadge },
-  { key: 'pending_tasks', label: 'pending tasks', num: true, cls: v => Number(v) >= 10 ? 'warn' : '' },
+  { key: 'pending_tasks', label: 'pending tasks', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 10 ? 'warn' : 'status ok' },
   { key: 'oldest_pending_ms', label: 'oldest pending', num: true, fmt: ms },
   { key: 'max_workers', label: 'max workers', num: true }, { key: 'workers_created', label: 'workers', num: true },
   { key: 'workers_idle', label: 'idle', num: true }, { key: 'tasks_completed', label: 'tasks completed', num: true },
@@ -246,12 +247,12 @@ function groupedGrid(title: string, rows: Row[], base: Col[], groups: ColGroup[]
   return box;
 }
 
-const yes = (v: unknown) => Number(v) > 0 || v === 'true' ? 'warn' : '';
+const yes = (v: unknown) => v == null || v === '' ? '' : Number(v) > 0 || v === 'true' ? 'warn' : 'status ok';
 const kb = (v: unknown) => v == null ? '' : fmtNum(v) + ' KB';
 
 const resourceBase: Col[] = [
   { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'state', fmt: stateBadge },
-  { key: 'last_notification', label: 'last notification', cls: v => text(v).endsWith('_LOW') ? 'warn' : '' },
+  { key: 'last_notification', label: 'last notification', cls: v => text(v) === '' ? '' : text(v).endsWith('_LOW') ? 'warn' : 'status ok' },
   { key: 'oom_exceptions', label: 'out-of-memory exceptions', num: true, cls: flag },
   { key: 'pool_out_of_memory', label: 'pool out of memory', num: true, cls: flag },
   { key: 'target_committed_mb', label: 'target committed', num: true, fmt: mb },
@@ -277,7 +278,7 @@ const resourceGroups = (): ColGroup[] => [
 // the events read beside the component results (0120): sp_HealthParser's columns, PerformanceMonitor's grids
 const brokerCols: Col[] = [
   { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'broker_id', label: 'broker id', num: true }, { key: 'broker' },
-  { key: 'notification', cls: v => text(v) === 'SHRINK' ? 'warn' : '' }, { key: 'pool_metadata_id', label: 'pool metadata id', num: true },
+  { key: 'notification', cls: v => text(v) === '' ? '' : text(v) === 'SHRINK' ? 'warn' : 'status ok' }, { key: 'pool_metadata_id', label: 'pool metadata id', num: true },
   { key: 'delta_time', label: 'delta time', num: true }, { key: 'memory_ratio', label: 'memory ratio', num: true },
   { key: 'new_target', label: 'new target', num: true }, { key: 'overall', num: true }, { key: 'rate', num: true },
   { key: 'currently_predicated', label: 'predicated', num: true }, { key: 'currently_allocated', label: 'allocated', num: true },
@@ -316,15 +317,15 @@ const oomGroups = (): ColGroup[] => [
 ];
 const schedulerCols: Col[] = [
   { key: 'event_at', label: 'when', fmt: fmtTime },
-  { key: 'sql_cpu', label: 'SQL Server CPU %', num: true, cls: v => Number(v) >= 90 ? 'warn' : '' },
-  { key: 'other_cpu', label: 'other processes CPU %', num: true, cls: v => Number(v) >= 50 ? 'warn' : '' },
+  { key: 'sql_cpu', label: 'SQL Server CPU %', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 90 ? 'warn' : 'status ok' },
+  { key: 'other_cpu', label: 'other processes CPU %', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 50 ? 'warn' : 'status ok' },
   { key: 'system_idle', label: 'idle %', num: true },
-  { key: 'memory_utilization', label: 'memory utilization %', num: true, cls: v => v != null && Number(v) <= 50 ? 'warn' : '' },
+  { key: 'memory_utilization', label: 'memory utilization %', num: true, cls: v => v == null || v === '' ? '' : Number(v) <= 50 ? 'warn' : 'status ok' },
   { key: 'page_faults', label: 'page faults', num: true }, { key: 'working_set_delta_mb', label: 'working set change', num: true, fmt: mb },
 ];
 const waitCols: Col[] = [
   { key: 'event_at', label: 'when', fmt: fmtTime },
-  { key: 'wait_type', label: 'wait type', fmt: v => v ? waitingLink(text(v), text(v)) : '' },
+  { key: 'wait_type', label: 'wait type', fmt: v => v ? el('span', {}, waitingLink(text(v), text(v)), waitDocs(v)) : '' },
   { key: 'duration_ms', label: 'duration', num: true, fmt: ms }, { key: 'signal_duration_ms', label: 'signal duration', num: true, fmt: ms },
   { key: 'wait_resource', label: 'wait resource', wide: true }, { key: 'session_id', label: 'session', num: true },
   { key: 'statement', wide: true },

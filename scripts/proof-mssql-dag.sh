@@ -18,7 +18,7 @@
 # What stays: the repository's migration creates the cluster-wide NOLOGIN roles pgvigil_collector, pgvigil_reader,
 # pgvigil_auth and pgvigil_alerter on the PostgreSQL server where they do not exist yet, as every pgvigil proof does.
 #
-# The lead's wiring (internal/web/q_mssql_hadr.go: the part "distributed" of /api/mssql/availability): where the tree
+# The wiring (internal/web/q_mssql_hadr.go: the part "distributed" of /api/mssql/availability): where the tree
 # does not have it yet, the build is made in a temporary copy with scripts/dag/wiring-q_mssql_hadr.patch applied, and
 # the proof says so. The web bundle is always built from this tree's web/src (in the copy: the committed bundle is not
 # touched).
@@ -224,7 +224,7 @@ else
   else
     (cd "$WORK/src" && { git apply --whitespace=nowarn scripts/dag/wiring-q_mssql_hadr.patch 2>/dev/null || patch -p1 -s < scripts/dag/wiring-q_mssql_hadr.patch; }) \
       || fail "scripts/dag/wiring-q_mssql_hadr.patch no longer applies to internal/web/q_mssql_hadr.go"
-    WIRED="wired in a temporary copy (scripts/dag/wiring-q_mssql_hadr.patch: the join applies the same patch)"
+    WIRED="wired in a temporary copy (scripts/dag/wiring-q_mssql_hadr.patch: the release wiring applies the same patch)"
   fi
   (cd "$WORK/src/web" && npm run build >"$WORK/web.log" 2>&1) || { tail -30 "$WORK/web.log"; fail "the web build"; }
   (cd "$WORK/src" && CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil) || fail "the go build"

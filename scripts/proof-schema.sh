@@ -32,7 +32,7 @@
 #       added|function|public.f(integer)   CREATE FUNCTION f(i int) ...
 #     and the trigger's own objects added without a statement (table public.pgvigil_ddl_log, the function
 #     public.pgvigil_ddl_capture(): created before the trigger existed; the table's identity sequence folds into the
-#     table [review fold: an owned sequence's parent is its table]); B's four changes still have no statement.
+#     table [an owned sequence's parent is its table]); B's four changes still have no statement.
 #  D. DROP INDEX n_y and ALTER TABLE t ALTER COLUMN b TYPE varchar(20) in MDB; CREATE TABLE z (i int) in MDB2 (no
 #     trigger); collect: MDB dropped|index|public.n_y with statement 'DROP INDEX n_y', changed|column|public.t.b
 #     text -> character varying(20) with its ALTER TABLE statement; MDB2 added|table|public.z with no statement and
@@ -41,34 +41,41 @@
 #     MDB's change count and present-object count are unchanged; DROP DATABASE MDB2, collect: MDB2's row is_present
 #     false and no 'dropped' change for its objects (a database gone is not its objects dropped); schema_findings
 #     rows for MDB: one warning, one info.
-#  F. [review fold, expected before the run] the cursor never stalls, and temporary objects are not logged: 6,000 rows
+#  F. [added later, expected before the run] the cursor never stalls, and temporary objects are not logged: 6,000 rows
 #     inserted into MDB's pgvigil_ddl_log in one statement as the superuser (object_identity 'public.burst', inside one
 #     second: more than one page of 5,000 inside the read's hour of overlap), then CREATE TABLE w (i int), and in one
 #     session CREATE TEMP TABLE tt (i int) and DROP TABLE tt; collect: MDB's schema_ddl_log holds 6,000 'public.burst'
 #     rows, the CREATE TABLE w row, and no pg_temp row; the change added|table|public.w carries
 #     'CREATE TABLE w (i int)'; a second collect adds no row (each kept once) and MDB's cursor is at the newest row.
-#  F2. [join fold] the run cap: 3,000 more rows ('public.burst2'), collects under PGVIGIL_SCHEMA_DDL_MAX=2500: the
+#  F2. the run cap: 3,000 more rows ('public.burst2'), collects under PGVIGIL_SCHEMA_DDL_MAX=2500: the
 #     first does not hold all 3,000 (MDB's note 'over 2500 rows in one read'); within 5 collects all 3,000 are held,
 #     each once, and the next read starts at or before the newest row (a capped run's cursor is its last row plus the
 #     hour of overlap, so the cursor itself may stand past the newest row).
-#  G. [join fold] one import per database: MDB3 (200 tables) and MDB4, MDB5 (40 tables each) read once, one table
+#  G. one import per database: MDB3 (200 tables) and MDB4, MDB5 (40 tables each) read once, one table
 #     added to each, then a collect under PGVIGIL_SCHEMA_MAX_PAYLOAD=49152 (each mid database's objects under it, MDB3's
 #     over it; MDB's event-trigger rows of the last hour, several MB, go in parts under it): MDB4 and MDB5 each have added|table|public.extra at that read; MDB3 has no
 #     change, its row still present and older than MDB4's; a collect without the cap then finds MDB3's table. With
 #     PGVIGIL_BIN_OLD (a build without RunOnce's batch path) the capped collect fails: one payload for the instance
 #     (F's rows alone pass the cap).
-#  H. [join fold] the trigger's guards: in MDB6, which has a FOR ALL TABLES publication, the printed block fails and
+#  H. the trigger's guards: in MDB6, which has a FOR ALL TABLES publication, the printed block fails and
 #     leaves no pgvigil_ddl_log; in MDB, CREATE SERVER and CREATE USER MAPPING with a password option, a CREATE
 #     SUBSCRIPTION (connect = false) with password= in its connection, and a two-statement batch whose text names a
 #     password leave no 'sekret' in MDB's pgvigil_ddl_log or the repository's schema_ddl_log; the CREATE SERVER row and
 #     the batch's CREATE TABLE row carry '(statement not kept: it may carry a password)'; with the log table held
 #     ACCESS EXCLUSIVE by another session, CREATE TABLE lk returns in under 3 s and lk exists.
-#     [review fold, expected before the run] on PostgreSQL 15+ the block fails in MDB6 too with only a publication FOR
+#     [added later, expected before the run] on PostgreSQL 15+ the block fails in MDB6 too with only a publication FOR
 #     TABLES IN SCHEMA public; a batch 'CREATE TABLE a2; CREATE SUBSCRIPTION ... CONNECTION 'postgresql://app:Hunter2xyz@...''
 #     (no word password) and a lone CREATE USER MAPPING with no password option keep no 'Hunter2xyz' and both their
 #     rows (the batch's CREATE TABLE a2, the mapping) not kept; the lock is seen granted in pg_locks before the timer
 #     starts, and lk has no row in MDB's log (it ran unlogged).
 #  The ACLs above carry PostgreSQL 17's MAINTAIN privilege (m): on 16 and older the expected text lacks it.
+#  P12. [A26, expected before the run] public.pf's body kept as text under query_text full ('return i + 1' after its
+#     'body sha256:' line); public.pw(), whose body names a password, kept as its hash and '(body text not kept: it
+#     names a password or a secret)', no 'Hunter2abc' in schema_objects or schema_changes; P12u, with
+#     PGVIGIL_BIN_MAINSCHEMA (a build with main's internal/collect/schema.go): main's read stores pf as its hash alone,
+#     this binary's read under full after it records no change of MDB (else 'NOT PROVEN P12u'); under none pf is its
+#     hash alone; the flips none -> full record no change of ANY object of MDB; a body change (return i + 2) is one
+#     'changed' row with the two texts.
 set -euo pipefail
 : "${PGVIGIL_REPO_DSN:?}"
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -342,4 +349,44 @@ H4=$(psql "$ADMIN_DSN dbname=$MDB" -XAt -c "select (to_regclass('public.lk') is 
 echo "CREATE TABLE beside the held lock: $ms ms, lk exists|its log rows: $H4"
 [[ $ms -lt 3000 && $H4 == "true|0" ]] || fail "H: the lock wait"
 
-echo "PASS: proof-schema (A the baseline: 6 objects, no change; B CREATE TABLE folded, ALTER COLUMN TYPE integer -> bigint, DROP INDEX with its definition, GRANT's ACL before and after, the two findings; C the event trigger installed: each change with its statement, the REVOKE matched by name, earlier changes untouched; D DROP INDEX and ALTER COLUMN with their statements, a database without the trigger: not installed; E a late read changes nothing, a dropped database drops no object; F a burst of 6,000 log rows read in pages, the statement after it found, no temp-table row, each row kept once; F2 the run cap goes on run by run; G one import per database under a payload cap; H the publication guard, no password kept, a one-second lock wait)"
+echo "--- P12. a function's body as text (A26): under query_text full, then none, then full again, then changed"
+m1 'create function public.pf(i int) returns int language plpgsql as $f$ begin return i + 1; end $f$'
+m1 'create function public.pw() returns int language plpgsql as $f$ begin /* the app password Hunter2abc */ return 1; end $f$'
+collect
+P12A=$(q "select definition from pgvigil.schema_objects where instance_id = $i and datname = '$MDB' and identity = 'public.pf(integer)'")
+[[ $P12A == *"body sha256:"* && $P12A == *"return i + 1"* ]] || fail "P12: under full the body is not kept as text: $P12A"
+# a body naming a password keeps its hash and the words, never its text, under full too
+P12W=$(q "select definition from pgvigil.schema_objects where instance_id = $i and datname = '$MDB' and identity = 'public.pw()'")
+[[ $P12W == *"body sha256:"* && $P12W == *"(body text not kept: it names a password or a secret)" && $P12W != *Hunter2abc* ]] \
+  || fail "P12: a body naming a password is not its hash and the words: $P12W"
+[[ $(q "select (select count(*) from pgvigil.schema_objects where definition ~ 'Hunter2abc') + (select count(*) from pgvigil.schema_changes where coalesce(before, '') || coalesce(after, '') ~ 'Hunter2abc')") == 0 ]] \
+  || fail "P12: Hunter2abc reached the repository's schema tables"
+# P12u: a store read by main's schema code (bodies as hashes) and then by this binary under full
+# records no change - the upgrade - and main's read after this binary's none either - the way back
+if [[ -n ${PGVIGIL_BIN_MAINSCHEMA:-} ]]; then
+  NU=$(q "select count(*) from pgvigil.schema_changes where instance_id = $i and datname = '$MDB'")
+  "$PGVIGIL_BIN_MAINSCHEMA" collect -config "$CFG" -once schema >/dev/null 2>&1 || fail "P12u: main's schema read failed"
+  P12U=$(q "select definition from pgvigil.schema_objects where instance_id = $i and datname = '$MDB' and identity = 'public.pf(integer)'")
+  [[ $P12U == *"body sha256:"* && $P12U != *"return i + 1"* ]] || fail "P12u: main's read did not store the hashed form: $P12U"
+  collect
+  [[ $(q "select count(*) from pgvigil.schema_changes where instance_id = $i and datname = '$MDB'") == "$NU" ]] \
+    || fail "P12u: main's read then this binary's under full recorded a change"
+  echo "ok   P12u: main's read (bodies as hashes), then this binary's under full: no change of MDB"
+else echo "NOT PROVEN P12u: PGVIGIL_BIN_MAINSCHEMA not set (a build with main's internal/collect/schema.go)"; fi
+# the two flips: no change of ANY object of MDB (not only pf's 'changed' rows)
+N12=$(q "select count(*) from pgvigil.schema_changes where instance_id = $i and datname = '$MDB'")
+sed -i '/dsn: env:SBX_DSN/a\    query_text: none' "$CFG"
+collect
+P12B=$(q "select definition from pgvigil.schema_objects where instance_id = $i and datname = '$MDB' and identity = 'public.pf(integer)'")
+[[ $P12B == *"body sha256:"* && $P12B != *"return i + 1"* ]] || fail "P12: under none the body is not its hash alone: $P12B"
+sed -i '/query_text: none/d' "$CFG"
+collect
+[[ $(q "select count(*) from pgvigil.schema_changes where instance_id = $i and datname = '$MDB'") == "$N12" ]] \
+  || fail "P12: flipping query_text recorded a change in MDB"
+m1 'create or replace function public.pf(i int) returns int language plpgsql as $f$ begin return i + 2; end $f$'
+collect
+P12C=$(q "select coalesce(before, '') || '|' || coalesce(after, '') from pgvigil.schema_changes where instance_id = $i and datname = '$MDB' and identity = 'public.pf(integer)' and change = 'changed' order by snapshot_at desc limit 1")
+[[ $P12C == *"return i + 1"*"|"*"return i + 2"* ]] || fail "P12: the body change is not before / after text: $P12C"
+echo "ok   P12: the body kept as text under full, a body naming a password as its hash and the words, as its hash under none, no change of MDB on the two flips, a body change with its before / after text"
+
+echo "PASS: proof-schema (P12 bodies as text by query_text, a body naming a password withheld, no change of MDB on the flips; A the baseline: 6 objects, no change; B CREATE TABLE folded, ALTER COLUMN TYPE integer -> bigint, DROP INDEX with its definition, GRANT's ACL before and after, the two findings; C the event trigger installed: each change with its statement, the REVOKE matched by name, earlier changes untouched; D DROP INDEX and ALTER COLUMN with their statements, a database without the trigger: not installed; E a late read changes nothing, a dropped database drops no object; F a burst of 6,000 log rows read in pages, the statement after it found, no temp-table row, each row kept once; F2 the run cap goes on run by run; G one import per database under a payload cap; H the publication guard, no password kept, a one-second lock wait)"

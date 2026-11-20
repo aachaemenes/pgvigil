@@ -30,14 +30,14 @@
 #     /api/mssql/traceflags answer with the rows of B, C and D; /api/jobs/thresholds answers levels and status
 #     (POST on a -no-login server is 403: thresholds need the UI login).
 #  G. go test of the packages it changed, go vet, tsc.
-#  H. [review fold, written before its first run] the script builders' cases, as tests written into a scratch copy
+#  H. [added later, written before its first run] the script builders' cases, as tests written into a scratch copy
 #     (the slice owns no test file): cronScript named and unnamed, a backslash in a name (E''), a command holding
 #     $cmd$ and one ending in $cmd (the quote still closes where it should), $pgagent$ inside a pgAgent step (the
 #     DO block's quote takes another tag), month day 'last' and weekday base 1 in the boolean arrays; agentScript
 #     with two schedules, start_step_id 2 (sp_update_job), a command of 9,000 characters (the note), a quote in a
 #     name, @flags. Each script of H that PostgreSQL can parse (pg_cron's and pgAgent's) parses: EXPLAIN-free, as a
 #     DO block or a SELECT prepared against stand-in functions.
-#  I. [review fold] thresholds: a set at each level gives job_status that level; inherit at the job level falls to the
+#  I. [added later] thresholds: a set at each level gives job_status that level; inherit at the job level falls to the
 #     instance's; {"fail_24h_warn":"abc"} and 0 and 2000000 are refused (outcome refused, no cast error); a script of
 #     another format with the same definition is rewritten in place (no new version).
 set -euo pipefail
@@ -64,14 +64,14 @@ sq() { docker exec -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -U sa -C -b -I -
 for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
 sq "SELECT 1" >/dev/null || fail "SQL Server did not come up"
 for _ in $(seq 1 60); do [ "$(sq "SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE program_name LIKE 'SQLAgent%'")" -gt 0 ] 2>/dev/null && break; sleep 2; done
-# the routes are the lead's (web.go, q_jobs_history.go, q_config_history.go): where the tree lacks them, a scratch copy
+# the routes are wired in web.go, q_jobs_history.go and q_config_history.go: where the tree lacks them, a scratch copy
 # takes PGVIGIL_JOBDDL_WIRING (the slice's wiring patch) and the proof says so
 if grep -q '/api/config/changes' internal/web/web.go; then go build -o "$BIN" ./cmd/pgvigil; echo "binary: wired in this tree"
 else
   : "${PGVIGIL_JOBDDL_WIRING:?the tree lacks the routes: name the wiring patch in PGVIGIL_JOBDDL_WIRING}"
   mkdir -p "$WORK/src"; tar --exclude=./web/node_modules --exclude=./.git -cf - . | tar -C "$WORK/src" -xf -
   (cd "$WORK/src" && git apply "$PGVIGIL_JOBDDL_WIRING" && go build -o "$BIN" ./cmd/pgvigil) || fail "the scratch build with the wiring"
-  echo "binary: wired in a scratch build (the join applies the same patch)"
+  echo "binary: wired in a scratch build (the release holds the same patch)"
 fi
 adm() { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 "$@"; }
 adm -c "create database $REPO_DB" -c "create database $AGENT_DB"

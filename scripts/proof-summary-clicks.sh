@@ -8,31 +8,31 @@
 #   CLICK_ALL=1             every instance-grid cell, not one per column, engine and text shape
 #   SUMCLICK_SCOPES         root,tag,instance (default all three): the fleet Summary, a tag folder, two instances
 #   SUMCLICK_SELFTEST_ONLY  1: the walk's planted twin / status self-test alone, on the first scope's page
-# Expected (written before the first run, 2026-11-14 18:3x PST):
-#  RED on main 1aba474 and on rel-j14pre 70c86da (the fault as reported: many texts of the Summary, the Deadlocks
+# Expected (written before the first run):
+#  RED on the code before the fix (the fault as reported: many texts of the Summary, the Deadlocks
 #  cell among them, do nothing on a click): FAIL rows at least for the Needs attention strip's reasons (their
 #  text is one plain span: 'Deadlocks n (x/hr)', 'Blocking n (x/hr)' and the cells' words), for pgvigil's own instance
 #  grid columns that are plain values (Total CPU ... Measured, Platform, Role, Sessions, Lock Waits, Last Sample), for
 #  the counts line, and wherever a click's change lands below the fold only (the test grid's count and name buttons
 #  that filter the instance grid out of view: 'nothing in view (a change below the fold only)'); the headings of a
 #  column whose values are all equal show nothing (no sort mark). The exact list is the run's 'DEAD' lines.
-#  RED, the instance Summary (added 18:4x PST, before its first run, after reading instheader.ts L165-171 / L267-273):
+#  RED, the instance Summary (instheader.ts L165-171 / L267-273):
 #  FAIL rows for the header's six chips (CPU, Threads, Memory, Blocking, Deadlocks, Collectors: plain div's, so a
 #  click on 'Deadlocks' does nothing - the likeliest text of the report), the band word, the status line ('Online ·
-#  last collect ...'), the reason line's words, and on 70c86da whatever of the verdict card is plain text.
+#  last collect ...'), the reason line's words, and before the fix whatever of the verdict card is plain text.
 #  GREEN: the same 0 FAIL there, the plain rows only headings and a properties table's labels.
 #  GREEN after the fix: 'clicks: <n>; 0 FAIL; <k> plain' at every scope, the plain rows only DBA Dash's text cells
 #  (Memory Dump / Crash restarts, Is Agent Running, DB Mail).
-#  REVISED 2026-11-14 19:4x PST, before run 3 (the walk now clicks an instance page one text node at a time, so a
+#  REVISED (the walk now clicks an instance page one text node at a time, so a
 #  label is clicked apart from the links after it): on an instance page plain is also a properties table's VALUE
 #  (DBA Dash's instance info is text), a label whose words end with ':' ('Not OK:', 'Not judged (...):') and a text
 #  marked data-nolink (DB Mail, a page's own name). Every chip, health tile, the verdict word and sentence, each
 #  verdict reason WITH its count, each acknowledged / not judged group, and each name of the counts line ('not read
-#  yet', 'skipped') is a link. Run 3's own expectation: 0 FAIL at the root and the tag folder; on the two instance
+#  yet', 'skipped') is a link. Its expectation: 0 FAIL at the root and the tag folder; on the two instance
 #  pages FAIL rows may remain only in their grids' plain cells (a finding's severity, object, time) - read them, then
 #  decide. A hang or a closed CDP socket is a FAIL line of its own ('the page hung ...'), never a silent exit.
-#  REVISED 2026-11-14 22:0x PST, before run 4 (the review of 823e113 folded; this states what 823e113 widened after
-#  run 3 and what the fold changed, so the expectation names every plain kind the walk ships): PLAIN kinds, all of
+#  REVISED (this states what the change widened after
+#  the earlier run and what the fix changed, so the expectation names every plain kind the walk ships): PLAIN kinds, all of
 #  them - a heading; a label (a properties table's label, a dt, the health calendar's heads and month, an off-reason,
 #  the chart legend's time row, words ending in ':'); a properties table's value; a text marked data-nolink; a
 #  disabled control that says why (its title or the off-reason beside it); a grid cell (tbody td) whose row holds a
@@ -42,13 +42,13 @@
 #  each scope is opened at the app's own address (w=1h) so a link to the page it is on changes nothing and FAILS,
 #  the point clicked must be on the target (another element over it FAILS), a bare number is found again only in its
 #  own box, the strip's '+n more' is clicked, texts over 80 characters are clicked too, and a landing outside the
-#  tab strip says so. Expected at 823e113 + the fold: 'clicks: <n>; 0 FAIL; <k> plain' at the root, the tag folder
+#  tab strip says so. Expected with the fix: 'clicks: <n>; 0 FAIL; <k> plain' at the root, the tag folder
 #  and both instance pages; on the SQL Server instance its header's Memory dumps / DB Mail reasons are plain
 #  ('marked as text') and Instance Uptime 'opens a dialog or a menu'; on the PostgreSQL instance the properties
 #  'sessions', 'failing collections' and 'last activity sample' are links ('lands on #/activity...' /
 #  '#/collectiondates...'). Any FAIL row is read and its cause named, never argued away.
-#  REVISED 2026-11-15 12:00 PST, before run 5 (run 4's causes read from its fetched outputs; rebased onto main
-#  dfd53d27), the review's fold of 12:2x in: the SQL Server instance's Findings grid has a link in every row (its
+#  REVISED (the earlier run's causes read from its fetched outputs,
+#  with the fixes in): the SQL Server instance's Findings grid has a link in every row (its
 #  check opens the finding's page, '#/alert?...k=<key>', a page outside the tab strip; the cells beside it plain 'a
 #  grid cell whose row has its link'); % Max Size 'lands on #/dbfiles?i=<id>&w=1h&status=critical%2Cwarning' and its
 #  test name on Files over the scope with the same status; the SQL Server Summary's 'not read yet' names open their

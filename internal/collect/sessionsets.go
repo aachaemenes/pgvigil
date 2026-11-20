@@ -277,7 +277,7 @@ func unquoteIdent(s string) string {
 	return strings.ToLower(s)
 }
 
-// isPlannerSetting: the settings that change a plan (task 58's list, settled; the lead added the last three on
+// isPlannerSetting: the settings that change a plan (task 58's list; the last three added
 // 2026-11-09): enable_*, *_cost, work_mem, jit, join_collapse_limit, from_collapse_limit, geqo*, plan_cache_mode,
 // default_statistics_target, effective_cache_size, hash_mem_multiplier, max_parallel_workers_per_gather. search_path is
 // not one (it changes which table a name means, not how a plan is made).

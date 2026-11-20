@@ -71,6 +71,21 @@ There is one row per index of every user table and indexed view. Each row holds:
 
 Each database is read and stored on its own. If a database's read fails, the repository keeps what it already holds for it.
 
+### What else each read stores
+
+After a database's index read, five more reads of the same database, each a plain `SELECT` (sp_BlitzIndex 8.34 and sp_IndexCleanup 2.11 read the same things; their rules come from these values):
+
+- Per index: whether its object is a table or an indexed view; its filegroup or partition scheme, with the partition function's argument type, partition count and boundaries (`RANGE RIGHT FOR VALUES (100, 200)`, each value written whole) and the partitioning column; whether any partition is uncompressed; and a filtered index's filter columns.
+- Per index, from `sys.dm_db_index_operational_stats` summed over the partitions: row and page lock waits, page latch and page I/O latch waits (count and milliseconds), forwarded fetches and leaf deletes. These count only since the table's metadata entered the server's cache, which can be later than the server's start.
+- Per columnstore index, on SQL Server 2022 and later: the columns whose compressed segments keep no minimum and maximum string data. Such an index was built before 2022 and gains string segment elimination only from a rebuild. Before 2022 this is not read, and the database's read notes say so.
+- Per heap of a user table: its size, rows, reads, writes, forwarded fetches and deletes, its filegroup or partition scheme and the table's create date. The Indexes tab lists them in a Heaps block under the inventory.
+- Per user table and indexed view: its columns' count and declared bytes, its LOB and string columns, whether it has a sparse column or a `text`, `ntext` or `image` column, the clustered key's bytes and columns, and whether it is a system-versioned temporal table or a history table.
+- Per enabled foreign key: its table, the table it references and its columns in order.
+
+The filter columns are the table's columns whose bracketed name the filter holds, as sp_IndexCleanup finds them. sp_BlitzIndex reads them from `sys.sql_expression_dependencies`, but by default only `db_owner` may read that view, so the monitor login cannot. No new right is needed for any of these reads.
+
+When one of these reads fails (a lock timeout, a denied right), the index read and the other reads still stand. The database's **read notes** on the Usage window grid name the part and the server's words, and the collection's run shows as partial. A part that was not read stores nothing for that database: a rule that needs it does not judge that database.
+
 ### The usage window
 
 The usage counters are kept in memory. They start again whenever:
@@ -99,11 +114,52 @@ An index that backs a primary key or a unique constraint, or that a foreign key 
 | written, seldom read | 10,000 or more writes, under 10,000 reads, ten times more writes than reads | none |
 | same keys, another order / same leading column | for review | none |
 
-A merged definition spells out `ONLINE` (as the edition allows), `FILLFACTOR`, `SORT_IN_TEMPDB` and `DATA_COMPRESSION`, and keeps the index's `IGNORE_DUP_KEY`, `ALLOW_ROW_LOCKS`, `ALLOW_PAGE_LOCKS` and `STATISTICS_NORECOMPUTE`. pgvigil does not read `OPTIMIZE_FOR_SEQUENTIAL_KEY` or the filegroup: check both before running the text. A disabled index comes back with `ALTER INDEX ... REBUILD`. Findings are raised per database: exact duplicates, unused indexes that are written, unused indexes, and redundant indexes.
+A merged definition spells out `ONLINE` (as the edition allows), `FILLFACTOR`, `SORT_IN_TEMPDB` and `DATA_COMPRESSION`, and keeps the index's `IGNORE_DUP_KEY`, `ALLOW_ROW_LOCKS`, `ALLOW_PAGE_LOCKS` and `STATISTICS_NORECOMPUTE`. The merged definition does not name the filegroup or partition scheme (the inventory shows it), and pgvigil does not read `OPTIMIZE_FOR_SEQUENTIAL_KEY`: check both before running the text. A disabled index comes back with `ALTER INDEX ... REBUILD`. Findings are raised per database: exact duplicates, unused indexes that are written, unused indexes, and redundant indexes.
 
 ### Missing-index requests
 
 Missing-index requests are what the optimizer asked for, one query shape at a time, since the server started. They show the equality, inequality and included columns, how often each was asked for, and the benefit per day of uptime. They are **hints**. They know nothing of the indexes that already exist or of the other requests, so pgvigil never writes them as a `CREATE INDEX`. A request worth 100,000 or more a day of uptime raises an info finding.
+
+### Usage and requests kept per read (task 414)
+
+Each read of `mssql_indexes` keeps what it added, so the Indexes tab charts **User actions over time**: the seeks, scans, lookups and updates each six-hourly read added, for a database or for one index (its row's *trend*). An index that did not move keeps no row; an index read for the first time adds nothing (its counters start the line); after a restart, a restore or the database taken offline or closed, a read adds the whole count. The inventory shows seeks, scans, lookups and updates apart, scans per seek and updates per read. The missing-index requests are kept the same way: **Missing-index requests over time** draws the seeks and scans each read added for the ten requests with the most benefit, beside the newest read's top 10 and its impact-against-requests scatter. A request is the same across reads when its database, table and columns are (the server's handle changes at a restart).
+
+Volume: one row per index that moved, per read: at most instances x indexes x 4 a day (every index of a table written in six hours moves its updates). The rows sit in monthly partitions under the repository's retention.
+
+### Disabled indexes, untrusted keys and constraints (task 414)
+
+A disabled index is listed per database (info). A disabled clustered index is a **warning**: the table can be neither read nor written, and its nonclustered indexes and foreign keys are disabled with it; `ALTER INDEX ALL ON <table> REBUILD` enables them. A disabled primary key or unique index that a foreign key references is a warning too: those foreign keys are disabled with it, and the rebuild does not enable them: each takes `ALTER TABLE ... WITH CHECK CHECK CONSTRAINT` (Microsoft Learn, *Disable Indexes and Constraints*).
+
+The collection `mssql_constraints` (every six hours) reads the untrusted foreign keys and check constraints of each user database: enabled again without `WITH CHECK`, or disabled. The rows written while they were off were never checked, and the optimizer does not use them. NOT FOR REPLICATION ones are left out, and disabled check constraints are counted, not named (dbachecks' rules). `WITH CHECK CHECK CONSTRAINT` reads the whole table: the tab shows it as text to review. Not on Azure SQL Database.
+
+### A histogram on demand (task 414)
+
+A statistic's histogram (its steps: RANGE_HI_KEY, EQ_ROWS, RANGE_ROWS, DISTINCT_RANGE_ROWS) is read when asked, from `sys.dm_db_stats_histogram`, and never stored. The keys are the column's **real values**, so it is **off** until an admin turns it on for the instance in `pgvigil.yaml`:
+
+```yaml
+  - name: sql1
+    engine: sqlserver
+    dsn: env:PGV_SQL1
+    histogram: true
+    stats_dsn: env:PGV_SQL1_STATS   # optional: the statistics-only login
+```
+
+It is read under `query_text: full` only, each read is audited before its answer (Custom reports' log, op `histogram`: who, the instance, the statistic and the step count, never a key value), the answer is sent `no-store`, and it is never an MCP tool, an export or a report mail. `sys.dm_db_stats_histogram` answers only for a login that may SELECT the statistic's columns (or owns the table). Do **not** give that to the read login: custom reports and report mail stay metadata-only because the read login holds VIEW SERVER STATE, VIEW ANY DEFINITION and CONNECT ANY DATABASE and no more. Give it to a separate statistics-only login, named by `stats_dsn` (env: or file: only), used by this read alone:
+
+```sql
+CREATE LOGIN pgvigil_stats WITH PASSWORD = '<a strong password>';
+-- in each database whose histograms you want, per schema:
+CREATE USER pgvigil_stats FOR LOGIN pgvigil_stats;
+GRANT SELECT ON SCHEMA::dbo TO pgvigil_stats;
+```
+
+On Amazon RDS use the per-database form `ALTER ROLE db_datareader ADD MEMBER pgvigil_stats;` (whether the master user may grant a server-wide right there was not checked). Off below SQL Server 2016 SP1 CU2 (13.0.4422.0), on Azure SQL Database, on a columnstore, XML or spatial index, and on an instance added in Admin > Instances (the file's instances only, as EXPLAIN and the index advisor).
+
+### Fragmentation on demand (task 414)
+
+**Read LIMITED** or **Read SAMPLED** reads `sys.dm_db_index_physical_stats` for one database, when asked, never on a schedule. It reads every index and heap of the database, and a heap's data pages are read in full even in LIMITED (the read login may only ask for every object at once: a single object needs CONTROL on it). SAMPLED reads 1 % of an index or heap of 10,000 pages or more and all of a smaller one. **Show the heap size** gives the database's heap and total size first. It is **off** until an admin turns it on for the instance (`index_fragmentation: true` in `pgvigil.yaml`).
+
+The read is a job of `pgvigil serve`, not tied to the browser's request: the page polls it, **Cancel** ends it on the server, one runs at a time per instance, and a read that loses serve (a restart) reads *stopped* a minute after its last beat. Its lock timeout is 30 s: index maintenance (an offline rebuild, an ALTER) can end it, and the rows read before are kept with where it stopped. It is refused on a secondary replica (its locks can block the redo thread there). Indexes over 30 % fragmented and over 1,000 pages are marked; pgvigil offers no rebuild. Each read is kept with who asked and when.
 
 ## Statistics (`mssql_stats`)
 

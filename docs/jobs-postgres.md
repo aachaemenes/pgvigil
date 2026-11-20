@@ -1,16 +1,18 @@
 # PostgreSQL: job actions, Running now, job exclusions and deadlocks
 
-The PostgreSQL side of four things DBA Dash has for SQL Server Agent and SQL Server deadlocks: stopping and starting a job,
+The PostgreSQL side of four things DBA Dash has for SQL Server Agent and SQL Server deadlocks: stopping, starting, enabling and disabling a job,
 the jobs running now, leaving jobs out of the job checks, and a Deadlocks page. The Jobs page itself (the grid, the history,
 the versions with their scripts and diffs, the thresholds) is [jobs](jobs.md).
 
-## Stop and Run now
+## Stop, Run now, Enable and Disable
 
 | Action | Scheduler | What is sent | Through |
 | --- | --- | --- | --- |
 | `job_stop` | pg_cron | `SELECT pg_cancel_backend(<the run's job_pid>)` | the actions login |
 | `job_stop` | pgAgent | `SELECT pg_cancel_backend(<the pid of the session running the current step>)` | the actions login |
 | `job_start` | pgAgent | `UPDATE pgagent.pga_job SET jobnextrun = now() WHERE jobid = <id>` (what pgAdmin's Run now does) | the actions login |
+| `job_enable` / `job_disable` | pgAgent | `UPDATE pgagent.pga_job SET jobenabled = true / false WHERE jobid = <id>` | the actions login |
+| `job_enable` / `job_disable` | pg_cron 1.4.0 and later | `SELECT cron.alter_job(job_id := <id>, active := true / false)` | the actions login, on a job it owns |
 
 pg_cron has no run-now call: a pg_cron job runs at its schedule only, and its row says so.
 
@@ -23,7 +25,7 @@ instances:
   - name: app1
     dsn: env:APP1_DSN
     actions_dsn: env:APP1_ACTIONS_DSN
-    actions: [job_stop, job_start]     # either or both; nothing else is taken on a PostgreSQL instance
+    actions: [job_stop, job_start, job_enable, job_disable]   # any of them; nothing else is taken on a PostgreSQL instance
 ```
 
 Run now also needs the actions login to set that one column, and no more:
@@ -31,6 +33,30 @@ Run now also needs the actions login to set that one column, and no more:
 ```sql
 GRANT USAGE ON SCHEMA pgagent TO pgvigil_actions;
 GRANT SELECT (jobid, jobenabled, jobagentid), UPDATE (jobnextrun) ON pgagent.pga_job TO pgvigil_actions;
+```
+
+Enable and Disable on a pgAgent job need one column of their own, `jobenabled`, and an enable reads the job's schedules and calls pgAgent's schedule functions: pgAgent's own
+trigger on `pga_job` (`pga_job_trigger`, BEFORE UPDATE, not SECURITY DEFINER) computes the next run from `pga_schedule`
+through `pga_next_schedule`, which reads `pga_exception`, as the login that sends the update:
+
+```sql
+GRANT USAGE ON SCHEMA pgagent TO pgvigil_actions;
+GRANT SELECT (jobid, jobenabled), UPDATE (jobenabled) ON pgagent.pga_job TO pgvigil_actions;
+GRANT SELECT ON pgagent.pga_schedule, pgagent.pga_exception TO pgvigil_actions;   -- for job_enable
+-- only where the database's default privileges revoke EXECUTE on functions from PUBLIC (pgAgent's own script grants
+-- none): the schedule functions the trigger calls
+-- GRANT EXECUTE ON FUNCTION pgagent.pga_next_schedule(...), pgagent.pga_is_leap_year(...) TO pgvigil_actions;
+```
+
+On pg_cron, `cron.alter_job` (pg_cron 1.4.0 and later) changes a job only for the job's owner or a superuser (its own
+check adds `username = <the caller>` for anyone else: "Job N does not exist or you don't own it"), and pg_cron 1.4.0
+revokes it from public. pgvigil's actions login is never a superuser, so Enable and Disable reach only the pg_cron jobs
+that the actions login owns (`cron.job.username`); on any other the button is off with that reason. Such a job is one
+scheduled as the actions login, for example by `cron.schedule` run as it. The grants:
+
+```sql
+GRANT USAGE ON SCHEMA cron TO pgvigil_actions;
+GRANT EXECUTE ON FUNCTION cron.alter_job(bigint, text, text, text, text, boolean) TO pgvigil_actions;
 ```
 
 **What is checked before anything is sent**, through the instance's monitoring login, as the cancel button's checks are:
@@ -47,6 +73,13 @@ GRANT SELECT (jobid, jobenabled, jobagentid), UPDATE (jobnextrun) ON pgagent.pga
   the job then goes on or fails by the step's "on error".
 - **Run now:** the job exists under the name shown, is enabled, is not running (`jobagentid` empty), and a pgAgent that may
   take it is connected (`pga_jobagent`, and its host where the job names one).
+- **Enable and Disable on pgAgent:** both logins in the same database, the grants above (an enable's two tables too), the
+  job under the name shown and not already in the state asked; the update changes the row only while it still holds the
+  other state.
+- **Enable and Disable on pg_cron:** pg_cron 1.4.0 or later, the actions login in pg_cron's database with the grants above,
+  the job read through the actions login (pg_cron shows a login its own jobs) and owned by it, under the name shown and
+  not already in the state asked; `cron.job.active` is read back after the call.
+- Disabling a job stops its scheduler from starting it; a run going on at that moment goes on (Stop ends it).
 - Both logins reach the same server (`pg_postmaster_start_time()`), the actions login is no superuser.
 
 **The dialog** shows the run or the job, asks for a reason (5 to 500 characters) and the job's name typed to confirm. An
@@ -55,8 +88,8 @@ character, a PostgreSQL instance and a reachable audit login that may write it -
 (done, refused or failed), with the UI user, the client address, the reason, the job (`target`, and `target_id` =
 `<scheduler>:<job id>`, with ` run <run id>` for a stop), the pid and the statement sent or that would have been; the
 others are answered with their reason and write nothing. The instance's Jobs page lists the newest 200 under "Job
-actions". Run now also refuses a standby (its job tables are the primary's copy) and an `actions_dsn` that connects to
-another database than the instance's (Run now writes in that database).
+actions". Run now, Enable and Disable also refuse a standby (its job tables are the primary's copy) and an `actions_dsn`
+that connects to another database than the instance's (they write in that database).
 
 ## Running now
 
@@ -74,8 +107,12 @@ since is gone at the next read, within a minute):
 | action | Stop |
 
 The Jobs grid gains two columns on PostgreSQL: the pg_cron schedule in words ("every 5 minutes", "at 04:10 every day",
-"at minute 0 of hours 8 to 18 on Monday to Friday"; an expression it does not read is shown as it is) and Run now on a
-pgAgent job.
+"at minute 0 of hours 8 to 18 on Monday to Friday"; an expression it does not read is shown as it is) and the job's
+actions: Run now on a pgAgent job, and Disable on an enabled job or Enable on a disabled one (a pg_cron job's only where
+the actions login owns it - the actions login being the user its `actions_dsn` names; a role it sets through options
+is not followed). The grants above and pg_cron's version (1.4.0 or later) are checked when the button is clicked, as
+Run now's grant is: a button on an instance that lacks them is refused at the click with the GRANT to run, and nothing
+is sent. A disabled job, or one dropped since, says so in its own row. The grid shows a change after the next jobs read.
 
 ## pgAgent's step log
 
@@ -153,9 +190,10 @@ pgAgent's step failures in its step counts), and `job_report_checks` and `job_fa
 
 | Route | What |
 | --- | --- |
-| `GET /api/jobs/running?instance=N` | Running now, which job actions are on (and why not), the job actions' audit |
+| `GET /api/jobs/running?instance=N` | Running now, which job actions are on (and why not), the job actions' audit; `actions_login` where Enable or Disable is on |
 | `POST /api/jobs/actions/stop` | `{instance_id, scheduler, job_id, job_name, run_id, job_pid, reason, confirm}` |
 | `POST /api/jobs/actions/start` | `{instance_id, scheduler: "pgagent", job_id, job_name, reason, confirm}` |
+| `POST /api/jobs/actions/enable`, `/disable` | `{instance_id, scheduler, job_id, job_name, reason, confirm}` (pgAgent, or pg_cron 1.4.0+ on the actions login's own job) |
 | `GET /api/jobs/steps?instance=N&job=J[&run=R]` | pgAgent's step stats over the range and the step runs |
 | `GET /api/jobs/exclusions?instance=N`, `POST` | the live exclusions; `{op: add, level, instance_id, match_on, pattern, note}` or `{op: end, exclusion_id}` |
 | `GET /api/pg/deadlocks?instance=N` | the deadlocks, groups, breakdowns, trend and counter of the range |

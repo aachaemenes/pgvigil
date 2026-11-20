@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/actions"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -245,7 +246,7 @@ func (a *Actions) Log(w http.ResponseWriter, r *http.Request) {
 		out.Reason = fmt.Sprintf("instance %s: the monitoring dsn resolved to an empty string", name)
 	default:
 		out.Enabled = true
-		su, err := a.superusers(ctx, name, door.Monitor)
+		su, err := a.superusers(ctx, name, door.Monitor, door.Secret)
 		if err != nil {
 			out.Enabled, out.Reason = false, "the monitoring login could not read the server's roles: "+err.Error()
 		} else {
@@ -257,8 +258,9 @@ func (a *Actions) Log(w http.ResponseWriter, r *http.Request) {
 }
 
 // superusers lists the server's superuser roles through the monitoring login (pg_roles is readable by any
-// login), kept a minute per instance: the Running queries page asks on every refresh.
-func (a *Actions) superusers(ctx context.Context, instance, dsn string) ([]string, error) {
+// login), kept a minute per instance: the Running queries page asks on every refresh. sec: the login's password_secret
+// (nil = none), set on the parsed config.
+func (a *Actions) superusers(ctx context.Context, instance, dsn string, sec *secrets.Ref) ([]string, error) {
 	if strings.TrimSpace(dsn) == "" { // never the driver's defaults (serve's environment, its local socket)
 		return nil, errors.New("the monitoring dsn resolved to an empty string")
 	}
@@ -273,6 +275,9 @@ func (a *Actions) superusers(ctx context.Context, instance, dsn string) ([]strin
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, errors.New("the monitoring dsn does not parse")
+	}
+	if err := secrets.FillPG(ctx, cfg, dsn, sec); err != nil {
+		return nil, err
 	}
 	cfg.ConnectTimeout = 10 * time.Second
 	cfg.RuntimeParams["application_name"] = "pgvigil-actions-check"

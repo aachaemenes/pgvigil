@@ -248,7 +248,7 @@ ni=$(pq "SELECT count(*) FROM pgvigil.dbadash_instance('sandbox', (SELECT min(in
 echo "ok   F: stored reasons checked; after the configuration dropped 'unreachable': $nr; an unchanged read added no history; an emptied list leaves 0 repositories and no instance page"
 
 echo "Not proven here: the 5-minute loop (dbadash.Run) under 'pgvigil run' and the tree and page in a browser (both are wired"
-echo "into the lead's files at the wave's join; the join must call dbadash.Run unconditionally, an empty list included, or an emptied"
+echo "into the shared files in the release; the wiring must call dbadash.Run unconditionally, an empty list included, or an emptied"
 echo "dbadash: list never takes the last repository out of the tree); Azure SQL Database rows of a DBADash repository (IsAzure = 1: left out by the"
 echo "reader, none in the sandbox); a DBADash version other than $ver."
 echo "proof-dbadash: OK (DBADash $ver built $DDB from its release zip; read-only login; statuses equal to dbo.Summary_Get; history; not read with reasons)"

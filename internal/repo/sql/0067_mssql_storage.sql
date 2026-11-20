@@ -17,7 +17,7 @@
 --   mssql_versionstore_db  the version store per database as last read (SQL Server 2016 SP2 and later).
 --   mssql_pvs              the persistent version store of accelerated database recovery per database as last read
 --                          (SQL Server 2019 and later).
--- mssql_storage_findings   the slice's findings in the findings columns (the join adds the arm to pgvigil.findings).
+-- mssql_storage_findings   this file's findings in the findings columns (the release migration's arm in pgvigil.findings).
 --
 -- The actions door: pgvigil.actions_log (0028) gains the SQL Server actions (kill, job_start, job_stop) with the
 -- statement sent and the server's own message; a job action has no pid. import_mssql_actions_log is its door.

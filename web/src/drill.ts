@@ -14,7 +14,7 @@ import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile }
 
 type Parts<K extends string> = Record<K, Table | null>;
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const yesNo = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
 const ms = (v: unknown) => v == null ? '' : fmtNum(Math.round(Number(v) * 10) / 10) + ' ms';
 const qtext = (v: unknown) => { const s = v == null ? '(no statement text: the query-text policy, or not read yet)' : String(v); return s.length > 600 ? s.slice(0, 600) + '...' : s; };
@@ -90,7 +90,7 @@ export async function dbPage(ctx: Ctx): Promise<HTMLElement> {
   ], 'No table read in this database: the tables collection keeps the largest tables of each database it can connect to.'));
 
   sec.append(el('h3', {}, 'Extensions'), grid(rowsOf(d.extensions), [
-    { key: 'name' }, { key: 'version', fmt: (v, r) => r.outdated ? badge(`${String(v)} (default ${String(r.default_version)})`, 'warn') : String(v ?? '') },
+    { key: 'name' }, { key: 'version', fmt: (v, r) => r.outdated ? badge(`${String(v)} (default ${String(r.default_version)})`, 'warn') : String(v ?? ''), cls: (v, r) => r.outdated || v == null || v === '' ? '' : 'status ok' },
     { key: 'schema_name', label: 'schema' }, { key: 'comment', wide: true },
   ], 'No extension read for this database.'));
 
@@ -102,7 +102,7 @@ export async function dbPage(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Jobs'), grid(rowsOf(d.jobs), [
     { key: 'job_name', label: 'job', fmt: (v, r) => jobLink(ctx, String(v ?? r.job_id), r.scheduler, r.job_id) },
     { key: 'scheduler' }, { key: 'schedule' }, { key: 'active', fmt: yesNo }, { key: 'next_run', label: 'next run', fmt: fmtTime },
-    { key: 'last_status', label: 'last', fmt: (v, r) => r.last_running ? badge('running', '') : v === 'succeeded' ? String(v) : v ? badge(String(v), 'crit') : '' },
+    { key: 'last_status', label: 'last', fmt: (v, r) => r.last_running ? badge('running', 'none') : v === 'succeeded' ? String(v) : v ? badge(String(v), 'crit') : '', cls: (v, r) => !r.last_running && v === 'succeeded' ? 'status ok' : '' },
     { key: 'last_start', label: 'started', fmt: fmtTime }, { key: 'last_duration_secs', label: 'took', num: true, fmt: fmtSecs },
     { key: 'failures_7d', label: 'failed (7 d)', num: true }, { key: 'fail_streak', label: 'failing in a row', num: true },
     { key: 'missed', fmt: v => v ? badge('missed', 'warn') : '' },
@@ -168,7 +168,7 @@ export async function tablePage(ctx: Ctx): Promise<HTMLElement> {
     el('p', { class: 'meta' }, `Indexes total ${fmtBytes(t.index_bytes) || '-'}. The indexes collection keeps the indexes that cost without serving: unused, redundant, duplicate or invalid; those on this table are below.`),
     grid(rowsOf(d.indexes), [
       { key: 'index_name', label: 'index', fmt: (v, r) => indexLink(ctx, String(v ?? r.indexrelid), db, r.indexrelid) },
-      { key: 'problems', fmt: v => badge(String(v ?? ''), String(v ?? '').match(/invalid|duplicate/) ? 'warn' : '') },
+      { key: 'problems', fmt: v => badge(String(v ?? ''), String(v ?? '').match(/invalid|duplicate/) ? 'warn' : 'none') },
       { key: 'index_bytes', label: 'size', num: true, fmt: fmtBytes }, { key: 'idx_scan', label: 'scans', num: true, fmt: fmtNum },
       { key: 'covered_by', label: 'covered by' }, { key: 'index_def', label: 'definition', wide: true },
     ], 'No index problem on this table.'));
@@ -212,7 +212,7 @@ export async function jobPage(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, `Runs (${rangeLabel(ctx)})`), grid(runs, [
     { key: 'start_time', label: 'started', fmt: fmtTime }, { key: 'end_time', label: 'ended', fmt: fmtTime },
     { key: 'duration_secs', label: 'took', num: true, fmt: (v, r) => (r.running ? 'running ' : '') + fmtSecs(v) },
-    { key: 'status', fmt: (v, r) => r.failed ? badge(String(v), 'crit') : String(v ?? '') },
+    { key: 'status', fmt: (v, r) => r.failed ? badge(String(v), 'crit') : String(v ?? ''), cls: (v, r) => r.failed || v == null || v === '' ? '' : 'status ok' },
     { key: 'return_message', label: 'message', wide: true }, { key: 'datname', label: 'db' }, { key: 'run_as', label: 'as' }, { key: 'job_pid', label: 'pid' },
   ], 'No run of this job started in the range.'));
   return sec;

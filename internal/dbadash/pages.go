@@ -22,12 +22,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	mssql "github.com/microsoft/go-mssqldb"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
@@ -53,6 +55,26 @@ func Proven(v string) bool {
 	return false
 }
 
+// versionAtLeast: a DBVersionHistory version (4.25.0, 4.25.0.7) at or past another, part by part as numbers; an
+// empty or unreadable version is not
+func versionAtLeast(v, want string) bool {
+	vs, ms := strings.Split(strings.TrimSpace(v), "."), strings.Split(want, ".")
+	for i := range ms {
+		if i >= len(vs) {
+			return false
+		}
+		a, errA := strconv.Atoi(vs[i])
+		b, errB := strconv.Atoi(ms[i])
+		if errA != nil || errB != nil {
+			return false
+		}
+		if a != b {
+			return a > b
+		}
+	}
+	return true
+}
+
 // PageDef is one page: its key in the URL, DBADash's own name for the screen, the procedure and how it is called.
 type PageDef struct {
 	Key       string `json:"key"`
@@ -62,7 +84,9 @@ type PageDef struct {
 	Window bool `json:"window"`
 	// Snapshot says the procedure takes one running-queries snapshot time (the sessions page; none = the latest).
 	Snapshot bool `json:"snapshot,omitempty"`
-	args     func(a PageArgs) []any
+	// Since names the DBA Dash version the procedure came with (B6.3: a repository without it is read as 'not read')
+	Since string `json:"since,omitempty"`
+	args  func(a PageArgs) []any
 }
 
 // PageArgs are a page call's inputs: the DBADash InstanceID, the time range (UTC) and, for the sessions page, the
@@ -124,6 +148,32 @@ var Pages = []PageDef{
 	{Key: "alerts", Title: "SQL Agent Alerts", Procedure: "dbo.Alerts_Get", args: func(a PageArgs) []any {
 		return []any{sql.Named("InstanceIDs", fmt.Sprint(a.InstanceID)), sql.Named("ShowHidden", true)}
 	}},
+	// B6.3: DBA Dash 4.25.0's Checks > Collection Health, called as its GUI calls it by default (CollectionHealthView.cs:
+	// Show 'Row per collection per instance', Steps shown, every status; @DetailMaxHours its default 48; the chart
+	// bucket and the collection left to the procedure). Absent on 4.24.1 and older: gated (gateNote).
+	{Key: "collectionhealth", Title: "Collection Health", Procedure: "dbo.CollectionHealth_Get", Window: true, Since: "4.25.0", args: func(a PageArgs) []any {
+		return append([]any{sql.Named("InstanceIDs", ids(a.InstanceID)), sql.Named("FromDate", utc2(a.From)), sql.Named("ToDate", utc2(a.To)),
+			sql.Named("DetailMaxHours", 48), sql.Named("GroupByInstance", true), sql.Named("IncludeSteps", true)}, allStatuses()...)
+	}},
+}
+
+// gateNote: why a page whose procedure came with a later DBA Dash (Since) is not read - the procedure absent from the
+// repository, or the login without EXECUTE on it - in words that name no source product (task 168: the source is
+// named once, on the import's settings line); "" to read it (and for every page with no Since)
+func gateNote(def PageDef, exists, canExec bool, version string) string {
+	switch {
+	case def.Since == "":
+		return ""
+	case !exists && versionAtLeast(version, def.Since):
+		// OBJECT_ID is NULL for an object the login has no right on (SQL Server's metadata visibility): on a repository
+		// of the procedure's version or later an unseen procedure is the missing GRANT
+		return fmt.Sprintf("not read: this login has no EXECUTE on %s (the GRANT in docs/dbadash.md, version %s and later)", def.Procedure, def.Since)
+	case !exists:
+		return fmt.Sprintf("not read: %s is not in this repository (it came with version %s)", def.Procedure, def.Since)
+	case !canExec:
+		return fmt.Sprintf("not read: this login has no EXECUTE on %s (the GRANT in docs/dbadash.md, version %s and later)", def.Procedure, def.Since)
+	}
+	return ""
 }
 
 // PageByKey finds a page; ok false for a key not in Pages.
@@ -265,6 +315,21 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
 		}
 		out.Instance, out.Machine = inst.String, machine.String
 	}
+	if def.Since != "" {
+		// a procedure newer than some repositories: read only where it is and may be run (never a failed call on 4.24.1)
+		var exists, canExec bool
+		if err := conn.QueryRowContext(ctx, `SELECT CAST(CASE WHEN OBJECT_ID(@p, 'P') IS NULL THEN 0 ELSE 1 END AS bit),
+       CAST(ISNULL(HAS_PERMS_BY_NAME(@p, 'OBJECT', 'EXECUTE'), 0) AS bit)`, sql.Named("p", def.Procedure)).Scan(&exists, &canExec); err != nil {
+			return PageReply{}, fmt.Errorf("%s's presence: %w", def.Procedure, err)
+		}
+		if n := gateNote(def, exists, canExec, out.Version); n != "" {
+			if out.Note != "" {
+				n = out.Note + "; " + n
+			}
+			out.Note = n
+			return out, nil
+		}
+	}
 	start := time.Now()
 	rs, err := callProc(ctx, conn, def.Procedure, def.args(a))
 	out.Millis = time.Since(start).Milliseconds()
@@ -272,7 +337,71 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
 		return out, fmt.Errorf("%s: %w", def.Procedure, err)
 	}
 	out.Results = rs
+	maskPage(&out)
 	return out, nil
+}
+
+// pageText names, per page, the columns that carry text a person or an application wrote, by the name DBADash's
+// procedure gives the column (4.24.1 and 4.25.0): true marks a statement's text (the sessions page's batch, its
+// statement and the statement of the session's first cursor: dbo.QueryText's text, by the request's handle and by the
+// cursor's; a cursor without a stored text shows DBADash's words for its properties in that column, which then follow
+// the statement rule too), false an owner's own words (a job's description, an alert's notification message). Every
+// other column of every page is a figure, a status, a name, a path or DBADash's own words, and is shown as DBADash
+// holds it. A page added to Pages names its text columns here.
+var pageText = map[string]map[string]bool{
+	"sessions": {"batch_text": true, "text": true, "cursor_text": true},
+	"jobs":     {"description": false},
+	"alerts":   {"Notification Message": false},
+}
+
+// eachText gives f every non-empty text cell of the reply's text columns (the statement columns alone when
+// statements) and shows what f answers in its place.
+func (r *PageReply) eachText(statements bool, f func(s string) any) {
+	cols := pageText[r.Page]
+	if len(cols) == 0 {
+		return
+	}
+	for i := range r.Results {
+		rs := &r.Results[i]
+		for c, col := range rs.Columns {
+			stmt, listed := cols[col.Name]
+			if !listed || (statements && !stmt) {
+				continue
+			}
+			for _, row := range rs.Rows {
+				if s, ok := row[c].(string); ok && s != "" {
+					row[c] = f(s)
+				}
+			}
+		}
+	}
+}
+
+// maskPage passes the reply's text columns through the credential mask the collection runs over a stored text
+// (collect.MaskCredentials, under every query_text mode) before the reply leaves the package: a password shown is the
+// leak a password stored is. Each listed column is a text, none an XML document, so the text mask runs over it whole
+// (a statement that only looks like one - a processing instruction's shape - is masked as the text it is).
+func maskPage(out *PageReply) {
+	out.eachText(false, func(s string) any { return collect.MaskCredentials(s) })
+}
+
+// HasStatements reports whether the reply's page shows statement text.
+func (r *PageReply) HasStatements() bool {
+	for _, stmt := range pageText[r.Page] {
+		if stmt {
+			return true
+		}
+	}
+	return false
+}
+
+// Statements gives f each statement text of the reply (already through the credential mask) and shows what f answers
+// in its place: the caller's rule for the instance's query_text at read (the web's: its words under none, the
+// collector's normalized form under normalized). A nil f changes nothing.
+func (r *PageReply) Statements(f func(s string) any) {
+	if f != nil {
+		r.eachText(true, f)
+	}
 }
 
 func orNone(v string) string {

@@ -16,7 +16,9 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { jsonRows, mssqlFindingCols } from './mssql_hadr';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, offControl, tile } from './ui';
+import { errorCell } from './doclinks';
 import { AckData, ackOn, ackWhy, jobAckCell, jobAcks, loadAckSafe, onDoor, seatWhy } from './ack';
+import { Can, markNeed, routeWhy } from './needs';
 import { fleet } from './fleet';
 import { jobChartSection } from './jobs_chart';
 import { definitionCompare, definitionView, diffCounts, lineDiff, textDiffView } from './diff';
@@ -44,8 +46,10 @@ const outcomeBadge = (v: unknown): string | Node => {
 // the level of an outcome by outcomeBadge's own rule, as a status cell's class ('' = not judged)
 const outcomeCls = (v: unknown): string => {
   const s = String(v ?? '');
-  return s === 'failed' ? 'status crit' : s === 'cancelled' || s === 'retry' ? 'status warn' : s === 'succeeded' ? 'status ok' : '';
+  return s === 'failed' ? 'status crit' : s === 'cancelled' || s === 'retry' ? 'status warn' : s === 'succeeded' ? 'status ok' : s ? 'status none' : '';
 };
+// a job's level against its thresholds as a status cell's class: 'excluded' (not checked) is N/A, as 'none'
+const levelCls = (v: unknown): string => `status ${v === 'excluded' ? 'none' : String(v)}`;
 const dur = (v: unknown) => v == null ? '' : Number(v) < 60 ? fmtNum(Math.round(Number(v) * 10) / 10) + ' s' : fmtSecs(v);
 
 // strip: the runs' durations over time as bars (oldest left); a failed or cancelled run is a hollow bar with a mark,
@@ -87,9 +91,9 @@ function strip(runs: Row[]): HTMLElement {
 const runCols: Col[] = [
   { key: 'start_time', label: 'start', fmt: fmtTime },
   { key: 'duration_s', label: 'took', num: true, fmt: dur },
-  { key: 'outcome', fmt: outcomeBadge },
+  { key: 'outcome', fmt: outcomeBadge, cls: v => v === 'succeeded' ? 'status ok' : v == null || v === '' || ['failed', 'cancelled', 'retry'].includes(String(v)) ? '' : 'status none' },
   { key: 'failed_step', label: 'step that failed' },
-  { key: 'sql_message_id', label: 'error', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
+  { key: 'sql_message_id', label: 'error', num: true, fmt: errorCell },
   { key: 'sql_severity', label: 'severity', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
   { key: 'retries', num: true, fmt: v => v == null ? '' : fmtNum(v) },
   { key: 'message', fmt: oneLine },
@@ -174,7 +178,7 @@ function versions(rows: Row[], jobName: string): HTMLElement {
 }
 
 // ---- thresholds at three levels (DBA Dash's Agent Job Thresholds: Job Level, Instance Level, Root Level, Inherit)
-export interface Thresholds { writable: boolean; reason?: string; demo?: boolean; levels?: Table | null; status?: Table | null }
+export interface Thresholds { writable: boolean; reason?: string; demo?: boolean; can?: Can | null; levels?: Table | null; status?: Table | null }
 // a server without the route (an older one, or the demo) has no thresholds: the grid then has no status column
 export async function loadThresholds(instance: number): Promise<Thresholds | null> {
   if (!instance) return null;
@@ -202,11 +206,12 @@ const thresholdRows: [string, string, string][] = [
 // does not carry is off in words before any request, the fields too
 let thOffSeq = 0;
 export function thresholdsDialog(instance: number, jobName: string, th: Thresholds, after: () => void, ad?: AckData, instName?: string) {
-  const levelWhy = (lv: Level): string | null => th.writable ? null
+  // the server's own reason first, then the role (B24f: a job threshold needs admin), in the server's words
+  const levelWhy = (lv: Level): string | null => (th.writable ? null
     : ad && onDoor(ad) ? seatWhy(ad, 'thresholds', lv === 'root' ? undefined : instance, instName)
     // a demo serve whose door was not read (GET /api/ack failed): that is the reason, never the door's own words
     : th.demo ? `the demo door's instances were not read: ${ad?.reason || 'the acknowledgement read did not answer'}`
-    : th.reason ?? 'thresholds cannot be written on this server';
+    : th.reason ?? 'thresholds cannot be written on this server') ?? routeWhy('jobs/thresholds', th.can);
   const offP = el('p', { class: 'meta', id: `th-off-${++thOffSeq}` });
   const levels = rowsOf(th.levels);
   const rowAt = (lv: Level) => levels.find(r => r.level === lv && (lv !== 'job' || r.job_name === jobName));
@@ -221,8 +226,8 @@ export function thresholdsDialog(instance: number, jobName: string, th: Threshol
   table.append(el('tr', {}, el('th', { scope: 'row' }, el('label', { for: 'th-lastfail' }, 'The last run failed')), el('td', { colspan: '2' }, lastFail)));
   const state = el('p', { class: 'meta' });
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const save = el('button', { type: 'submit' }, 'Save this level');
-  const inherit = el('button', { type: 'button' }, 'Inherit');
+  const save = markNeed(el('button', { type: 'submit' }, 'Save this level'), 'jobs/thresholds');
+  const inherit = markNeed(el('button', { type: 'button' }, 'Inherit'), 'jobs/thresholds');
   const no = el('button', { type: 'button' }, 'Close');
   const names: Record<Level, string> = { job: `This job (${jobName})`, instance: 'This instance (every job on it)', root: 'Root (every instance)' };
   const fill = () => {
@@ -283,6 +288,46 @@ export function thresholdsDialog(instance: number, jobName: string, th: Threshol
   document.body.append(dlg);
   fill();
   dlg.showModal();
+}
+
+// jobCards (B9-12; SQLWATCH PBI#11): the instance's runs over the page's range from 0139's hourly statistics (every
+// whole hour the range touches, named in the heading) - tiles failed or cancelled (a cancel counts as a failure, 0149's
+// rule), succeeded and retries attempted (SQL Server's step retry rows; pg_cron and pgAgent do not retry a run), and the
+// five longest, most frequent and most failed jobs; 'being built' while the instance's hours are not built yet. Data:
+// /api/jobs/history?part=cards and ?part=top. The reply is written whatever the page's state: the page is attached only
+// after its view function ends (main.ts), and the PostgreSQL tab reads more after jobsPanel, so a guard on isConnected
+// would drop it; an old page's element is thrown away with the page. The range sent is kept on the section (data-from /
+// data-to) for a reader that checks the tiles against the API.
+async function jobCards(into: HTMLElement, ctx: Ctx, engine: 'pg' | 'mssql', w: { from: string; to: string }): Promise<void> {
+  let hours = '';
+  const head = () => el('h3', {}, `Runs, ${rangeLabel(ctx)}${hours}`);
+  into.dataset.from = w.from; into.dataset.to = w.to;
+  into.replaceChildren(head(), el('p', { class: 'meta' }, 'Reading the hourly statistics...'));
+  try {
+    const q = { engine, instance: ctx.instance, ...w };
+    const [c, t] = await Promise.all([get<Record<'cards', Table | null>>('jobs/history', { ...q, part: 'cards' }),
+      get<Record<'top', Table | null>>('jobs/history', { ...q, part: 'top' })]);
+    const k = rowsOf(c.cards)[0] ?? {};
+    if (k.hours_from != null) hours = ` (the whole hours ${fmtTime(k.hours_from)} to ${new Date(String(k.hours_to)).getTime() > Date.now() ? 'now' : fmtTime(k.hours_to)})`;
+    if (k.building === true) {
+      into.replaceChildren(head(), el('p', { class: 'meta' }, 'Being built: the hourly statistics of this instance\'s runs in the range are not built yet (after an upgrade, an import or a late read); they fill in by themselves.'));
+      return;
+    }
+    const top = rowsOf(t.top);
+    const list = (name: string, title: string, col: Col) => el('div', {}, el('h4', {}, title),
+      grid(top.filter(r => r.list === name), [{ key: 'job_name', label: 'job' }, col], name === 'failed' ? 'No failed or cancelled run in the range.' : 'No finished run in the range.'));
+    into.replaceChildren(head(),
+      el('div', { class: 'tiles' },
+        tile('failed or cancelled', fmtNum(k.failed ?? 0), Number(k.failed) > 0 ? 'crit' : ''),
+        tile('succeeded', fmtNum(k.succeeded ?? 0)),
+        tile('retries attempted', engine === 'mssql' ? fmtNum(k.retries ?? 0) : 'none')),
+      el('p', { class: 'meta' }, `${fmtNum(k.runs ?? 0)} run(s) in every whole hour the range touches, from the hourly statistics; a cancelled run counts as a failure, as in DBA Dash. `
+        + (engine === 'mssql' ? 'Retries are the step rows msdb recorded as a retry in those hours.' : 'pg_cron and pgAgent do not retry a run.')),
+      el('div', { class: 'job-top' },
+        list('longest', 'Longest 5', { key: 'max_secs', label: 'longest run', num: true, fmt: v => v == null ? '' : fmtSecs(v) }),
+        list('frequent', 'Most frequent 5', { key: 'runs', num: true }),
+        list('failed', 'Most failed 5', { key: 'failed', label: 'failed or cancelled', num: true })));
+  } catch (e) { into.replaceChildren(head(), errorBox(e)); }
 }
 
 // jobsPanel: the one-line-per-job grid and, under it, the picked job's History and Changes. extra = the engine's own
@@ -364,7 +409,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   // status: the job against the thresholds in force for it, and the door to its three levels
   const statusCol = (t: Thresholds): Col => ({
     key: '_status', label: 'status',
-    cls: (_v, r) => { const x = st(r); return x && !r.dropped_at ? `status ${String(x.status)}` : ''; },
+    cls: (_v, r) => { const x = st(r); return x && !r.dropped_at ? levelCls(x.status) : ''; },
     fmt: (_v, r) => {
       const x = st(r);
       if (r.dropped_at || !x) return '';
@@ -374,34 +419,41 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
         el('span', { title: x.reason ? String(x.reason) : `judged by the ${String(x.level)} level` }, statusWord(x) + (x.reason ? `: ${String(x.reason)}` : '')), ' ', b);
     },
   });
+  // the measured cells carry the job's status, as DBA Dash colours its Job Name and Last Failed (the status column
+  // stays): the status the thresholds give, or N/A where they give none; no thresholds in force: plain, as the status
+  const jobCls = (r: Row) => { if (!th) return ''; const x = st(r); return x && !r.dropped_at ? levelCls(x.status) : 'status none'; };
   const cols: Col[] = [
     { key: 'name', label: 'job', fmt: (v, r) => {
       const b = el('button', { class: 'link', type: 'button' }, String(v ?? ''));
       b.addEventListener('click', () => { void pick(r); });
       return b;
-    } },
-    { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn') },
+    }, cls: (_v, r) => jobCls(r) },
+    { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
     { key: 'schedule', fmt: oneLine },
     // the value cells carry the outcome's level, so the screen and the export show one colour
-    { key: 'last_run_at', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null || r.dropped_at ? '' : outcomeCls(r.last_outcome) },
+    { key: 'last_run_at', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null ? '' : r.dropped_at ? 'status none' : outcomeCls(r.last_outcome) || 'status none' },
     { key: 'last_duration_s', label: 'took', num: true, fmt: dur },
     { key: 'last_outcome', label: 'outcome', cls: (v, r) => r.dropped_at ? '' : outcomeCls(v),
       fmt: (v, r) => r.dropped_at ? el('span', {}, badge(`dropped ${fmtTime(r.dropped_at)}`, 'warn'), v ? ` (last run ${String(v)})` : '') : outcomeBadge(v) },
     ...(th ? [statusCol(th)] : []),
-    { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.last_failed_outcome === 'cancelled' ? ' (cancelled)' : ''}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)) },
+    { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.last_failed_outcome === 'cancelled' ? ' (cancelled)' : ''}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)), cls: (v, r) => v == null ? '' : jobCls(r) },
     { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(ctx.instance), String(r.name), lastFailOf(r), ackRedraw, ackOffP ?? undefined, ackName) },
     { key: 'next_run', label: 'next run', fmt: (v, r) => v ? fmtTime(v) : r.dropped_at || r.enabled === false ? '' : !r.schedule ? 'no schedule' : '' },
     { key: 'runs', num: true },
     // failed or cancelled runs in the range (0137's judge: run_status 0 or 3; PostgreSQL failed, internal error or
-    // aborted); a job the judge holds critical or warning is never green here
-    { key: 'failures', num: true, cls: (v, r) => Number(v) > 0 ? (jobAcked(r) ? '' : 'status crit') : judged(r) ? '' : 'status ok',
+    // aborted); a job the judge holds critical or warning is never green here: N/A; an acknowledged count its
+    // Acknowledged pair (every cell of the column carries a status)
+    { key: 'failures', num: true, cls: (v, r) => Number(v) > 0 ? (jobAcked(r) ? 'status none ack' : 'status crit') : judged(r) ? 'status none' : 'status ok',
       fmt: (v, r) => Number(v) > 0 ? (jobAcked(r) ? `${fmtNum(v)} (acknowledged)` : badge(fmtNum(v), 'crit')) : '0' },
     { key: 'avg_s', label: 'average (good runs)', num: true, fmt: dur },
     { key: 'max_s', label: 'longest', num: true, fmt: dur },
     { key: 'changes', label: 'changed', num: true, fmt: (v, r) => Number(v) > 0 ? `${fmtNum(v)} (${fmtTime(r.last_change_at)})` : '' },
     ...extra,
   ];
-  box.append(...(ackOffP ? [ackOffP] : []), grid(jobs, cols, 'No job on this server.'), detail);
+  // B9-12: the range's runs as tiles and top 5 lists, from the hourly statistics, read after the grid (its own parts)
+  const cards = el('section', { class: 'job-cards', 'aria-label': 'The runs of the range' });
+  box.append(cards, ...(ackOffP ? [ackOffP] : []), grid(jobs, cols, 'No job on this server.'), detail);
+  void jobCards(cards, ctx, engine, w);
   if (jobs.length) detail.append(el('p', { class: 'meta' }, 'Pick a job for its history and its versions (the script, the diff, the job as it was).'));
   // a SQL Agent job named in the address (the fleet Job status grid's 'Open the job on its instance': job=<name>) opens
   // picked, its history under the grid
@@ -418,15 +470,15 @@ const failedCols: Col[] = [
   { key: 'run_at', label: 'run', fmt: fmtTime }, { key: 'job' }, { key: 'outcome', cls: outcomeCls, fmt: outcomeBadge },
   { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'step name' },
   { key: 'duration_s', label: 'took', num: true, fmt: fmtSecs },
-  { key: 'sql_message_id', label: 'error', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
+  { key: 'sql_message_id', label: 'error', num: true, fmt: errorCell },
   { key: 'message', fmt: oneLine },
 ];
 
 const stepCols: Col[] = [
   { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'name' }, { key: 'subsystem' },
   { key: 'database_name', label: 'database' },
-  { key: 'last_outcome', label: 'last outcome', cls: v => v === 0 ? 'status crit' : v === 1 ? 'status ok' : '', fmt: v => v === 0 ? badge('failed', 'crit') : outcomeText(v) },
-  { key: 'last_run_utc', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null ? '' : r.last_outcome === 0 ? 'status crit' : r.last_outcome === 1 ? 'status ok' : '' },
+  { key: 'last_outcome', label: 'last outcome', cls: v => v === 0 ? 'status crit' : v === 1 ? 'status ok' : v == null ? '' : 'status none', fmt: v => v === 0 ? badge('failed', 'crit') : outcomeText(v) },
+  { key: 'last_run_utc', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null ? '' : r.last_outcome === 0 ? 'status crit' : r.last_outcome === 1 ? 'status ok' : 'status none' },
   { key: 'last_duration_s', label: 'took', num: true, fmt: fmtSecs },
   { key: 'on_success', label: 'on success' }, { key: 'on_fail', label: 'on failure' },
   { key: 'command', fmt: oneLine },
@@ -467,9 +519,9 @@ export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {
     const findings = rowsOf(d.findings);
     if (findings.length) sec.append(el('h3', {}, 'Findings'), grid(findings, mssqlFindingCols));
     if (running.length) sec.append(el('h3', {}, 'Running now'), grid(running, runningCols));
-    // Start and Stop ride the actions door: where the instance has none they are off, with the reason said once above
-    // the grid (the column's offNote) and each button pointing at it
-    const act = await mssqlJobCol(ctx, () => window.dispatchEvent(new HashChangeEvent('hashchange')));
+    // Start, Stop and (B9c) Enable or Disable ride the actions door: where the instance has none they are off, with the
+    // reason said once above the grid (the column's offNote) and each button pointing at it
+    const act = await mssqlJobCol(ctx, () => window.dispatchEvent(new HashChangeEvent('hashchange')), { toggle: true });
     // the panel hands the column its rows before it draws: the sentence is read after it, so it stands only where a
     // job's Start and Stop point at it
     const jobsBox = await jobsPanel(ctx, 'mssql', [{ key: 'owner' }, { key: 'category' }, act]);

@@ -11,7 +11,7 @@
 # and pg_ctl of the sandbox's major version must be on PATH, with the auto_explain module installed. Its database
 # plansdb holds the seeded shapes of internal/plans/testdata/seed.sql. Nothing that exists before the run is touched.
 # The capture from the log goes through internal/plans (FromLogMessage) by the Go test TestDumpRows; the log readers'
-# kind 'plan' (task 34) feeding import_plans is the join's. pg_store_plans is not built here: its collector is
+# kind 'plan' (task 34) feeding import_plans is the release's wiring. pg_store_plans is not built here: its collector is
 # unit-tested on a constructed answer (internal/collect/plans_test.go), not proven live.
 #
 # Expected (written before the first run):
@@ -32,17 +32,16 @@
 #     pg_read_all_data; after GRANT SELECT ON t40: 200, stored as source explain, not analyzed, no rule hit; a $1 $2
 #     statement: 200 with the generic-plan note and $1 in the plan; EXPLAIN of "delete from t40": 200 and t40 keeps
 #     its 200000 rows; "select 1; delete from t40": 409.
-#     [first run 2026-11-09: the DELETE's EXPLAIN came 409 "permission denied for table t40" - the expectation missed
-#      that EXPLAIN checks the statement's own privileges (DELETE), which the read login does not hold; graded since as
-#      409 without the grant, then 200 with t40's 200000 rows unchanged after a GRANT DELETE given for that one call
-#      and revoked]
+#     [EXPLAIN checks the statement's own privileges (DELETE), which the read login does not hold: the DELETE's
+#      EXPLAIN is 409 "permission denied for table t40" without the grant, then 200 with t40's 200000 rows unchanged
+#      after a GRANT DELETE given for that one call and revoked]
 #  D. TestPlansProof, EXPLAIN ANALYZE: gate off 409; instance without actions_dsn 409; confirmation "yes" 409; the
 #     actions login (NOSUPERUSER, pg_signal_backend) without SELECT 502 naming the privileges; after GRANT SELECT: 200,
 #     stored as explain_analyze, analyzed, rule 'filter removes most rows'; a data-modifying CTE 502 "tried to write"
 #     with t40's rows unchanged; a DELETE 409; pg_sleep(3) under a 1 s gate timeout 502. actions_log then holds for
 #     the door instance done 1 / failed 3 / refused 3 and for the other refused 1, every row action explain_analyze
 #     with the statement, the datname, the UI user and a detail, pid NULL.
-#     [review 1 fold, expected before the rerun: EXPLAIN ANALYZE runs through a login of its own (explain_dsn: the
+#     [expected before the rerun: EXPLAIN ANALYZE runs through a login of its own (explain_dsn: the
 #      proof's pgvigil_plexp_<suf>, LOGIN NOSUPERUSER, no role membership), since a read-only transaction does not
 #      stop pg_terminate_backend through the cancel / terminate login. D becomes: gate off 409; the instance without
 #      explain_dsn 409 "no explain_dsn"; the cancel / terminate login (pg_signal_backend) named as explain_dsn 409

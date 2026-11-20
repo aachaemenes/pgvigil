@@ -3,7 +3,7 @@
 // usage counts, and the used, dirty and largest-relation shares over the window), the temp-file spills by statement
 // and by hour (pg_stat_statements' temp blocks and the log's temporary-file lines), and the temp files by database
 // from the database statistics (the TempDB-shaped view: every temp file counts there, whatever log_temp_files says).
-// Data from /api/memory; the lead wires the tab (router.ts, main.ts).
+// Data from /api/memory; the shell wires the tab (router.ts, main.ts).
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
@@ -11,7 +11,7 @@ import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid, props, tile 
 
 type MemoryParts = 'buffer_state' | 'buffer_rels' | 'buffer_series' | 'temp_statements' | 'temp_hours' | 'temp_databases' | 'findings';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const relkinds: Record<string, string> = { r: 'table', i: 'index', t: 'TOAST', m: 'materialized view', S: 'sequence', p: 'partitioned table', I: 'partitioned index' };
 

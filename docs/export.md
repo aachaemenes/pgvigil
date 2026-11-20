@@ -147,39 +147,99 @@ injection. The workbook needs no guard: its text cells are stored as text, never
 
 ## File names
 
-`<instance>_<tab>_<from>_<to>.xlsx` (and `.csv` / `.csv.zip`); one grid's or one chart's workbook
-`<instance>_<tab>_<sheet>_<from>_<to>.xlsx` (the sheet: the grid's heading, `Instance Summary` / `Test Summary`
+`<instance>_<tab>_<from>_<to>.xlsx` (and `.csv` / `.csv.zip`); one grid's or one chart's workbook, and every Export file
+form of one grid, `<instance>_<tab>_<sheet>_<from>_<to>.<ext>` (the sheet: the grid's heading, `Instance Summary` / `Test Summary`
 from the Summary's drop-down, the chart's title); the window's start and end in the browser's
 time as `yyyymmdd-hhmm`; the instance is `fleet` on the root tabs and `tag-<tag>` in a tag folder. Characters
 outside `A-Z a-z 0-9 . _ -` become `-`.
 
-## The grid tools
+## The grid menu
 
-Every grid's menu (right-click, the menu key or Shift+F10) carries **Export Excel** after the copy lines (that grid's
-workbook: its own sheet, then 'About'; the grid's line says the file's name), and, under them:
+Every grid of both engines has DBA Dash's grid menu: a right-click on a cell, on a header cell (that column's items
+and the grid's) or on the grid; from the keyboard the menu key or Shift+F10 on the grid's current cell. The same menu
+is on a page's own tables (the slow statements' histograms), on a grouping's panel and on a grid with no rows (its
+copies off, `No data to copy`; Export Excel writes its header). An item that cannot act says why in words in the item
+(`Clear filters` with no filter: `no filter is set`). In a dialog's grid (the file viewers) the menu opens in that
+dialog. In DBA Dash's order:
 
-- **Copy the rows as Markdown** and **as HTML with the colours**: the rows the filter leaves and the columns
-  shown, as a pipe table, or as an HTML table whose cells carry the workbook's colours in their own style (the
-  header blue, each status fill and its text colour, a link cell's fill and blue), so a mail, a document or
-  a spreadsheet it is pasted into shows them; the tab-separated words ride beside the HTML for a plain paste.
-  With cells selected, both copy the selection.
-- **Hide column**, **Freeze the columns up to** this one (they stay while the rest scrolls sideways) and
-  **Columns...**: the chooser, with every column's tick, the number of frozen columns, data bars per number
-  column, the group-by and `Reset this grid`. What is hidden, frozen and barred is kept in this browser
-  (localStorage, one entry per grid: the tab, the heading above the grid and its column names), not on the
-  server and not per user.
-- **Group by** a column: a panel above the grid with one line per value, its row count and one aggregate of
-  every number column (sum, average, min or max; a size stays a size, a duration a duration), the largest
-  group first. It follows the grid's filters; the grid itself stays as it is.
-- **Data bars** on a number column: a bar behind each number above zero, its length the value's share of the
-  largest one drawn; a cell the page colours keeps its colour and gets no bar. A screen aid: the export writes
-  the number.
+- **Copy** > **Grid** (the header and the rows, tab-separated), **Column** (a value a line), **Cell**, **Row** (the
+  header and the row), **Selected** (the selected cells, tab-separated, with an HTML table in the colours beside them
+  for a mail or a document), **As Markdown** > Standard / Prettified (every column padded to its widest), **As JSON**
+  > Compact / Prettified (an array of objects keyed by the header, a repeated header numbered `name_1`).
+- **Export Excel**: this grid's workbook (its own sheet, then 'About').
+- **Export file** > **CSV**, **JSON**, **Markdown**, **HTML** (a page of its own: the header blue, each cell's colour
+  through one class per look), **SQL (INSERT) for PostgreSQL** and **for SQL Server**: a temp table `pgvigil_grid`
+  and its rows as INSERT batches of 1,000, DBA Dash's script shape for each engine. PostgreSQL's script writes every
+  string as an escape string `E'...'` with each backslash doubled, so it reads the same with
+  `standard_conforming_strings` on or off and in every client (pgAdmin's F5 or `psql -c` send the file as one query,
+  read before any `SET` in it runs); it sets `standard_conforming_strings` on and `client_encoding` UTF8, drops and creates `pg_temp.pgvigil_grid`, and ends with its SELECT and a commented DROP;
+  SQL Server's starts with a UTF-8 byte-order mark (SSMS reads the encoding from it), drops `#pgvigil_grid` if it is
+  there, writes every string `N'...'` with its line breaks, except a break after a backslash (T-SQL's line
+  continuation) or before a line sqlcmd or SSMS would act on (`GO`, a `:command`, `!!`, `EXIT`, `QUIT`, `RESET`,
+  `ED`): that break is written as `NCHAR(13)` / `NCHAR(10)` outside the literal, the parts joined with `+`, the first
+  `NVARCHAR(MAX)`; it asks in its header for `sqlcmd -x`
+  (a value may hold what sqlcmd reads as a variable), and ends the same way. In both a string doubles its `'`, a column name its `"`
+  or `]`; an empty header is `column_<n>`, a repeated one `_1`, `_2` (the next number no other column holds;
+  on SQL Server names that differ only in case count as repeated), a name past the engine's length (SQL Server 128
+  characters, PostgreSQL 63 bytes) cut with a suffix; a NUL character is dropped (neither engine stores one in text) and
+  the header says how many. A column is a number type only when every non-empty cell is a number (whole numbers:
+  `bigint`; else `numeric` on PostgreSQL and `DECIMAL(38,10)` on SQL Server, which rounds past 10 decimals); a time is `timestamptz` / `DATETIMEOFFSET`, written with its offset, the zone named in the header; anything
+  else text. Every file is named as the grid's workbook (below) with its own extension (`.pg.sql` and `.mssql.sql` for the two
+  SQL forms). JSON objects list a header that is a whole number (`2026`) first: JavaScript orders such keys so.
+- **Transpose** > **This row**, **Selected rows**, **Grid**: the rows as columns in a dialog, with Copy; the grid form
+  shows its first 50 rows and says so, its Copy takes every row.
+- **Select** > **Row**, **Column**, **All**; **Clear the selection**.
+- **Columns...** (the chooser below), **Row numbers** (drawn before each row, never copied or exported), **Hide
+  column**, **Freeze the columns up to** this one, **Unfreeze**, **Group by**, **Ungroup**, **Data bar** > **Behind
+  value**, **Under value**, **Traffic light (higher is worse)**, **Traffic light (higher is better)**, **Remove**.
+- **Filter by value** and **Exclude value** (the clicked value, exactly), **Filter by these values** / **Exclude these
+  values** (cells selected in one column), **All filters** > Like / Not like (a text column), `=` `<>` `>` `<` `>=` `<=`
+  (a prompt with the clicked value), **Clear filters**. A menu's filter is added to what the column's filter holds:
+  every condition must hold.
+- `Rows: n | Cols: n` and the statistics: the selection's (count, numeric count, sum, average, min, max) or the clicked
+  column's over every row the filters leave; a click copies the line.
+
+**The filter box's words.** A typed filter with no double quote means what it always meant: words the cell holds
+(`R & D` is those words), `!x` words it does not hold, `<>5` a number other than 5, `>5`, `<10m`, `>500 MB` a number as shown. The menu writes
+every condition quoted, joined by ` & `: `"x"` holds x, `!"x"` does not, `="x"` `<>"x"` `>"x"` ... (a number column
+compares the number shown), `like "a%"` / `not like "a%"` (`%` any run, `_` one character, `\%` `\_` `\\` themselves),
+`in:"a","b"` / `!in:"a","b"`; a quote inside a value is doubled. A typed filter in that form works the same. Every filter
+compares the words as the screen shows them: a line break or a run of spaces is one space.
+
+**The values each form writes.** One value per cell for the CSV, JSON and SQL forms (export.ts `rawValue`); the
+workbook writes Excel's own forms; Markdown, HTML and the copies write the words on the screen:
+
+| a cell shows | CSV | JSON, SQL | the workbook |
+| --- | --- | --- | --- |
+| nothing | an empty field | `null` / `NULL` | an empty cell |
+| a duration (`1m 5s`) | the seconds, `65` (a millisecond column: the milliseconds) | the same | a time under `[h]:mm:ss` (a fraction of a day) |
+| a percent (`12.5 %`) | `12.5` | `12.5` | `0.125` under `0.0%` |
+| a size (`1.5 MB`) | the bytes | the bytes | the bytes under a size format |
+| a time | `2026-11-14 17:00:00` on the display zone's clock | `2026-11-14T17:00:00-08:00` (its offset) | an Excel date on the display zone's clock |
+| text with a line break or a tab | the words as shown (one space) | the value with its line breaks and tabs | the words as shown |
+| yes / no | the word | the word (`"yes"`; SQL: a text column) | the word |
+| a time in the hour a fall-back repeats | as shown | one of that hour's two offsets for both (the screen's clock cannot tell them apart) | as shown |
+
+**The keyboard.** A grid is one tab stop: its current cell. The arrows, Home / End (with Ctrl: the first / last row)
+and PageUp / PageDown move it (PageDown past the drawn rows reaches `Show more`); Enter or F2 reaches a cell's own link
+or button and Escape comes back; on a header cell Enter sorts and F2 opens the filter row; the menu key or Shift+F10
+opens the menu at the cell, Escape gives the focus back to it.
+
+**What the tools keep, and what they are not.** Hidden columns, frozen columns, data bars and their style, and the row
+numbers are kept in this browser per grid (localStorage: the tab, the heading above the grid and its column names), not
+on the server and not per user; a grouping and an open chooser hold while the page is loaded. Data bars and traffic
+lights are a screen aid in their own colours: no file carries them, and the export never reads a traffic light as a
+status. A statement's masked text (the text policy) is masked when it is collected, so every copy and file carries the
+masked text.
+
+- **Columns...**: the chooser, with every column's tick, the number of frozen columns, data bars per number column,
+  the group-by and `Reset this grid`.
+- **Group by** a column: a panel above the grid with one line per value, its row count and one aggregate of every
+  number column (sum, average, min or max; a size stays a size, a duration a duration), the largest group first. It
+  follows the grid's filters; the grid itself stays as it is.
 - **Selection statistics**: Ctrl+click (Cmd on a Mac) picks cells, Shift+click a rectangle, and the chooser's
-  `Sum the cells of` picks a whole column from the keyboard; the line above the grid says their count, sum,
-  average, min and max. A plain click clears it.
-
-A grouping and an open chooser hold while the page is loaded, also over a live tab's 30-second refresh; a
-selection does not (the cells are drawn again).
+  `Sum the cells of` picks a whole column from the keyboard; the line above the grid says their count, sum, average,
+  min and max. A plain click clears it.
 
 ## How it is built
 
@@ -190,8 +250,10 @@ no spreadsheet library is in the bundle, so no third-party code or licence is ad
 of the bundle. The grid helper in
 `web/src/ui.ts` keeps each rendered grid's columns and its rows in the shown order beside the table, so the
 export writes raw values, not the formatted text, and knows each column by its key (the carried colours go by
-it). The grid tools read the page as the export does and change only how a grid is drawn; their lines come
-into the grid's menu on the `pgvigil:gridmenu` event the grid sends before it shows the menu.
+it). The grid tools read the page as the export does and change only how a grid is drawn; the grid sends the
+`pgvigil:gridmenu` event on a right-click and the grid tools build its menu from it. A page adds its own lines to
+the end of that menu by pushing `[label, action]` pairs into the event's `extra` from a listener on an element
+around its grid (the Backup history grid's 'Verify this backup...').
 
 ## Proof
 

@@ -15,7 +15,7 @@
 #   PGVIGIL_MAIL_OUT   a folder to keep the sink's messages and the screens in (default: removed with the temp folder)
 #   PGVIGIL_DEMO_WAIT_S the seconds the demo's seed may take (default 600)
 #   Needs: go, psql, chromium, node, python3, curl, openssl; the web bundle built with the wiring (internal/web/dist/app.js
-#   carries 'mailrender': `cd web && npm run build` after the join's main.ts / router.ts lines).
+#   carries 'mailrender': `cd web && npm run build` after the wiring's main.ts / router.ts lines).
 #
 # Expected (written before the first run):
 #   R  the role contract: a login IN ROLE pgvigil_collector may EXECUTE import_report_mail, import_report_mail_send and
@@ -48,11 +48,16 @@
 #      lease) - that render's turn is refused ('no longer this server's') and the turn mailed after the lease; every
 #      schedule has exactly one scheduled mail sent (none twice), rendered headless as the owner; next_at back at the
 #      next 07:00 of its zone, no lease, no token; the subject starts with the schedule's name and carries the window.
+#      DB Space's Unit and Decimal places: a schedule made at MB / 2 keeps both keys, one made at GB / 1 none; the MB / 2
+#      one brought due alone afterwards is mailed with its page drawn in MB with 2 decimals - the HTML grid's 'allocated
+#      (MB)' column every figure with exactly 2 decimals, no '(GB)' heading in that grid, and the workbook's 'allocated
+#      (MB)' column numbers under '0.00' or '#,##0.00'. RED (before the pickers): no Unit picker, no schedule.
 #   T  Send test on a schedule: queued as kind test by the asking user, mailed with '[test] <name> - ' as its subject; a
 #      second test at once is refused (one at a time).
 #   C  every one of the nine mails (four now, four scheduled, the test) against the page's screen (the driver's read of the same route): the same grids in
 #      order under the same headings, the same header cells, the same row count, and for every drawn row every cell's
-#      text equal; every cell the screen colours carries that status's fill and text colour (ok #006638 / #ffffff, warn
+#      text equal (a data-at cell by its instant, a Jobs status's 'N minute(s) ago' / 'for N minute(s)' by its minutes:
+#      each within one of the same row's reads, C0 its own rows first); every cell the screen colours carries that status's fill and text colour (ok #006638 / #ffffff, warn
 #      #e49325 / #1d1300, crit #ab1f26 / #ffffff, none #e0e1e9 / #004f83, ack #1b6aa3 / #ffffff); a link cell #f1f1f6
 #      / #004f83; any other cell no fill, or a colour its row's judging cell shows on the screen (the export's carry
 #      rule) with words in it; the header cells #0063a3 with white bold text. Counted per mail (cells, coloured cells).
@@ -210,8 +215,8 @@ S(('127.0.0.1', port), H).serve_forever()
 PY
 python3 "$WORK/sink.py" "$SINKP" "$WORK/sink" > "$WORK/sink.log" 2>&1 &
 SINK=$!
-PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" $UIUSER >/dev/null 2>&1 || fail "user add"
-PGVIGIL_PASSWORD=$U2PW "$BIN" user add -config "$CFG" $U2USER >/dev/null 2>&1 || fail "user add (the second)"
+PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" $UIUSER >/dev/null 2>&1 || fail "user add" # the first enabled admin (B24f: the repository's first user without -role)
+PGVIGIL_PASSWORD=$U2PW "$BIN" user add -config "$CFG" -role admin $U2USER >/dev/null 2>&1 || fail "user add (the second)" # adds a schedule: admin (B24f)
 U="http://127.0.0.1:$PORT"; U2="http://127.0.0.1:$PORT2"
 TZ=UTC "$BIN" serve -config "$CFG" -listen "127.0.0.1:$PORT" >> "$WORK/serve.log" 2>&1 &
 SRV=$!
@@ -428,6 +433,36 @@ if (mode === 'now' || mode === 'screen') {
   const m = /schedule (\d+) added/.exec(said);
   if (!m) throw new Error('the schedule dialog said: ' + said);
   res.schedule_id = Number(m[1]); res.hidden = col;
+} else if (mode === 'dbsprefs') {
+  // DB Space's Unit and Decimal places kept with a schedule: MB / 2 picked on the page, Mail... > Schedule this page...
+  // > Add; then GB / 1 picked back (its keys go) and a second schedule. No picker = said in res.pick, no schedule
+  const route = routes[0];
+  const pick = (u, k) => ev(`(() => { const a = document.getElementById('dbs-unit'), b = document.getElementById('dbs-dp'); if (!a || !b) return 'no Unit picker on the page';
+    a.value = ${JSON.stringify(u)}; a.dispatchEvent(new Event('change', { bubbles: true })); b.value = ${JSON.stringify(k)}; b.dispatchEvent(new Event('change', { bubbles: true })); return 'ok'; })()`);
+  const add = async (nm) => {
+    await ev(`document.querySelector('#bar .mail button').click()`);
+    for (let n = 0; n < 50 && !await ev(`!!document.querySelector('dialog[open] textarea')`); n++) await sleep(100);
+    await ev(`[...document.querySelectorAll('dialog[open] button')].find(b => b.textContent === 'Schedule this page...').click()`);
+    for (let n = 0; n < 80 && await ev(`document.querySelector('dialog[open] h3')?.textContent ?? ''`) !== 'New report mail schedule'; n++) await sleep(100);
+    const note = await ev(`(() => { const d = document.querySelector('dialog[open]'); const name = d.querySelector('input[type=text]'); name.value = ${JSON.stringify(nm)}; name.dispatchEvent(new Event('input', { bubbles: true }));
+      const t = d.querySelector('textarea'); t.value = 'sched-dbs@pgvigil.test'; t.dispatchEvent(new Event('input', { bubbles: true }));
+      const ss = d.querySelectorAll('select'); ss[0].value = 'mail'; ss[0].dispatchEvent(new Event('change', { bubbles: true })); ss[2].value = 'UTC'; ss[2].dispatchEvent(new Event('change', { bubbles: true }));
+      const note = [...d.querySelectorAll('p.meta')].map(p => p.textContent).find(x => /kept with the schedule|No grid choice/.test(x)) ?? '';
+      d.querySelector('button[type=submit]').click(); return note; })()`);
+    let said = '';
+    for (let n = 0; n < 100; n++) { await sleep(200); said = await ev(`document.querySelector('dialog[open] [role=status]')?.textContent ?? ''`); if (/added|not done/.test(said)) break; }
+    const m = /schedule (\d+) added/.exec(said);
+    await ev(`document.querySelector('dialog[open]')?.close(); true`);
+    return { id: m ? Number(m[1]) : null, said, note };
+  };
+  await open(route);
+  res.pick = await pick('MB', '2'); await sleep(400);
+  if (res.pick === 'ok') {
+    res.mb = await add('Proof DB Space MB');
+    await open(route);
+    res.back = await pick('GB', '1'); await sleep(400);
+    res.gb = await add('Proof DB Space GB');
+  }
 } else if (mode === 'page') {
   await open('#/reportmail?w=24h');
   res.screen = await ev(SCREEN);
@@ -519,6 +554,21 @@ HIDDEN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hidden
 [[ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["note"])' "$WORK/prefs.json") == *"grid choices in this browser (1 grid"* ]] || fail "S: the dialog's note: $(cat "$WORK/prefs.json")"
 [[ $(q "select count(*) from pgvigil.report_mail_schedules where schedule_id = $SJOB and route = '$JOBS' and grid_prefs is not null and (select count(*) from jsonb_object_keys(grid_prefs)) = 1") == 1 ]] || fail "S: the dialog's schedule: $(q "select route, grid_prefs from pgvigil.report_mail_schedules where schedule_id = $SJOB")"
 ok "S: column '$HIDDEN' hidden on the Jobs page with the grid's menu; Mail... > Schedule this page... added schedule $SJOB with that grid's choice"
+# DB Space's Unit and Decimal places kept with a schedule (its grid_prefs, under the grid tools' prefix): MB / 2 picked =
+# both size keys kept and the dialog's note names them, not as grids; GB / 1 picked back = no size key kept
+drive dbsprefs "$WORK" - "#/dbspace?i=$DSID" > "$WORK/dbsprefs.json" || fail "S: the DB Space schedule dialog: $(tail -3 "$WORK/dbsprefs.json")"
+DBSP=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("pick"))' "$WORK/dbsprefs.json")
+[[ $DBSP == ok ]] || fail "S: DB Space's pickers on #/dbspace?i=$DSID: $DBSP"
+SDBS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["mb"]["id"])' "$WORK/dbsprefs.json")
+SDBSGB=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["gb"]["id"])' "$WORK/dbsprefs.json")
+DBSNOTE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["mb"]["note"])' "$WORK/dbsprefs.json")
+[[ $(q "select count(*) from pgvigil.report_mail_schedules where schedule_id = ${SDBS:-0} and grid_prefs->>'pgvigil.grid.dbspace.size-unit' = 'MB' and grid_prefs->>'pgvigil.grid.dbspace.size-decimals' = '2'") == 1 && $DBSNOTE == *"unit and decimal places"* && $DBSNOTE != *" grids:"* ]] || fail "S: the MB / 2 schedule's kept choice: $(q "select grid_prefs from pgvigil.report_mail_schedules where schedule_id = ${SDBS:-0}"); note: $DBSNOTE"
+ok "S: DB Space at MB / 2 scheduled (schedule $SDBS): both size keys kept with it, the dialog says so ($DBSNOTE)"
+[[ $(q "select count(*) from pgvigil.report_mail_schedules where schedule_id = ${SDBSGB:-0} and coalesce(grid_prefs::text, '{}') !~ 'size-'") == 1 ]] || fail "S: the GB / 1 schedule kept a size key: $(q "select grid_prefs from pgvigil.report_mail_schedules where schedule_id = ${SDBSGB:-0}")"
+# the GB / 1 schedule ended once read (the MB / 2 one after its mail, below): the Report mail page's Schedules grid (P)
+# lists the live ones it made
+[[ $(postj reportmail "{\"op\":\"end\",\"schedule_id\":${SDBSGB:-0}}") == 200 ]] || fail "S: ending the DB Space schedule $SDBSGB: $(cat "$WORK/body")"
+ok "S: DB Space back at GB / 1 scheduled (schedule $SDBSGB): no size key kept (the default is no key)"
 SIDS=""
 for i in 0 1 2; do
   r=${ROUTES[$i]}; tz=UTC; [[ $i == 2 ]] && tz=America/Los_Angeles
@@ -576,6 +626,72 @@ waitsent $SCHIDS $GONEID || fail "S: the turns not answered: $(q "select send_id
 nextok " and claimed_until is null and claim_token is null" || fail "S: the turns did not move on: $(q "select schedule_id, next_at, claimed_until, claim_token from pgvigil.report_mail_schedules where schedule_id in ($SL)")"
 Q1=$(grep -c "report mail: queued" "$WORK/serve.log" || true); Q3=$(grep -c "report mail: queued" "$WORK/serve3.log" || true)
 ok "S: four schedules rendered headless as $UIUSER by the two serves ($Q1 and $Q3 turns) and mailed once each (mails $SCHIDS); schedule $STOLEN's stale turn refused and mailed after the lease; next_at back at $NEXT7 (UTC) and $NEXT7LA (Los Angeles), no lease left"
+# DB Space's MB / 2 schedule brought due alone (after the four: the C/H/X screens are theirs): its mail drawn in its
+# kept unit and decimals, the HTML grid and the workbook
+q "update pgvigil.report_mail_schedules set next_at = now() - interval '1 second' where schedule_id = ${SDBS:-0}" >/dev/null
+DBSID=""
+for _ in $(seq 1 90); do
+  DBSID=$(q "select send_id from pgvigil.report_mail_sends where schedule_id = ${SDBS:-0} and kind = 'scheduled' and outcome is distinct from 'refused' order by send_id limit 1")
+  [[ -n $DBSID ]] && break; sleep 2
+done
+[[ -n $DBSID ]] || fail "S: the DB Space MB / 2 turn was not queued in 3 minutes: $(grep -i 'report mail' "$WORK/serve.log" "$WORK/serve3.log" | tail -4)"
+waitsent "$DBSID" || fail "S: the DB Space MB / 2 mail not answered: $(q "select outcome, error from pgvigil.report_mail_sends where send_id = $DBSID")"
+python3 - "$WORK/sink" "$DBSID" <<'PY2' || fail "S: the DB Space MB / 2 mail (above)"
+import email, glob, html, io, os, re, sys, zipfile
+from email import policy
+sink, sid = sys.argv[1], sys.argv[2]
+m = next((email.message_from_binary_file(open(f, 'rb'), policy=policy.default) for f in sorted(glob.glob(os.path.join(sink, '*.eml')))
+          if email.message_from_binary_file(open(f, 'rb'), policy=policy.default)['X-Pgvigil-Report'] == sid), None)
+assert m is not None, f"S: DB Space mail {sid} is not in the sink"
+txt = lambda x: html.unescape(re.sub(r'<[^>]+>', '', x)).replace('\xa0', ' ').strip()
+body = m.get_body(('html',)).get_content()
+two = re.compile(r'^-?\d{1,3}(,\d{3})*\.\d{2}$|^-?\d+\.\d{2}$')
+found = None
+for t in re.findall(r'<table\b.*?</table>', body, re.S):
+    trs = re.findall(r'<tr\b.*?</tr>', t, re.S)
+    if not trs: continue
+    head = [txt(c) for c in re.findall(r'<th\b.*?</th>', trs[0], re.S)]
+    if 'allocated (MB)' not in head: continue
+    k = head.index('allocated (MB)')
+    cells = [txt(c) for tr in trs[1:] for i, c in enumerate(re.findall(r'<td\b.*?</td>', tr, re.S)) if i == k]
+    found = (head, cells)
+    break
+assert found, f"S: DB Space mail {sid}: no HTML grid headed 'allocated (MB)'"
+head, cells = found
+assert cells and all(two.match(c) for c in cells), f"S: DB Space mail {sid}: 'allocated (MB)' figures not all with 2 decimals: {cells[:6]}"
+assert not any('(GB)' in h for h in head), f"S: DB Space mail {sid}: a GB heading beside MB: {head}"
+xl = next(p for p in m.iter_attachments() if (p.get_filename() or '').endswith('.xlsx'))
+z = zipfile.ZipFile(io.BytesIO(xl.get_content()))
+st = z.read('xl/styles.xml').decode()
+fmts = {int(a): html.unescape(b) for a, b in re.findall(r'<numFmt numFmtId="(\d+)" formatCode="([^"]*)"', st)}
+fmts.update({0: 'General', 2: '0.00', 4: '#,##0.00'})
+xfs = [int(x) for x in re.findall(r'<xf [^>]*?numFmtId="(\d+)"', re.search(r'<cellXfs[^>]*>(.*?)</cellXfs>', st, re.S).group(1))]
+ss = [txt(x) for x in re.findall(r'<si>(.*?)</si>', z.read('xl/sharedStrings.xml').decode(), re.S)] if 'xl/sharedStrings.xml' in z.namelist() else []
+def val(c):
+    v = re.search(r'<v>(.*?)</v>', c); t = re.search(r' t="(\w+)"', c); inl = re.search(r'<is>(.*?)</is>', c, re.S)
+    if inl: return txt(inl.group(1))
+    if not v: return ''
+    return ss[int(v.group(1))] if t and t.group(1) == 's' else v.group(1)
+got = None
+for n in sorted(x for x in z.namelist() if x.startswith('xl/worksheets/sheet')):
+    rows = re.findall(r'<row [^>]*>(.*?)</row>', z.read(n).decode(), re.S)
+    if not rows: continue
+    hc = re.findall(r'<c [^>]*?(?:/>|>.*?</c>)', rows[0], re.S)
+    hv = [val(c) for c in hc]
+    if 'allocated (MB)' not in hv: continue
+    col = re.search(r' r="([A-Z]+)', hc[hv.index('allocated (MB)')]).group(1)
+    got = []
+    for r in rows[1:]:
+        for c in re.findall(r'<c [^>]*?(?:/>|>.*?</c>)', r, re.S):
+            if re.search(r' r="' + col + r'\d+"', c):
+                sx = re.search(r' s="(\d+)"', c)
+                got.append((re.search(r' t="(\w+)"', c) is None and bool(re.search(r'<v>', c)), fmts.get(xfs[int(sx.group(1))] if sx else 0, '?')))
+    break
+assert got, f"S: DB Space mail {sid}: no workbook sheet headed 'allocated (MB)'"
+assert all(num and f in ('0.00', '#,##0.00') for num, f in got), f"S: DB Space mail {sid}: the workbook's 'allocated (MB)' cells (number, format): {got[:6]}"
+print(f"ok   S: DB Space's MB / 2 schedule mailed (mail {sid}): its HTML grid 'allocated (MB)' {len(cells)} figure(s) with 2 decimals, no GB heading; the workbook's {len(got)} cell(s) numbers under {sorted({f for _, f in got})}")
+PY2
+[[ $(postj reportmail "{\"op\":\"end\",\"schedule_id\":${SDBS:-0}}") == 200 ]] || fail "S: ending the DB Space schedule $SDBS: $(cat "$WORK/body")"
 
 # ---- T: Send test ----------------------------------------------------------------------------------------------------------
 [[ $(postj reportmail/test "{\"schedule_id\":$S1}") == 200 ]] || fail "T: $(cat "$WORK/body")"
@@ -720,6 +836,34 @@ def by_instant(mc, sc, alts):
     mins = lambda t: int(re.sub(r'\D', '', t))
     seen = [mins(c['t']) for c in alts if c.get('a') == sc['a'] and WHOLE.fullmatch(c['t'])]
     return bool(seen) and min(seen) - 1 <= mins(mc['t']) <= max(seen) + 1
+# a cell's words with a time counted from now in them and no data-at (the Jobs status: 'failed N minute(s) ago', 'no
+# success for N minute(s)', SQL's round(now() - at) at each read: 0137 L175-190) are compared by those minutes as
+# by_instant does: the same words around them, each within one of the minutes the same row's reads show (a read's row
+# counts when its other cells' words equal the mail's, its instants and moving minutes aside, so another job's row at
+# that place never vouches); a threshold's minutes ('within N', 'over N minute(s)', 'the last N minute(s)') are words
+MOVING = re.compile(r'(?<=for )\d+(?= minute\(s\))|\d+(?= minute\(s\) ago\b)')
+def by_minutes(mr, j, rows):
+    shape = lambda t: MOVING.sub('#', t)
+    nums = lambda t: [int(x) for x in MOVING.findall(t)]
+    mine = nums(mr[j]['t'])
+    if not mine: return False
+    same = lambda r: len(r) == len(mr) and all(c.get('a') or shape(c['t']) == shape(m['t']) for m, c in zip(mr, r))
+    seen = [nums(r[j]['t']) for r in rows if same(r) and shape(r[j]['t']) == shape(mr[j]['t'])]
+    return bool(seen) and all(min(x[k] for x in seen) - 1 <= v <= max(x[k] for x in seen) + 1 for k, v in enumerate(mine))
+# the minutes compare's own rows first: within one of the reads either way and between two reads taken; two minutes off,
+# another job's row, a threshold and another outcome word refused
+self_row = lambda *ts: [{'t': t} for t in ts]
+FW = 'failed %s minute(s) ago (warning within 10080)'
+SELF = [(self_row('j1', FW % 317), [self_row('j1', FW % 318)], True), (self_row('j1', FW % 319), [self_row('j1', FW % 318)], True),
+        (self_row('j1', FW % 317), [self_row('j1', FW % 316), self_row('j1', FW % 320)], True),
+        (self_row('j1', 'no success for 61 minute(s) (critical over 60)'), [self_row('j1', 'no success for 62 minute(s) (critical over 60)')], True),
+        (self_row('j1', FW % 316), [self_row('j1', FW % 318)], False), (self_row('j1', FW % 317), [self_row('j2', FW % 318)], False),
+        (self_row('j1', 'failed 318 minute(s) ago (warning within 10079)'), [self_row('j1', FW % 318)], False),
+        (self_row('j1', 'no success in the last 14 day(s) (warning over 20161 minute(s))'), [self_row('j1', 'no success in the last 14 day(s) (warning over 20160 minute(s))')], False),
+        (self_row('j1', 'cancelled 317 minute(s) ago (warning within 10080)'), [self_row('j1', FW % 318)], False)]
+selfbad = [f'the minutes compare\'s own row {n}: {mr[1]["t"]!r} against {[r[1]["t"] for r in rows]} gave {not want}' for n, (mr, rows, want) in enumerate(SELF, 1) if by_minutes(mr, 1, rows) != want]
+problems += selfbad
+if not selfbad: print(f'ok   C0: the minutes compare\'s own {len(SELF)} rows (4 taken: within one either way, between two reads, no success for; 5 refused: two minutes off, another job\'s row, two thresholds, another outcome word)')
 for sid, s in sorted(sends.items()):
     m = mails.get(sid)
     if m is None: problems.append(f'mail {sid}: not in the sink'); continue
@@ -758,7 +902,7 @@ for sid, s in sorted(sends.items()):
     if s['schedule'] == SJOB and (not p.grids or HIDDEN in [c['t'] for c in p.grids[0]['head']]): problems.append(f'mail {sid}: the column {HIDDEN!r} the owner hid is in the mail')
     if [g['name'] for g in p.grids] != [g['named'] for g in grids]:
         problems.append(f'mail {sid}: grids {[g["name"] for g in p.grids]} vs the screen {[g["named"] for g in grids]}'); continue
-    cells = coloured = moved = instants = empties = 0
+    cells = coloured = moved = instants = minutes = empties = 0
     altss = [[g for g in a] for a in alt_scrs]
     altss = [a if len(a) == len(grids) else grids for a in altss]
     for gi, (g, sg) in enumerate(zip(p.grids, grids)):
@@ -794,7 +938,9 @@ for sid, s in sorted(sends.items()):
                     instants += 1
                     if mc['t'] != sc['t'] and not by_instant(mc, sc, [r[j] for r in rows_i if j < len(r)]):
                         problems.append(f'mail {sid} {sg["named"]} [{i},{j}]: {mc["t"]!r} vs {sc["t"]!r} (from {sc["a"]}: the reads show {[r[j]["t"] for r in rows_i if j < len(r) and r[j].get("a") == sc["a"]]})')
-                elif mc['t'] != sc['t']: problems.append(f'mail {sid} {sg["named"]} [{i},{j}]: {mc["t"]!r} vs {sc["t"]!r}')
+                elif mc['t'] != sc['t']:
+                    if by_minutes(mr, j, rows_i): minutes += 1   # each read's own row, never sr (a row built from several reads)
+                    else: problems.append(f'mail {sid} {sg["named"]} [{i},{j}]: {mc["t"]!r} vs {sc["t"]!r} (the reads show {[r[j]["t"] for r in rows_i if j < len(r)]})')
                 got = (mc['bg'], mc['fg'])
                 if sc['s']:
                     coloured += 1
@@ -817,7 +963,7 @@ for sid, s in sorted(sends.items()):
     summ = lambda w: [(ws.title, head_of(ws), rows_of(ws)) for ws in w.worksheets]
     problems += x_problems(sid, summ(wb), [summ(openpyxl.load_workbook(f)) for f in barfs], book, [mg for mg, sg in zip(p.grids, grids) if not sg.get('empty')])
     total += cells
-    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids ({empties} empty, each with its sentence), {cells} cells equal to the screen ({moved} rows matched a later read; {instants} compared by their instant), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
+    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids ({empties} empty, each with its sentence), {cells} cells equal to the screen ({moved} rows matched a later read; {instants} compared by their instant, {minutes} by their minutes), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
 # the file rules (scripts/xlsx-check.py rules) on every mailed workbook
 xr = subprocess.run([sys.executable, '-I', XCHECK, 'rules', *books], capture_output=True, text=True)
 if xr.returncode != 0 or not books: problems += [f'xlsx-check: {l}' for l in xr.stdout.splitlines() if l.startswith('FAIL')] or [f'xlsx-check rc {xr.returncode}: {(xr.stderr or xr.stdout)[-300:]}']

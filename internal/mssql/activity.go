@@ -25,9 +25,6 @@ import (
 //     tasks) and sys.dm_db_session_space_usage (the session's finished tasks) summed per session over 50, kept when
 //     the allocations are over 0, the 20 largest by allocations, with the running tasks' part apart and the session's
 //     login, program, host, status, open transactions and last request's end.
-//   - The per-database performance counters (the Databases and Database Replica objects of perfmonCounters, every
-//     database but the system ones) as 'perfmon' rows: per-database counters every 5 minutes, the instance's every
-//     minute (cpu.go).
 //   - sp_PressureDetector's CPU details from sys.dm_os_sys_info: the columns it lists that this server has
 //     (socket_count, numa_node_count, cpu_count, cores_per_socket, hyperthread_ratio, softnuma_configuration_desc,
 //     scheduler_total_count, scheduler_count), found in sys.all_columns as sp_PressureDetector finds them (L3843-3881).
@@ -51,33 +48,84 @@ func (activityCollector) Applies(in Info) (bool, string) {
 	return true, ""
 }
 
-// activitySessionsSQL: the totals (grp 'total', the sessions over 50) and the user sessions per program, host and database.
-// A session that is not a user session over 50 with a program name has no group key and falls in the NULL group of
-// each set, which activityRows drops.
-const activitySessionsSQL = `SELECT 'sessions' AS kind,
-  CASE WHEN GROUPING(x.gp) = 0 THEN N'program' WHEN GROUPING(x.gh) = 0 THEN N'host' WHEN GROUPING(x.gd) = 0 THEN N'database' ELSE N'total' END AS grp,
-  CAST(COALESCE(x.gp, x.gh, x.gd) AS nvarchar(256)) AS name,
+// activitySessionsSQL: one read of sys.dm_exec_sessions grouped by GROUPING SETS (task 413's one read):
+//   - the total over ALL sessions (the Connections page's one user / system rule: background = the
+//     system sessions, is_user_process = 0; before 413 the total counted sessions over 50, PerformanceMonitor's rule);
+//   - per program, host and database, the user sessions with a program name that are not pgvigil's own
+//     (PerformanceMonitor's SessionStatsCollector groups): any other session has no key there and falls in the NULL
+//     group of the set, which activityRows drops;
+//   - kind 'session_by' (0163's mssql_session_by): every session per login, per status x user / system, per network
+//     interface and per client address of its physical connection (sys.dm_exec_connections, parent_connection_id IS
+//     NULL in the join: a MARS session counted once; a session with no connection, a system one, has NULL there: a
+//     bucket of its own, kept) and per isolation level; of login, interface and address the 50 largest names, the rest
+//     summed in one row whose is_other is 1 (the set's own column, so a NULL name and the rest stay apart).
+//
+// OPTION (RECOMPILE): a plan of the session and connection DMVs compiled at a few sessions and reused at thousands ran
+// 44 s CPU-bound on SQL Server 2017 (a lab run: 193 ms at 32 sessions, 43,967 ms reused at 5,037, 293 ms
+// recompiled) - a connection surge would cost every read; one compile per 5-minute read.
+const activitySessionsSQL = `WITH b AS (
+  SELECT s.session_id, s.status, CAST(s.is_user_process AS int) AS is_user_process, s.last_request_end_time, s.database_id,
+         s.cpu_time, s.reads, s.writes, s.logical_reads, s.login_time, s.login_name, s.transaction_isolation_level,
+         c.net_transport, c.protocol_type, c.client_net_address,
+         CASE WHEN s.is_user_process = 1 AND ISNULL(s.program_name, N'') <> N''
+                   AND s.program_name <> ISNULL(PROGRAM_NAME(), N'') AND s.program_name NOT LIKE N'pgvigil%' THEN 1 ELSE 0 END AS mine,
+         s.program_name, s.host_name
+    FROM sys.dm_exec_sessions s
+    LEFT JOIN sys.dm_exec_connections c ON c.session_id = s.session_id AND c.parent_connection_id IS NULL),
+k AS (
+  SELECT b.*,
+         CAST(b.login_name AS nvarchar(128)) AS lg,
+         CAST(CASE WHEN b.is_user_process = 1 THEN N'user ' ELSE N'system ' END + b.status AS nvarchar(60)) AS st,
+         CAST(CASE WHEN b.net_transport IS NULL THEN NULL ELSE b.net_transport + N' / ' + ISNULL(b.protocol_type, N'?') END AS nvarchar(80)) AS itf,
+         CAST(b.client_net_address AS nvarchar(48)) AS addr,
+         CAST(CASE b.transaction_isolation_level WHEN 0 THEN N'unspecified' WHEN 1 THEN N'read uncommitted' WHEN 2 THEN N'read committed'
+                   WHEN 3 THEN N'repeatable read' WHEN 4 THEN N'serializable' WHEN 5 THEN N'snapshot' END AS nvarchar(30)) AS iso
+    FROM b),
+n AS (
+  SELECT k.*, COUNT(*) OVER (PARTITION BY k.lg) AS lg_n, COUNT(*) OVER (PARTITION BY k.itf) AS itf_n,
+         COUNT(*) OVER (PARTITION BY k.addr) AS addr_n
+    FROM k),
+x AS (
+  SELECT n.*,
+         CASE WHEN n.mine = 1 THEN n.program_name END AS gp,
+         CASE WHEN n.mine = 1 THEN n.host_name END AS gh,
+         CASE WHEN n.mine = 1 THEN DB_NAME(n.database_id) END AS gd,
+         CASE WHEN DENSE_RANK() OVER (ORDER BY n.lg_n DESC, n.lg) > 50 THEN 1 ELSE 0 END AS lg_o,
+         CASE WHEN DENSE_RANK() OVER (ORDER BY n.itf_n DESC, n.itf) > 50 THEN 1 ELSE 0 END AS itf_o,
+         CASE WHEN DENSE_RANK() OVER (ORDER BY n.addr_n DESC, n.addr) > 50 THEN 1 ELSE 0 END AS addr_o
+    FROM n),
+y AS (
+  SELECT x.*, CASE WHEN x.lg_o = 0 THEN x.lg END AS lg_k, CASE WHEN x.itf_o = 0 THEN x.itf END AS itf_k,
+         CASE WHEN x.addr_o = 0 THEN x.addr END AS addr_k
+    FROM x)
+SELECT
+  CASE WHEN GROUPING(y.lg_o) = 0 OR GROUPING(y.st) = 0 OR GROUPING(y.itf_o) = 0 OR GROUPING(y.addr_o) = 0 OR GROUPING(y.iso) = 0
+       THEN 'session_by' ELSE 'sessions' END AS kind,
+  CASE WHEN GROUPING(y.lg_o) = 0 OR GROUPING(y.st) = 0 OR GROUPING(y.itf_o) = 0 OR GROUPING(y.addr_o) = 0 OR GROUPING(y.iso) = 0 THEN NULL
+       WHEN GROUPING(y.gp) = 0 THEN N'program' WHEN GROUPING(y.gh) = 0 THEN N'host' WHEN GROUPING(y.gd) = 0 THEN N'database'
+       ELSE N'total' END AS grp,
+  CASE WHEN GROUPING(y.lg_o) = 0 THEN N'login' WHEN GROUPING(y.st) = 0 THEN N'status' WHEN GROUPING(y.itf_o) = 0 THEN N'interface'
+       WHEN GROUPING(y.addr_o) = 0 THEN N'address' WHEN GROUPING(y.iso) = 0 THEN N'isolation' END AS dimension,
+  CAST(CASE WHEN GROUPING(y.lg_o) = 0 THEN y.lg_k WHEN GROUPING(y.st) = 0 THEN y.st WHEN GROUPING(y.itf_o) = 0 THEN y.itf_k
+            WHEN GROUPING(y.addr_o) = 0 THEN y.addr_k WHEN GROUPING(y.iso) = 0 THEN y.iso
+            ELSE COALESCE(y.gp, y.gh, y.gd) END AS nvarchar(256)) AS name,
+  CASE WHEN GROUPING(y.lg_o) = 0 THEN y.lg_o WHEN GROUPING(y.itf_o) = 0 THEN y.itf_o WHEN GROUPING(y.addr_o) = 0 THEN y.addr_o ELSE 0 END AS is_other,
   CAST(COUNT(*) AS bigint) AS sessions,
-  CAST(SUM(CASE WHEN x.status = N'running' THEN 1 ELSE 0 END) AS bigint) AS running,
-  CAST(SUM(CASE WHEN x.status = N'sleeping' THEN 1 ELSE 0 END) AS bigint) AS sleeping,
-  CAST(SUM(CASE WHEN x.status = N'dormant' THEN 1 ELSE 0 END) AS bigint) AS dormant,
-  CAST(SUM(CASE WHEN x.is_user_process = 0 THEN 1 ELSE 0 END) AS bigint) AS background,
-  CAST(SUM(CASE WHEN x.status = N'sleeping' AND x.is_user_process = 1
-                 AND x.last_request_end_time < DATEADD(MINUTE, -30, SYSDATETIME()) THEN 1 ELSE 0 END) AS bigint) AS idle_30min,
-  CAST(COUNT(DISTINCT x.database_id) AS bigint) AS databases,
-  SUM(CAST(x.cpu_time AS bigint)) AS cpu_ms, SUM(CAST(x.reads AS bigint)) AS reads, SUM(CAST(x.writes AS bigint)) AS writes,
-  SUM(CAST(x.logical_reads AS bigint)) AS logical_reads
-FROM (SELECT s.status, CAST(s.is_user_process AS int) AS is_user_process, s.last_request_end_time, s.database_id,
-             s.cpu_time, s.reads, s.writes, s.logical_reads,
-             CASE WHEN u.mine = 1 THEN s.program_name END AS gp,
-             CASE WHEN u.mine = 1 THEN s.host_name END AS gh,
-             CASE WHEN u.mine = 1 THEN DB_NAME(s.database_id) END AS gd
-        FROM sys.dm_exec_sessions s
-       CROSS APPLY (SELECT CASE WHEN s.is_user_process = 1 AND ISNULL(s.program_name, N'') <> N''
-                                 AND s.program_name <> ISNULL(PROGRAM_NAME(), N'') AND s.program_name NOT LIKE N'pgvigil%'
-                                THEN 1 ELSE 0 END AS mine) u
-       WHERE s.session_id > 50) x
-GROUP BY GROUPING SETS ((x.gp), (x.gh), (x.gd), ())`
+  CAST(SUM(y.is_user_process) AS bigint) AS user_sessions,
+  CAST(SUM(1 - y.is_user_process) AS bigint) AS system_sessions,
+  CAST(SUM(CASE WHEN y.status = N'running' THEN 1 ELSE 0 END) AS bigint) AS running,
+  CAST(SUM(CASE WHEN y.status = N'sleeping' THEN 1 ELSE 0 END) AS bigint) AS sleeping,
+  CAST(SUM(CASE WHEN y.status = N'dormant' THEN 1 ELSE 0 END) AS bigint) AS dormant,
+  CAST(SUM(1 - y.is_user_process) AS bigint) AS background,
+  CAST(SUM(CASE WHEN y.status = N'sleeping' AND y.is_user_process = 1
+                 AND y.last_request_end_time < DATEADD(MINUTE, -30, SYSDATETIME()) THEN 1 ELSE 0 END) AS bigint) AS idle_30min,
+  CAST(COUNT(DISTINCT y.database_id) AS bigint) AS databases,
+  SUM(CAST(y.cpu_time AS bigint)) AS cpu_ms, SUM(CAST(y.reads AS bigint)) AS reads, SUM(CAST(y.writes AS bigint)) AS writes,
+  SUM(CAST(y.logical_reads AS bigint)) AS logical_reads,
+  CONVERT(varchar(33), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), MAX(y.login_time)), 126) + 'Z' AS newest_login
+FROM y
+GROUP BY GROUPING SETS ((y.gp), (y.gh), (y.gd), (), (y.lg_o, y.lg_k), (y.st), (y.itf_o, y.itf_k), (y.addr_o, y.addr_k), (y.iso))
+OPTION (RECOMPILE)`
 
 // activityTempdbSQL: the sessions holding tempdb (sp_PressureDetector's allocations and current pages, in KB), the 20
 // largest by allocations; the last request's end in UTC.
@@ -104,14 +152,6 @@ WHERE u.session_id > 50
 GROUP BY u.session_id
 HAVING SUM(u.ua + u.ia) > 0
 ORDER BY SUM(u.ua + u.ia) DESC`
-
-// activityDBCounterSQL: the per-database objects of perfmonCounters (cpuCounterRows keeps them with perDB).
-var activityDBCounterSQL = `SELECT CAST(RTRIM(object_name) AS nvarchar(128)) AS object, CAST(RTRIM(counter_name) AS nvarchar(128)) AS counter,
-  CAST(RTRIM(instance_name) AS nvarchar(128)) AS instance, CAST(cntr_value AS bigint) AS value, CAST(cntr_type AS bigint) AS type
-FROM sys.dm_os_performance_counters
-WHERE (RTRIM(object_name) LIKE N'%:Databases' OR RTRIM(object_name) LIKE N'%:Database Replica')
-  AND counter_name IN (` + perfmonInList() + `)
-  AND RTRIM(instance_name) NOT IN (` + perfmonSkipInList() + `)`
 
 // cpuInfoColumns: sp_PressureDetector's CPU details, in its order; a server lists only those sys.dm_os_sys_info has.
 var cpuInfoColumns = []string{"socket_count", "numa_node_count", "cpu_count", "cores_per_socket", "hyperthread_ratio",
@@ -141,7 +181,7 @@ func (activityCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]col
 		out = append(out, keep(rows)...)
 	}
 	apart("sys.dm_db_session_space_usage", activityTempdbSQL, func(r []collect.Row) []collect.Row { return r })
-	apart("sys.dm_os_performance_counters", activityDBCounterSQL, func(r []collect.Row) []collect.Row { return cpuCounterRows(r, true) })
+	// the per-database counters are mssql_counters_db's (task 401): one writer per series
 	if q, err := cpuInfoSQL(ctx, conn); err != nil {
 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.dm_os_sys_info", "message": err.Error()})
 	} else if q != "" {
@@ -150,12 +190,13 @@ func (activityCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]col
 	return out, nil
 }
 
-// activityRows keeps the totals row and the group rows with a name (a group's NULL key holds the sessions that are
-// not counted per group).
+// activityRows keeps the totals row, the group rows with a name (a program, host or database group's NULL key holds
+// the sessions that are not counted per group) and every 'session_by' row (its NULL name is a bucket of its own: the
+// sessions without a connection, an address or a login).
 func activityRows(rows []collect.Row) []collect.Row {
 	out := make([]collect.Row, 0, len(rows))
 	for _, r := range rows {
-		if r["grp"] != "total" && r["name"] == nil {
+		if r["kind"] != "session_by" && r["grp"] != "total" && r["name"] == nil {
 			continue
 		}
 		out = append(out, r)

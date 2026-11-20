@@ -66,6 +66,10 @@ const (
 	doorPgThreshold    doorRoute = "pg/thresholds"
 	doorJobThreshold   doorRoute = "jobs/thresholds"
 	doorJobExclusion   doorRoute = "jobs/exclusions"
+	doorConfigExpect   doorRoute = "mssql/config_expect" // task 409
+	// B6g-2: Collection Health's thresholds (one instance's collection, or every collection of one instance, on the
+	// demo; every instance's are refused in words)
+	doorCHThreshold doorRoute = "collectionhealth/thresholds"
 )
 
 // doorRowRef names a stored row an end, an edit, a pause or a resume acts on: acks (ack_id), alert_dismissals
@@ -127,6 +131,7 @@ var doorLevels = map[doorRoute][]string{
 	doorPgThreshold:    {"instance", "database"},
 	doorJobThreshold:   {"instance", "job"},
 	doorJobExclusion:   {"instance"},
+	doorConfigExpect:   {"instance"},
 }
 
 func doorWide(what string) string {
@@ -138,7 +143,7 @@ func (d *demoDoor) allow(ctx context.Context, sc writeScope) (string, error) {
 	switch sc.Route {
 	// a job's thresholds and the job exclusions came back on with their pages (B7 DONE-3): the page and the route turn
 	// on together, so the server never carries a write its page says is off
-	case doorAck, doorAckEnd, doorDismiss, doorMuteChange, doorDriveThreshold, doorPgThreshold, doorJobThreshold, doorJobExclusion:
+	case doorAck, doorAckEnd, doorDismiss, doorMuteChange, doorDriveThreshold, doorPgThreshold, doorJobThreshold, doorJobExclusion, doorConfigExpect, doorCHThreshold:
 	case doorAlertTest:
 		return "Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here", nil
 	default:
@@ -318,6 +323,13 @@ func payRow(v any) int64 {
 // by 'level' alone - root and tag name no instance, every other level needs one (0111, 0117, 0094, 0102).
 func scopeOfLevel(route doorRoute, pay map[string]any) writeScope {
 	return writeScope{Route: route, Level: payText(pay["level"]), Tag: payText(pay["tag"]), InstanceID: payInstance(pay["instance_id"])}
+}
+
+// scopeOfCHThreshold: a Collection Health threshold's scope - its instance (none = every instance: wider than one
+// instance, refused on the demo in words); a collection of it or every collection of it is one instance's
+func scopeOfCHThreshold(pay map[string]any) writeScope {
+	id := payInstance(pay["instance_id"])
+	return writeScope{Route: doorCHThreshold, InstanceID: id, AnyInstance: id <= 0 && payText(pay["instance_id"]) == "", OneInstance: payText(pay["instance_id"]) != "" && id <= 0}
 }
 
 // scopeOfExclusion: a job exclusion's end goes by its row, an add by its level.

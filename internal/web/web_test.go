@@ -266,10 +266,19 @@ func TestLoginOff(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"login":false`) {
 		t.Fatalf("session with the login off: %d %s", rec.Code, rec.Body.String())
 	}
+	// every POST checks the X-Pgvigil header first (B24f: s.post), so the login-off answer is read with
+	// the header the UI always sends; without it the header's own 403
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader("{}")))
+	req := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader("{}"))
+	req.Header.Set(loginHeader, "1")
+	h.ServeHTTP(rec, req)
 	if rec.Code != 404 {
 		t.Fatalf("login with the login off: %d, want 404", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader("{}")))
+	if rec.Code != 403 || !strings.Contains(rec.Body.String(), "X-Pgvigil") {
+		t.Fatalf("login without the header: %d %s, want 403 naming X-Pgvigil", rec.Code, rec.Body.String())
 	}
 	if rec.Header().Get("Strict-Transport-Security") != "" {
 		t.Fatal("HSTS sent on a plain listener")

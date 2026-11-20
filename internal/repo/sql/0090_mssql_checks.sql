@@ -14,7 +14,7 @@
 --   mssql_agent_alert, mssql_agent_operator, mssql_agent_alerting   SQL Server Agent's alerts, operators, fail-safe
 --   mssql_identity_column, mssql_identity_scan   the identity columns at 10 per cent of their range or more, and
 --                          per database whether it was scanned
--- Views: mssql_checks_findings (the findings columns: the join adds the arm to pgvigil.findings),
+-- Views: mssql_checks_findings (the findings columns: 0110 adds the arm to pgvigil.findings),
 -- mssql_checks_status (one Summary cell per area), mssql_option_risks (the fleet's risk counts per instance).
 -- The trace flags have one store, 0094's mssql_trace_flags and mssql_trace_flag_history (the collection
 -- mssql_traceflags, judged by checks.go's rules); the checks' grid of them is 0094's view mssql_trace_flag_checks.

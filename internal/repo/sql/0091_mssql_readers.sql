@@ -47,7 +47,7 @@
 --   OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 --   WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --
--- For the join: the arm in pgvigil.findings
+-- For the release migration: the arm in pgvigil.findings
 --     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_readers', at
 --       FROM pgvigil.mssql_readers_findings
 --   'mssql_errorlog', 'mssql_health_components' and 'mssql_trace_events' on purge()'s month-partition parents, and

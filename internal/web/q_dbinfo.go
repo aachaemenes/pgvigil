@@ -13,7 +13,7 @@ import (
 //   GET /api/dbinfo/fleet -> s.DBInfoFleet: the fleet's databases and tables that grew the most over 7 and 30 days.
 // Every part reads a 0046 read function, never a table, with one exception: the side tree's `part=databases` (task 65) reads
 // the four columns it shows from pgvigil.databases itself, in dbinfo()'s order, so a folder open does not pay for the
-// page's growth aggregate and per-database reads (the join review of 0a46d48 measured the whole function per open).
+// page's growth aggregate and per-database reads.
 
 // dbinfoMinWindow is the shortest span the size charts draw: the sizes are read hourly, so a shorter range would
 // hold one or two points; the reply says which window it used (series_meta).

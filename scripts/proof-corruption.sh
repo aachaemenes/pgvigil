@@ -14,8 +14,8 @@
 # is touched.
 #
 # The log_events kind CHECK: 0024 re-adds log_events_kind_check without 'plan' and 'corruption', and on a fresh
-# repository it runs after 0023, so a fresh install relies on the wave's join migration (0042 onward) to carry both
-# kinds. Until the join, this proof applies the join's line itself when the constraint lacks them and says which path
+# repository it runs after 0023, so a fresh install relies on a later migration (0042 onward) to carry both
+# kinds. Until then, this proof applies that line itself when the constraint lacks them and says which path
 # it took (step 0).
 #
 # Expected (written before the first run):
@@ -46,15 +46,15 @@
 #        TOAST tables, corrupt 0 (a clean result).
 #     D4 N stopped, the max key of index ai_idx rewritten from 168496141 to 1 in its file and line pointer 1 of the
 #        heap ah's block 0 overwritten; N started:
-#        [first run 2026-11-09: verify_heapam 'ok' - the all-ones pointer first written decodes as LP_DEAD, which
-#         verify_heapam passes over; the seed is an LP_NORMAL pointer past the page's end since, the expectation unchanged] bt_index_check 'corrupt', corrupt 1, the problem on public.ai_idx;
+#        [the seed is an LP_NORMAL pointer past the page's end: an all-ones pointer decodes as LP_DEAD, which
+#         verify_heapam passes over] bt_index_check 'corrupt', corrupt 1, the problem on public.ai_idx;
 #        verify_heapam 'corrupt', corrupt 1, the problem on public.ah; corruption_findings for N gains
 #        'amcheck bt_index_check' and 'amcheck verify_heapam' (critical).
 #  E. rights: pgvigil_collector may run import_amcheck; pgvigil_reader may read corruption_findings,
 #     corruption_events, corruption_summary, amcheck_runs, amcheck_latest and amcheck_state.
-#  [review 1 fold, expected before the rerun]
+#  [expected before the rerun]
 #  A also: TestCorruptionMultiBlock (a recorded PG 18 combined read with two bad headers = one event, a zeroed index
-#     page, two zero_damaged_pages WARNINGs: 4 events); the constructed file 13 of 16 entries (the lead's condition: a CONTEXT
+#     page, two zero_damaged_pages WARNINGs: 4 events); the constructed file 13 of 16 entries (a CONTEXT
 #     line that quotes statement text goes to statement, never detail).
 #  C: the log finding's value now starts '3 message(s)' (messages, not damaged reads).
 #  D: the instance schedule is amcheck: 1s through D4 (the collector skips a run inside 90% of its interval since the

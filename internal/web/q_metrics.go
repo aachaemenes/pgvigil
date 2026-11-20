@@ -26,8 +26,17 @@ SELECT g.key, g.family, g.family_label, g.metric, g.label, g.unit, g.per_databas
        pgvigil.metric_status(g.op, g.avg_value, g.warning, g.critical) AS avg_status,
        pgvigil.metric_status(g.op, g.current_value, g.warning, g.critical) AS current_status,
        g.rule_id, g.rule_name, g.op, g.warning, g.critical, g.for_minutes, g.rule_scope, g.rule_target, g.rule_database,
-       s.state AS rule_state, s.held AS rule_held, s.since AS rule_since, s.evaluated_at AS rule_evaluated_at
+       s.state AS rule_state, s.held AS rule_held, s.since AS rule_since, s.evaluated_at AS rule_evaluated_at,
+       -- task 402: a seeded rule colours while off (the release migration's metric_rule); the page says it sends nothing
+       ar.enabled AS rule_enabled,
+       -- task 402: a floored metric's floor, so the page says N/A with its words whatever the rule's state (or none)
+       fl.input_key AS floor_input, fl.unit AS floor_unit, fl.floor AS floor,
+       -- a metric not judged under a condition of its own (0152's metric_na_reasons): the N/A cell's words
+       nr.why AS na_why
   FROM pgvigil.metric_grid($1, $2, $3, make_interval(secs => $4), $5, $6) g
+  LEFT JOIN pgvigil.alert_rules ar ON ar.rule_id = g.rule_id
+  LEFT JOIN pgvigil.metric_floors fl ON fl.key = g.key
+  LEFT JOIN pgvigil.metric_na_reasons nr ON nr.key = g.key
   LEFT JOIN pgvigil.alert_rule_state s
     ON s.instance_id = $1 AND s.metric = g.key AND s.database = coalesce(g.rule_database, '') AND s.rule_id = g.rule_id
  ORDER BY g.family_sort, g.sort`
@@ -49,6 +58,14 @@ SELECT d.datname
    AND d.snapshot_at = (SELECT max(x.snapshot_at) FROM pgvigil.dbstats x
                          WHERE x.instance_id = $1 AND x.snapshot_at <= $2 AND x.snapshot_at > $2::timestamptz - interval '1 day')
  ORDER BY d.datname`
+
+// sqlMetricCollections: the collections of an instance's hour rows in the day up to the window's end (the Collection
+// family's cut, B6g-4)
+const sqlMetricCollections = `
+SELECT DISTINCT h.collection
+  FROM pgvigil.collection_health_hour h
+ WHERE h.instance_id = $1 AND h.hour <= $2::timestamptz AND h.hour > $2::timestamptz - interval '1 day'
+ ORDER BY h.collection`
 
 // sqlMetricSeries: one metric's samples; $7 = the bucket in seconds (1 = every sample as stored), $8 the metric of
 // its family. A bucket carries its average, its highest and its lowest sample.
@@ -141,6 +158,14 @@ func (s *Server) Metrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out["databases"] = dbs
+	// B6g-4 (N30): the collections of the instance's hour rows over the day before the window's end - the Collection
+	// family's cut (the sub-series slot: db= one of them)
+	cols, err := s.query(r.Context(), sqlMetricCollections, id, to)
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("collections: %w", err))
+		return
+	}
+	out["collections"] = cols
 	s.reply(w, r, out, nil)
 }
 

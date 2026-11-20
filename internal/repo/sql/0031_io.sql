@@ -4,7 +4,7 @@
 --      newest period as late samples arrive), and cloud_io_latest, the newest datapoint per metric.
 --   2. DMS: the replication instance's storage IO and network metrics on dms_instances, one sample per run
 --      (dms_ri_sample) for the DMS page's IO panel, and import_dms as in 0016 plus those columns.
---   3. io_findings: the IO findings in the findings view's columns (the join puts them under pgvigil.findings).
+--   3. io_findings: the IO findings in the findings view's columns (0039 puts them under pgvigil.findings).
 -- Retention: cloud_io_sample and dms_ri_sample are monthly partitions; their names join pgvigil.purge's list in
 -- the wave's join migration (one re-creation of purge for every slice's tables).
 

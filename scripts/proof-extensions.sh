@@ -26,7 +26,7 @@
 #     collect again: extension_history gains exactly, for the two proof databases,
 #         <tgt1>|amcheck|updated|1.0|1.5, <tgt2>|hstore|removed|1.4|, <tgt2>|pg_trgm|installed||1.6
 #     the hstore row is_present false; the amcheck and hstore warnings are gone; the collection status is ok
-#  [review 1 fold, expected before the rerun:]
+#  [expected before the rerun:]
 #  B2. tgt2 dropped and re-created under its name with hstore (at the default), a role-and-database setting
 #      ALTER ROLE <app> IN DATABASE <tgt1> SET session_preload_libraries = 'auto_explain', collect again:
 #      - no tgt2 row of the old dbid stays present; tgt2 = hstore <default>, plpgsql 1.0
@@ -46,7 +46,7 @@
 #     and on z a second import (no shared_preload_libraries setting row = the list unreadable; no db row for app2,
 #     a collector_error instead; a databases list without 'gone') -> pg_stat_statements keeps preloaded_via {shared}
 #     and no 'preload' history row; app2's rows stay present; gone's rows go is_present false
-#     [review 1 fold] and on y a second import (pg_stat_statements' default 1.10 -> 1.11, pg_hint_plan no longer
+#     and on y a second import (pg_stat_statements' default 1.10 -> 1.11, pg_hint_plan no longer
 #     in pg_available_extensions but still in the shared list, hstore newly available, auto_explain out of the list,
 #     enable_hint on) -> server history exactly: auto_explain|preload|shared|, hstore|available||1.8,
 #     pg_hint_plan|unavailable|1.6.0|, pg_stat_statements|default version|1.10|1.11, and the settings

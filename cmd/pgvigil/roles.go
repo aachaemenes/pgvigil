@@ -30,9 +30,22 @@ CREATE ROLE %[2]s LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_auth
 -- report on the store is refused and the page says why. Name its dsn in reports_dsn (env:NAME or file:/path), as
 -- the repository's.
 CREATE ROLE pgvigil_reports LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader;
+-- optional: the Parquet export's login (the configuration's export.dsn; only where an export: section is set):
+-- pgvigil_exporter is pgvigil_reader plus the one door that records the export's windows for the Collector page.
+-- A login that could write anything else is refused by 'pgvigil export'.
+-- CREATE ROLE pgvigil_export LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_exporter;
+-- optional: serve's login in queue mode (actions: via: queue, docs/queue.md) - the UI's roles and pgvigil_requester,
+-- which may only write a request and cancel its own; never the collector's login. (Or GRANT pgvigil_requester to the
+-- UI's login above.)
+-- CREATE ROLE pgvigil_ui_queue LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_auth, pgvigil_requester;
 -- optional: the alert sender's login (the configuration's alerts_dsn; only where an alerts: list names channels):
 -- it reads the findings (pgvigil_reader) and writes the alert tables; the collector's login cannot read the findings.
 -- CREATE ROLE pgvigil_alerts LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_alerter;
+-- optional: the agent door's login (pgvigil mcp for the site's own investigating agent, docs/agents.md): IN ROLE
+-- pgvigil_reader, pgvigil_investigator and nothing else - it reads as the reader, runs read-only SELECTs, and writes only its
+-- own investigation records through the agent functions; any other role (pg_read_all_data, pg_monitor, the owner) is
+-- refused at its start.
+-- CREATE ROLE pgvigil_investigator_login LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_investigator;
 
 -- On each monitored PostgreSQL server: the monitoring login (pg_monitor is all it needs;
 -- on RDS, Aurora, Azure and Cloud SQL prefer the platform's IAM / Entra token login instead of a password)

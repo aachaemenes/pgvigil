@@ -4,7 +4,7 @@
 // A job's name cuts the timeline to that job (DBA Dash 90): a SQL Server job then shows its steps as lanes. An
 // Outcome filter and a job name filter; the same runs as a table under the drawing. On an instance (pg_cron,
 // pgAgent or SQL Server Agent) or the fleet (both engines, grouped by instance). Data from /api/jobs/timeline.
-// The lead mounts jobsTimelineView(ctx) as its own page reached from the Jobs folder.
+// The shell mounts jobsTimelineView(ctx) as its own page reached from the Jobs folder.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { fmt, offsetMin } from './tz';
@@ -178,7 +178,7 @@ const stepCols: Col[] = [
   { key: 'duration_s', label: 'took', num: true, fmt: fmtSecs }, { key: 'outcome', fmt: outcomeBadge }, { key: 'message', wide: true },
 ];
 
-// keep: under a tag folder of the fleet, only these instances' runs (the lead's wiring passes the folder's filter)
+// keep: under a tag folder of the fleet, only these instances' runs (the shell's wiring passes the folder's filter)
 export async function jobsTimelineView(ctx: Ctx, keep?: (r: Row) => boolean): Promise<HTMLElement> {
   const fleet = !ctx.instance;
   const sec = el('section', {}, el('h2', {}, `Jobs timeline (${rangeLabel(ctx)})`));

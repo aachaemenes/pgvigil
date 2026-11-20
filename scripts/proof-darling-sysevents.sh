@@ -328,7 +328,7 @@ pq "INSERT INTO pgvigil.mssql_xe_state (instance_id, capture, snapshot_at, state
     ON CONFLICT (instance_id, capture) DO UPDATE SET truncated = true, snapshot_at = now(), event_count = 812, session_name = 'pgvs_ring'" >/dev/null
 EF=$(pq "SELECT string_agg(severity || '|' || check_name || '|' || split_part(detail, ':', 1), ',' ORDER BY check_name) FROM pgvigil.mssql_sysevents_findings WHERE instance_id = $FX")
 ER=$(pq "SELECT string_agg(severity || '|' || check_name, ',') FROM pgvigil.mssql_sysevents_findings WHERE instance_id = $SB AND check_name = 'the ring buffer output was cut off'")
-# the join's arm (0190): the same findings reach pgvigil.findings under the source mssql_sysevents
+# 0190's arm: the same findings reach pgvigil.findings under the source mssql_sysevents
 EA=$(pq "SELECT count(*) FROM pgvigil.findings WHERE instance_id = $FX AND source = 'mssql_sysevents'")
 EB=$(pq "SELECT count(*) FROM pgvigil.findings WHERE instance_id = $SB AND source = 'mssql_sysevents' AND setting = 'the ring buffer output was cut off'")
 pq "DELETE FROM pgvigil.mssql_health_components WHERE instance_id = $FX" >/dev/null

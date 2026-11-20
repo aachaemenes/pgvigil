@@ -3,7 +3,7 @@
 // row, the next run (pg_cron's from pgvigil's own schedule parser, pgAgent's its own) and a duration trend over
 // the window (at least the last 7 days); at the root every failing, missed or over-average job of the fleet.
 // Data from /api/jobsreport (?instance= for one instance). The shell mounts jobsReportView(ctx) and
-// jobsReportFleetView(keep, instLink, ctx) (the lead wires the routes and the tabs); ctx makes each job name a link
+// jobsReportFleetView(keep, instLink, ctx) (the shell wires the routes and the tabs); ctx makes each job name a link
 // to its job page (task 65).
 import { jobLink } from './drill';
 import { get, Row, rowsOf, Table } from './api';
@@ -11,7 +11,7 @@ import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const failed = ['failed', 'internal error', 'aborted'];
 const runBadge = (v: unknown, r: Row) => {
   const s = String(v ?? '');
@@ -21,7 +21,7 @@ const runBadge = (v: unknown, r: Row) => {
 // a short run keeps its tenths; a long one reads as minutes and hours
 const dur = (v: unknown) => v == null ? '' : Number(v) < 60 ? fmtNum(v) + ' s' : fmtSecs(v);
 // the value cells in the colour of the rule that judges them: the last start by the last run's outcome, the streak by its own thresholds
-const runCls = (v: unknown, r: Row) => { const s = String(r.last_status ?? ''); return !v || !s ? '' : failed.includes(s) ? 'crit' : s === 'succeeded' ? 'ok' : 'warn'; };
+const runCls = (v: unknown, r: Row) => { const s = String(r.last_status ?? ''); return !v ? '' : !s ? 'status none' : failed.includes(s) ? 'crit' : s === 'succeeded' ? 'ok' : 'warn'; };
 const streakCls = (v: unknown) => Number(v) >= 3 ? 'crit' : Number(v) > 0 ? 'warn' : 'ok';   // as streak(): no value reads 0
 const streak = (v: unknown) => Number(v) >= 3 ? badge(fmtNum(v), 'crit') : Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0';
 const fails = (v: unknown) => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0';
@@ -49,7 +49,7 @@ function status(r: Row): string | Node {
   else if (Number(r.fail_streak) > 0) out.push(badge('last run failed', 'warn'));
   if (r.missed) out.push(badge('missed', 'crit'));
   if (r.over_average) out.push(badge('over 2x average', 'warn'));
-  if (r.schedule_note) out.push(badge('schedule not judged', ''));
+  if (r.schedule_note) out.push(badge('schedule not judged', 'none'));
   if (!out.length) return badge('ok', 'ok');
   const span = el('span');
   out.forEach((n, i) => { if (i) span.append(' '); span.append(n); });
@@ -63,19 +63,19 @@ const withJobLinks = (cols: Col[], ctx?: Ctx, fleet = false): Col[] => !ctx ? co
 const jobCols: Col[] = [
   { key: 'job_name', label: 'job', fmt: (v, r) => String(v ?? r.job_id ?? '') },
   { key: 'scheduler' },
-  { key: 'status_rank', label: 'status', num: true, fmt: (_v, r) => status(r) },
+  { key: 'status_rank', label: 'status', num: true, fmt: (_v, r) => status(r), cls: (_v, r) => r.is_present === false || r.active === false ? 'status none' : '' },
   { key: 'schedule', fmt: (v, r) => String(v ?? '') + (r.schedule_note ? ` (${String(r.schedule_note)})` : '') },
-  { key: 'last_status', label: 'last run', fmt: runBadge },
+  { key: 'last_status', label: 'last run', fmt: runBadge, cls: v => v == null || v === '' ? 'status none' : '' },
   { key: 'last_start', label: 'last start', fmt: fmtTime, cls: runCls },
   { key: 'last_duration_secs', label: 'took', num: true, fmt: dur },
   { key: 'next_run', label: 'next run', fmt: (v, r) => r.active === false || r.is_present === false ? '' : fmtTime(v) },
   { key: 'fail_streak', label: 'failed in a row', num: true, fmt: streak, cls: streakCls },
   { key: 'runs_7d', label: 'runs 7 d', num: true },
-  { key: 'failures_7d', label: 'failed 7 d', num: true, fmt: fails },
+  { key: 'failures_7d', label: 'failed 7 d', num: true, fmt: fails, cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
   { key: 'avg_7d_secs', label: 'avg 7 d', num: true, fmt: dur },
   { key: 'max_7d_secs', label: 'max 7 d', num: true, fmt: dur },
   { key: 'runs_30d', label: 'runs 30 d', num: true },
-  { key: 'failures_30d', label: 'failed 30 d', num: true, fmt: fails },
+  { key: 'failures_30d', label: 'failed 30 d', num: true, fmt: fails, cls: v => Number(v) > 0 ? '' : 'status ok' },
   { key: 'avg_30d_secs', label: 'avg 30 d', num: true, fmt: dur },
   { key: 'max_30d_secs', label: 'max 30 d', num: true, fmt: dur },
   { key: 'last_ok', label: 'last success', fmt: fmtTime },
@@ -144,7 +144,7 @@ export async function jobsReportView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('h3', {}, `Failures per ${per}`), grid(fl, [
       { key: 'snapshot_at', label: per, fmt: fmtTime },
       { key: 'job_name', label: 'job', fmt: (_v, r) => jobLink(ctx, jobLabel(r), r.scheduler, r.job_id) },
-      { key: 'failures', label: 'failed', num: true, fmt: fails },
+      { key: 'failures', label: 'failed', num: true, fmt: fails, cls: v => Number(v) > 0 ? '' : 'status ok' },
       { key: 'runs', num: true },
     ]));
   }

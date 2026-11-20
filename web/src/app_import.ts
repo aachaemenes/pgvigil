@@ -9,6 +9,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { Section, exportSection } from './export';
 import { Col, el, fmtTime, grid } from './ui';
+import { markNeed } from './needs';
 
 interface Item { id: string; kind: string; line: number; level?: string; instance?: string; database?: string; application?: string; outcome: string; words: string }
 interface Answer {
@@ -31,7 +32,7 @@ const COUNTS: [string, string][] = [['applications_added', 'application(s) added
   ['unknown_servers', 'unknown server(s)'], ['unknown_databases', 'unknown database(s)'], ['refused', 'refused line(s)'],
   ['unchanged', 'unchanged line(s)'], ['servers_whose_tag_moves', 'server(s) whose application: tag moves']];
 
-// the inventory's own workbook says what it holds on its About sheet (the lead's call h: on the button and in the file)
+// the inventory's own workbook says what it holds on its About sheet (on the button and in the file)
 const INV_NOTE = 'every line of the inventory, whatever the grid on the page was filtered to; contacts are never in it';
 
 // the import's request: the file's own bytes as the body (no base64), its kind read by the server from what it holds;
@@ -56,11 +57,11 @@ export function appFileSection(opts: { whyNot: () => string; changed: () => Prom
   const previewBox = el('div', { 'data-part': 'import-preview' });
   let rows: Row[] = [];
   let pending: { bytes: ArrayBuffer; source: string; digest: string; name: string } | null = null;
-  let busy = false;   // a preview or an apply in flight: a second click does nothing (review C, 4)
+  let busy = false;   // a preview or an apply in flight: a second click does nothing
 
-  // the inventory's own export: every row whatever the grid's filter, each value the text the repository holds (review
-  // B M5 / C 2: the page's typed export wrote 1.50 as a number and Yes as a boolean and folded a two-line description,
-  // so its file read back changed), one sheet named Inventory; a read, on in a read-only page (review C, 3)
+  // the inventory's own export: every row whatever the grid's filter, each value the text the repository holds (a
+  // typed export wrote 1.50 as a number and Yes as a boolean and folded a two-line description, so its file read
+  // back changed), one sheet named Inventory; a read, on in a read-only page
   const exportBtn = el('button', { type: 'button', title: 'The whole inventory, whatever the grid below is filtered to; contacts are never in it' }, 'Export the inventory (.xlsx)');
   exportBtn.addEventListener('click', () => {
     if (!rows.length) { say('The inventory is empty: nothing to export.', true); return; }
@@ -73,9 +74,10 @@ export function appFileSection(opts: { whyNot: () => string; changed: () => Prom
   const csvLink = el('a', { href: '/api/applications/inventory.csv', download: '' }, 'Download the inventory (CSV)');
 
   const fileIn = el('input', { type: 'file', name: 'file', accept: '.csv,.json,.xlsx,text/csv,application/json', id: 'app-import-file' }) as HTMLInputElement;
-  // the pattern compiles under the v flag the browser uses (an unescaped - in a class is an error there: review C, 5)
+  // the pattern compiles under the v flag the browser uses (an unescaped - in a class is an error there)
   const srcIn = el('input', { type: 'text', name: 'source', value: 'file', maxlength: '40', pattern: '[a-z0-9_.\\-]{1,40}', id: 'app-import-source' }) as HTMLInputElement;
-  const previewBtn = el('button', { type: 'submit' }, 'Preview the import');
+  // the import's route needs admin (B24f): the page's read-only sentence carries the role's words below it (whyNot)
+  const previewBtn = markNeed(el('button', { type: 'submit' }, 'Preview the import'), 'admin/applications/import');
   const form = el('form', { 'aria-label': 'Import a file' },
     el('label', { for: 'app-import-file' }, 'A file (CSV, JSON or .xlsx, 5 MB at most) '), fileIn, ' ',
     el('label', { for: 'app-import-source' }, 'its source name (every field it sets says import:<name>) '), srcIn, ' ',
@@ -86,11 +88,11 @@ export function appFileSection(opts: { whyNot: () => string; changed: () => Prom
     const items = a.items ?? [];
     const conflicts = items.filter(i => i.outcome === 'conflict');
     // a tick is kept by its item's id, never by its checkbox: a grid draws its rows again (Copy all, the export, a
-    // sort) and a redrawn row's checkbox is a new one (review C, BLOCKER 1)
+    // sort) and a redrawn row's checkbox is a new one
     const ticks = new Map<string, boolean>();
     const itemCols: Col[] = [
       { key: 'line', num: true }, { key: 'kind' }, { key: 'instance' }, { key: 'database' }, { key: 'application' },
-      { key: 'outcome', cls: v => (v === 'refused' ? 'crit' : v === 'conflict' || v === 'unknown' ? 'warn' : '') },
+      { key: 'outcome', cls: v => (v == null ? '' : v === 'refused' ? 'crit' : v === 'conflict' || v === 'unknown' ? 'warn' : 'status ok') },
       { key: 'words', label: 'what it does', wide: true },
       ...(applied ? [] : [{ key: 'id', label: 'take it', fmt: (_v: unknown, r: Record<string, unknown>) => {
         if (r.outcome !== 'conflict') return '';
@@ -109,7 +111,7 @@ export function appFileSection(opts: { whyNot: () => string; changed: () => Prom
       grid(items as unknown as Row[], itemCols, applied ? 'Nothing else to say.' : 'Nothing to change: the file says what the repository holds.'),
     ];
     if (!applied && pending) {
-      const apply = el('button', { type: 'button' }, conflicts.length ? 'Apply the import (ticked conflicts taken, the rest kept)' : 'Apply the import');
+      const apply = markNeed(el('button', { type: 'button' }, conflicts.length ? 'Apply the import (ticked conflicts taken, the rest kept)' : 'Apply the import'), 'admin/applications/import');
       apply.addEventListener('click', () => void doApply([...ticks.entries()].filter(([, on]) => on).map(([id]) => id)));
       if (opts.whyNot()) { apply.setAttribute('aria-disabled', 'true'); apply.title = opts.whyNot(); }
       parts.push(el('div', { class: 'actions' }, apply));
@@ -135,7 +137,7 @@ export function appFileSection(opts: { whyNot: () => string; changed: () => Prom
   }
 
   // one apply at a time; an answer that cannot be read says the import may have been applied (the server finishes its
-  // work whatever happens to the connection: review C, 4); the result keeps the focus after the page's redraw (C, 9)
+  // work whatever happens to the connection); the result keeps the focus after the page's redraw
   async function doApply(force: string[]): Promise<void> {
     if (busy || !pending || opts.whyNot()) return;
     busy = true;

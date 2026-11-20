@@ -8,7 +8,7 @@
 // max). Data from /api/mssql/querystore and its two detail routes.
 //
 // The view, the sort, the database and Regressed's baseline ride the page's hash (qs=, qo=, qdb=, qb=), read here as
-// stmt_filter.ts reads its own; the lead's wiring keeps them on the tab's own links (router.ts).
+// stmt_filter.ts reads its own; the shell's wiring keeps them on the tab's own links (router.ts).
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { qsOverlay, qsStrip } from './mssql_queries';
@@ -37,7 +37,7 @@ const dur = (v: unknown) => {
 const mb = (v: unknown) => v == null || v === '' ? '' : fmtNum(v) + ' MB';
 const times = (v: unknown) => v == null || v === '' ? '' : fmtNum(v) + ' x';
 const yes = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
-const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const stmt = (v: unknown) => v == null || v === '' ? '(no text stored)' : sqlCell(v);
 // a tinted cell (class 'status warn' / 'status crit') has no padding of its own: the stylesheet gives it to the
 // cell's .cell-link, so a tinted cell's content rides one (bare text sat against the cell's top and side)
@@ -290,7 +290,7 @@ function compareBody(kind: CompareKind, w: Row, rows: Row[]): HTMLElement[] {
   const status = (v: unknown, r: Row) => {
     const t = text(v);
     if (t === 'new') return badge(kind === 'querystore' ? `new: first compiled ${fmtTime(r.first_compile)}` : 'NEW', 'warn');
-    if (t === 'gone') return badge('GONE', '');
+    if (t === 'gone') return badge('GONE', 'none');
     return t;
   };
   const keyCols: Col[] = kind === 'procs'
@@ -300,7 +300,7 @@ function compareBody(kind: CompareKind, w: Row, rows: Row[]): HTMLElement[] {
       : [{ key: 'database_name', label: 'database' }, { key: 'query_hash', label: 'query hash' }, { key: 'object_name', label: 'object' }];
   const cols: Col[] = [
     ...keyCols,
-    { key: 'status', label: 'new / gone', fmt: status },
+    { key: 'status', label: 'new / gone', fmt: status, cls: v => v == null || v === '' || v === 'new' || v === 'gone' ? '' : 'status none' },
     { key: 'before_executions', label: 'executions before', num: true }, { key: 'executions', label: 'executions now', num: true },
     { key: 'executions_pct', label: 'executions +%', num: true, ...band(100, -50) },
     { key: 'before_avg_duration_ms', label: 'avg duration before', num: true, fmt: dur }, { key: 'avg_duration_ms', label: 'avg duration now', num: true, fmt: dur },
@@ -425,7 +425,7 @@ function regressedView(ctx: Ctx, d: QS, base: string): HTMLElement[] {
     side === 'base' && !r.has_baseline ? '' : Number(r[`${side}_unsplit`]) > 0 ? notApart : dur(v);
   const abortedTip = 'Timeouts (Aborted) is execution_type 3: "Client initiated aborted execution" (Microsoft): a timeout or a cancel by the client.';
   const cols: Col[] = [
-    { key: 'severity', label: 'Severity', cls: sevCls, fmt: v => sevCls(v) ? tinted(text(v)) : text(v) },
+    { key: 'severity', label: 'Severity', cls: v => sevCls(v) || (v == null || v === '' ? '' : 'status none'), fmt: v => sevCls(v) ? tinted(text(v)) : text(v) },
     { key: 'raised_by', label: 'Why' },
     { key: 'database_name', label: 'Database' },
     { key: 'query', label: 'Query', fmt: stmt },
@@ -466,10 +466,10 @@ function regressedView(ctx: Ctx, d: QS, base: string): HTMLElement[] {
     { key: 'last_execution', label: 'Last Exec', fmt: fmtTime },
     // pgvigil's duration test (task 129): the plan it names
     { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
-    { key: 'new_plan', label: 'plan seen before', fmt: (v, r) => !r.has_baseline ? '' : v ? badge('not seen before', 'warn') : 'yes' },
+    { key: 'new_plan', label: 'plan seen before', fmt: (v, r) => !r.has_baseline ? '' : v ? badge('not seen before', 'warn') : 'yes', cls: (v, r) => !r.has_baseline || v ? '' : 'status ok' },
     { key: 'forced', fmt: v => v ? badge('forced', 'ok') : '' },
-    { key: 'duration_ratio', label: 'plan duration x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
-    { key: 'cpu_ratio', label: 'plan CPU x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
+    { key: 'duration_ratio', label: 'plan duration x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => v == null || v === '' ? '' : Number(v) >= 1.5 ? 'status warn' : 'status ok' },
+    { key: 'cpu_ratio', label: 'plan CPU x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => v == null || v === '' ? '' : Number(v) >= 1.5 ? 'status warn' : 'status ok' },
     { key: 'object_name', label: 'object' },
   ];
   const baseWords = base === 'prev' ? 'the range of equal length before it' : base === 'day' ? 'the same range 24 hours earlier'
@@ -513,7 +513,7 @@ function forcedView(ctx: Ctx, d: QS): HTMLElement[] {
     { key: 'object_name', label: 'object' },
     { key: 'query', label: 'statement', fmt: stmt },
     { key: 'forcing_type', label: 'plan forcing', fmt: v => text(v).toLowerCase() },
-    { key: 'force_failure_count', label: 'force failures', num: true, fmt: v => Number(v) > 0 ? tinted(fmtNum(v)) : fmtNum(v), cls: v => Number(v) > 0 ? 'status warn' : '' },
+    { key: 'force_failure_count', label: 'force failures', num: true, fmt: v => Number(v) > 0 ? tinted(fmtNum(v)) : fmtNum(v), cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'status warn' : 'status ok' },
     { key: 'force_failure_reason', label: 'last force failure' },
     { key: 'plan_count', label: 'plans of the query', num: true },
     { key: 'plan_last_execution', label: 'last execution (plan)', fmt: fmtTime },
@@ -543,7 +543,7 @@ function forceFailSection(ctx: Ctx): HTMLElement {
         + 'The finding \'a forced plan fails\' is a warning when one read saw 2 or more failures or two failures were read within 24 hours of each other; with one failure it is held as an info.'),
       grid(rowsOf(d.plans), [
         { key: 'database' }, { key: 'query_id', label: 'query', num: true, fmt: v => text(v) }, { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
-        { key: 'paged', label: 'judged', fmt: v => v ? badge('pages (warning)', 'warn') : badge('held (info)', 'info') },
+        { key: 'paged', label: 'judged', fmt: v => v ? badge('pages (warning)', 'warn') : badge('held (info)', 'none') },   // X18: held = N/A, a status class
         { key: 'failures', num: true }, { key: 'failure_reads', label: 'reads with a failure', num: true },
         { key: 'first_failure', label: 'first failure read', fmt: fmtTime }, { key: 'last_failure', label: 'last failure read', fmt: fmtTime },
         { key: 'force_failure_reason', label: 'last reason' },
@@ -571,7 +571,8 @@ export function planStatsPanel(ctx: Ctx, key: Record<string, string | number>, t
         + 'or from compatibility level 130 the smaller of that and the square root of 1,000 x rows: a statistic past it was stale at compile '
         + '(AUTO_UPDATE_STATISTICS off, asynchronous updates or NORECOMPUTE).'),
       grid(rows, [
-        { key: 'stale_at_compile', label: 'stale at compile', fmt: (v, r) => v === true ? badge('stale', 'warn') : v === false ? 'no' : String(r.not_judged ?? 'not judged') },
+        { key: 'stale_at_compile', label: 'stale at compile', fmt: (v, r) => v === true ? badge('stale', 'warn') : v === false ? 'no' : String(r.not_judged ?? 'not judged'),
+          cls: v => v === true ? '' : v === false ? 'status ok' : 'status none' },   // X18: no = OK, not judged = N/A
         { key: 'stmt', label: 'statement', num: true }, { key: 'database' }, { key: 'schema' }, { key: 'table' }, { key: 'statistic' },
         { key: 'modification_count', label: 'rows changed', num: true }, { key: 'table_rows', label: 'table rows', num: true },
         { key: 'modified_pct', label: 'modified %', num: true }, { key: 'update_line', label: 'auto-update line', num: true },
@@ -630,17 +631,21 @@ function tuningView(d: QS): HTMLElement[] {
 function stateView(d: QS): HTMLElement[] {
   const rows = rowsOf(d.state);
   const lower = (v: unknown) => text(v).toLowerCase().replace(/_/g, ' ');
-  const stateCls = (_: unknown, r: Row) => r.severity === 'critical' ? 'status crit' : r.severity === 'warning' ? 'status warn' : '';
+  // the cell's status: critical / warning as judged; a store not read or a note N/A; OK and a store off that nobody asked
+  // for (a choice, not a fault: judged and nothing wrong) OK
+  const flag = (r: Row) => r.severity === 'critical' || r.severity === 'warning';
+  const stateCls = (_: unknown, r: Row) => r.severity === 'critical' ? 'status crit' : r.severity === 'warning' ? 'status warn'
+    : !r.options_read || r.severity === 'info' ? 'status none' : 'status ok';
   const cols: Col[] = [
     { key: 'database_name', label: 'database' },
     { key: 'severity', label: 'status', cls: stateCls,
       fmt: (v, r) => {
-        const b = !r.options_read ? badge('not read', '') : v === 'critical' ? badge('critical', 'crit') : v === 'warning' ? badge('warning', 'warn')
-          : v === 'info' ? badge('note', '') : r.actual_state === 'OFF' ? 'off' : badge('OK', 'ok');
-        return stateCls(v, r) ? tinted(b) : b;
+        const b = !r.options_read ? badge('not read', 'none') : v === 'critical' ? badge('critical', 'crit') : v === 'warning' ? badge('warning', 'warn')
+          : v === 'info' ? badge('note', 'none') : r.actual_state === 'OFF' ? 'off' : badge('OK', 'ok');
+        return flag(r) ? tinted(b) : b;
       } },
     { key: 'desired_state', label: 'desired state', fmt: lower },
-    { key: 'actual_state', label: 'actual state', fmt: (v, r) => stateCls(v, r) ? tinted(lower(v)) : lower(v), cls: stateCls },
+    { key: 'actual_state', label: 'actual state', fmt: (v, r) => flag(r) ? tinted(lower(v)) : lower(v), cls: (v, r) => v == null || v === '' ? '' : stateCls(v, r) },
     { key: 'readonly_reasons', label: 'read-only reason', fmt: (v, r) => text(v) || (Number(r.readonly_reason) ? `reason ${text(r.readonly_reason)}` : '') },
     { key: 'capture_mode', label: 'query capture mode', fmt: lower },
     { key: 'cleanup_mode', label: 'size-based cleanup', fmt: lower },
@@ -672,7 +677,7 @@ function stateView(d: QS): HTMLElement[] {
     grid(rows, cols, 'No database read.'),
     ...(flagged.length ? [el('h3', {}, 'What each flagged state means'), grid(flagged, [
       { key: 'database_name', label: 'database' },
-      { key: 'severity', label: 'status', fmt: v => v === 'info' ? badge('note', '') : sevBadge(v) },
+      { key: 'severity', label: 'status', fmt: v => v === 'info' ? badge('note', 'none') : sevBadge(v) },
       { key: 'verdict', label: 'what it means', wide: true },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ], '')] : []),

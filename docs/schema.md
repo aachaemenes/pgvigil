@@ -12,7 +12,7 @@ to, it reads one row per object:
 | index                       | `pg_get_indexdef`, marked `(INVALID)` when invalid                                     |
 | constraint                  | `pg_get_constraintdef`, marked `NOT VALID` when not validated                          |
 | trigger                     | `pg_get_triggerdef`, marked when disabled, replica or always                           |
-| function, procedure         | the kind, its arguments with their names and defaults, result, language, volatility, strictness, `security definer`, leakproof, parallel safety, cost and rows, its `SET` settings, and `body sha256:<16 hex>` of its source |
+| function, procedure         | the kind, its arguments with their names and defaults, result, language, volatility, strictness, `security definer`, leakproof, parallel safety, cost and rows, its `SET` settings, and `body sha256:<16 hex>` of its source; where the instance's `query_text` is `full` (the default) the source's text follows it, masked (since A26: the history shows what changed) - except a body that names a password or a secret (the DDL log's own test: `password`, `secret`, `pwd`, a `user:password@` address, `CREATE` / `ALTER SERVER`, `USER MAPPING`, `SUBSCRIPTION`), kept as its hash with the words "body text not kept", and a database whose bodies fell back to hashes (over 160 MB); a PostgreSQL 14+ SQL-standard body (`BEGIN ATOMIC ... END`, `RETURN expr`) is read with `pg_get_function_sqlbody`, the server's decompiled text (see SQL-standard bodies below) |
 | view, materialized view     | `pg_get_viewdef`                                                                       |
 | sequence                    | the type, start, increment, min, max, cache, cycle, and the column that owns it (an owned sequence belongs to that table) |
 
@@ -30,7 +30,37 @@ Extensions tab), aggregates, and PostgreSQL 18's NOT NULL constraints (the colum
 where FIPS mode disables `md5()`. A definition longer than 20,000 characters is stored cut, but its hash is taken
 over the whole text, so a change after the cut still shows.
 
-**Rights:** pg_monitor, nothing more. The catalogs and the `pg_get_*def` functions are readable by every role.
+**SQL-standard bodies (PostgreSQL 14 and later):** a `BEGIN ATOMIC ... END` or `RETURN expr` body has an empty
+`prosrc` in the catalog, so pgvigil reads it with `pg_get_function_sqlbody`, the function pg_dump itself reads such a
+body with (it is not in PostgreSQL's documented table of catalog functions). Each database's read first asks the
+server whether the monitoring login may run the function: PostgreSQL 13 reads every body as before; on a server at 14
+or later where it may not (the function absent, or `EXECUTE` on it revoked from `PUBLIC`) the bodies are read as
+before too and each such database gets the collector error `schema body:<database>: pg_get_function_sqlbody is absent
+or not executable ...`, so the collection is 'partial' (its line shows the run's first collector error), never silent;
+the database's snapshot is still taken. The text is the server's decompiled form, not the text that was typed: names come
+schema-qualified, constants print under the session's `TimeZone`, `DateStyle`, `IntervalStyle` and
+`extra_float_digits`, comments are dropped (an edit of a comment alone records nothing), and `SELECT *` is expanded
+when the function is created. So, as for a view: renaming a table the body reads changes the body (a 'changed' row for
+the function, with no matched statement - the event trigger logs the ALTER under the table), and a major-version
+upgrade that prints the same body differently records one 'changed' row per such function, with both texts.
+Deparsing a body takes an `AccessShareLock` on every table it reads until the read's transaction ends, as
+`pg_get_viewdef` does for a view: an `ACCESS EXCLUSIVE` lock on such a table (an `ALTER TABLE` rewrite, `VACUUM FULL`,
+`TRUNCATE`) held past the collector's `lock_timeout` (2 s) fails that database's read for the hour (its stored snapshot
+stays), and a DDL that arrives during the read waits behind it. One body whose deparse raises an error fails the
+database's read.
+
+**The upgrade to SQL-standard bodies:** the first read after it records each such body as its baseline, not a change:
+beside each body the collector sends the hash the earlier version took of the same row (over the empty source), and
+the import takes a stored row with that hash as the body's baseline - its text is stored, its `last_changed` kept (an
+arm in `import_schema`, not an equal hash as when `query_text` changes). A real change of such a body between the
+earlier version's last read and this version's first read is taken as that baseline (the earlier version could not
+see it either). An owner, ACL or settings change in that interval still records its rows, and the definition's row
+then shows the body appearing. The same arm takes one contrived change silently at any time: a `LANGUAGE sql AS ''`
+function (an empty string body) replaced by an SQL-standard body with the same signature and settings. The way back is not silent: an earlier version's read after this one records one
+'changed' row per such function (its body goes back to empty).
+
+**Rights:** pg_monitor, nothing more. The catalogs and the `pg_get_*def` functions are readable by every role, and so
+is `pg_get_function_sqlbody` (`EXECUTE` is `PUBLIC`'s by default).
 
 **Size:** the collector hands the repository one database at a time (its event-trigger rows, then its objects), and a
 last call that marks a database neither read nor in error as gone; PostgreSQL refuses a jsonb array over 256 MB, so
@@ -154,6 +184,70 @@ under every policy.
 - **schema: a definition changed** (info): how many objects were added and how many changed, and the newest change.
   A dropped partition (a retention job's routine) is counted here, not in the warning.
 
+## SQL Server (mssql_schema)
+
+The SQL Server collection **mssql_schema** keeps the same history for the databases a SQL Server instance names, in
+the same tables, on the same Schema tab (an instance's Configuration row). It is off until the instance names its
+databases in `pgvigil.yaml`:
+
+```yaml
+instances:
+  - name: erp01
+    engine: sqlserver
+    mssql_schema:
+      databases: ['*', '-scratch']   # every user database but scratch; or a list of names
+```
+
+`*` is every user database, a name is that database, `-name` leaves one out (case ignored). Nothing is created on the
+server. The databases of an availability group's secondary replica, an offline or restoring database are kept as
+they were (their primary or their return is read); a database the login cannot enter is kept and said so.
+
+**What is kept.** One row per object: schemas; tables (temporal and history tables, memory-optimized with its
+durability, lock escalation, the partition scheme and column), each column (its id, type, nullability, identity,
+computed text, collation, sparse), each index (type, unique, key columns in order, included columns, filter, data
+space), each constraint (primary key, unique, foreign key with its columns and actions, check, default) and each DML
+trigger as its own row with its table as parent; views; procedures, functions and triggers (their parameters,
+EXECUTE AS, SCHEMABINDING, ANSI_NULLS and QUOTED_IDENTIFIER, encryption, a CLR method); synonyms, sequences and user
+types. Owners are kept, permissions are not.
+
+**A module's body** is kept as **text** where the instance's `query_text` is `full` (the configuration's default),
+masked as the job and audit texts are, and as `body sha256:<16 hex>` where it is `normalized` or `none`: the Schema
+tab then shows that a body changed, not how. A view's text is kept under every policy. A body (or a view) that names a
+password or a secret - the DDL log's own test, so `PASSWORD = '...'`, `CREATE CREDENTIAL ... SECRET`, a
+`user:password@` address - is kept as its `body sha256:` line with the words "body text not kept", under every
+policy. The object's hash is taken over the body's SHA-256, never its text, so a change of `query_text` is never
+recorded as a schema change. A definition is stored up to
+20,000 characters; a change past that point is still found.
+
+**When a database is read.** Every 15 minutes a pass reads the databases that are due, by reason in this order, then
+the oldest read first; each is started within the pass's 5 minutes and given 120 seconds. The reasons: never read,
+another database on a reused id, a restore over it under the same name (msdb's restore history), a `CREATE`, `ALTER`
+or `DROP` the default trace's reader (`mssql_defaulttrace`) stored since its last read, a gap the reader reported
+(kept until each database is read after it), a read that met a change halfway, and the daily read of every database.
+A read-only or standby database (a log-shipping secondary) is read when new and at the daily read only, never on each
+log restore. A database too large to store is tried again at the daily read, on a restore or on DDL after the attempt,
+never on every pass. A database is the same one while its id and its create date in the server's own clock stay (a
+daylight-saving change does not make it new); another database restored onto a dropped one's id is a new baseline. A
+database is read whole: the default trace keeps neither the schema nor the id of an object. Where there is no default trace to trust -
+Azure SQL Database, a server that switched it off, a login without ALTER TRACE, a reader that is failing or behind -
+changes are found at the daily read alone, and the Schema tab says so with the reason and how old the oldest read is.
+
+**Who made a change** is the default trace's login, host and program for the object's name (or its table's) between
+the two reads. A name two schemas share, or several statements in the interval, list every candidate with the words
+"matched by name"; a change no trace row fits says so.
+
+**Limits.** A read runs under READ COMMITTED with a 5-second lock timeout, never uncommitted; a change that lands
+during the read leaves it unstored (read again next pass). A database without VIEW DEFINITION for the login is "not
+readable" and records no change. Over 10,000 tables and views, or over 160 MB of definitions even with the bodies as
+hashes, a database is not snapshotted and its stored snapshot is kept. An owner change (the default trace's event
+153, which the reader leaves out) is found at the daily read. A change inside a masked part of a body or past the
+20,000-character cut is recorded with the same stored text on both sides, and the compare says so. SQL
+Server 2016 or later, Azure SQL Managed Instance, Azure SQL Database.
+
+**Rights**: VIEW ANY DEFINITION (or VIEW DEFINITION in each database), CONNECT ANY DATABASE (or a user in each), SELECT
+on `msdb.dbo.restorehistory` (without it a restore that moves the database's create date reads as another database: a
+new baseline, no diff); ALTER TRACE for the default trace's reader.
+
 ## The repository (migration 0058)
 
 | Table / function                                  | Holds                                                                           |
@@ -165,5 +259,13 @@ under every policy.
 | `import_schema(i, at, payload)`                   | the collector's import: the diff, the snapshot, the log rows, the cursor         |
 | `schema_changes_window(i, from, to, dbid)`        | the changes of a window (2,000 newest), each with its matched statement          |
 | `schema_findings`                                 | the two findings above                                                           |
+| `mssql_schema_dbs` (0267)                         | SQL Server: each database the collection has seen - its id, name, create date (UTC for the page; `create_local`, the server's own clock, for its identity), newest restore, the last pass's state and note (a pass that does not read it keeps a 'torn' or 'partial'), `read_at` (the server's UTC clock before its last whole read), `partial_at` (the same, of its last read too large to store) |
+| `mssql_schema_trace_gaps` (0267)                  | SQL Server: per instance, the newest default-trace read that said events were not read (kept by a trigger on `mssql_reader_state`) |
+| `import_mssql_schema(i, at, payload)` (0267)      | SQL Server's import: another database on a reused id becomes a new baseline (a restore, a rename keep the history), then `import_schema` |
+| `import_mssql_schema_due(i, at, payload)` (0267)  | which databases a pass reads whole, and why                                      |
+| `mssql_schema_changes_window(i, from, to, dbid)` (0267) | SQL Server's changes of a window, each with the default trace's candidates |
+
+Since 0267 a database gone from a read takes its objects with it (they were left present before, on both engines),
+so purge removes them with the database.
 
 A late import (a one-off `collect` that finishes after the daemon's newer read) changes nothing.

@@ -14,7 +14,7 @@ func TestRunningPlansSwitch(t *testing.T) {
 		{Name: "p_on", Engine: EngineSQLServer, DSNRef: "file:/x/p_on", RunningPlans: true},
 		{Name: "pg_on", Engine: EnginePostgres, DSNRef: "file:/x/pg_on", RunningPlans: true},
 	}
-	all, skipped := Merge(file, page, "full")
+	all, skipped := Merge(file, page, "full", CounterEdits{})
 	if len(skipped) != 0 || len(all) != 4 {
 		t.Fatalf("merge: %d instances, skipped %v", len(all), skipped)
 	}

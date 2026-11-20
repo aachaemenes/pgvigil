@@ -33,9 +33,9 @@
 -- mssql_session_tempdb_newest (the TempDB page), mssql_log_flush_between (log bytes flushed per database).
 --
 -- mssql_cpu_findings: other processes using the CPU (sp_PressureDetector's 50 %), a transaction open for a long time,
--- slow data file writes (sp_PressureDetector's 100 ms). The join adds the arm to pgvigil.findings (0190):
+-- slow data file writes (sp_PressureDetector's 100 ms). 0190 adds the arm to pgvigil.findings:
 --   SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_cpu', at FROM pgvigil.mssql_cpu_findings
--- Partition parents for purge() (the join adds them): mssql_counter_sample, mssql_counter_read, mssql_session_summary,
+-- Partition parents for purge() (0190 adds them): mssql_counter_sample, mssql_counter_read, mssql_session_summary,
 -- mssql_session_group, mssql_session_tempdb, mssql_activity_read.
 --
 -- Sources (MIT): sp_PressureDetector (DarlingData, darlingdata-20261101): perfmon list L2373-2386, its rates L2410-2440,

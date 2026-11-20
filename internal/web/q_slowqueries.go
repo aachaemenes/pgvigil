@@ -34,7 +34,7 @@ SELECT day::text AS day, statements, under_1s, s1_to_10, s10_to_60, over_60s, to
   FROM pgvigil.slow_histogram($1, $2, $3, $4, $5)`
 
 // sqlSlowTop serves both top lists in one call: the page sorts by rank_count or rank_total.
-const sqlSlowTop = `SELECT * FROM pgvigil.slow_top($1, $2, $3, $4, $5)`
+const sqlSlowTop = `SELECT * FROM pgvigil.slow_top($1, $2, $3, $4, $5) /* text: example=stmt, instance_id=inst */`
 
 const sqlSlowTotals = `SELECT * FROM pgvigil.slow_totals($1, $2, $3, $4)`
 
@@ -46,7 +46,7 @@ SELECT $1::int AS min_ms, $2::timestamptz AS histogram_from,
 
 // sqlSlowRecent is the window's slow statements of one instance, newest first.
 const sqlSlowRecent = `
-SELECT at, duration_ms, pid, datname, usename, client, left(statement, 4000) AS statement, shape_key, reader
+SELECT at, duration_ms, pid, datname, usename, client, left(statement, 4000) AS "statement@stmt", shape_key, reader
   FROM pgvigil.slow_events
  WHERE instance_id = $1 AND at > $2 AND at <= $3 AND duration_ms >= $4
  ORDER BY at DESC
@@ -115,7 +115,7 @@ func (s *Server) SlowQueries(w http.ResponseWriter, r *http.Request) {
 		secs := max(1, int(math.Ceil(float64(minMS)/1000)))
 		parts = append(parts,
 			part{"recent", sqlSlowRecent, []any{id, from, to, ms}},
-			part{"sampled", `SELECT * FROM pgvigil.long_runs_in_window($1, $2, $3, $4, 'active', NULL, NULL, NULL, 200)`, []any{id, from, to, secs}})
+			part{"sampled", `SELECT * FROM pgvigil.long_runs_in_window($1, $2, $3, $4, 'active', NULL, NULL, NULL, 200) /* text: query=stmt */`, []any{id, from, to, secs}})
 	}
 	s.multi(w, r, parts)
 }

@@ -6,8 +6,13 @@
 -- alert, which is the recovery message.
 --   dead tuples piling up           a table's n_dead_tup at 1,000,000 (warning) / 10,000,000 (critical): template
 --                                   pg-autovacuum-dead-tuples (CustomAlertTemplates.cs L46-55)
---   replay lag                      a sender's replay lag at 30 s (warning) / 5 min (critical): template pg-replication-lag
---                                   (L57-65)
+--   (replay lag)                    NOT in this view since the HA join (task 389): the template pg-replication-lag
+--                                   (L57-65: a sender's replay lag at 30 s warning / 5 min critical) is judged once per
+--                                   link by 0141's 'standby lag', its tiers the threshold key standby_replay_lag
+--                                   (30 / 300 s, two reads in a row, beyond recovery_min_apply_delay), and a logical
+--                                   slot's sender by 0141's 'replay lag', its tiers the key logical_sender_lag (30 / 300 s,
+--                                   the newest read: this arm's rule). The arm that stood here said a standby's lag a
+--                                   second time and raised on a standby delayed on purpose
 --   replication slot retaining WAL  a slot's retained WAL at 10 GB (warning) / 50 GB (critical): template
 --                                   pg-replication-slot-wal (L87-96)
 --   a volume under 5 GB free        a SQL Server volume's free space under 5 GB (warning) / at or under 2 GB (critical):
@@ -17,8 +22,10 @@
 --                                   raises nothing, and only on a volume over 10 GB (on a smaller one the floor would stand
 --                                   for good: its percent rule judges it). With the default 20 % that is a volume of 10 to
 --                                   25 GB; the critical tier needs a percent threshold set lower (under 20 % on 10 GB)
---   AG secondary behind             an Availability Group database 300 s or more behind its primary (warning):
---                                   agLagAlertSeconds 300 (DarlingConfig.cs L796-799)
+--   (AG secondary behind)           NOT in this view since the HA join (task 389): agLagAlertSeconds 300
+--                                   (DarlingConfig.cs L796-799: an Availability Group database 300 s behind its primary)
+--                                   is judged by 0143's 'a secondary would lose data in a failover', its tiers the
+--                                   threshold key ag_data_loss (1 / 5 minutes, two reads in a row)
 --   runnable queue per scheduler    SQL Server's runnable tasks per scheduler averaged over the last 5 minutes (3 reads
 --                                   at least) at 8 (warning) / 16 (critical): RunnableQueueWarningPerScheduler /
 --                                   RunnableQueueCriticalPerScheduler (RunnableQueueEvaluator.cs L117-120); the
@@ -58,12 +65,6 @@ SELECT t.instance_id, CASE WHEN t.n_dead_tup >= 10000000 THEN 'critical' ELSE 'w
   FROM pgvigil.tables t
  WHERE t.is_present AND t.n_dead_tup >= 1000000 AND t.snapshot_at > now() - interval '1 day'
 UNION ALL
-SELECT r.instance_id, CASE WHEN r.lag_secs >= 300 THEN 'critical' ELSE 'warning' END, 'replay lag', r.key, true,
-       'under 30 s', 'all', format('the standby %s replays %s s behind the primary', r.key, round(r.lag_secs::numeric, 1)),
-       'pg-collector', r.snapshot_at
-  FROM pgvigil.replication_latest r
- WHERE r.kind = 'sender' AND r.lag_secs >= 30 AND r.snapshot_at > now() - interval '15 minutes'
-UNION ALL
 SELECT s.instance_id, CASE WHEN s.lag_bytes >= 50 * 1073741824::bigint THEN 'critical' ELSE 'warning' END, 'replication slot retaining WAL', s.key, true,
        'under 10 GB', 'all',
        format('the slot %s retains %s of WAL and %s: WAL a slot keeps is unbounded unless max_slot_wal_keep_size is set, so it fills the volume; a slot whose consumer is gone is dropped',
@@ -80,13 +81,6 @@ SELECT v.instance_id, CASE WHEN v.free_bytes <= 2 * 1073741824::bigint THEN 'cri
   FROM pgvigil.drives_now v
  WHERE v.source = 'dm_os_volume_stats' AND v.status = 'ok' AND v.free_bytes < 5 * 1073741824::bigint
    AND v.snapshot_at > now() - interval '3 hours' AND v.total_bytes > 10 * 1073741824::bigint
-UNION ALL
-SELECT d.instance_id, 'warning', 'AG secondary behind', d.group_name || ': ' || d.database_name || ' on ' || d.replica_server, true,
-       'under 300 s', 'all',
-       format('Availability Group %s: database %s on replica %s is %s seconds behind the primary (threshold 300)', d.group_name, d.database_name, d.replica_server, d.secondary_lag_s),
-       'mssql_hadr', d.snapshot_at
-  FROM pgvigil.mssql_ag_database_state d
- WHERE d.secondary_lag_s >= 300 AND d.snapshot_at > now() - interval '30 minutes'
 UNION ALL
 SELECT q.instance_id, CASE WHEN q.per_sched >= 16 THEN 'critical' ELSE 'warning' END, 'runnable queue per scheduler', 'schedulers', true,
        'under 8 per scheduler', 'all',
@@ -130,7 +124,7 @@ SELECT c.instance_id, 'critical', 'server unreachable', i.name, true, 'answering
 -- import_connect_failure: a collection that could not connect to its instance, recorded as that collection's error with
 -- the note 'connect: <the driver's error>'. An instance with no row - one of pgvigil.yaml never reached (its row is
 -- made at its first read that connects) - gets its row here with the configuration's engine, platform and tags, so
--- it is reported as any instance that cannot be reached (the join's w9e, finding 7); not when the page removed the
+-- it is reported as any instance that cannot be reached; not when the page removed the
 -- name in the last 5 minutes (a read in flight of a removed page instance). A retired row (is_active false: removed,
 -- disabled) is left alone. The collector's door (an import_ function: apply_roles makes it SECURITY DEFINER and the
 -- collector's).
@@ -141,7 +135,7 @@ RETURNS void LANGUAGE plpgsql AS $$
 DECLARE v_id int; v_active boolean;
 BEGIN
   -- the row of this engine only: a read of the other engine in flight (a name removed and added again with the other
-  -- engine) writes nothing onto it (the fold's review, finding 2)
+  -- engine) writes nothing onto it
   SELECT i.instance_id, i.is_active INTO v_id, v_active FROM pgvigil.instances i WHERE i.name = p_name AND (p_engine IS NULL OR i.engine = p_engine);
   IF v_id IS NULL THEN
     IF coalesce(p_engine, '') NOT IN ('postgres', 'sqlserver')
@@ -157,7 +151,7 @@ BEGIN
   PERFORM pgvigil.log_collection(v_id, p_collection, p_at, p_duration_ms, 'error', 'connect: ' || left(coalesce(nullif(p_error, ''), 'no reason given'), 2000));
 END $$;
 
-COMMENT ON VIEW pgvigil.darling_alert_findings IS 'PerformanceMonitor''s alert defaults as findings (task 177 D30): dead tuples, replay lag, slot WAL, a volume under 5 GB free, an AG secondary behind, the runnable queue per scheduler, long-running requests, a server unreachable.';
+COMMENT ON VIEW pgvigil.darling_alert_findings IS 'PerformanceMonitor''s alert defaults as findings (task 177 D30): dead tuples, slot WAL, a volume under 5 GB free, the runnable queue per scheduler, long-running requests, a server unreachable.';
 
 -- pgvigil.findings takes them in the release's join (0190_join_release2.sql writes its arm in the view:
 --   SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.darling_alert_findings

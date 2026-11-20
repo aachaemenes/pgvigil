@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestBackupLocWiringOnAStore (task 301's wiring, scripts/inv-301-wiring.patch): on a migrated repository
+// TestBackupLocWiringOnAStore (task 301's wiring): on a migrated repository
 // (PGVIGIL_REPO_TEST_DSN, skipped without it) the Summary's Backup FULL cell follows mssql_backups alone - its run
 // failed and mssql_backup_files fresh reads 'failed', never 'ok' (the design pass's F1) - and counts the new findings by
 // the type their names carry; the Detail rows of /api/mssql/backups carry each database's 'to' cells and DBA Dash's flags.

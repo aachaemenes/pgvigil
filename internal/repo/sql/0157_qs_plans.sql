@@ -30,8 +30,8 @@
 -- The running plans switch of a page instance (admin_instances.running_plans, false for every row; ticked on Admin >
 -- Instances through import_admin_running_plans; admin_inventory() re-made with it) and the audit of a plan read by its
 -- handle (custom_report_log op 'plan_read'; 0131's import_custom_report_run with the op) are at the end.
--- For the join: the actions_log constraints below start from 0102 and 0078: a join that adds an action merges the lists.
--- Add 'mssql_qs_plans_purge' and 'mssql_plan_stats_store' to apply_roles()' owner-only list (it deletes) and
+-- The actions_log constraints below start from 0102 and 0078: a later migration that adds an action merges the lists.
+-- 0190 adds 'mssql_qs_plans_purge' and 'mssql_plan_stats_store' to apply_roles()' owner-only list (it deletes) and
 -- n := n + pgvigil.mssql_qs_plans_purge(p_days) to purge(). No partitioned parent, no findings arm here.
 SET LOCAL lock_timeout = '20s';
 
@@ -417,7 +417,7 @@ $$;
 -- '\'), from the plan cache's texts or the Query Store's; p_instance NULL = every instance. p_skip: the instances whose
 -- query_text policy is 'none' NOW (serve's configuration): a policy change clears no stored text (a plan cache text goes
 -- only when its key is sent again, a Query Store text when a later read returns its query), so their stored texts are
--- never returned (j15's fix review finding 4). The caller bounds the time.
+-- never returned. The caller bounds the time.
 DROP FUNCTION IF EXISTS pgvigil.mssql_statement_search(text, text, int, int);
 CREATE OR REPLACE FUNCTION pgvigil.mssql_statement_search(p_pattern text, p_source text, p_instance int, p_limit int, p_skip int[])
 RETURNS TABLE (instance_id int, instance text, source text, database text, statement_key text, object_name text, statement text, seen_at timestamptz)
@@ -486,7 +486,7 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 -- ---------------------------------------------------------------------------------------------------------------
--- a plan read by its handle is audited (task 406's FOLD: a plan carries the statement's literals): op 'plan_read' in
+-- a plan read by its handle is audited (a plan carries the statement's literals): op 'plan_read' in
 -- custom_report_log, written by serve through the actions door's audit login before the plan is answered (who, the
 -- client, the instance, the handle and offsets, the state read; never the plan). 0131's CHECK and function, the op
 -- added; a join that adds another op (0164's 'histogram') merges the lists.
@@ -533,7 +533,7 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------------------------------------------
--- the running plans switch of an instance added in Admin > Instances (task 406's FOLD, the lead's Q15 call: the locked-
+-- the running plans switch of an instance added in Admin > Instances (task 406: the locked-
 -- down default). admin_instances.running_plans is false for every row, those there at the upgrade and those added
 -- after; an admin ticks it on the page (import_admin_running_plans, audited as the page's other changes). The collector
 -- reads it through admin_inventory() (0131's, one column more) and runs mssql_running_plans each minute for a ticked

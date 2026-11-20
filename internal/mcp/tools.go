@@ -24,6 +24,7 @@ type arg struct {
 type tool struct {
 	Name, Title, Description string
 	args                     []arg
+	writes                   bool // the agent door's claim, renew, report and release write the investigation's own record
 	run                      func(ctx context.Context, s *Server, a map[string]any) (any, error)
 }
 
@@ -75,7 +76,7 @@ var (
 )
 
 func tools() []tool {
-	return []tool{
+	return append([]tool{
 		{Name: "fleet_summary", Title: "Fleet summary",
 			Description: "Every monitored PostgreSQL instance (platform, version, sessions, failing collections) and the fleet's failing daily checks (critical first): the starting point.",
 			args:        []arg{{name: "severity", typ: "string", desc: "only checks of this severity", enum: []string{"critical", "warning"}}},
@@ -121,22 +122,30 @@ func tools() []tool {
 			args: []arg{{name: "text", typ: "string", desc: "the text the statement holds", required: true},
 				{name: "instance", typ: "string", desc: "one SQL Server instance (name or instance_id); without it every one"}},
 			run: findStatements},
-	}
+	}, alertTools()...) // task 403b: alert_history (tools_alerts.go)
 }
 
-func toolList() []any {
+func listOf(ts []tool) []any {
 	var out []any
-	for _, t := range tools() {
+	for _, t := range ts {
 		out = append(out, map[string]any{
 			"name": t.Name, "title": t.Title, "description": t.Description, "inputSchema": t.schema(),
-			"annotations": map[string]any{"title": t.Title, "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+			"annotations": map[string]any{"title": t.Title, "readOnlyHint": !t.writes, "destructiveHint": false, "idempotentHint": !t.writes, "openWorldHint": false},
 		})
 	}
 	return out
 }
 
-func toolByName(n string) (tool, bool) {
-	for _, t := range tools() {
+// served is the tools this server answers: the reader's, and with the agent door its seven.
+func (s *Server) served() []tool {
+	if s.agent == nil {
+		return tools()
+	}
+	return append(tools(), agentTools()...)
+}
+
+func findTool(ts []tool, n string) (tool, bool) {
+	for _, t := range ts {
 		if t.Name == n {
 			return t, true
 		}

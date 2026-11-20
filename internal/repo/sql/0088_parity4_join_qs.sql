@@ -1,4 +1,4 @@
--- 0088: the join of parity4, second part (task 129, Query Store on SQL Server: 0083), built from 0087's purge() and
+-- 0088: the wiring migration of parity4, second part (task 129, Query Store on SQL Server: 0083), built from 0087's purge() and
 -- 0077's pgvigil.findings (never edited by hand).
 -- pgvigil.findings re-created with one more arm, mssql_querystore_findings (a store in ERROR, read-only, off though
 -- asked for or near its size limit; a forced plan SQL Server fails to use), mapped as the other SQL Server arms are:
@@ -146,7 +146,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the corruption column (0023): checksums off, ignore_checksum_failure on, a corruption event in 24 h, amcheck damage
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.corruption_findings WHERE setting <> 'zero_damaged_pages'
     UNION ALL
-    -- the plans slice (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
+    -- the plan findings (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.plan_findings
     UNION ALL
     -- the indexes collection (0030): invalid and duplicate indexes (warning), redundant and unused ones (info)

@@ -6,10 +6,11 @@ import { alertHref } from './alert_page';
 import { cellClass, cells, cellTarget, cellText, fleet, groups, withTarget } from './fleet';
 import { Ctx, href } from './router';
 import { badge, el, fmtTime, grid, props, Col } from './ui';
+import { buildDocs } from './doclinks';
 import { healthCalendar } from './healthcal';
 import { jumpWhenDrawn, markRows, ownPageAction } from './rowjump';
 
-const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 // the check opens the finding's own page (alert_page.ts: the finding as it stands, its fix, its firings), as a row of
 // the Alerts page does; one link a row, the cells beside it text (DBA Dash's grids)
 const findingCols = (ctx: Ctx): Col[] => [
@@ -25,8 +26,10 @@ const findingCols = (ctx: Ctx): Col[] => [
 ];
 
 export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
-  const [f, fi, sn] = await Promise.all([fleet(), get('findings', { instance: ctx.instance }),
-    loadAckSafe(['seen'], { instance: ctx.instance }) as Promise<AckData & { seen?: Table | null }>]);
+  const [f, fi, sn, bd] = await Promise.all([fleet(), get('findings', { instance: ctx.instance }),
+    loadAckSafe(['seen'], { instance: ctx.instance }) as Promise<AckData & { seen?: Table | null }>,
+    // task 412: the build's documentation links (the checks API's build_docs part; none when it fails)
+    get<{ build_docs?: Table | null }>('mssql/checks', { instance: ctx.instance, part: 'build_docs' }).catch(() => ({ build_docs: null }))]);
   const seen = new Map(rowsOf(sn.seen ?? null).map(x => [`${String(x.setting ?? '')}\x1f${String(x.value ?? '')}`, x]));
   const r = f.instances.find(x => Number(x.instance_id) === ctx.instance);
   if (!r) return el('p', { class: 'empty' }, 'This instance is not in the repository (or no longer active).');
@@ -59,7 +62,8 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
   const mem = (v: unknown) => v == null ? '' : `${(Number(v) / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB`;
   const yn = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
   const server = props([
-    ['version', [s.product_version, s.product_level, s.product_update_level].filter(Boolean).map(String).join(' ') || String(r.server_version ?? '')],
+    ['version', el('span', {}, [s.product_version, s.product_level, s.product_update_level].filter(Boolean).map(String).join(' ') || String(r.server_version ?? ''),
+      ' ', buildDocs(rowsOf(bd.build_docs ?? null)[0] ?? {}))],
     ['edition', String(s.edition ?? '')],
     ['server', [s.server_name, s.machine_name && s.machine_name !== s.server_name ? `(machine ${String(s.machine_name)})` : ''].filter(Boolean).map(String).join(' ')],
     ['started', s.started_at ? `${fmtTime(s.started_at)} (${cellText(c.uptime)})` : ''],

@@ -1,8 +1,8 @@
--- 0037: the wave A join for the vacuum collections (0024). The findings view gains the vacuum checks (a table over
+-- 0037: wires in the vacuum collections (0024). The findings view gains the vacuum checks (a table over
 -- its threshold for hours, wraparound past autovacuum_freeze_max_age, a vacuum running over an hour or waiting on a
 -- lock; the server-wide 'autovacuum off' row stays out: the settings rule of the view already carries it);
 -- purge() gains the vacuum_sample partitions, the runs by last_seen and the absent tables and databases. Both bodies
--- are 0036's with the additions (a frozen file is never edited; a later join re-creates them again with its own).
+-- are 0036's with the additions (a frozen file is never edited; a later migration re-creates them with its own).
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (

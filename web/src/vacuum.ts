@@ -1,19 +1,19 @@
 // The Vacuum tab of one instance: the autovacuum state, its checks, what vacuums now, the tables over or
 // near their thresholds, the never or long unvacuumed ones, wraparound per database, who holds the xmin
 // horizon back, and the vacuum runs of the window (at least the last 7 days). The shell mounts it as
-// vacuumView(ctx) (the lead wires the route and the tab).
+// vacuumView(ctx) (the shell wires the route and the tab).
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
 type Parts = 'state' | 'checks' | 'running' | 'tables' | 'wraparound' | 'holders' | 'history';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const never = (v: unknown) => v == null ? 'never' : fmtTime(v);
 const yes = (v: unknown, kind = 'warn') => v ? badge('yes', kind) : '';
 const ratio = (v: unknown) => v == null ? '' : fmtNum(v) + 'x';
-const ratioCls = (v: unknown) => Number(v) >= 1 ? 'warn' : '';
+const ratioCls = (v: unknown) => v == null || v === '' ? '' : Number(v) >= 1 ? 'warn' : 'status ok';
 const weekMs = 7 * 24 * 3600 * 1000;
 
 export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
@@ -65,12 +65,12 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'table_name', label: 'table' },
     { key: 'is_auto', label: 'by', fmt: v => v ? 'autovacuum' : 'manual' },
     { key: 'is_wraparound', label: 'wraparound', fmt: v => yes(v, 'crit') },
-    { key: 'phase', fmt: (v, r) => r.wait_event_type === 'Lock' ? badge(String(v ?? 'waiting for its lock'), 'warn') : String(v ?? '') },
+    { key: 'phase', fmt: (v, r) => r.wait_event_type === 'Lock' ? badge(String(v ?? 'waiting for its lock'), 'warn') : String(v ?? ''), cls: (v, r) => r.wait_event_type === 'Lock' || v == null || v === '' ? '' : 'status ok' },
     { key: 'scanned_pct', label: 'heap scanned', num: true, fmt: pct },
     { key: 'heap_blks_total', label: 'heap blocks', num: true },
     { key: 'index_vacuum_count', label: 'index passes', num: true },
     { key: 'dead_tuples', label: 'dead tuples found', num: true },
-    { key: 'elapsed_secs', label: 'elapsed', num: true, fmt: fmtSecs, cls: v => Number(v) >= 3600 ? 'warn' : '' },
+    { key: 'elapsed_secs', label: 'elapsed', num: true, fmt: fmtSecs, cls: v => v == null || v === '' ? '' : Number(v) >= 3600 ? 'warn' : 'status ok' },
     { key: 'wait_event', label: 'wait', fmt: (v, r) => v ? `${r.wait_event_type}:${v}` : '' },
     { key: 'blocking_pids', label: 'blocked by', fmt: v => Array.isArray(v) && v.length ? v.join(', ') : '' },
     { key: 'query', wide: true },
@@ -86,12 +86,12 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'dead_ratio', label: 'dead / threshold', num: true, fmt: ratio, cls: ratioCls },
     { key: 'ins_ratio', label: 'inserts / threshold', num: true, fmt: ratio, cls: ratioCls },
     { key: 'anl_ratio', label: 'changes / analyze threshold', num: true, fmt: ratio, cls: ratioCls },
-    { key: 'hours_over', label: 'hours over', num: true, cls: v => Number(v) >= 6 ? 'warn' : '' },
-    { key: 'autovacuum_enabled', label: 'autovacuum', fmt: (v, r) => v === false ? badge('off', 'warn') : r.has_own_settings ? 'own settings' : 'on' },
+    { key: 'hours_over', label: 'hours over', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 6 ? 'warn' : 'status ok' },
+    { key: 'autovacuum_enabled', label: 'autovacuum', fmt: (v, r) => v === false ? badge('off', 'warn') : r.has_own_settings ? 'own settings' : 'on', cls: v => v === false ? '' : 'status ok' },
     { key: 'last_autovacuum', label: 'last autovacuum', fmt: never },
     { key: 'last_vacuum', label: 'last vacuum', fmt: never },
     { key: 'last_autoanalyze', label: 'last autoanalyze', fmt: never },
-    { key: 'freeze_pct', label: 'xid age, % of freeze max', num: true, fmt: pct, cls: v => Number(v) > 100 ? 'warn' : '' },
+    { key: 'freeze_pct', label: 'xid age, % of freeze max', num: true, fmt: pct, cls: v => v == null ? '' : Number(v) > 100 ? 'warn' : 'status ok' },
   ];
   sec.append(el('h3', {}, 'Tables over or near a threshold'),
     el('p', { class: 'meta' }, 'Thresholds as autovacuum computes them: the table\'s own reloptions over the server settings, base + scale factor x reltuples. A ratio of 1x or more is over. Read hourly per database, at most 50 tables per database.'),
@@ -108,9 +108,9 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Wraparound'), grid(wrap, [
     { key: 'datname', label: 'database' },
     { key: 'xid_age', label: 'xid age', num: true },
-    { key: 'xid_freeze_pct', label: '% of freeze max', num: true, fmt: pct, cls: v => Number(v) > 100 ? 'warn' : '' },
+    { key: 'xid_freeze_pct', label: '% of freeze max', num: true, fmt: pct, cls: v => v == null ? '' : Number(v) > 100 ? 'warn' : 'status ok' },
     { key: 'mxid_age', label: 'multixact age', num: true },
-    { key: 'mxid_freeze_pct', label: '% of mxid freeze max', num: true, fmt: pct, cls: v => Number(v) > 100 ? 'warn' : '' },
+    { key: 'mxid_freeze_pct', label: '% of mxid freeze max', num: true, fmt: pct, cls: v => v == null ? '' : Number(v) > 100 ? 'warn' : 'status ok' },
     { key: 'xid_horizon_pct', label: '% of 2^31', num: true, fmt: pct },
     { key: 'user_tables', label: 'user tables', num: true },
     { key: 'over_vacuum', label: 'over vacuum threshold', num: true },

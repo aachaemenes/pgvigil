@@ -7,7 +7,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
-// The approve's sign-in (C1's wiring and the join's review 3a / 3c): entra-identity never takes the source's or the
+// The approve's sign-in: entra-identity never takes the source's or the
 // proposal's SQL login or password, takes a user-assigned identity's client id typed at the approve or kept by an
 // entra-identity source, and BuildDSN refuses a typed secret with it; a PostgreSQL proposal of an Entra source is
 // approved only with a PostgreSQL login typed (its secret never becomes a password); a picked authentication with no

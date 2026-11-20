@@ -36,8 +36,8 @@ has('an instance name with a hyphen', addrWhy('SQL01\\MY-INST'), 'not a characte
 has('a name with a slash', addrWhy('sql01/prod'), 'not a character of a network name');
 has('a name ending in a dot', addrWhy('sql01.'), 'not a host name');
 has('empty', addrWhy('  '), 'empty');
-// review 206h: an IPv6 address with ',port' (the server takes it); spaces around the ','; isV6 as strict as Go's
-// net.ParseIP; an unclosed bracket; a name's 253 limit in bytes (Go's len)
+// an IPv6 address with ',port' (the server takes it); spaces around the ','; isV6 as strict as Go's net.ParseIP;
+// an unclosed bracket; a name's 253 limit in bytes (Go's len)
 for (const s of ['fe80::1,1433', 'tcp:2001:db8::5,1433', 'sql01, 1433', 'sql01 , 1433', '::ffff:10.1.2.3', '::', '1::']) {
   eq(`address: ${s}`, addrWhy(s), '');
 }
@@ -78,7 +78,7 @@ has('no ConnectionID: why says so', none.why, 'holds no connection');
 const neither = rowAddress('[odd] name', ['[ERP]']);
 eq('neither is an address: the host empty', [neither.host, neither.port], ['', '']);
 has('neither is an address: why asks for both', neither.why, 'type its host and port');
-// review 206h: a ConnectionID on DBA Dash's own host falls back to the Instance, with why
+// a ConnectionID on DBA Dash's own host falls back to the Instance, with why
 const loc = rowAddress('SQL01', ['localhost']);
 eq('localhost: the host is the Instance', [loc.host, loc.port], ['SQL01', '']);
 has('localhost: why says DBA Dash\'s own host', loc.why, "DBA Dash's own host");
@@ -86,7 +86,7 @@ const loc2 = rowAddress('SQL01', ['localhost,1433', 'sql01.corp.example.com,1433
 eq('a local ConnectionID is skipped for the next address', loc2, { host: 'sql01.corp.example.com', port: '14330', why: '' });
 eq('tcp:localhost: the Instance', rowAddress('SQL05', ['tcp:localhost']).host, 'SQL05');
 
-// review 206d 13: an add's posts under the server's 16 KB body, in order, nothing lost
+// an add's posts under the server's 16 KB body, in order, nothing lost
 const base = { op: 'add', repo: 'corp', auth: 'sql', login: 'pgv_mon', password: 'p'.repeat(40) };
 const fifty = Array.from({ length: 50 }, (_, i) => ({ server: 'SQL' + i + 'X'.repeat(120), dbadash_ids: [1000 + i, 2000 + i], host: 'sql' + i + '.a-long-domain.example.com', port: '14330', name: 'sql' + i + 'x'.repeat(50) }));
 const parts = addChunks(base, fifty);

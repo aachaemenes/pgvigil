@@ -172,7 +172,7 @@ index ee4135f..a8bff5d 100644
  		}
  		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText})
 +		// task 406: an instance whose running plans box is ticked on the page (off for every instance until an admin ticks
-+		// it, Q15) reads them each minute, unless the file's global schedules: names mssql_running_plans (0 = off for all)
++		// it) reads them each minute, unless the file's global schedules: names mssql_running_plans (0 = off for all)
 +		if p.Engine == EngineSQLServer && p.RunningPlans {
 +			all[len(all)-1].PageDefaults = map[string]Duration{"mssql_running_plans": {Duration: time.Minute}}
 +		}

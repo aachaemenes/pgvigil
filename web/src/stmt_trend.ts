@@ -5,7 +5,7 @@
 // longest duration, rows, mean CPU).
 //
 // trendCol(ctx, keyOf) is the grid column; keyOf picks the statement of a row (null = no button on that row).
-// The Slow queries pages (slow.ts) use it; the Statements grid gets it through the lead's wiring (borrowed.ts).
+// The Slow queries pages (slow.ts) use it; the Statements grid gets it through the shell's wiring (borrowed.ts).
 //
 // parity3 task 125 (pgwatch's Query ID drill, shot 52, and its Time Lag Comparison): a pg_stat_statements row's panel
 // shows calls, time per call and the buffers per interval, a compare of the window with one day earlier and with a

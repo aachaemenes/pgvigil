@@ -237,7 +237,8 @@ export function silenceButton(ad: AckData, r: Row, live: Row | undefined, after:
   if (live?.silence_id != null) {
     const b = endButton(Number(live.silence_id), `Unsilence '${name}'`, after, 'Unsilence');
     b.classList.add('silence-btn');
-    b.title = 'Unsilence this server';
+    // (a button off for the role keeps the role's words as its title: B24f)
+    if (b.getAttribute('aria-disabled') !== 'true') b.title = 'Unsilence this server';
     const why = ackWhy(ad, Number(r.instance_id), name);
     if (why) offBeside(b, why, pageNote(ad));
     return b;
@@ -247,7 +248,7 @@ export function silenceButton(ad: AckData, r: Row, live: Row | undefined, after:
     what: 'This holds every alert of the server; the held alerts are still logged (Held sends). Unsilence removes it.',
     body: { kind: 'silence', instance_id: Number(r.instance_id) }, expiry: true, noteField: 'optional', after }), { instance: Number(r.instance_id), name });
   b.classList.add('silence-btn');
-  if (ackOn(ad, Number(r.instance_id))) b.title = 'Silence This Server';
+  if (ackOn(ad, Number(r.instance_id)) && b.getAttribute('aria-disabled') !== 'true') b.title = 'Silence This Server';
   return b;
 }
 

@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"encoding/csv"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -50,6 +51,14 @@ type PageInstance struct {
 	// door reads them for its words (pagedoor.go), the collector does not
 	Auth    string
 	Options string
+	// Host is the row's host as the page stored it (the name match of its cloud blocks, B24p)
+	Host string
+	// AWS and Azure are the row's cloud blocks (0193; nil = none): set on the Instance by Merge only through
+	// PageCloudRefusal (pagecloud.go)
+	AWS   *PageAWS
+	Azure *PageAzure
+	// SettingsRaw is admin_instances.settings (0263, ST5a: its own schedules and query_text); Merge reads it
+	SettingsRaw []byte
 }
 
 // InventoryReader is the repository's side: the generation alone (cheap, polled) and the list with its generation.
@@ -71,9 +80,17 @@ func RefOK(v string) bool {
 }
 
 // Merge gives the file's instances, then the page's enabled ones the file does not name, each made an Instance the
-// way Validate makes a file instance (platform auto when empty, the file-level query_text). A page instance that
-// breaks a rule is left out with its reason in skipped (the page refuses those on write; this guards a hand edit).
-func Merge(file []Instance, page []PageInstance, queryText string) (all []Instance, skipped []string) {
+// way Validate makes a file instance (platform auto when empty, the file-level query_text, the file's root
+// mssql_counters lines). A page instance that breaks a rule is left out with its reason in skipped (the page refuses
+// those on write; this guards a hand edit).
+func Merge(file []Instance, page []PageInstance, queryText string, root CounterEdits) (all []Instance, skipped []string) {
+	all, skipped, _ = MergeNotes(file, page, queryText, root)
+	return all, skipped
+}
+
+// MergeNotes is Merge with the page blocks not used (B24p): each '<name>: its cloud block is not used: <why>' - the
+// instance itself is kept and collects without the block.
+func MergeNotes(file []Instance, page []PageInstance, queryText string, root CounterEdits) (all []Instance, skipped, dropped []string) {
 	all = append(all, file...)
 	inFile := map[string]bool{}
 	for _, in := range file {
@@ -101,6 +118,10 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
 				why = err.Error()
 			}
 		}
+		ps, psErr := ParsePageSettings(p.SettingsRaw)
+		if psErr != nil && why == "" {
+			why = psErr.Error()
+		}
 		if why != "" {
 			skipped = append(skipped, p.Name+": "+why)
 			continue
@@ -109,14 +130,18 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
 		if plat == "" {
 			plat = "auto"
 		}
-		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText})
+		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText, MSSQLCountersRoot: root})
+		ps.apply(&all[len(all)-1]) // ST5a: its own schedules, off and query_text, as the file's are for its instances
 		// task 406: an instance whose running plans box is ticked on the page (off for every instance until an admin ticks
-		// it, Q15) reads them each minute, unless the file's global schedules: names mssql_running_plans (0 = off for all)
+		// it) reads them each minute, unless the file's global schedules: names mssql_running_plans (0 = off for all)
 		if p.Engine == EngineSQLServer && p.RunningPlans {
 			all[len(all)-1].PageDefaults = map[string]Duration{"mssql_running_plans": {Duration: time.Minute}}
 		}
+		if why := pageCloud(p, &all[len(all)-1]); why != "" {
+			dropped = append(dropped, why)
+		}
 	}
-	return all, skipped
+	return all, skipped, dropped
 }
 
 // Fingerprint names what makes an instance's loops differ: a change in any of these restarts its loops.
@@ -133,7 +158,24 @@ func Fingerprint(in Instance) string {
 	sort.Strings(dis)
 	tags := slices.Clone(in.Tags)
 	sort.Strings(tags)
-	return strings.Join([]string{in.Engine, in.Platform, in.DSNRaw, in.QueryText, strings.Join(tags, ","), strings.Join(sch, ","), strings.Join(dis, ",")}, "\x1f")
+	// the cloud blocks: a collection whose Configured was false has no loop, so a block set, edited
+	// or cleared restarts the instance's loops
+	cloud := ""
+	if a := in.AWS; a != nil {
+		cloud += "aws:" + strings.Join([]string{a.Region, a.Profile, a.Cluster, a.DBInstance, a.LogGroup}, "/")
+	}
+	if a := in.Azure; a != nil {
+		cloud += ";azure:" + a.ServerKey() + "/" + a.Cloud
+	}
+	// a SQL Server instance's thresholds too (ST5b's design pass F1: the collector reads them only at its loops' start);
+	// encoding/json writes a map's keys sorted, so an equal set in another order gives the same text
+	th := ""
+	if len(in.MSSQLThresholds) > 0 {
+		if b, err := json.Marshal(in.MSSQLThresholds); err == nil {
+			th = string(b)
+		}
+	}
+	return strings.Join([]string{in.Engine, in.Platform, in.DSNRaw, in.QueryText, strings.Join(tags, ","), strings.Join(sch, ","), strings.Join(dis, ","), cloud, th}, "\x1f")
 }
 
 // Diff names the instances to stop (gone or changed) and to start (new or changed), by name, each sorted.
@@ -168,8 +210,8 @@ func Diff(old, cur []Instance) (stop, start []string) {
 // hold (nil = always) says whether this collector holds the page's instances (one collector of a repository does:
 // sched's page_inventory lock). One that does not collects the file's instances only, says so once, and asks again
 // each tick: when the holder ends, the next to take the lock reads the page's list at once.
-func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, apply func([]Instance)) {
-	WatchInventoryRaw(ctx, log, src, hold, file, queryText, every, nil, false, func(all []Instance, _ []PageInstance, _ int64) { apply(all) })
+func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, root CounterEdits, every time.Duration, apply func([]Instance)) {
+	WatchInventoryRaw(ctx, log, src, hold, file, queryText, root, every, nil, false, func(all []Instance, _ []PageInstance, _ int64) { apply(all) })
 }
 
 // WatchInventoryRaw is WatchInventory for serve's doors: apply also gets the page's raw rows (a disabled row and a row
@@ -178,7 +220,7 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 // a receive on wake reads at once (serve's own write, so this serve's doors follow before it replies); with reapply,
 // every tick applies the last rows again although the generation did not move (serve re-resolves a page door whose
 // credential could not be read).
-func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, wake <-chan struct{}, reapply bool, apply func(all []Instance, page []PageInstance, gen int64)) {
+func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, root CounterEdits, every time.Duration, wake <-chan struct{}, reapply bool, apply func(all []Instance, page []PageInstance, gen int64)) {
 	if every <= 0 {
 		every = 15 * time.Second
 	}
@@ -201,7 +243,7 @@ func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReade
 					toldOther = true
 				}
 				if held || have == -1 { // lost the lock, or never had it: the file's list alone
-					all, _ := Merge(file, nil, queryText)
+					all, _ := Merge(file, nil, queryText, root)
 					apply(all, nil, 0)
 				}
 				held, have, failing = false, -3, false
@@ -233,15 +275,18 @@ func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReade
 			failing = true
 			if have == -1 { // the first read failed: run the file's instances meanwhile (once, not each tick), generation -1
 				have = -2
-				all, _ := Merge(file, nil, queryText)
+				all, _ := Merge(file, nil, queryText, root)
 				apply(all, nil, -1)
 			}
 			return
 		}
 		failing = false
-		all, skipped := Merge(file, page, queryText)
+		all, skipped, dropped := MergeNotes(file, page, queryText, root)
 		for _, s := range skipped {
 			log.Warn("instances: a page instance is left out", "why", s)
+		}
+		for _, s := range dropped {
+			log.Warn("instances: a page instance's cloud block is not used", "why", s)
 		}
 		log.Info("instances: list read", "generation", gen, "from_file", len(file), "from_page", len(all)-len(file))
 		have = gen
@@ -530,7 +575,7 @@ type Proposal struct {
 	AutoPause  bool              `json:"auto_pause,omitempty"`
 	// Platform: what the cloud says the server is, the configuration's platform word (rds, aurora, azure, cloudsql,
 	// alloydb for PostgreSQL; rds, azuresqldb, azuresqlmi, cloudsql for SQL Server) - an approved proposal's instance
-	// starts with it, never 'auto' when the source knows (the join's review 3e); empty for the list and CMS sources
+	// starts with it, never 'auto' when the source knows; empty for the list and CMS sources
 	Platform string `json:"platform,omitempty"`
 }
 

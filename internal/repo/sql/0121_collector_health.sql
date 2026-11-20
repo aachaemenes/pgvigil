@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_heartbeat (
   instances     int,                              -- instances it ran a collection on in the last minute
   repo_conns    int,                              -- the repository's sessions named pgvigil* at the beat (every pgvigil process)
   span_s        int,                              -- the host's span at this run's newest beat (collector_span_take); NULL: no interval known
-  beat_minute   timestamptz                       -- the newest minute this run's beat wrote, on the collector's clock (collector_reading)
+  beat_minute   timestamptz,                      -- the newest minute this run's beat wrote, on the collector's clock (collector_reading)
+  sends_alerts  boolean                           -- this run sends alerts (its alerts: list names a channel), as its beat says; NULL before its first beat ('alert sender idle', 0166)
 );
 
 CREATE TABLE IF NOT EXISTS pgvigil.collector_beats (
@@ -103,10 +104,24 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_load (
 -- an instance's rows in time order (collector_server_down_at: the row before a spell, rows between two minutes)
 CREATE INDEX IF NOT EXISTS collector_load_instance ON pgvigil.collector_load (instance_id, minute);
 
+-- the trim mark of each minute-led table the beats trim (collector_load, collector_runs; collector_probe in 0254): the
+-- trims have reached every row before trimmed_to. A beat trims from the mark - never 'minute < now() - 8 days' over
+-- the whole key, whose estimate counts every row deleted since the last analyze as still there (BJf8L: on statistics
+-- 10 hours old, collector_load's trim read its 6.2 GB by a Seq Scan, 3.2 s a beat at 2,124 instances). A row is
+-- written once per table (collector_trim, at the table's first trim)
+CREATE TABLE IF NOT EXISTS pgvigil.collector_trim_mark (
+  tbl         text PRIMARY KEY,
+  trimmed_to  timestamptz NOT NULL
+);
+
 -- per instance, collection and collector (host): the failed runs in a row now. By host: two hosts reading one
 -- instance (a move, a second collector) each keep their own count, and the lowest of the hosts still reading speaks
 -- (collector_streaks_now). A renamed host starts at 0. Trimmed by the beat when its host has not named the instance
--- for 8 days.
+-- for 8 days, and every row of a host none of whose runs has beaten for 8 days (a host gone: uninstalled, renamed) -
+-- while any collector still beats: a repository whose last collector is uninstalled keeps that host's rows (one host's,
+-- as its heartbeat rows). Kept as a limit: a repository restored from a backup older than 8 days, or back after an
+-- outage of 8 days, sees every other host as gone at the first beat and drops their rows; a host's streak at 0 is not
+-- written again while it stays 0, so until it changes the lowest of the hosts still reading may be a failing one.
 CREATE TABLE IF NOT EXISTS pgvigil.collector_streaks (
   instance_id   int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   collection    text NOT NULL,
@@ -247,6 +262,56 @@ RETURNS void LANGUAGE sql AS $$
    WHERE c.collector_id = p_id
 $$;
 
+-- collector_trim: one beat's trim of a minute-led table past 8 days, by its mark (collector_trim_mark). The first row
+-- at or after the mark is read on the key (an empty stretch - a store whose collectors stopped - is passed in one read,
+-- and the executor never walks the dead entries below the mark); from the mark to 10 minutes past that row at most,
+-- never past now() - 8 days, is deleted, planned with its bounds each time (EXECUTE), so the estimate is those minutes
+-- at most (10 minutes, not an hour - a backlog's step must end inside the beat's 30 s at
+-- many collectors; a 13-hour backlog is 78 beats); the mark moves to the step's end in the same transaction (a beat
+-- that fails after it leaves the rows and the mark as they were). No mark yet - '-infinity', or no row (the first trim
+-- of the table): from its first row, 10 minutes a beat. A beat that finds the mark held by another beat's trim -
+-- locked or already moved, not committed - skips its own without waiting (that beat trims): the plain read sees the
+-- committed row (an INSERT ... ON CONFLICT here waited on a moved mark). Returns the rows deleted.
+-- On a server older than 16 the planner's own read of the key's low end (get_actual_variable_range) may still walk the
+-- dead entries once per plan (not measured; the lab runs 18, which caps that read).
+CREATE OR REPLACE FUNCTION pgvigil.collector_trim(p_tbl text)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+  v_cut  timestamptz := now() - interval '8 days';
+  v_mark timestamptz;
+  v_lo   timestamptz;
+  v_hi   timestamptz;
+  v_n    bigint;
+BEGIN
+  IF p_tbl IS NULL OR p_tbl NOT IN ('collector_load', 'collector_runs', 'collector_probe') THEN
+    RAISE EXCEPTION 'collector_trim: % is not a minute-led table the beats trim', p_tbl;
+  END IF;
+  SELECT trimmed_to INTO v_mark FROM pgvigil.collector_trim_mark WHERE tbl = p_tbl FOR UPDATE SKIP LOCKED;
+  IF NOT FOUND THEN
+    IF EXISTS (SELECT 1 FROM pgvigil.collector_trim_mark WHERE tbl = p_tbl) THEN
+      RETURN 0;
+    END IF;
+    INSERT INTO pgvigil.collector_trim_mark (tbl, trimmed_to) VALUES (p_tbl, '-infinity') ON CONFLICT (tbl) DO NOTHING;
+    SELECT trimmed_to INTO v_mark FROM pgvigil.collector_trim_mark WHERE tbl = p_tbl FOR UPDATE SKIP LOCKED;
+    IF NOT FOUND THEN
+      RETURN 0;
+    END IF;
+  END IF;
+  EXECUTE format('SELECT min(minute) FROM pgvigil.%I WHERE minute >= $1', p_tbl) INTO v_lo USING v_mark;
+  IF v_lo IS NULL OR v_lo >= v_cut THEN
+    RETURN 0;
+  END IF;
+  v_hi := least(v_cut, v_lo + interval '10 minutes');
+  -- from the mark itself when it is a time (a row committed between the read and the delete with a
+  -- minute between the mark and v_lo is not left below the new mark); from v_lo at '-infinity' (the first trim: the
+  -- whole key's low end would bring back the estimate the mark is for)
+  EXECUTE format('DELETE FROM pgvigil.%I WHERE minute >= $1 AND minute < $2', p_tbl)
+    USING CASE WHEN isfinite(v_mark) THEN v_mark ELSE v_lo END, v_hi;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  UPDATE pgvigil.collector_trim_mark SET trimmed_to = v_hi WHERE tbl = p_tbl;
+  RETURN v_n;
+END $$;
+
 -- import_collector_beat: the minute's beat. p_beat: {mem_bytes, goroutines, instances,
 --   runs: [{engine, collection, runs, failures, rows, dur_sum, dur_max, hist: [19 ints]}],
 --   load: [{instance, attempts, opened, runs, failures, auth, interval_s}],  (interval_s: the fastest configured interval, absent when not known)
@@ -270,6 +335,7 @@ BEGIN
      SET beat_at = now(), mem_bytes = (p_beat->>'mem_bytes')::bigint, goroutines = (p_beat->>'goroutines')::int,
          instances = (p_beat->>'instances')::int, repo_conns = v_conns,
          beat_minute = greatest(beat_minute, p_minute),
+         sends_alerts = coalesce((p_beat->>'sends_alerts')::boolean, sends_alerts),
          -- a run still beating 2 minutes after it was retired was retired by mistake (a second host of that name, the
          -- door run for a host that is not gone): the mark goes. A beat sooner than that is a stopping service's last
          -- one and must not undo its uninstall's retire
@@ -327,10 +393,16 @@ BEGIN
   SELECT now(), p_id, (p_beat->>'mem_bytes')::bigint, (p_beat->>'goroutines')::int, v_conns, pg_database_size(current_database()),
          coalesce(sum(r.runs), 0), coalesce(sum(r.failures), 0), coalesce(sum(r.rows), 0)
     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'runs') = 'array' THEN p_beat->'runs' ELSE '[]'::jsonb END)) AS r(runs int, failures int, rows bigint);
-  -- the history this file keeps: 8 days (the page reads 24 h and 7 days)
+  -- the history this file keeps: 8 days (the page reads 24 h and 7 days); the two minute-led tables by their marks
+  -- (collector_trim), and a beat whose own minute is already past 8 days (a collector clock that far behind) takes its
+  -- rows back at once - they sit below the mark, where no trim reaches (the old whole-key trim removed them here too)
   DELETE FROM pgvigil.collector_beats WHERE at < now() - interval '8 days';
-  DELETE FROM pgvigil.collector_runs WHERE minute < now() - interval '8 days';
-  DELETE FROM pgvigil.collector_load WHERE minute < now() - interval '8 days';
+  PERFORM pgvigil.collector_trim('collector_runs');
+  PERFORM pgvigil.collector_trim('collector_load');
+  IF p_minute < now() - interval '8 days' THEN
+    DELETE FROM pgvigil.collector_runs WHERE minute = p_minute AND collector_id = p_id;
+    DELETE FROM pgvigil.collector_load WHERE minute = p_minute AND collector_id = p_id;
+  END IF;
   DELETE FROM pgvigil.collector_spells WHERE coalesce(ended_at, last) < now() - interval '8 days';
   DELETE FROM pgvigil.collector_instances WHERE seen_at < now() - interval '8 days';
   -- this host's streaks of an instance it has not named for 8 days, written 8 days ago or more (never by the streak's
@@ -341,17 +413,36 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_instances ci JOIN pgvigil.collector_heartbeat h USING (collector_id)
                        JOIN pgvigil.instances i ON i.name = ci.instance
                       WHERE h.host = s.host AND i.instance_id = s.instance_id);
+  -- a host gone 8 days - every run of it last beat 8 days ago or more: uninstalled, renamed, its machine gone - loses
+  -- its streak rows when its last run's row goes below (the trim above takes only the beating
+  -- host's rows, so a host that never beat again kept them for good; a host back after 8 days counts from 0 - with no
+  -- other collector beating meanwhile its rows stay, and import_collector_streaks leaves them out). The guard reads only
+  -- the heartbeat rows, so a beat with no host leaving pays nothing for it. The beats of the minute the guard turns
+  -- true take one lock in turn (two DELETEs of one host's rows by synchronized seq scans can
+  -- deadlock and lose a beat's minute); a beat after the first finds the rows gone. Never a try-lock: a beat that
+  -- skipped would still delete the host's heartbeat rows below, and if the holder then failed the streaks would stay
+  IF EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat g WHERE g.beat_at < now() - interval '8 days'
+              AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat f WHERE f.host = g.host AND f.beat_at >= now() - interval '8 days')) THEN
+    PERFORM pg_advisory_xact_lock(31638955663386483);   -- 0x7067766961_6773: "pgvia" "gs" (alerts.go and deliver.go's form)
+    DELETE FROM pgvigil.collector_streaks s
+     WHERE s.host IN (SELECT g.host FROM pgvigil.collector_heartbeat g WHERE g.beat_at < now() - interval '8 days'
+                        AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat f WHERE f.host = g.host AND f.beat_at >= now() - interval '8 days'));
+  END IF;
   DELETE FROM pgvigil.collector_heartbeat WHERE beat_at < now() - interval '8 days';
   RETURN true;
 END $$;
 
 -- import_collector_streaks: the failed runs in a row the repository holds for host p_host (a collector started again
--- on that host counts on from them; a collector on another host never takes them)
+-- on that host counts on from them; a collector on another host never takes them), written in the last 8 days: a host
+-- back after 8 days counts from 0 (with one collector nothing beats while it is away, so its
+-- rows are still there). A failing streak is written at every run of its host; one older than a day sends no alert
+-- ('collection failing', 'server unreachable'), so a collection read less often than every 8 days loses only a count
+-- that alerted nothing. Its first result after the start replaces the stored row (the collector's fresh mark)
 CREATE OR REPLACE FUNCTION pgvigil.import_collector_streaks(p_host text)
 RETURNS TABLE (instance text, collection text, fail_streak int, last_error text) LANGUAGE sql STABLE AS $$
   SELECT i.name, s.collection, s.fail_streak, s.last_error
     FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id)
-   WHERE i.is_active AND s.fail_streak > 0 AND s.host = p_host
+   WHERE i.is_active AND s.fail_streak > 0 AND s.host = p_host AND s.last_run_at >= now() - interval '8 days'
 $$;
 
 -- import_collector_retire: the host's collector is uninstalled and its repository kept (uninstall calls it; the
@@ -497,7 +588,7 @@ SELECT c.host, c.s0 AS since, c.began, c.ran, c.members,
   FROM cand c
  WHERE pgvigil.collector_together(c.began, c.ran) AND cardinality(c.members) >= 3;
 
--- collector_server_down_at (task 201 DONE-2 N8, review part D's D-2 as the lead took it 14:08): per dial target, a
+-- collector_server_down_at (task 201 DONE-2 N8): per dial target, a
 -- server not answering on host p_host in its written minute p_minute. The identity is the DIAL target, never the
 -- server's reported address (a pooler, a container's address, a virtual name).
 --   ON the target: an instance whose newest row of the 15 minutes up to the minute names it; DOWN: that row is a
@@ -580,7 +671,7 @@ SELECT hn.host, d.target, d.since, d.instances
 --     first minute (the earliest when two stand)
 --   'server not answering' (N8, the server's OWN quorum, only where no cohort stands): the host's down sets
 --     (collector_server_down); server = the newest one's target; since = the earliest down set's start
--- instances (both arms, review part D's D-3): every standing cohort's members still failing AND every down set of the
+-- instances (both arms): every standing cohort's members still failing AND every down set of the
 -- host - a second server down, or a cohort beside a down server, releases nothing. event: the start of the host's
 -- NEWEST event - a standing cohort or down set with no other one begun in the span + 3 minutes before it (chained by
 -- their windows they are one event: a cut spread over a minute's edge makes a second cohort of the same cut). The
@@ -663,7 +754,11 @@ SELECT DISTINCT x.instance_id
 -- last good read and is sent as it is (a full disk found before a cut may be the shared cause itself).
 CREATE OR REPLACE FUNCTION pgvigil.collector_shared_cause(p_source text, p_setting text)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-  SELECT coalesce((p_source = 'pgvigil collector' AND p_setting IN ('authentication failing', 'collection failing', 'server unreachable', 'slow connect'))
+  -- B6.4 (WIRING): 'collection runs long' with the collector's own kinds - held while a parent stands for its instance (a
+  -- cut or a host down slows the runs it does not fail); a host that is slow while its runs succeed forms no parent:
+  -- its instances fold into ONE 'collections run long' of the host instead (0166 collection_runs_long_fold, B6.4 #4)
+  SELECT coalesce((p_source = 'pgvigil collector' AND p_setting IN ('authentication failing', 'collection failing', 'server unreachable', 'slow connect',
+                                                                    'collection runs long'))
       OR (p_source = 'collector' AND p_setting = 'server unreachable')   -- 0118's (task 177 D30), where no heartbeat covers the instance
       OR (p_source = 'pgvigil' AND p_setting IN ('job run over twice its average', 'job schedule missed'))
       OR (p_source = 'mssql_jobs' AND p_setting = 'a job runs far longer than its average')
@@ -703,12 +798,12 @@ RETURNS SETOF int LANGUAGE sql STABLE AS $$
 $$;
 
 -- alert_key: an alert's key. The repository-wide 'collector or network' is keyed on its value AS IT IS - the value
--- names the collector's host, and alert_finding_key (0059) replaces a number by '#', so the parents of hosts 'pgv-1'
+-- names the collector's host (and the host-valued folds alike: 'slow connects', B6.4 #4's 'collections run long'), and alert_finding_key (0059) replaces a number by '#', so the parents of hosts 'pgv-1'
 -- and 'pgv-2' shared one key and the second, cut by the same event, was never sent. Every other finding keeps 0059's
 -- key. alert_findings (0190) and the alert page's two queries call it, so they agree.
 CREATE OR REPLACE FUNCTION pgvigil.alert_key(p_instance_id int, p_source text, p_setting text, p_value text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
-  SELECT CASE WHEN p_instance_id IS NULL AND p_source = 'pgvigil repository' AND p_setting IN ('collector or network', 'slow connects')
+  SELECT CASE WHEN p_instance_id IS NULL AND p_source = 'pgvigil repository' AND p_setting IN ('collector or network', 'slow connects', 'collections run long')
               THEN md5('0' || E'\x1f' || p_source || E'\x1f' || p_setting || E'\x1f' || coalesce(p_value, ''))
               ELSE pgvigil.alert_finding_key(coalesce(p_instance_id, 0), p_source, p_setting, p_value) END
 $$;
@@ -761,7 +856,7 @@ WITH hn AS (
 SELECT f.instance_id, hn.host, hn.newest AS minute
   FROM hn CROSS JOIN LATERAL pgvigil.collector_forming_at(hn.host, hn.newest) f;
 
--- collector_stood (review part D's D-4): did a 'collector or network' condition stand on host p_host at one of its
+-- collector_stood: did a 'collector or network' condition stand on host p_host at one of its
 -- written minutes in [p_from, p_to] - a cohort (a 'dead' spell anchor meeting collector_together, 3 or more of its
 -- members failing at that minute: collector_cohorts' rule) or a server not answering (collector_server_down_at)?
 -- A forming wait that ran into a parent, since cleared, did not end without one.
@@ -796,8 +891,8 @@ $$;
 -- parent stands, forming does not hold in its newest written minute, and in one of its written minutes of the last 15
 -- forming held: last_forming = the newest such minute, ended_at = the next written minute (the wait's end: its alerts
 -- went out as they came), instances = those it counted. A wait that ran into a parent since cleared (collector_stood
--- from span + 3 minutes before its last forming minute) is not one (review part D's D-4); the newest minute is judged
--- by its own forming, not by collector_forming's freshness (a host whose beats come late: nit 8). The Collector page
+-- from span + 3 minutes before its last forming minute) is not one; the newest minute is judged
+-- by its own forming, not by collector_forming's freshness (a host whose beats come late). The Collector page
 -- says it under the host; a parent's detail never does (a parent that rises later says it in its covers text:
 -- collector_forming_stopped).
 CREATE OR REPLACE VIEW pgvigil.collector_forming_ended AS
@@ -828,8 +923,8 @@ SELECT lf.host, lf.last_forming,
 -- collector_forming_stopped (task 201 DONE-2 N7): for a parent on host p_host since p_since, the written minute at which
 -- a forming wait of the 15 minutes before it stopped without a parent (forming held, then a written minute before
 -- p_since in which it did not): the alerts that went out then are the ones the parent's covers text says went first.
--- NULL when the wait ran into this parent, or into an earlier one since cleared (collector_stood before p_since:
--- review part D's D-4), or none ran.
+-- NULL when the wait ran into this parent, or into an earlier one since cleared (collector_stood before p_since),
+-- or none ran.
 CREATE OR REPLACE FUNCTION pgvigil.collector_forming_stopped(p_host text, p_since timestamptz)
 RETURNS timestamptz LANGUAGE sql STABLE AS $$
   WITH m AS (
@@ -852,7 +947,7 @@ $$;
 -- parent clears, an instance still failing alerts once per finding after one failure past the window, never off a
 -- streak or a refusal from inside it. Anchored to the finding, with no look-back cap: it reads the instance's spells
 -- that overlap the reach and their cohorts only. A spell that began before a cohort is never in its window.
--- The server arm (review part D's D-1): a written minute of the host in the reach at which the instance's 'down'
+-- The server arm: a written minute of the host in the reach at which the instance's 'down'
 -- spell ran and it was in a server's down set (collector_server_down_at) - the members whose connects fell before a
 -- server came back wait as a cohort's stragglers do; they never go out the minute the first member answers.
 CREATE OR REPLACE FUNCTION pgvigil.collector_in_window(p_instance_id int, p_at timestamptz)
@@ -946,7 +1041,7 @@ $$;
 -- known when it was given; a second outage hidden by it is the worse failure). The old claim names no start ('collector
 -- not seen') or an earlier one: the start times alone are compared (the fixed 'YYYY-MM-DD HH24:MI' form orders as
 -- text), read from either form - 'instances failing together from <T> UTC' or 'server <target> not answering from <T>
--- UTC' (review part D's D-3: a second server down is a newer event; a down server's event widening into a cohort of
+-- UTC' (a second server down is a newer event; a down server's event widening into a cohort of
 -- the same start is not). A why turning to 'collector not seen', back to an older start when a newer event clears, or
 -- a server named or dropped on one event (N8), is no newer event: the ack holds.
 CREATE OR REPLACE FUNCTION pgvigil.collector_claim_newer(p_new text, p_old text)
@@ -1146,6 +1241,17 @@ SELECT x.instance_id
           FROM pgvigil.collector_connects c) x
  WHERE x.crossed AND x.n >= 3;
 
+-- collection_dont_monitor (B6g-2 DONT-MONITOR (a)): a collection its Collection Health threshold sets
+-- Don't monitor raises no 'collection failing' (below). Its body is 0166's (the thresholds' table is made there, after
+-- this file): this stub lets the view name it on a fresh store, and 0166's CREATE OR REPLACE gives it the body
+-- (made only where it is absent: a re-run of this file after 0166 keeps 0166's body)
+DO $do$ BEGIN
+  IF to_regprocedure('pgvigil.collection_dont_monitor(integer,text)') IS NULL THEN
+    CREATE FUNCTION pgvigil.collection_dont_monitor(p_instance_id int, p_collection text)
+    RETURNS boolean LANGUAGE sql STABLE AS $f$ SELECT false $f$;
+  END IF;
+END $do$;
+
 CREATE OR REPLACE VIEW pgvigil.collector_findings AS
 -- the parent: its value is the host alone (one alert per collector, whatever its why: a restart inside the hold, or a
 -- cut that turns into a host not seen, is the same alert, repeated once with its new why - alert_due); the claim
@@ -1192,11 +1298,12 @@ SELECT s.instance_id, 'critical', 'collection failing', s.collection, true, 'the
        'pgvigil collector', s.last_run_at
   FROM pgvigil.collector_streaks_now s JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND s.collection <> '(connect)' AND s.fail_streak >= 3 AND s.last_run_at > now() - interval '1 day'
+   AND NOT pgvigil.collection_dont_monitor(s.instance_id, s.collection)   -- B6g-2: Don't monitor (its Collection Health threshold)
    -- it stands during an outage too (the page shows it); alert_due (0190) decides the send: held while 'collector or
    -- network' stands, and after it one failed run past its window (collector_in_window)
    -- a streak speaks only while a beating collector still names the instance (collector_covers): only such a run ends
    -- it. An instance moved to a `pgvigil collect` on a schedule, or one whose collector died, leaves this view 20
-   -- minutes after its last naming; the Summary's Collection Errors check reads the scheduled collect's errors
+   -- minutes after its last naming; the Summary's Collection Health column reads the scheduled collect's errors
    AND pgvigil.collector_covers(s.instance_id, now())
 UNION ALL
 -- the instance's own connect failing, the server not answering (not a refused login: that is 'authentication
@@ -1281,6 +1388,25 @@ SELECT f.instance_id, 'warning', 'job statistics not rolled up', f.src, true, 't
                     WHERE h.instance_id = f.instance_id AND h.collection = 'job_stats_hourly' AND h.status = 'ok'
                       AND h.note LIKE 'rollup healed: the ' || f.src || ' hours %' AND h.log_id > f.log_id)
 UNION ALL
+-- HA join (0150): an instance's replication hours not rolled up - its newest 'rollup failed' row of the last day
+-- (collection_log, collection 'replication_hourly') with no 'rollup healed' row after it. An arm of its own, not a
+-- name in the arm above: 0150's notes name no source ('rollup failed for the hours X to Y ...', 'rollup healed: the
+-- hours X to Y rebuilt' - an instance has ONE range to rebuild, its trigger's), so the arm above, which parses the
+-- source out of the note and requires it, gives no row for them. The value is the samples' table, fixed while the
+-- fault lasts (an alert is keyed by its finding's value); the detail is the row's note. The samples are stored and
+-- the Replication page's charts read them; only a chart over the hours is behind. 'After' is by log_id, as above
+SELECT f.instance_id, 'warning', 'replication hours not rolled up', 'replication_sample', true, 'the hours rebuilt by the next import or pgvigil purge', 'all',
+       f.note, 'pgvigil collector', f.snapshot_at
+  FROM (SELECT DISTINCT ON (l.instance_id) l.instance_id, l.note, l.snapshot_at, l.log_id
+          FROM pgvigil.collection_log l
+         WHERE l.collection = 'replication_hourly' AND l.status = 'error' AND l.note LIKE 'rollup failed for the hours %'
+           AND l.snapshot_at > now() - interval '1 day'
+         ORDER BY l.instance_id, l.log_id DESC) f
+  JOIN pgvigil.instances i ON i.instance_id = f.instance_id AND i.is_active
+ WHERE NOT EXISTS (SELECT 1 FROM pgvigil.collection_log h
+                    WHERE h.instance_id = f.instance_id AND h.collection = 'replication_hourly' AND h.status = 'ok'
+                      AND h.note LIKE 'rollup healed: the hours %' AND h.log_id > f.log_id)
+UNION ALL
 -- the slow-connect tier: an instance whose connects average over its own warning (collector_connects); its value the
 -- average in seconds (alert_finding_key reads its digits as '#': one alert while it stays slow)
 SELECT c.instance_id, CASE WHEN c.level = 2 THEN 'critical' ELSE 'warning' END, 'slow connect', to_char(c.avg_s, 'FM9990.00') || ' s', true,
@@ -1296,6 +1422,9 @@ SELECT NULL::int, CASE WHEN f.level = 2 THEN 'critical' ELSE 'warning' END, 'slo
        'connects under their warning', 'all', f.detail, 'pgvigil repository', f.since
   FROM pgvigil.collector_slow_folds f;
 
--- the job statistics' rows of collection_log (0139's 'rollup failed' / 'rollup healed'), per instance newest first: the
--- arm 'job statistics not rolled up' above reads only these (the log keeps every collection's errors and skips)
-CREATE INDEX IF NOT EXISTS collection_log_job_stats_idx ON pgvigil.collection_log (instance_id, log_id DESC) WHERE collection = 'job_stats_hourly';
+-- the rollups' rows of collection_log ('rollup failed' / 'rollup healed': 0139's job statistics and, since the HA join,
+-- 0150's replication hours), per instance newest first: the arms 'job statistics not rolled up' and 'replication hours
+-- not rolled up' above read only these (the log keeps every collection's errors and skips). One index for both: each
+-- arm names its one collection, which implies this predicate
+CREATE INDEX IF NOT EXISTS collection_log_job_stats_idx ON pgvigil.collection_log (instance_id, log_id DESC)
+ WHERE collection IN ('job_stats_hourly', 'replication_hourly');

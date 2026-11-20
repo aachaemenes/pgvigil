@@ -1,0 +1,30 @@
+# ha-kitwatch-pins.txt - the HA join's (task 389) upstream sources, as KITWATCH pin lines. KITWATCH is
+# scripts/kitwatch.sh: its URL block holds one <NAME>_REPO / <NAME>_FILE /
+# <NAME>_PIN group per source, and its ports.json one entry per ported block. Nothing reads this file: the change that
+# brings KITWATCH and the HA files together copies each group into kitwatch.sh's block and adds the port named
+# beside it. A source is listed here only where something of it was PORTED into an HA file (a threshold table, a
+# query, a check's logic); a source that was only compared has no line.
+
+# ---- PORTED: a threshold table --------------------------------------------------------------------------------------
+# pgMonitor 5.3.0, alert rule PGReplicationByteLag (two `- alert:` blocks: ccp_replication_lag_size_bytes
+# > 5.24288e+07 warning, > 1.048576e+08 critical, each `for: 60s`) -> internal/repo/sql/0141_hadr_pg.sql, the
+# pg_threshold_keys row 'standby_lag_bytes' (MB, warning 50, critical 100; pg_repl_link_health compares
+# bytes >= MB * 1048576). Licence: the tag's LICENSE file - Copyright (c) 2017-2025 Crunchy Data Solutions, Inc.,
+# Apache License 2.0. Read from the tag's raw files on 2026-11-15; the port is the two expr thresholds.
+PGMON_REPO=CrunchyData/pgmonitor; PGMON_FILE=prometheus/common/alert-rules.d/crunchy-alert-rules-pg.yml.example
+PGMON_PIN=v5.3.0          # 5.3.0 (commit 44fd9718c604); newest = the latest release's tag
+
+# PerformanceMonitor 3.12.0, the custom alert template pg-replication-lag (CustomAlertTemplates.cs L57-65: a sender's
+# replay lag at 30 s warning / 5 min critical) -> internal/repo/sql/0141_hadr_pg.sql, the pg_threshold_keys rows
+# 'standby_replay_lag' and 'logical_sender_lag' (seconds, warning 30, critical 300). KITWATCH already pins this
+# repository (PM_REPO, PM_PIN=65bdb5f946f7: 3.12.0); the port to add is the template's two thresholds in
+# Darling/PerformanceMonitor.Darling.Storage/CustomAlertTemplates.cs. Licence: MIT (THIRD-PARTY-NOTICES.md's row).
+# PM_REPO=erikdarlingdata/PerformanceMonitor; PM_PIN=65bdb5f946f7   (KITWATCH's own lines: not repeated)
+
+# ---- LISTED until each is marked PORTED or COMPARED (0143_hadr_mssql.sql is its file; no pin line until it says) --------
+# sp_Blitz 20260708 check 268 (First Responder Kit): 0143's 'a secondary would lose data in a failover' and the key
+#   ag_data_loss (0143's header L5). KITWATCH pins the kit already (FRK_REPO, FRK_PIN=20260708); if PORTED, the port
+#   is check 268's block in sp_Blitz.sql.
+# dbachecks' three HADR checks: 0143's 'the AlwaysOn_health session is not running' and the reads beside it
+#   (internal/mssql/ag.go agHealthSessionSQL). If PORTED: its repository, the file, the version read and the
+#   licence, as a <NAME>_REPO / <NAME>_FILE / <NAME>_PIN group here and a row in THIRD-PARTY-NOTICES.md.

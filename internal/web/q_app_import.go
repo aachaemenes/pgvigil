@@ -8,7 +8,7 @@ package web
 //	                                       preview, else ?digest=<the preview's>&force=<ticked item ids>; ?source=<name>
 //
 // Go only parses; pgvigil.import_app_file plans, digests and writes (one SQL planner: the 312 pass, answer 3). The
-// .xlsx is read with the standard library alone (archive/zip, encoding/xml: the lead's condition on F3). Contacts are
+// .xlsx is read with the standard library alone (archive/zip, encoding/xml). Contacts are
 // never in the file either way (F1, A14): a contact-like column of an imported file is listed as not read.
 
 import (
@@ -39,10 +39,10 @@ const (
 	xlsxPartLimit   = 64 << 20         // one decompressed part of an .xlsx
 	xlsxMaxEntries  = 4000             // the parts of an .xlsx
 	xlsxMaxStrings  = 400000           // its shared strings
-	xlsxMaxSheets   = 32               // the sheets a workbook may list (review B, M3)
-	xlsxUnpacked    = 128 << 20        // all its parts unpacked (review B, M3)
-	xlsxMaxCols     = 64               // the cells of a row read (the file has 14 columns; review B, M2)
-	unreadMax       = 40               // the names of columns not read, listed (review B, M1)
+	xlsxMaxSheets   = 32               // the sheets a workbook may list
+	xlsxUnpacked    = 128 << 20        // all its parts unpacked
+	xlsxMaxCols     = 64               // the cells of a row read (the file has 14 columns)
+	unreadMax       = 40               // the names of columns not read, listed
 	importTimeout   = "120s"           // the planner's own statement timeout (the audit pool's is 5 s)
 	importReadTime  = 60 * time.Second // the body's read and parse, before the work's budget starts
 )
@@ -157,7 +157,7 @@ func fromRecords(kind string, header []string, recs [][]string, lines []int, why
 	cols := make([]string, len(header))
 	f := &invFile{Kind: kind}
 	seen := map[string]bool{}
-	first := map[string]string{} // a known column's header cell: a second cell naming it is refused (review B, M4)
+	first := map[string]string{} // a known column's header cell: a second cell naming it is refused
 	for i, h := range header {
 		c := normCol(h)
 		cols[i] = c
@@ -185,7 +185,7 @@ func fromRecords(kind string, header []string, recs [][]string, lines []int, why
 				break
 			}
 		}
-		if empty && (whys == nil || whys[n] == "") { // a blank line that carries a reason is a refused line (review B, m4)
+		if empty && (whys == nil || whys[n] == "") { // a blank line that carries a reason is a refused line
 			continue
 		}
 		if len(f.Rows) >= importMaxRows {
@@ -243,7 +243,7 @@ func guardCell(v string) string {
 // two lines above it); its line decides the separator - a comma, or a semicolon (Excel in a comma-decimal locale).
 func parseCSVInventory(text string) (*invFile, error) {
 	// the header line: the first of the file's first lines whose cells, split at a comma, a semicolon or a tab, name
-	// instance and application (their other names too: server, app) - t-im-u2, a literal search missed them
+	// instance and application (their other names too: server, app) - a literal search missed them
 	sep := rune(0)
 	for i, l := range strings.SplitN(text, "\n", 40) {
 		if i == 39 {
@@ -271,8 +271,8 @@ func parseCSVInventory(text string) (*invFile, error) {
 	}
 	cr := csv.NewReader(strings.NewReader(text))
 	cr.Comma = sep
-	// a bad quote is refused with its line (review B, m2: with LazyQuotes a quote that ends a field early read the rest of
-	// the file into one cell); the export and Excel write RFC 4180
+	// a bad quote is refused with its line (with LazyQuotes a quote that ends a field early read the rest of the file
+	// into one cell); the export and Excel write RFC 4180
 	cr.FieldsPerRecord = -1
 	var header []string
 	var recs [][]string
@@ -364,7 +364,7 @@ func parseJSONInventory(t string) (*invFile, error) {
 		}
 	case []any:
 		// the elements counted before any row is built, and a row holds the known columns alone: a key no column takes
-		// is a name in the 'not read' list, never a cell (review B, M1: 100,000 keys times a million elements)
+		// is a name in the 'not read' list, never a cell (100,000 keys times a million elements)
 		if len(d) > importMaxRows {
 			return nil, fmt.Errorf("more than %d lines: at most %d in one file (split it)", importMaxRows, importMaxRows)
 		}
@@ -447,7 +447,7 @@ func parseJSONInventory(t string) (*invFile, error) {
 
 type xlsxReader struct {
 	zr       *zip.Reader
-	unpacked int // the bytes unpacked so far: xlsxUnpacked for the whole file (review B, M3)
+	unpacked int // the bytes unpacked so far: xlsxUnpacked for the whole file
 }
 
 func (x *xlsxReader) part(name string) ([]byte, error) {
@@ -519,7 +519,7 @@ func parseXLSX(body []byte) (*invFile, error) {
 	if len(book.Sheets) > xlsxMaxSheets {
 		return nil, fmt.Errorf("the workbook lists %d sheets: at most %d are read (save the inventory's sheet alone)", len(book.Sheets), xlsxMaxSheets)
 	}
-	d1904 := book.Pr.Date1904 == "1" || strings.EqualFold(book.Pr.Date1904, "true") // a Mac workbook's day 0 is 1904-01-01 (review B, m7)
+	d1904 := book.Pr.Date1904 == "1" || strings.EqualFold(book.Pr.Date1904, "true") // a Mac workbook's day 0 is 1904-01-01
 	relsB, err := x.part("xl/_rels/workbook.xml.rels")
 	if err != nil || relsB == nil {
 		return nil, fmt.Errorf("the workbook has no relationships part: not read (%v)", err)
@@ -566,7 +566,7 @@ func parseXLSX(body []byte) (*invFile, error) {
 			order = append(order, i)
 		}
 	}
-	read := map[string]bool{} // each sheet part read once, however many sheets name it (review B, M3)
+	read := map[string]bool{} // each sheet part read once, however many sheets name it
 	for _, i := range order {
 		tp := strings.ToLower(target[book.Sheets[i].RID])
 		if read[tp] {
@@ -701,7 +701,7 @@ func xlsxRows(b []byte, sst []string, dates map[int]bool, d1904 bool) ([]xlsxRow
 						}
 					}
 				}
-				// a line is keyed by its number all the way to the planner: the rows go up (review A, M4)
+				// a line is keyed by its number all the way to the planner: the rows go up
 				if num <= last {
 					return nil, fmt.Errorf("row %d comes after row %d: a sheet's rows go up, each once (save the sheet again)", num, last)
 				}
@@ -749,7 +749,7 @@ func xlsxRows(b []byte, sst []string, dates map[int]bool, d1904 bool) ([]xlsxRow
 					i = next
 				}
 				next = i + 1
-				if i >= xlsxMaxCols { // the file has 14 columns: a cell far to the right is not read (review B, M2)
+				if i >= xlsxMaxCols { // the file has 14 columns: a cell far to the right is not read
 					continue
 				}
 				var s string
@@ -829,7 +829,7 @@ func (s *Server) hasImport(ctx context.Context) (bool, error) {
 }
 
 // appBusy: a write that waited past the audit login's lock_timeout (55P03) for the applications' write lock - an import
-// or a page write holding it - answered in words (review B, m3), here and in 310's appWrite
+// or a page write holding it - answered in words, here and in 310's appWrite
 func appBusy(err error) error {
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) && pe.Code == "55P03" {
@@ -838,8 +838,8 @@ func appBusy(err error) error {
 	return nil
 }
 
-// importParamsBad: a NUL in the source, the digest or the ticks is refused in words, never sent to the store (review B,
-// m5: jsonb refuses \u0000 with a SQL error)
+// importParamsBad: a NUL in the source, the digest or the ticks is refused in words, never sent to the store (jsonb
+// refuses \u0000 with a SQL error)
 func importParamsBad(q url.Values) error {
 	for _, k := range []string{"source", "digest", "force"} {
 		if strings.ContainsRune(q.Get(k), 0) {
@@ -851,8 +851,8 @@ func importParamsBad(q url.Values) error {
 
 // AppImport is POST /api/admin/applications/import.
 func (s *Server) AppImport(w http.ResponseWriter, r *http.Request) {
-	// serve's WriteTimeout (75 s) would cut a long import's answer (t-im-g2 F13: curl 000 after 79 s): this route moves
-	// its own write deadline past its work's, first of all (review B, m6: a deadline already passed is not moved); a
+	// serve's WriteTimeout (75 s) would cut a long import's answer (a test import: curl 000 after 79 s): this route moves
+	// its own write deadline past its work's, first of all (a deadline already passed is not moved); a
 	// writer that cannot move it keeps the work inside the serve's 75 s
 	budget := 130 * time.Second
 	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(budget + 20*time.Second + importReadTime)); err != nil {
@@ -961,7 +961,7 @@ const sqlInventory = `SELECT level, instance, engine, database, application, env
 func (s *Server) AppInventory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if have, err := s.hasImport(ctx); err != nil {
-		writeErr(w, http.StatusInternalServerError, err) // a store that cannot be read is no 409 (review B, m9)
+		writeErr(w, http.StatusInternalServerError, err) // a store that cannot be read is no 409
 		return
 	} else if !have {
 		writeErr(w, http.StatusConflict, errors.New(importOldStore))
@@ -976,7 +976,7 @@ func (s *Server) AppInventory(w http.ResponseWriter, r *http.Request) {
 func (s *Server) AppInventoryCSV(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if have, err := s.hasImport(ctx); err != nil {
-		writeErr(w, http.StatusInternalServerError, err) // a store that cannot be read is no 409 (review B, m9)
+		writeErr(w, http.StatusInternalServerError, err) // a store that cannot be read is no 409
 		return
 	} else if !have {
 		writeErr(w, http.StatusConflict, errors.New(importOldStore))
@@ -1017,7 +1017,7 @@ func writeInventoryCSV(w io.Writer, t *table) error {
 	if _, err := io.WriteString(w, "\ufeff"); err != nil {
 		return err
 	}
-	// LF line ends: encoding/csv's UseCRLF drops every CR inside a quoted field (review B, m1), so a CR in a cell would not
+	// LF line ends: encoding/csv's UseCRLF drops every CR inside a quoted field, so a CR in a cell would not
 	// come back; Excel and the import read LF files
 	cw := csv.NewWriter(w)
 	if err := cw.Write(t.Columns); err != nil {
@@ -1066,7 +1066,7 @@ func xlsxDateStyles(b []byte) map[int]bool {
 }
 
 // xlsxSerialText: an Excel serial day (the 1900 system, day 0 = 1899-12-30; a 1904 workbook's day 0 = 1904-01-01) as
-// yyyy-MM-dd, with the time when it has one; a serial under 1 is a time alone, HH:MM:SS (review B, m7).
+// yyyy-MM-dd, with the time when it has one; a serial under 1 is a time alone, HH:MM:SS.
 func xlsxSerialText(v string, d1904 bool) string {
 	f, err := strconv.ParseFloat(v, 64)
 	if err != nil {

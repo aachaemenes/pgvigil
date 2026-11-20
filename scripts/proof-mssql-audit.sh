@@ -48,13 +48,13 @@
 #     1,000 SELECT and 3 INSERT on the audited table by sa. An index created on the new table, its statistics updated
 #     and the table truncated (each recorded by the server as an ALTER of the table) are counted - 'CREATE INDEX' and
 #     'UPDATE STATISTICS' as maintenance, 'TRUNCATE TABLE' as a write, once each - and the new table's only listed
-#     DDL is its CREATE (added after the review: maintenance commands filled the listed DDL). No row holds statement text and a dump of the whole
+#     DDL is its CREATE (maintenance commands once filled the listed DDL). No row holds statement text and a dump of the whole
 #     repository does not hold the marker (grep 0). A read again stores nothing new: the same 1,000.
 #     The same server read as three more instances that opt in (audit_text: true): under query_text full the CREATE
 #     TABLE's row holds the marker; under normalized it holds the statement without the marker; under none it holds
 #     no statement and text_stored is false. None of them holds the SELECTs' text: counts only. The DDL's marker is
 #     stored for the instance under full alone, on every audit record of that one CREATE TABLE: as many as sa's own
-#     read of the file finds with the marker. (Corrected after the fold's first box run, which expected two: the
+#     read of the file finds with the marker. (Corrected after a first lab run, which expected two: the
 #     ALTER of the schema measured beside a CREATE TABLE belongs to DATABASE_OBJECT_CHANGE_GROUP, which this
 #     specification does not name, so here the server writes one record; runs 1 and 3 showed no such row either.)
 #  D. a stopped audit. sa stops <main> (ALTER SERVER AUDIT ... STATE = OFF): the next read stores it as stopped,
@@ -80,7 +80,7 @@
 #     stopped audit raises 'an audit is defined and not started' and the cell's warning, keeps its 'since' over a
 #     second read and clears both when it is started; a
 #     database's specification stays while the database is skipped and goes absent when the database is gone; an
-#     Application log audit is stored as 'not readable'; a PostgreSQL instance is refused. Added after the review:
+#     Application log audit is stored as 'not readable'; a PostgreSQL instance is refused. Also:
 #     a batch whose cursor row names a start other than the stored cursor (a second run that read the same buffers)
 #     is refused and stores nothing (the count stays 5, then 12, the cursor never moves back); without the audit
 #     list an audit the read does not name goes 'unknown' and its 'an audit failed' clears; without the state view an
@@ -90,7 +90,7 @@
 #     may select the five tables and two views and may not execute the import.
 #  Y. the API on G's imported rows: /api/mssql/audit gives the parts; category=role keeps only that category; an
 #     unknown category and an unknown part are refused with 400; a window that ends on the counts' own hour holds
-#     none of them and one that ends an hour later holds both (added after the review: the hour edge counted the
+#     none of them and one that ends an hour later holds both (the hour edge once counted the
 #     next hour).
 #  P. the API on the server's rows: audits has <main> and <off>; specs has the two specifications, the database one
 #     with 'INSERT on dbo.<table> by public'; counted has SELECT on the table with 1,000 events; by_category has 13

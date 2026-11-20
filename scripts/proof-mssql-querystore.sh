@@ -417,7 +417,7 @@ collect "$N" >/dev/null
   || fail "E: the status row: $(q "select * from pgvigil.mssql_querystore_status where instance_id=$iid")"
 curl -fs "$U/mssql/summary?part=cells" > "$WORK/sum.json"
 CELL=$(objs "$WORK/sum.json" cells | jq -c --argjson i "$iid" '[.[] | select(.instance_id == $i and .key == "qs")] | .[0]')
-[ "$CELL" != null ] || fail "E: /api/mssql/summary has no 'qs' cell: the Summary wiring (q_mssql_summary.go, the lead's) is not on this tree"
+[ "$CELL" != null ] || fail "E: /api/mssql/summary has no 'qs' cell: the Summary wiring (q_mssql_summary.go) is not on this tree"
 [ "$(echo "$CELL" | jq '.sampled == true and .warning >= 1 and .critical == 0')" = true ] || fail "E: the Summary's qs cell: $CELL"
 echo "  the Summary's qs cell: $(echo "$CELL" | jq -c '{state, critical, warning, value}')"
 # satot <database>: sa's sums over EVERY plan of the store: intervals with a plan run | executions | plan runs
@@ -683,7 +683,7 @@ grep -q "demo serving" "$WORK/demo.log" || { tail -5 "$WORK/demo.log" >&2; fail 
 D=http://127.0.0.1:$DPORT/api
 dq() { psql "$ADMIN_DSN dbname=$DEMO_DB" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 s1=$(dq "select instance_id from pgvigil.instances where name like '%-sql01'"); s2=$(dq "select instance_id from pgvigil.instances where name like '%-sql02'")
-[ "$(dq "select count(*) from pgvigil.mssql_qs_store where instance_id=$s1")" -ge 1 ] || fail "DEMO: the demo carries no Query Store rows: the seed's wiring (mssql_demo.go, the lead's) is not on this tree"
+[ "$(dq "select count(*) from pgvigil.mssql_qs_store where instance_id=$s1")" -ge 1 ] || fail "DEMO: the demo carries no Query Store rows: the seed's wiring (mssql_demo.go) is not on this tree"
 DW="from=$(date -u -d '-6 hours' +%FT%TZ)&to=$(date -u -d '+1 minute' +%FT%TZ)"
 # the hour plan 12 first ran in, from the stored rows (the demo's anchor is its seed's start, not this clock)
 RH0=$(dq "select to_char(min(snapshot_at) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') from pgvigil.mssql_qs_runtime where instance_id=$s1 and database_name='Sales' and plan_id=12")

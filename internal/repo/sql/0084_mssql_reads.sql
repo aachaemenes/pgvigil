@@ -35,10 +35,10 @@
 -- mssql_tempdb_page_kind names a tempdb page a request waits for a latch on: the fleet Running queries row counts
 -- the tempdb page latch waits of a snapshot with it.
 --
--- For the join: add mssql_indexlock_read, mssql_indexlock_sample, mssql_proc_read and mssql_proc_sample to purge()'s
--- month-partition parents and n := n + pgvigil.mssql_reads_purge(p_days) for the rest; put 'mssql_reads_purge' on
--- apply_roles()' owner-only list beside mssql_running_purge (it deletes; mssql_tempdb_page_kind stays with the
--- reader, the fleet Running queries page calls it).
+-- For the release migration: add mssql_indexlock_read, mssql_indexlock_sample, mssql_proc_read and mssql_proc_sample
+-- to purge()'s month-partition parents and n := n + pgvigil.mssql_reads_purge(p_days) for the rest; put
+-- 'mssql_reads_purge' on apply_roles()' owner-only list beside mssql_running_purge (it deletes; mssql_tempdb_page_kind
+-- stays with the reader, the fleet Running queries page calls it).
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_property (
   instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,

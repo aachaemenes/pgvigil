@@ -3,14 +3,14 @@
 // load with its text as the query_text policy stored it (the digest, cut at 500 bytes by PI, and the whole text when
 // it was fetched), and the cache finding; a PI-off instance says so. capacitySection(ctx) is the Capacity section of
 // the Host tab: the ACU against the cluster's floor and ceiling, the buffer cache hit ratio, the reads against the
-// CPU. Data from /api/pi and /api/capacity; the lead wires the tab and the section.
+// CPU. Data from /api/pi and /api/capacity; the shell wires the tab and the section.
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart, neutralColor, seriesColors } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { fmtClock } from './tz';
 import { badge, Col, el, fmtNum, fmtTime, grid, props, tile } from './ui';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 
 const SVG = 'http://www.w3.org/2000/svg';
 

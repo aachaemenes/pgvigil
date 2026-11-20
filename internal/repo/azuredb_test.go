@@ -116,7 +116,7 @@ func TestAzureDBOnAStore(t *testing.T) {
 	if !ok || !ok2 || !strings.Contains(purge, "'mssql_azuredb_minute'") {
 		t.Fatal("0190's purge() not found, or mssql_azuredb_minute not among its monthly parents")
 	}
-	// [review b2a-b 5] the behaviour on a store: 0190's purge() as written (the store's own may be an earlier one,
+	// the behaviour on a store: 0190's purge() as written (the store's own may be an earlier one,
 	// above) drops a month of mssql_azuredb_minute older than its days; 1,095 days, so nothing a test made is touched
 	if _, err := pool.Exec(ctx, "CREATE OR REPLACE FUNCTION pgvigil.purge("+purge+"END $$;"); err != nil {
 		t.Fatal(err)
@@ -152,7 +152,7 @@ func TestAzureDBOnAStore(t *testing.T) {
 	imp("mssql_azuredb_governance", t0.Add(time.Hour), gov("Basic", 5, 99, 2))                                                     // usage and an unknown column only
 	imp("mssql_azuredb_governance", t0.Add(2*time.Hour), gov("S0", 10, 99, 2))                                                     // the tier changed
 	imp("mssql_azuredb_governance", t0.Add(3*time.Hour), map[string]any{"kind": "collector_error", "source": "x", "message": "y"}) // nothing
-	imp("mssql_azuredb_governance", t0.Add(90*time.Minute), gov("Basic", 5, 50, 2))                                                // [review b2a-b 1] an older read imported late: nothing
+	imp("mssql_azuredb_governance", t0.Add(90*time.Minute), gov("Basic", 5, 50, 2))                                                // an older read imported late: nothing
 	var hist, open, changes, props int
 	var usage int64
 	var since time.Time
@@ -178,7 +178,7 @@ func TestAzureDBOnAStore(t *testing.T) {
 		t.Errorf("the first tier's row closed at %v (%v), want the change's read", closedAt, err)
 	}
 
-	// [review b2a-b 2] into a pool whose name the service objectives view gives; an hour later the name is not read
+	// into a pool whose name the service objectives view gives; an hour later the name is not read
 	// (the view refused, no tag): no history row, no change row, the name kept (0084's rule: an unread value is no change)
 	pooled := gov("ElasticPool", 5, 99, 2)
 	pooled["pool"], pooled["pool_from"] = "mypool", "service objectives"
@@ -226,7 +226,7 @@ func TestAzureDBMaxSizeOnAStore(t *testing.T) {
 		ids[platform] = id
 	}
 	defer func() {
-		// [review b2a-b 4] import_mssql_storage writes mssql_database_size (partitioned, no key to instances) too
+		// import_mssql_storage writes mssql_database_size (partitioned, no key to instances) too
 		for _, q := range []string{`DELETE FROM pgvigil.mssql_database_size WHERE instance_id IN ($1, $2)`, `DELETE FROM pgvigil.instances WHERE instance_id IN ($1, $2)`} {
 			if _, err := pool.Exec(context.Background(), q, ids["azuresqldb"], ids["sqlserver"]); err != nil {
 				t.Error(err)

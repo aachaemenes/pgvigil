@@ -69,7 +69,7 @@ const judged = { full: { level: 0, n: 0, detail: [] } };
   eq('Deadlocks: each engine its own words', [verdict(pgRow, {}, now, band([item('dbhealth', 1)]), 'online').sentence, verdict(msRow, {}, now, band([item('dbhealth', 1)]), 'online').sentence],
     ['x1 needs a look: deadlocks or checksum failures were seen.', 'x2 needs a look: deadlocks or long blocking were seen.']);
 }
-// an all-clear only where checks were read (the review's blocker 2)
+// an all-clear only where checks were read
 {
   const rf = { level: 0, n: 0, detail: [], none: true, text: 'read failed' }, ny = { level: 0, n: 0, detail: [], none: true, text: 'not yet' }, na = { level: 0, n: 0, detail: [], none: true, text: 'n/a' };
   const all = (c, extra = {}) => ({ disk: c, full: c, snapshot: c, errors: c, agent: na, ...extra });

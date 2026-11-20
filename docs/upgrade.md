@@ -37,6 +37,20 @@ what happens in the other order, and what the project's own proof showed (`scrip
   `%ProgramData%\pgvigil\app\pgvigil.yaml`, [app.md](app.md)), its connection string in that serve's environment or
   file, never only in the collector's unit (`pgvigil serve` is not part of it). `serve` reads `reports_dsn` when it
   starts: restart it after the line is in.
+- **The web UI's users get roles.** From this version every user of the web UI is a viewer (reads), an operator (acts
+  on a monitored server and acknowledges) or an admin (changes configuration others live with). The upgrade makes
+  every user that exists an admin, so nobody loses what they could do; a user added after it starts as a viewer
+  unless `pgvigil user add -role operator|admin` says otherwise, and `pgvigil user role <name> <role>` changes one.
+  A change above a user's role is refused with its words, and the pages show its control off with them. Until the
+  per-login instance scope lands, every role sees every instance. A `pgvigil serve` of an older version on the
+  upgraded repository signs in admins only: upgrade it with the repository ([roles.md](roles.md)).
+- **SQL Server indexes (task 414).** A new collection, `mssql_constraints`, reads each user database's untrusted
+  foreign keys and check constraints every six hours on every SQL Server instance (catalog views only; not on Azure
+  SQL Database); `mssql_indexes` keeps what each read added to the usage counters and the missing-index requests (the
+  first read after the upgrade is each index's baseline). Two findings are new: disabled indexes (info, a warning
+  when a disabled clustered index or a disabled referenced key blocks its table) and untrusted keys and constraints
+  (info). The histogram and the fragmentation read on demand are off on every instance until `histogram: true` and
+  `index_fragmentation: true` name it in `pgvigil.yaml` ([sqlserver-indexes.md](sqlserver-indexes.md)).
 - **EXPLAIN asks the same check.** Plain EXPLAIN (Plans > a statement's EXPLAIN) and the index advisor's hypothetical
   index now refuse, in words, a monitoring login that is a superuser or a member of `pg_execute_server_program`,
   `pg_write_server_files` or `pg_read_server_files`, besides the logins above: they plan the DBA's statement on that
@@ -62,6 +76,31 @@ what happens in the other order, and what the project's own proof showed (`scrip
 - **Plans of running queries are off on every instance.** `mssql_running_plans` and `mssql_live_plans` are new and off
   by default; an instance added on Admin > Instances has a running plans box, unticked, and an instance of the file
   takes `schedules:` ([plans of running queries](sqlserver-indexes.md#plans-of-running-queries)).
+- **The provider replica doors are off.** `cloud_replicas` (PostgreSQL) and `mssql_cloud_replicas` (RDS for SQL
+  Server) are new: they read an RDS instance's read replicas through RDS and CloudWatch only where the instance's `aws:`
+  block says `replicas: true` (a new switch, off: the io, logs and DMS reads of the same block are unchanged), and a
+  Cloud SQL for PostgreSQL instance's through Google's APIs only where a new `gcp:` block names it
+  ([cloud-replicas.md](cloud-replicas.md)). Nothing calls a cloud for them after the upgrade until a block is written.
+- **A purge fault of v0.3.0, fixed.** v0.3.0's `pgvigil purge` and `pgvigil purge -dry-run` can fail with 'date/time
+  field value out of range' (SQLSTATE 22008) once the repository's database holds a table whose name ends in six digits
+  that are no month - a TOAST table named after an object identifier between 100,000 and 999,999, `pg_toast_100017`
+  (the name stays while the table does): their test of a partition's month could read that name. The upgrade replaces
+  `pgvigil.purge()`; the new hours tables' function is made with the same guard; the new binary's dry run reads a month
+  only from a name ending in one. Nothing to do by hand.
+- **A new month's partitions are made ahead.** v0.3.0's imports made a new month's partition inside their own
+  transaction, so at a month's first minute two imports could deadlock: PostgreSQL ended one (SQLSTATE 40P01) and that
+  run's rows were not stored. The upgrade makes the current and the next month's partitions of every partitioned table
+  (the next two days of `mssql_requests`; `pgvigil migrate` and the script `pgvigil migrate -print` writes alike), `pgvigil run` and `pgvigil collect` make them at their start and `pgvigil
+  run` every hour, each partition in a short transaction of its own, and `pgvigil demo` makes its whole range first.
+  An import still makes a month itself for old or late rows - the SQL Server error log, Extended Events and audit
+  readers' first read of an old file: one ended by a deadlock is tried up to three times in all, and the Collector page
+  counts the imports taken again per collection over 24 hours ('retried after a deadlock'). `pgvigil dbadash import`
+  makes each batch's months before the batch and takes a batch ended by a deadlock again (its line and the Migrate
+  page's import result say `retried N time(s) after a deadlock`). Nothing to do by hand.
+- **The SQL Server Connections page counts every session.** Its totals counted the sessions over 50 (PerformanceMonitor's
+  rule); from this version they count every session, background being the system sessions (the server's
+  `is_user_process` flag, one rule on the whole page), so on the same server the total and background read higher
+  after the upgrade. Reads stored before it keep their numbers.
 - **Files and stored rows.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no
   migration changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and
   after.
@@ -85,6 +124,13 @@ what happens in the other order, and what the project's own proof showed (`scrip
   instances, the slowest 38,343 job outcomes into 12,330 hour rows), so an instance of that size is built by its first
   import. Until then the fleet Jobs page's 7-day columns of that instance read `being built`; its status grid does not
   depend on them.
+- **`0150_hadr_trends.sql` adds the replication samples' hourly rollup and builds it after the upgrade, not during it.**
+  The file creates `replication_hourly` and the triggers on `replication_sample` and builds no hour (beside them it
+  changes `pg_repl_standby_state` and stores one retention row and one threshold key). Each
+  instance's hours are built by `pgvigil purge` (its month partitions in a transaction of their own, then the instance
+  in one transaction, the newest hours first); the imports go on meanwhile. Until an instance is built its Replication
+  charts read the samples. Measured on the lab box: a first build of 30 days over 300 databases (13 million samples)
+  took about 9 to 11 minutes beside the running imports. The hours are kept 730 days.
 
 Two rules follow from how the binary checks the schema:
 
@@ -95,6 +141,25 @@ Two rules follow from how the binary checks the schema:
   function it calls. Stop the collector before `migrate`.
 
 There is no downgrade migration. The way back is the dump taken before the upgrade and the previous binary (below).
+
+### Schema history after A26 (migration 0267)
+
+- **Function bodies as text.** Where an instance's `query_text` is `full` (the default) the schema history keeps a
+  PostgreSQL function's or procedure's body as text (a password in it masked), as SQL Server's modules are: the first
+  read after the upgrade rewrites each stored definition and records **no** change (an object's hash is taken over its
+  body's SHA-256, as before). Under `normalized` or `none` nothing changes.
+- **A database may stop being snapshotted whole.** With bodies as text, a database's definitions can pass the 160 MB
+  one import takes: that database then keeps its bodies as hashes (a collector error 'schema text:<database>' says
+  "bodies kept as hashes"; the collection's line shows it when it is the run's first error), and only over 160 MB even
+  so is it not snapshotted.
+- **A body that names a password or a secret** (the DDL log's own test) is kept as its hash with the words "body text
+  not kept", under every policy.
+- **One false row.** A `query_text` change made between two reads in which an object's owner or ACL also changed
+  records one 'definition changed' row for it (the hash line becomes the text, or back); so does a database crossing
+  the 160 MB fall-back between two such reads. On the Diff page, an object changed and changed back across the upgrade
+  or a `query_text` change shows as 'different' (its two stored forms differ in format only).
+- **Gone databases.** A database gone from a read now takes its objects with it, so purge removes them; on the first
+  read after the upgrade the objects of databases gone earlier are marked gone.
 
 ## The upgrade from the offline bundle (no network needed)
 
@@ -151,6 +216,10 @@ back to before them).
 3. Have the repository owner's connection string at hand (the login that ran the first `pgvigil migrate`). The
    service's own env file holds the collector's login, which cannot migrate.
 
+Migration 0200 (the request queue) makes the group role `pgvigil_requester`; the repository owner's `pgvigil migrate`
+makes it as it made the others. Nothing changes until a site turns the queue on ([queue.md](queue.md)): a serve with
+`actions: via: queue` needs a login IN ROLE `pgvigil_reader, pgvigil_auth, pgvigil_requester`, never the collector's.
+
 An upgrade starts from a tagged release. A repository first migrated by an untagged build (the main branch between two
 tags) is made fresh, not upgraded: a migration file added since the last tag may still change in place until the next
 tag, and a file the repository has already recorded is never run again.
@@ -194,6 +263,37 @@ The collector is down from step 2 to step 5. On the proof's store (three days of
 to 429,545 rows in the three runs below) the 39 files from v0.3.0 to the build measured below ran in 2,237 to 3,079 ms
 (PostgreSQL 18, 16, 13: 2,237, 2,997 and 3,079 ms); a release with more files is measured again before its figure is
 given here, and a migration that rewrites a large table would say so in its release notes.
+
+## A change-controlled site: the schema printed, not applied
+
+Where a schema change goes through a review before anyone runs it, step 4 can be a script the site's DBA reads and
+runs instead of `pgvigil migrate`:
+
+```sh
+./pgvigil migrate -config /etc/pgvigil/pgvigil.yaml -print > pgvigil-migrate-vX.Y.Z.sql
+# reviewed, then run by the repository owner
+psql -X -v ON_ERROR_STOP=1 -d <the repository database> -f pgvigil-migrate-vX.Y.Z.sql
+```
+
+`-print` only reads the repository (one read-only transaction: its database, its server version and the versions
+`pgvigil.schema_version` holds), so any login that can read `pgvigil.schema_version` may print it; it applies nothing,
+takes no advisory lock and sets no jit. The script is for psql: its first line is `\set ON_ERROR_STOP on` (another SQL
+tool stops on that line before anything runs), then `SET client_encoding = 'UTF8'`, and then what `pgvigil migrate`
+would do to that repository, in its order: the advisory lock, the `pgvigil.schema_version` bootstrap, the jit step (it
+sets `jit = off` when the database has no jit setting of its own; refused, it is a WARNING naming the statement, as
+migrate warns), then each file the repository does not hold yet - a fresh repository gets every file - in its own
+transaction with its `schema_version` row and the `apply_roles()` re-apply, as migrate commits them. Two checks run
+before any change: on a repository whose schema `pgvigil` exists the script runs only as that schema's owner (`SET ROLE`
+to it first: objects a superuser made would belong to the superuser, and the next `migrate` as the owner fails on
+them), and a guard stops it unless the repository is exactly the one it was printed for - none of its files recorded
+since and none of the recorded ones gone (print it again). Its header names the build, the repository, how many files
+are applied and pending, and any version a newer pgvigil recorded. With nothing pending the script is its header alone.
+One step of `pgvigil migrate` is not in the script (with a file pending, its header says so): the partitions made
+ahead after its files (this month's and the next month's, and the next two days of `mssql_requests`); `pgvigil run`
+and `pgvigil collect` make the same partitions at their start and `pgvigil run` every hour, so the collector's first
+pass after the script does it.
+`-print` exits 0 when the script is written, 1 when the repository cannot be read or a flag is wrong (nothing on
+stdout), 3 on a configuration error.
 
 ## The way back
 
@@ -240,9 +340,9 @@ upgrade over stored history.
 `scripts/proof-upgrade.sh` starts from the released v0.3.0 itself and ends on the build of this tree, on throwaway
 containers: a Debian 12 host under systemd for pgvigil, on a network with no route out, a mirror folder there, and
 PostgreSQL as the repository and as the monitored server. Run on 2026-11-11 (PST) against PostgreSQL 13, 16 and 18 on
-the build of rel-join-w1 at 42cbbe2 (99 migration files, the newest 0110_join_release.sql; the proof's own tree differed
-from it in proof scripts and docs only), green on each, as the lab box jobs s175-upg13 (13) and s175-loop1 (16, then
-18). The numbers are PostgreSQL 16's; 13's and 18's are in brackets where they differ:
+a build of 99 migration files (the newest 0110_join_release.sql; the proof's own tree differed from it in proof scripts
+and docs only), green on each, as lab runs showed on 13 and on 16 (then 18). The numbers are PostgreSQL 16's; 13's and
+18's are in brackets where they differ:
 
 - **The release.** v0.3.0's binary and SBOM match `SHA256SUMS`. The SBOM names exactly the 35 modules the binary
   itself reports (`go version -m`: name, version and hash of each) and the same build settings. The signature of

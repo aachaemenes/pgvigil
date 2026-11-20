@@ -1,6 +1,7 @@
 package web
 
-// sqlInstances lists the active instances with their state and the latest session summary.
+// sqlInstances lists the active instances with their state and the latest session summary (cluster_backups_on: on an
+// Aurora instance that does not hold its cluster's backups, the one that does - the Summary's Backup FULL cell names it).
 // $1 = the stale check's expectations: a collection disabled or gated off for an instance (0) is not
 // counted as failing there, so an error row an earlier build left behind does not alarm for ever.
 // A row never read (no server_version: an instance added on Admin > Instances whose server has not answered yet)
@@ -11,7 +12,7 @@ SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, coales
        CASE WHEN i.server_version IS NULL THEN i.first_seen END AS added_at,
        i.engine, st.postmaster_start, st.max_connections, st.data_checksums, st.has_pg_stat_statements,
        a.snapshot_at AS activity_at, a.total, a.active, a.idle_in_txn, a.waiting_lock,
-       a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age, h.snapshot_at AS host_at,
+       a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age, h.snapshot_at AS host_at, cb.cluster_backups_on,
        (SELECT count(*) FROM pgvigil.collection_dates c
          WHERE c.instance_id = i.instance_id AND c.status = 'error'
            AND coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int,
@@ -20,6 +21,7 @@ SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, coales
   LEFT JOIN pgvigil.instance_state st ON st.instance_id = i.instance_id
   LEFT JOIN pgvigil.instance_tags_merged tm ON tm.instance_id = i.instance_id
   LEFT JOIN pgvigil.host_state h ON h.instance_id = i.instance_id
+  LEFT JOIN pgvigil.backup_cluster_holders cb ON cb.instance_id = i.instance_id
   LEFT JOIN LATERAL (SELECT * FROM pgvigil.activity_summary x
                       WHERE x.instance_id = i.instance_id
                       ORDER BY x.snapshot_at DESC LIMIT 1) a ON true
@@ -39,7 +41,8 @@ SELECT c.instance_id, 'critical' AS severity, 'collection failing' AS check_name
   FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND c.status = 'error'
    AND coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int,
-                ($1::jsonb -> 'defaults' ->> c.collection)::int, -1) <> 0`},
+                ($1::jsonb -> 'defaults' ->> c.collection)::int, -1) <> 0
+   AND NOT pgvigil.collection_dont_monitor(c.instance_id, c.collection)   -- B6g-2: Don't monitor, as 0121's arm`},
 	{"collection stale", `
 SELECT instance_id, 'warning', 'collection stale', collection, snapshot_at,
        'last ' || to_char(now() - snapshot_at, 'DD"d" HH24"h" MI"m"') || ' ago'
@@ -50,7 +53,7 @@ SELECT instance_id, 'warning', 'collection stale', collection, snapshot_at,
  WHERE coalesce(iv, -1) <> 0
    AND now() - snapshot_at > make_interval(secs => CASE WHEN iv IS NULL THEN $2::int ELSE greatest(300, 3 * iv) END)`},
 	{"replication", `
-SELECT r.instance_id, CASE WHEN r.check_name LIKE 'slot WAL status%' THEN 'critical' ELSE 'warning' END,
+SELECT r.instance_id, coalesce(r.severity, CASE WHEN r.check_name LIKE 'slot WAL status%' THEN 'critical' ELSE 'warning' END),
        r.check_name, r.object, r.snapshot_at,
        r.value::text || ' ' || r.unit || coalesce(' (' || r.state || ')', '')
   FROM pgvigil.replication_checks r JOIN pgvigil.instances i USING (instance_id)
@@ -100,11 +103,63 @@ SELECT s.pid, s.backend_start, s.leader_pid, s.backend_type, s.datname, s.usenam
        extract(epoch FROM s.snapshot_at - s.query_start)::int AS query_secs,
        extract(epoch FROM s.snapshot_at - s.xact_start)::int  AS xact_secs,
        extract(epoch FROM s.snapshot_at - s.state_change)::int AS state_secs,
-       s.backend_xmin_age, s.xid_assigned, s.query_id, q.query
+       s.backend_xmin_age, s.xid_assigned, s.query_id, q.query AS "query@stmt"
   FROM pgvigil.activity_sample s
   LEFT JOIN pgvigil.query_text q ON q.query_hash = s.query_hash
  WHERE s.instance_id = $1 AND s.snapshot_at = $2
  ORDER BY s.is_blocker DESC, cardinality(s.blocking_pids) > 0 DESC, s.query_start NULLS LAST`
+
+// B24 OWN's hide, one fragment per engine, shared by the instance pages' reads and the fleet's longest-statement pick (so
+// the fleet never links to a row the page hides): pgvigil's own (the collector's flag, 0265) and none of the reasons to
+// show it. ownHideMssql reads a request row q of mssql_requests_v and its flag o.is_own (ownLateralMssql joins it from
+// mssql_requests: the view has no is_own); ownHidePg reads an activity_sample row s. is_own NULL is never hidden.
+const ownLateralMssql = `
+  LEFT JOIN LATERAL (SELECT r.is_own FROM pgvigil.mssql_requests r
+                      WHERE r.instance_id = q.instance_id AND r.snapshot_at = q.snapshot_at AND r.session_id = q.session_id
+                        AND r.request_id IS NOT DISTINCT FROM q.request_id LIMIT 1) o ON true`
+const ownHideMssql = `coalesce(o.is_own, false)
+         AND NOT (pgvigil.own_shown_mssql(q.session_id, q.blocking_session_id, q.head_session_id, q.in_cycle, q.elapsed_ms, q.request_id,
+                                          q.open_tran, q.last_request_end, q.granted_memory_kb, q.tempdb_alloc_kb, q.tran_age_ms,
+                                          q.snapshot_at)
+                  OR EXISTS (SELECT 1 FROM pgvigil.mssql_requests b WHERE b.instance_id = q.instance_id AND b.snapshot_at = q.snapshot_at
+                               AND b.blocking_session_id = q.session_id AND b.session_id <> q.session_id))`
+const ownHidePg = `coalesce(s.is_own, false)
+         AND NOT pgvigil.own_shown_pg(s.wait_event_type, s.is_blocker, s.state, s.query_start, s.state_change, s.xact_start,
+                                    s.snapshot_at)`
+
+// ownSince: when this repository began to mark pgvigil's own sessions (0265 applied); a read before it marks none, and
+// the pages say so (FOLD O7). NULL: not applied.
+const ownSince = `(SELECT v.applied_at FROM pgvigil.schema_version v WHERE v.version LIKE '0265\_%' LIMIT 1)`
+
+// sqlSessionsOwnInner: sqlSessions' snapshot with is_own (the collector's flag, 0265: the name and the login together,
+// decided on the server) and hide - own and none of the reasons to show it (own_shown_pg: a lock waiter, a blocker,
+// active over 60 s, idle in a transaction over 60 s). is_own NULL (read before 0265) is never hidden.
+const sqlSessionsOwnInner = `
+SELECT s.pid, s.backend_start, s.leader_pid, s.backend_type, s.datname, s.usename, s.application_name, s.client, s.state,
+       s.wait_event_type, s.wait_event, s.blocking_pids, s.is_blocker,
+       extract(epoch FROM s.snapshot_at - s.query_start)::int AS query_secs,
+       extract(epoch FROM s.snapshot_at - s.xact_start)::int  AS xact_secs,
+       extract(epoch FROM s.snapshot_at - s.state_change)::int AS state_secs,
+       s.backend_xmin_age, s.xid_assigned, s.query_id, q.query AS "query@stmt", s.is_own,
+       ` + ownHidePg + ` AS hide,
+       s.query_start AS order_query_start
+  FROM pgvigil.activity_sample s
+  LEFT JOIN pgvigil.query_text q ON q.query_hash = s.query_hash
+ WHERE s.instance_id = $1 AND s.snapshot_at = $2`
+
+// sqlSessionsOwn: the activity snapshot (sqlSessions' rows and order) with pgvigil's own hidden unless $3 (own=1) or a
+// reason shows them (B24 OWN; the activity handler's WIRING uses it); sqlSessionsOwnHidden counts what the default hid.
+const sqlSessionsOwn = `SELECT x.pid, x.backend_start, x.leader_pid, x.backend_type, x.datname, x.usename, x.application_name, x.client,
+       x.state, x.wait_event_type, x.wait_event, x.blocking_pids, x.is_blocker, x.query_secs, x.xact_secs, x.state_secs,
+       x.backend_xmin_age, x.xid_assigned, x.query_id, x."query@stmt", x.is_own
+  FROM (` + sqlSessionsOwnInner + `) x
+ WHERE $3::boolean OR NOT x.hide
+ ORDER BY x.is_blocker DESC, cardinality(x.blocking_pids) > 0 DESC, x.order_query_start NULLS LAST`
+
+// sqlSessionsOwnHidden: the backends the default hid (0 with own=1), the read's own backends in all (the status line's
+// 'includes n of pgvigil's own') and since (ownSince)
+const sqlSessionsOwnHidden = `SELECT count(*) FILTER (WHERE x.hide AND NOT $3::boolean) AS sessions,
+       count(*) FILTER (WHERE x.is_own) AS own_sessions, ` + ownSince + ` AS since FROM (` + sqlSessionsOwnInner + `) x`
 
 // sqlCounters are per-second rates per snapshot, summed over databases (db) or IO rows (io).
 var sqlCounters = map[string]string{
@@ -202,22 +257,21 @@ SELECT kind, key, state, lag_bytes, lag_secs, active, snapshot_at, detail
 
 // sqlReplChecks are the replication daily checks of one instance.
 const sqlReplChecks = `
-SELECT check_name, object, value, unit, state, snapshot_at
+SELECT check_name, object, value, unit, state, snapshot_at, severity
   FROM pgvigil.replication_checks
  WHERE instance_id = $1
  ORDER BY check_name, object`
 
-// sqlReplSeries is the lag of every lag-bearing object over the window, the max per $4-second bucket
-// (the handler picks about 600 buckets per window), and when even that passes the cap the NEWEST rows
-// are kept: a lag chart that loses its end loses the point the page is opened for.
+// sqlReplSeries is the lag of every lag-bearing object over the window, through pgvigil.replication_series (0150;
+// its 'conflicts' metric waits for the page's own chart and part, so it never shares this cap): the samples
+// while the window is 2 days or less and the stored samples reach its start, else the hourly rollup for the whole
+// window (its first point may hold up to 59 minutes before the window; 'building' says the hours are not built
+// yet and the samples stand in). The max per $4-second bucket (the handler picks about 600 buckets per window;
+// the hours' buckets are an hour at least), and when even that passes the cap the NEWEST rows are kept: a lag
+// chart that loses its end loses the point the page is opened for.
 const sqlReplSeries = `
 SELECT * FROM (
-  SELECT to_timestamp(floor(extract(epoch FROM snapshot_at) / $4) * $4) AS snapshot_at, kind, key,
-         max(lag_bytes) AS lag_bytes, max(lag_secs) AS lag_secs
-    FROM pgvigil.replication_sample
-   WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
-     AND kind IN ('sender', 'receiver', 'slot', 'aurora_replica')
-   GROUP BY 1, 2, 3
+  SELECT s.* FROM pgvigil.replication_series($1, $2, $3, $4, 'lag') s
    ORDER BY 1 DESC
    LIMIT 20000) x
  ORDER BY snapshot_at, kind, key`
@@ -258,8 +312,8 @@ SELECT kind, count(*) AS events, max(snapshot_at) AS last_at
 // sqlLogEvents are the window's log events ($4 = one kind or NULL), newest first; the checkpoint lines (two per
 // checkpoint, 0079) only on their own sub-tab, so 'all' keeps its 1000 rows for the events.
 const sqlLogEvents = `
-SELECT snapshot_at AS at, kind, pid, datname, usename, client, duration_ms,
-       left(statement, 2000) AS statement, left(detail, 1000) AS detail, source
+SELECT snapshot_at AS at, kind AS "kind@logkind", pid, datname, usename, client, duration_ms,
+       left(statement, 2000) AS "statement@stmt", left(detail, 1000) AS "detail@logdetail", source
   FROM pgvigil.log_events
  WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
    AND (kind = $4 OR ($4::text IS NULL AND kind <> 'checkpoint'))
@@ -343,8 +397,8 @@ SELECT d.datname, d.user_tables, d.never_vacuumed, d.never_analyzed, d.big_table
 // sqlFindings lists the findings of every instance ($1 NULL) or one, the most severe first; finding_key is the key of
 // the finding's own page (#/alert?k=: pgvigil.alert_key, the key sqlAlertCard finds it by).
 const sqlFindings = `
-SELECT f.instance_id, i.name AS instance, i.platform, f.severity, f.setting, f.value, f.is_set, f.suggested, f.platforms,
-       f.detail, f.source, f.at, f.alert_first_sent, f.alert_last_sent, f.alert_sends, f.alert_channels,
+SELECT f.instance_id AS "instance_id@inst", i.name AS instance, i.platform, f.severity, f.setting AS "setting@fcheck", f.value AS "value@fvalue", f.is_set, f.suggested, f.platforms,
+       f.detail AS "detail@fdetail", f.source, f.at, f.alert_first_sent, f.alert_last_sent, f.alert_sends, f.alert_channels,
        pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding_key
   FROM pgvigil.findings_alerts f JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND ($1::int IS NULL OR f.instance_id = $1)

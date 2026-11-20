@@ -42,7 +42,7 @@
 --                             mssql_option_risks): databases at their connection limit and near it, connections not
 --                             allowed, not UTF8, collation mismatch, checksums off, xid age past the freeze age, and
 --                             the overrides that break a rule.
--- Nothing here grows by the month: purge() has nothing to do. The findings arms are the join's (0110).
+-- Nothing here grows by the month: purge() has nothing to do. The findings arms are 0110's.
 
 CREATE TABLE IF NOT EXISTS pgvigil.pg_db_role_settings (
   instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,

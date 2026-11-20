@@ -158,12 +158,14 @@ BEGIN
 
   -- what this read no longer lists: a candidate goes; a log goes when it lies below the lowest log the read sent for
   -- its database (the range moved on), or when the read sent no log of the database at all; any set goes whose recovery
-  -- fork no set of the read's for the database names (a restore over the database left that fork)
+  -- fork no set of the read's for the database names (a restore over the database left that fork). No log sent (or none
+  -- with a last_lsn): the fallback s.last_lsn + 1 (PostgreSQL 13 has no numeric infinity); a log with no last_lsn stays
+  -- NULL here, so this branch keeps it (the fork rule below can still remove it)
   DELETE FROM pgvigil.mssql_restore_sets s
    WHERE s.instance_id = p_instance_id AND EXISTS (SELECT 1 FROM pgv_rc_db d WHERE d.database_name = s.database_name)
      AND NOT EXISTS (SELECT 1 FROM pgv_rc_set x WHERE x.uuid = s.backup_set_uuid)
      AND (s.role <> 'log'
-          OR s.last_lsn < coalesce((SELECT min(x.last_lsn) FROM pgv_rc_set x WHERE x.database_name = s.database_name AND x.role = 'log'), 'infinity'::numeric)
+          OR s.last_lsn < coalesce((SELECT min(x.last_lsn) FROM pgv_rc_set x WHERE x.database_name = s.database_name AND x.role = 'log'), s.last_lsn + 1)
           OR (s.last_recovery_fork_guid IS NOT NULL
               AND EXISTS (SELECT 1 FROM pgv_rc_set x WHERE x.database_name = s.database_name)
               AND NOT EXISTS (SELECT 1 FROM pgv_rc_set x WHERE x.database_name = s.database_name
@@ -242,7 +244,7 @@ RETURNS text LANGUAGE sql STABLE AS $$
    ORDER BY f.mirror, f.family LIMIT 1
 $$;
 
--- mssql_restore_chain: the steps a restore of the database takes, in order, with pgvigil's marks (task 304's fold):
+-- mssql_restore_chain: the steps a restore of the database takes, in order, with pgvigil's marks (task 304):
 --   the sets of the members (a set once by backup_set_uuid), of the recovery fork of the newest set BY ITS FINISH (a
 --   restore over the database to an older point starts a fork whose LSNs lie below the old fork's newest: the greatest
 --   last_lsn would follow the abandoned fork); a set of the parent fork counts when it ends at or before the fork point (F2);
@@ -433,7 +435,7 @@ END $$;
 -- mssql_restore_findings (the findings columns): 'the log chain is broken' (warning) on a database judged for its log
 -- backups (mssql_backup_judged: log_status not 'not judged'), whose replicas are all monitored, not on Amazon RDS or Managed
 -- Instance (the service keeps their backups: 301's platform line instead), and only for a break - a gap a replica's late
--- read may fill is held, never raised. Its pgvigil.findings arm and the Summary's map are the lead's wiring.
+-- read may fill is held, never raised. Its pgvigil.findings arm and the Summary's map are wired by the release migration 0190.
 CREATE OR REPLACE VIEW pgvigil.mssql_restore_findings AS
 SELECT v.instance_id, 'warning'::text AS severity, 'the log chain is broken' AS check_name, v.database_name AS object,
        v.verdict || ' (a restore from these backups stops there; a new full or differential backup starts a whole chain again)' AS detail,

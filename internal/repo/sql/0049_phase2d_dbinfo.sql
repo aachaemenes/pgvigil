@@ -1,9 +1,9 @@
--- 0049: the wave D join for the database information and drill-down slice (0046 database info: the facts joined from
+-- 0049: wires in the database information and drill-down (0046 database info: the facts joined from
 -- what is already collected, the comment, the size history and the growers; 0047 the drill-down read functions: a
 -- database, a table, a job, an index). Neither adds a findings view arm or a partitioned table, so pgvigil.findings
 -- stays 0045's; purge() is re-created from 0045's body with one addition: a database marked absent longer than the
 -- retention is deleted (0007 marked it absent and never removed it; the size history rows go with their partitions).
--- A frozen file is never edited; a later join re-creates purge() again with its own additions.
+-- A frozen file is never edited; a later migration re-creates purge() again with its own additions.
 
 CREATE OR REPLACE FUNCTION pgvigil.purge(p_days int DEFAULT 30)
 RETURNS bigint LANGUAGE plpgsql AS $$

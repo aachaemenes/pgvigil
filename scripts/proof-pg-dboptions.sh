@@ -22,7 +22,7 @@
 #     connection limit ok ('no limit'), allow connections ok, encoding ok (UTF8).
 #  C. the server refuses ALTER DATABASE ... SET autovacuum = off ('cannot be changed now': autovacuum is a reload
 #     setting), so the critical override of a database is track_counts = off and of a role zero_damaged_pages = on.
-#     Seeded (16 overrides; the review's spellings among them): ALTER DATABASE dbo_t SET track_counts = off, jit =
+#     Seeded (16 overrides; odd spellings among them): ALTER DATABASE dbo_t SET track_counts = off, jit =
 #     'true', random_page_cost = '1.1e0', timezone = 'UTC'; ALTER ROLE dbo_app SET zero_damaged_pages = on,
 #     log_statement = 'ALL', idle_in_transaction_session_timeout = '2.5s', statement_timeout = '2.5ms' (if the server
 #     takes it), app.tenant = 'x' (a placeholder), enable_indexscan = 'of', work_mem = '1.3GB', log_min_messages =
@@ -48,7 +48,7 @@
 #     dbo_hold is refused by the server ('too many connections'); after connections and databases dbo_c's cell is crit
 #     ('reached') with a critical finding 'database connection limit'. CONNECTION LIMIT 5 and four sessions: warn
 #     ('near'), a warning finding. The sessions ended: ok, the finding gone. CONNECTION LIMIT 0: warn 'closed'.
-#     [Run 1, box job s163-proof1, 2026-11-11 15:17 PST: A to C green on PostgreSQL 13; D let the second session in.
+#     [A lab run: A to C green on PostgreSQL 13; D let the second session in.
 #     Cause: the sessions logged in as dbo_app, whose statement_timeout C had set to 2.5 ms, so the held session ended
 #     at once. Fixed: the held sessions log in as dbo_hold, a role without overrides, and a hold is read again a second
 #     later; the expectation unchanged.]
@@ -65,12 +65,12 @@
 #     the read within the xids used since; ok on a fresh server; dbo_x frozen (VACUUM FREEZE) and a few xids used after:
 #     in a transaction rolled back, with the stored freeze age set just above dbo_x's age, dbo_x is ok and every older
 #     database warn (at least one each), and an age written as 1.2 billion is crit.
-#     [Run 5, box job s163-proof5, 15:40 PST: C green up to the instance read, which read 262144 warn as expected; the
+#     [A lab run: C green up to the instance read, which read 262144 warn as expected; the
 #     flag came back as psql's 't' for 'true': the query casts it to text since.]
-#     [Run 4, box job s163-proof4, 15:39 PST: C's hand read differed only in 'timezone' against the stored 'TimeZone':
+#     [A lab run: C's hand read differed only in 'timezone' against the stored 'TimeZone':
 #     the comparison is case-blind on the name since, the spelling checked on its own.]
-#     [Run 2, box job s163-proof2, 15:18 PST: the freeze age of 100 found no database at or past it ('warn 0 0': a
-#     fresh cluster's ages are under 100). Run 3 set it to the smallest age, which the review showed cannot fail its
+#     [A lab run: the freeze age of 100 found no database at or past it ('warn 0 0': a
+#     fresh cluster's ages are under 100). The next run set it to the smallest age, which cannot fail its
 #     'younger stays ok' half; the frozen dbo_x makes both halves able to fail.]
 #  E. the fleet's risk counts (pg_dboption_risks) while dbo_c is at its limit and the overrides are set: at_limit 1,
 #     not_utf8 1 (template0 not judged), overrides_broken 9, overrides_critical 2, checksums_off = the databases when
@@ -572,12 +572,12 @@ JS
   # of it is refused (FATAL 55000) and ended the collection 'partial' every run before the fix
   s "$V" "create database dbo_inv" >/dev/null
   s "$V" "update pg_database set datconnlimit = -2 where datname = 'dbo_inv'" >/dev/null
-  # precondition (review 20261114-095000 #1): this server itself refuses an invalid database (13.12, 14.9, 15.4, 16+);
+  # precondition: this server itself refuses an invalid database (13.12, 14.9, 15.4, 16+);
   # on an older minor the row would pass with or without the fix
   echo "  (PostgreSQL $V runs $(s "$V" "select version()" | cut -d' ' -f1-2))"
   INVERR=$(psql "${SU[$V]} dbname=dbo_inv" -XAtqc "select 1" 2>&1) && fail "D: the server let a session into dbo_inv (datconnlimit -2): an older minor, the row proves nothing"
   [[ "$INVERR" == *"invalid database"* ]] || fail "D: dbo_inv refused with other words: $INVERR"
-  # D-INV xid (11-14 review 20261114-095000's follow-up): autovacuum and the clog truncation skip an invalid database, so
+  # D-INV xid (11-14): autovacuum and the clog truncation skip an invalid database, so
   # its frozen-xid age only grows and is no risk; neither the 'database xid age' finding nor the xid cell may judge it.
   # datfrozenxid = '2' (FrozenTransactionId) makes age() read 2147483647 at once (a fresh server has used too few xids)
   s "$V" "update pg_database set datfrozenxid = '2'::xid where datname = 'dbo_inv'" >/dev/null
@@ -587,7 +587,7 @@ JS
   IXC=$(dbcell "$V" dbo_inv xid); IXN=$(q "select xid_note from pgvigil.pg_db_options where instance_id = $ID and datname = 'dbo_inv'")
   [[ "$IX" == "0 -" && "$IXC" == "none -" && "$IXN" == *"not judged"* ]] \
     || fail "D: dbo_inv (invalid, xid age 2147483647) judged on its xid age: finding '$IX', cell '$IXC' '$IXN' (want 0 -, none -, 'not judged')"
-  # the third judge of a database's xid age (review 20261114-112243 finding 1): the vacuum read's wraparound rows feed
+  # the third judge of a database's xid age: the vacuum read's wraparound rows feed
   # the 'wraparound' finding and the Vacuum page's tile and grid; an invalid database is left out of that read
   collect "$V" vacuum_tables
   IW=$(q "select count(*) || ' ' || coalesce(max(severity), '-') from pgvigil.findings where instance_id = $ID and setting = 'wraparound' and value = 'dbo_inv'")

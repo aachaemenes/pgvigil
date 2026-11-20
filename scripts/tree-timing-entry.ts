@@ -1,7 +1,7 @@
-// TAGTREE's draw() timing (the design pass's #8): the side tree drawn from a synthetic fleet of 2,124 instances (one
+// TAGTREE's draw() timing: the side tree drawn from a synthetic fleet of 2,124 instances (one
 // written tag each, one in four SQL Server; ui.group_by empty, so one folder per tag, every folder open - the default),
 // timed in the page: seven draws after a warm one, the median - the draw alone (building the nodes) and the draw with
-// the layout it costs (a read of offsetHeight forces style and layout inside the timed window; the TAGTREE review B #7).
+// the layout it costs (a read of offsetHeight forces style and layout inside the timed window).
 // Two shapes: 60 tags of about 35 instances, 300 tags of
 // about 7. Written into <pre id="out"> for chromium --dump-dom (scripts/tree-timing.sh); no server, no API read
 // succeeds (the tree's reads fail and change nothing drawn).

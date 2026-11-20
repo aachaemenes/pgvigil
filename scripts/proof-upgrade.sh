@@ -46,7 +46,10 @@
 #                 columns the old version had; each table this build adds holds exactly the rows this build's migrate
 #                 leaves in an EMPTY repository (a second database, migrated and counted, then dropped): 0, or the
 #                 reference rows a migration writes (0100's pgaudit_rules, 0103's pg_threshold_keys), the run naming
-#                 each seeded table;
+#                 each seeded table - except ONE DERIVED TABLE, filled from the old store's own rows by the migration
+#                 that adds it, which holds exactly the count read from the old store before the migrate:
+#                 collection_run_status (0166_collection_health.sql's INSERT ... SELECT: one row per collection_dates
+#                 row whose status is ok, partial or error), the run naming it with its count;
 #                 './pgvigil install' ends 'installed and running': the installed binary
 #                 prints this build's version, the config and the env file are byte for byte the old ones, the unit is
 #                 active with 0 restarts and runs as pgvigil
@@ -341,6 +344,10 @@ rq "select c.relname || '|' || string_agg(quote_ident(a.attname), ',' order by a
 hashes "$WORK/before.hash" "$WORK/before.cols" || fail "the row hashes before the upgrade"
 [[ "$(wc -l < "$WORK/before.hash")" == "$(wc -l < "$WORK/before.cols")" ]] || fail "the row hashes before the upgrade cover $(wc -l < "$WORK/before.hash") of $(wc -l < "$WORK/before.cols") tables"
 counts "$WORK/before.all" 0 || fail "the row counts before the upgrade"
+# the one derived table (the header's E): its exact count from the old store, by its migration's own condition
+CRS=$(rq "select count(*) from pgvigil.collection_dates where status in ('ok', 'partial', 'error')") || fail "the old store's collection_dates count for collection_run_status"
+[[ "$CRS" =~ ^[0-9]+$ ]] || fail "the old store's collection_dates count for collection_run_status: '$CRS'"
+printf 'collection_run_status|i|%s\n' "$CRS" > "$WORK/derived.all"
 counts "$WORK/before.rest" "$TID" || fail "the row counts before the upgrade (the live instance left out)"
 docker exec "$REPO" pg_dump -Fc -d "postgres://pgvigil_owner:$OPW@127.0.0.1:5432/pgvigil" -f /tmp/pgvigil-before.dump || fail "pg_dump of the repository as its owner before the upgrade"
 # this build on the old schema: it refuses to run and says what to do
@@ -360,19 +367,22 @@ hashes "$WORK/after.hash" "$WORK/before.cols" || fail "the row hashes after the 
 # schema_version alone may differ (it holds the files applied more); every other table: the same rows in the columns it had
 diff <(grep -v '^schema_version|' "$WORK/before.hash") <(grep -v '^schema_version|' "$WORK/after.hash") >"$WORK/hash.diff" || fail "stored rows changed over the migrate, in the columns $OLD had: $(sed -n 's/^[<>] \([a-z0-9_]*\)|.*/\1/p' "$WORK/hash.diff" | sort -u | tr '\n' ' ')"
 NHASH=$(grep -vc '|empty$' "$WORK/before.hash" || true); NEMPTY=$(grep -c '|empty$' "$WORK/before.hash" || true)
-# compare <before> <after> <mode> <applied> [<seed>]: strict = every old table the same count, a new table exactly what
-# this build's migrations leave in an EMPTY repository (<seed>: reference rows a migration writes, 0100's pgaudit_rules
-# and 0103's pg_threshold_keys; 0 without them); rest = tables
+# compare <before> <after> <mode> <applied> [<seed>] [<derived>]: strict = every old table the same count, a new table
+# exactly what this build's migrations leave in an EMPTY repository (<seed>: reference rows a migration writes, 0100's
+# pgaudit_rules and 0103's pg_threshold_keys; 0 without them) - a table named in <derived> exactly its count there (read
+# from the old store: the migration that adds it fills it from the old rows); rest = tables
 # with an instance column the same, one without may only have grown; schema_version holds the files applied more in both
 compare() {
   python3 -I - "$@" <<'PY'
 import sys
 before, after, mode = sys.argv[1:4]; applied = int(sys.argv[4]) if len(sys.argv) > 4 else 0
 seedf = sys.argv[5] if len(sys.argv) > 5 else ""
+derf = sys.argv[6] if len(sys.argv) > 6 else ""
 load = lambda p: {l.split("|")[0]: (l.split("|")[1], int(l.split("|")[2])) for l in open(p).read().split("\n") if l}
 b, a = load(before), load(after); bad, grew = [], []
 seed = load(seedf) if seedf else {}
 seeded = lambda t: seed.get(t, ("", 0))[1]
+der = load(derf) if derf else {}
 if not b or not a: sys.exit("an empty count file (%d and %d tables)" % (len(b), len(a)))
 for t, (kind, n) in sorted(b.items()):
     if t not in a: bad.append("%s: gone (held %d)" % (t, n)); continue
@@ -381,11 +391,14 @@ for t, (kind, n) in sorted(b.items()):
     if mode == "rest" and kind == "g" and m > n: grew.append("%s %d -> %d" % (t, n, m)); continue
     bad.append("%s: %d before, %d after" % (t, n, m))
 new = sorted(t for t in a if t not in b)
-if mode == "strict": bad += ["%s: a table this build adds holds %d row(s), %d after a migrate of an empty repository" % (t, a[t][1], seeded(t)) for t in new if a[t][1] != seeded(t)]
+if mode == "strict":
+    bad += ["%s: a table this build adds holds %d row(s), %d after a migrate of an empty repository" % (t, a[t][1], seeded(t)) for t in new if t not in der and a[t][1] != seeded(t)]
+    bad += ["%s: a table this build fills from the old store holds %d row(s), %d read from the old store" % (t, a[t][1], der[t][1]) for t in new if t in der and a[t][1] != der[t][1]]
+    bad += ["%s: named derived, but no table this build adds" % t for t in der if t not in new]
 if bad: sys.exit("; ".join(bad))
 rows = sum(n for _, n in b.values())
-nseed = [t for t in new if seeded(t)]
-print("%d tables, %d rows%s%s" % (len(b), rows, ("; %d new tables, each as a migrate of an empty repository leaves it (%s)" % (len(new), "empty" if not nseed else "%d seeded: %s" % (len(nseed), ", ".join("%s %d" % (t, seeded(t)) for t in nseed)))) if mode == "strict" else "", "; grew without an instance column: " + ", ".join(grew) if grew else ""))
+nseed = [t for t in new if seeded(t) and t not in der]
+print("%d tables, %d rows%s%s" % (len(b), rows, ("; %d new tables, each as a migrate of an empty repository leaves it (%s)" % (len([t for t in new if t not in der]), "empty" if not nseed else "%d seeded: %s" % (len(nseed), ", ".join("%s %d" % (t, seeded(t)) for t in nseed)))) if mode == "strict" else "", "; grew without an instance column: " + ", ".join(grew) if grew else "") + ("; derived from the old store: " + ", ".join("%s %d" % (t, der[t][1]) for t in sorted(der)) if der and mode == "strict" else ""))
 PY
 }
 # what this build's migrations leave in an EMPTY repository: the count a new table must have after the upgrade
@@ -393,7 +406,7 @@ docker exec "$REPO" psql -U postgres -XAtq -v ON_ERROR_STOP=1 -c "create databas
 insys sh -c "PGVIGIL_REPO_DSN='postgres://pgvigil_owner:$OPW@$REPO:5432/pgvigil_seedcount?sslmode=disable' /root/pgvigil migrate -config /etc/pgvigil/pgvigil.yaml" >"$WORK/m0.out" 2>&1 || fail "this build's migrate of an empty repository: $(tail -n 3 "$WORK/m0.out")"
 RDB=pgvigil_seedcount counts "$WORK/seed.all" 0 || fail "the row counts of the empty repository after its migrate"
 docker exec "$REPO" psql -U postgres -XAtq -c "drop database pgvigil_seedcount with (force)" >/dev/null || fail "dropping the empty repository of the seeded counts"
-got=$(compare "$WORK/before.all" "$WORK/after.all" strict "$APPLIED" "$WORK/seed.all" 2>&1) || fail "row counts changed over the migrate: $got"
+got=$(compare "$WORK/before.all" "$WORK/after.all" strict "$APPLIED" "$WORK/seed.all" "$WORK/derived.all" 2>&1) || fail "row counts changed over the migrate: $got"
 ok "migrate applied $APPLIED files in $MIGMS ms (the store's $OLDFILES to this tree's $NFILES), a second one 0; this build refused to run before it (exit 1); row counts kept: $got; the rows themselves, in the columns $OLD had: the same md5 per table in all $NHASH tables that hold rows ($NEMPTY hold none)"
 # the stamp BEFORE the install restarts the unit (stopped since the start of E, so nothing else writes in between): each
 # collection first runs at a random moment in min(its interval, 5 min) after the start, and 'install' returns half a

@@ -22,7 +22,7 @@ func TestClassifyMore(t *testing.T) {
 		{"LOG", `temporary file: path "base/pgsql_tmp/pgsql_tmp148.1", size 2457600`, TempFile, "SERVER_TEMP_FILE_CREATED"},
 		{"ERROR", "could not serialize access due to concurrent update", SerializationFailure, "COULD_NOT_SERIALIZE_REPEATABLE_READ"},
 		{"ERROR", "canceling statement due to user request", Canceled, "STATEMENT_CANCELED_USER"},
-		// recorded by the slice's review in a throwaway PostgreSQL 18 container (a backend killed with SIGSEGV)
+		// recorded in a throwaway PostgreSQL 18 container (a backend killed with SIGSEGV)
 		{"LOG", "client backend (PID 83) was terminated by signal 11: Segmentation fault", Crash, "SERVER_CRASHED"},
 		// constructed
 		{"LOG", "client backend (PID 84) was terminated by signal 9: Killed", OutOfMemory, "SERVER_OUT_OF_MEMORY"},

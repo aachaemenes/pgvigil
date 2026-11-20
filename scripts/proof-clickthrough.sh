@@ -35,7 +35,7 @@
 #     'current' rows 2; 'tree: 0 leaf(s) found on the second look'; no tree leaf NOTHING; 'click-through: OK (...)', rc 0
 #   beside the run: every path in the eighth's rows and not in the ninth's (or the reverse) is a control with a meta
 #     span - the ten range items
-#   [the review's should 1, folded after the ninth run started - its grade names it as a difference] the three range
+#   [added after the ninth run started - its grade names it as a difference] the three range
 #     items the walk clicked again under 'display time zone = <zone>' (Today, Week to date, Month to date: new signatures
 #     in the eighth, '#m' against '#h #m') are the same signatures now and not clicked again: three bar rows fewer
 # The ninth ran as expected but for one row outside the file, 'not reached root bar "bar B Theme: auto": gone' - the
@@ -49,20 +49,33 @@
 # T: as its Drives page lists them), no 'tree drive (none)' row; each must row 'clicked' (the two drive rows and E304's
 # five: the Base backups dialog, its Set held, Inherit off with its words, Back, the root Thresholds page's Set...
 # refused in words on the demo); 'click-through: OK (... 7 must row(s) clicked ...)', rc 0
-# Expected (the findings run, rel-findings: the fold, the must rows and the findings - written before it): as the tenth's,
+# Expected (the findings run: the fix, the must rows and the findings - written before it): as the tenth's,
 # and: none of the seven findings' controls a NOTHING or reads row; each of their must rows 'clicked' (14 must rows in all),
 # its row 'disabled' with its words (every series is shown; every column is shown; nothing in this grid is changed from its
 # default; no filter is set: nothing to reset; this is the newest snapshot: the page follows it; Pick instance A.; this is
 # the newest snapshot); the Draws on the strip redraw or say '... has no interval in this range: no line to draw.' (no
 # reads row); the FAIL rows listed: the re-reads (12 to 15), the deadlock Graph 1, Admin's Servers 1, the alert page's
 # 'at the firing' 1; 'click-through: OK (... 14 must row(s) clicked ...)', rc 0
-# Expected (the findings review's fold, f2 - written before it): tsc rc 0; as the findings run's grade (f1: 17 FAIL rows
+# Expected (the f2 run - written before it): tsc rc 0; as the findings run's grade (f1: 17 FAIL rows
 # listed, 14 must rows clicked, 522 click-map links), but Activity's 'Latest' is ON in the walk (the walk pauses auto
 # refresh; off only while it is on): its must row gone (13 must rows clicked) and its row listed as 'reads' (18 FAIL rows
 # listed) - or, if the demo stored a newer snapshot between the load and the click, 'redraws' and that expected row
 # 'not seen' (17 listed, 1 not seen); Pick series All / None, Columns...'s two buttons and SQL Server's Later / Latest
 # still 'disabled' with their words (the walk opens the panels on a default grid, every series shown, the newest
 # snapshot read); no new NOTHING or reads row; 'click-through: OK (...)', rc 0
+# Expected (the GM run: the grid menu .tm-menu, its 30 must rows, the walker's per-item count - written before it;
+# gridmenu-c1 ran before these changes and is not this run): tsc rc 0; the grader's
+# self-test 15 of 15; the walker's four fixtures pass (the busy rule, the signature, the grid menu's count, the verdict;
+# no exit 2); the expected file 48 rows (43 must); the click map's own verdict line (about f2's 522 links, 0 FAIL); 182
+# pages listed, every page settled; the FAIL rows listed as f2's (the re-reads 12 to 15, the deadlock Graph 1, Admin's
+# Servers 1, the alert page's 'at the firing' 1; Activity's Latest 'reads' 0 or 1); 43 must rows clicked - f2's 13 and
+# the grid menu's 30, each by its kind (Copy's four 'copies', Export Excel and the six Export file forms 'download',
+# Transpose's two 'dialog', the off items 'disabled' with their words); no NOTHING, 'error', 'off without words' or 'not
+# reached' row under a right-click (CTX) path - a grid menu item that only closes its menu is NOTHING now, and NEW.
+# Differences from f2 said here, not graded: outside the grid menu the verdict's order is f2's (a status line that
+# begins 'Export failed' is an error anywhere: none expected); the grid menu's clicks no longer take a page's cap, so
+# 'over the cap' falls on the capped pages (any FAIL among the controls that frees is NEW and graded as found); the walk
+# about 10-18 min longer a driver (the menu walked on each driver's first three grids); 'click-through: OK (...)', rc 0
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=(); MADE=""

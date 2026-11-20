@@ -16,9 +16,12 @@ import { toHtml } from './gridtools';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, rootTabs, window_ } from './router';
 import { browserZone, stamp, zoneName, zones } from './tz';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid, offControl } from './ui';
+import { Can, markNeed, needControl, routeWhy, WriteRoute } from './needs';
 
 interface Door {
   writable: boolean; reason?: string; user: string; browser: boolean; browser_reason?: string;
+  // what the session's role may do (B24f): Send now and a schedule's test need operator, a schedule's change admin
+  can?: Can | null;
   max_html: number; max_xlsx: number; max_recipients: number; min_gap_secs: number;
 }
 interface MailData { door: Door; schedules?: Table | null; sends?: Table | null; channels?: Table | null; log?: Table | null; send?: Table | null }
@@ -234,18 +237,22 @@ const addrList = (v: string) => v.split(/[\s,;]+/).map(x => x.trim()).filter(Boo
 const message = (e: unknown) => e instanceof Error ? e.message : String(e);
 
 // dialog: one modal form; run answers with the server's words or throws its refusal. invalid: what is missing.
+// route, can: the route the go button posts to and the door's word on the session's role (B24f): below the route's
+// need the button is off with the role's words where it says what is missing, whatever the fields hold - unless the
+// server takes no mail write at all (serverOff): its own reason comes first.
 function dialog(title: string, what: string | Node, go: string, fields: HTMLElement[], run: () => Promise<string>, invalid: () => string = () => '',
-  extra: HTMLElement[] = [], after: () => void = () => { /* nothing to redraw */ }) {
+  extra: HTMLElement[] = [], after: () => void = () => { /* nothing to redraw */ }, route: WriteRoute = 'reportmail', can?: Can | null, serverOff = false) {
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const ok = el('button', { type: 'submit' }, go);
+  const ok = markNeed(el('button', { type: 'submit' }, go), route);
+  const role = serverOff ? null : routeWhy(route, can);
   const no = el('button', { type: 'button' }, 'Back');
   const need = el('p', { class: 'meta' });
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   let busy = false, done = false;
   // the go button is off while it works, once done, and while the form lacks something: the words beside it say which
   const check = () => {
-    const w = done ? '' : invalid(); need.textContent = w ? `${go} needs ${w}.` : '';
-    offControl(ok, busy ? 'working' : done ? 'done' : w ? need.textContent : null, busy || done ? msg : need);
+    const w = done ? '' : invalid(); need.textContent = done ? '' : role ? role + '.' : w ? `${go} needs ${w}.` : '';
+    offControl(ok, busy ? 'working' : done ? 'done' : role ?? (w ? need.textContent : null), busy || done ? msg : need);
   };
   const form = el('form', { method: 'dialog' }, el('h3', {}, title), el('p', {}, what),
     ...fields.map(f => el('div', { style: 'margin:.3rem 0' }, f)), need, msg, el('div', { style: 'margin-top:.6rem' }, ok, ' ', ...extra.flatMap(x => [x, ' ']), no));
@@ -257,7 +264,7 @@ function dialog(title: string, what: string | Node, go: string, fields: HTMLElem
   dlg.addEventListener('cancel', leave);
   form.addEventListener('submit', ev => {
     ev.preventDefault();
-    if (busy || done) return;
+    if (busy || done || role) return;   // off is off: an Enter in a field submits the form too
     busy = true; check();
     msg.textContent = 'Working...';
     void run().then(words => {
@@ -328,6 +335,7 @@ async function openMail(ctx: Ctx, root: () => HTMLElement | null) {
   const sched = el('button', { type: 'button' }, 'Schedule this page...');
   const w = d.door;
   const schedWhy = offControl(sched, w.writable ? null : (w.reason || 'report mail is off on this server'));
+  needControl(sched, 'reportmail', { can: w.can });   // the role (B24f): a schedule needs admin, Send now operator
   const what = w.writable
     ? `The grids of this page as they show now, in their colours, with the workbook attached; at most ${fmtBytes(w.max_html)} of body and ${fmtBytes(w.max_xlsx)} of workbook. The alert sender (pgvigil run) mails it within a minute.`
     : `Report mail is off here: ${w.reason ?? ''}`;
@@ -338,7 +346,7 @@ async function openMail(ctx: Ctx, root: () => HTMLElement | null) {
       xlsx: attach.checked ? body.xlsx : '' });
     if (res.send_id) void watchSend(Number(res.send_id), msg);
     return `${res.detail} (${fmtNum(body.rows)} rows in ${fmtNum(body.grids)} grid${body.grids === 1 ? '' : 's'})`;
-  }, invalid, w.writable ? [sched] : [sched, schedWhy]);
+  }, invalid, w.writable ? [sched] : [sched, schedWhy], undefined, 'reportmail/send', w.can, !w.writable);
   sched.addEventListener('click', () => {
     (sched.closest('dialog') as HTMLDialogElement | null)?.close();
     sched.closest('dialog')?.remove();
@@ -402,8 +410,13 @@ export async function scheduleDialog(p: SchedulePrefill, after: () => void = red
   route.addEventListener('input', noteFixed);
   noteFixed();
   const w = d.door;
-  const nPrefs = Object.keys(p.prefs ?? {}).length;
-  const prefsNote = el('p', { class: 'meta' }, nPrefs ? `The page's grid choices in this browser (${nPrefs} grid${nPrefs === 1 ? '' : 's'}: hidden, frozen and barred columns) are kept with the schedule: its mail leaves out what your window leaves out.`
+  // a grid's choices are one key per grid; DB Space's Unit and Decimal places (drives.ts, '.size-' keys) are no grid
+  const prefKeys = Object.keys(p.prefs ?? {}), sizeKeys = prefKeys.filter(k => /\.size-(unit|decimals)$/.test(k));
+  const nPrefs = prefKeys.length - sizeKeys.length;
+  const sizeOf = (re: RegExp) => { const k = sizeKeys.find(x => re.test(x)); return k ? String((p.prefs ?? {})[k]) : undefined; };
+  const sizeDp = sizeOf(/\.size-decimals$/) ?? '1';   // each named, never in the keys' order (a browser's own)
+  const sizeWords = sizeKeys.length ? `DB Space's unit and decimal places as you picked them (${sizeOf(/\.size-unit$/) ?? 'GB'}, ${sizeDp} decimal place${sizeDp === '1' ? '' : 's'})` : '';
+  const prefsNote = el('p', { class: 'meta' }, nPrefs || sizeKeys.length ? `The page's ${[nPrefs ? `grid choices in this browser (${nPrefs} grid${nPrefs === 1 ? '' : 's'}: hidden, frozen and barred columns)` : '', sizeWords].filter(Boolean).join(' and ')} are kept with the schedule: its mail shows the page as your window does.`
     : s ? 'The grid choices kept with the schedule stay as they are.' : 'No grid choice of this browser is kept: the mail shows every column of the page.');
   const fields = [el('label', {}, 'Name (the subject starts with it) ', name), el('label', {}, 'Page (its address in this UI, as the bar\'s Mail... takes it) ', route), fixedNote, prefsNote,
     el('label', {}, `To (one or more addresses, at most ${w.max_recipients}) `, to), el('label', {}, 'Channel (the alerts: smtp relay) ', chan),
@@ -423,7 +436,7 @@ export async function scheduleDialog(p: SchedulePrefill, after: () => void = red
       ...(p.prefs ? { grid_prefs: p.prefs } : {}),
     });
     return res.detail;
-  }, invalid, [], after);
+  }, invalid, [], after, 'reportmail', w.can, !w.writable);
 }
 
 const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -461,11 +474,11 @@ export async function dailyMailControl(ctx: Ctx): Promise<HTMLElement | null> {
   const why = el('span', { class: 'off-reason' });
   const off = d.writable ? null : (d.reason || 'the Daily checks mail cannot be changed here');
   if (off) why.textContent = off;
-  const keep = el('button', { type: 'button', class: 'link' }, d.kept ? 'Change...' : 'Mail daily...');
+  const keep = markNeed(el('button', { type: 'button', class: 'link' }, d.kept ? 'Change...' : 'Mail daily...'), 'reportmail');   // the role (B24f): an admin's
   if (off) offControl(keep, off, why); else keep.addEventListener('click', () => { void dailyMailDialog(d); });
   line.append(keep, ' ');
   if (d.kept) {
-    const drop = el('button', { type: 'button', class: 'link' }, 'Turn off');
+    const drop = markNeed(el('button', { type: 'button', class: 'link' }, 'Turn off'), 'reportmail');
     if (off) offControl(drop, off, why);
     else drop.addEventListener('click', () => {
       dialog('Turn off the daily mail', 'The Daily checks page is no longer mailed; its sends stay in the Report mail log.', 'Turn off', [],
@@ -541,6 +554,7 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
   const add = el('button', { type: 'button' }, 'New schedule...');
   // off: the door line above says why (their description)
   if (!door0.writable) offControl(add, door0.reason || 'report mail is off on this server', doorLine);
+  needControl(add, 'reportmail', { can: door0.can });   // the role (B24f): a schedule needs admin
   // a new schedule under a tag folder starts as the folder's Summary
   add.addEventListener('click', () => { void scheduleDialog(ids ? { route: '#/summary?' + new URLSearchParams({ tag: ctx.tag! }).toString() } : {}); });
   box.append(el('p', {}, add));
@@ -554,13 +568,14 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
   }
 
   // a schedule's action: off with the door's reason, or its own (offWhy: a test needs the server's headless browser)
-  const button = (label: string, aria: string, offWhy: string | null, run: () => void) => {
+  // route: what the action posts to - below its need the button is off with the role's words (B24f), after the door's
+  const button = (label: string, aria: string, offWhy: string | null, run: () => void, route: WriteRoute = 'reportmail') => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
     const why = !door0.writable ? (door0.reason || 'report mail is off on this server') : offWhy;
     if (why) offControl(b, why, doorLine); else b.addEventListener('click', run);
-    return b;
+    return needControl(b, route, { can: door0.can });
   };
-  const confirmAct = (title: string, what: string, go: string, op: string, id: unknown) => dialog(title, what, go, [], () => act(op, id, go), () => '', [], redraw);
+  const confirmAct = (title: string, what: string, go: string, op: string, id: unknown) => dialog(title, what, go, [], () => act(op, id, go), () => '', [], redraw, 'reportmail', door0.can, !door0.writable);
   const sched: Col[] = [
     { key: 'name', label: 'name' },
     { key: 'page', label: 'page', fmt: (v, r) => el('a', { href: String(r.route) }, String(v || r.route)) },
@@ -580,8 +595,8 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
         : button('Edit', `Change schedule ${String(r.name)}`, null, () => { void scheduleDialog({ schedule: r }); }), ' ',
       button('Send test', `Send a test of schedule ${String(r.name)} now`, door0.browser ? null : (door0.browser_reason || 'no headless browser on this server: a test is drawn on the server'), () => {
         dialog(`Send a test of ${String(r.name)}`, `The page is drawn now on the server as you and mailed to ${String(r.recipients)} with [test] in its subject.`, 'Send test', [],
-          async () => (await post<WriteResult>('reportmail/test', { schedule_id: Number(v) })).detail, () => '', [], redraw);
-      }), ' ',
+          async () => (await post<WriteResult>('reportmail/test', { schedule_id: Number(v) })).detail, () => '', [], redraw, 'reportmail/test', door0.can, !door0.writable);
+      }, 'reportmail/test'), ' ',
       ...(r.kept_as ? [] : [button(r.enabled ? 'Turn off' : 'Turn on', `${r.enabled ? 'Turn off' : 'Turn on'} schedule ${String(r.name)}`, null, () => {
         confirmAct(`${r.enabled ? 'Turn off' : 'Turn on'} ${String(r.name)}`, r.enabled ? 'No mail goes out until it is turned on again.' : 'The next send is the cron line\'s next time.', r.enabled ? 'Turn off' : 'Turn on', r.enabled ? 'disable' : 'enable', v);
       }), ' ',

@@ -44,11 +44,11 @@ import (
 
 // sqlRunningFleet: both engines in one read, the instances with the most blocked sessions first.
 const sqlRunningFleet = `
-SELECT i.instance_id, i.name AS instance, i.engine, a.snapshot_at,
+SELECT i.instance_id AS "instance_id@inst", i.name AS instance, i.engine, a.snapshot_at,
        extract(epoch FROM now() - a.snapshot_at)::bigint AS age_secs,
        a.total::bigint AS sessions, a.active::bigint AS active, a.idle_in_txn::bigint AS idle_in_txn,
        x.blocked::bigint AS blocked, h.heads::bigint AS heads, x.longest_wait_secs::bigint AS longest_wait_secs,
-       l.secs::bigint AS longest_stmt_secs, l.session AS longest_stmt_session, l.statement AS longest_stmt,
+       l.secs::bigint AS longest_stmt_secs, l.session AS longest_stmt_session, l.statement AS "longest_stmt@stmt",
        x.oldest_txn_secs::bigint AS oldest_txn_secs,
        NULL::bigint AS max_grant_kb, NULL::bigint AS sum_grant_kb, NULL::bigint AS tempdb_waits, NULL::bigint AS tempdb_wait_ms,
        NULL::bigint AS tempdb_alloc_waits, NULL::bigint AS tempdb_alloc_wait_ms
@@ -78,6 +78,7 @@ SELECT i.instance_id, i.name AS instance, i.engine, a.snapshot_at,
                       WHERE s.instance_id = i.instance_id AND s.snapshot_at = a.snapshot_at
                         AND s.state = 'active' AND s.query_start IS NOT NULL
                         AND coalesce(s.backend_type, 'client backend') = 'client backend'
+                        AND NOT (` + ownHidePg + `)   -- B24 OWN: never a row the instance page hides
                       ORDER BY s.query_start, s.pid LIMIT 1) l ON a.snapshot_at IS NOT NULL
  WHERE i.is_active AND i.engine <> 'sqlserver'
 UNION ALL
@@ -85,7 +86,7 @@ SELECT i.instance_id, i.name, i.engine, m.snapshot_at,
        extract(epoch FROM now() - m.snapshot_at)::bigint,
        m.sessions::bigint, m.requests::bigint, r.idle_in_txn::bigint,
        m.blocked::bigint, m.heads::bigint, floor(m.longest_wait_ms / 1000.0)::bigint,
-       floor(l.elapsed_ms / 1000.0)::bigint, l.session_id, l.statement,
+       floor(l.elapsed_ms / 1000.0)::bigint, l.session_id, l.statement AS "longest_stmt@stmt",
        floor(r.oldest_tran_ms / 1000.0)::bigint,
        r.max_grant_kb::bigint, r.sum_grant_kb::bigint, r.tempdb_waits::bigint, r.tempdb_wait_ms::bigint,
        r.tempdb_alloc_waits::bigint, r.tempdb_alloc_wait_ms::bigint
@@ -108,9 +109,10 @@ SELECT i.instance_id, i.name, i.engine, m.snapshot_at,
                       CROSS JOIN LATERAL (SELECT CASE WHEN q.wait_type LIKE 'PAGELATCH%' THEN pgvigil.mssql_tempdb_page_kind(q.wait_type, q.wait_resource) END AS kind) k
                       WHERE q.instance_id = i.instance_id AND q.snapshot_at = m.snapshot_at) r ON m.snapshot_at IS NOT NULL
   LEFT JOIN LATERAL (SELECT q.elapsed_ms, q.session_id, left(q.statement, 4000) AS statement
-                       FROM pgvigil.mssql_requests_v q
+                       FROM pgvigil.mssql_requests_v q` + ownLateralMssql + `
                       WHERE q.instance_id = i.instance_id AND q.snapshot_at = m.snapshot_at
                         AND q.request_id IS NOT NULL AND NOT q.wait_is_benign AND q.elapsed_ms IS NOT NULL
+                        AND NOT (` + ownHideMssql + `)   -- B24 OWN: never a row the instance page hides
                       ORDER BY q.elapsed_ms DESC, q.session_id LIMIT 1) l ON m.snapshot_at IS NOT NULL
  WHERE i.is_active AND i.engine = 'sqlserver'
  ORDER BY 9 DESC NULLS LAST, 11 DESC NULLS LAST, 2

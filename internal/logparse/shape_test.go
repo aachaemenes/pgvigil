@@ -18,7 +18,7 @@ func TestMessageShape(t *testing.T) {
 		{`no such table pg_toast_2619 or t1`, `no such table ... or ...`}, // a name with a digit is masked too
 		{"  two\t spaces  ", `two spaces`},
 		{`value -5 and $1 and x.5`, `value ... and ... and ...`},
-		// review 1: values a shape must not keep
+		// values a shape must not keep
 		{`Customer alice@example.com has insufficient balance`, `Customer ... has insufficient balance`},
 		{`balance $5000 too low for acct_7781`, `balance ... too low for ...`},
 		{`token 3fa9c0 expired`, `token ... expired`},
@@ -79,8 +79,8 @@ func TestEventsGrouped(t *testing.T) {
 	if evs[8].Statement != "select 'abc'::int" || !strings.Contains(evs[8].Detail, "CONTEXT: PL/pgSQL function f() line 3 at PERFORM") {
 		t.Errorf("error context: %q / %q", evs[8].Statement, evs[8].Detail)
 	}
-	// a complete line carries its start, paired in log order (review 1): the PG 13 checkpoint and the PG 18 one; the
-	// restartpoint's start has no completion
+	// a complete line carries its start, paired in log order: the PG 13 checkpoint and the PG 18 one; the restartpoint's
+	// start has no completion
 	if !DetailIsMessage(Checkpoint) || !strings.HasSuffix(evs[1].Detail, "\nSTARTED: 2026-11-10T10:00:00Z time") ||
 		!strings.HasSuffix(evs[3].Detail, "\nSTARTED: 2026-11-10T10:01:00Z immediate force wait") || strings.Contains(evs[4].Detail, "STARTED") {
 		t.Errorf("checkpoint pairing: %q / %q / %q", evs[1].Detail, evs[3].Detail, evs[4].Detail)

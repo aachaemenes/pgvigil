@@ -6,6 +6,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { Col, el, fmtBytes, fmtNum, fmtSecs, grid } from './ui';
 import { tagWords } from './fleet';
+import { viewControl } from './views';
 
 interface Data { pg: Table | null; mssql: Table | null }
 
@@ -14,8 +15,15 @@ export const thresholds = {
   cpu_max: [75, 90] as const,     // %
   lock_ms_s: [100, 1000] as const, // ms of lock wait per second
 };
+// DBA Dash's CPU low line (its setting CPULowThreshold, default 50): under it a CPU cell is OK
+export const cpuLow = 50;
 
 const lvl = (v: unknown, t: readonly [number, number]) => v == null ? '' : Number(v) > t[1] ? 'crit' : Number(v) > t[0] ? 'warn' : '';
+// every cell of a status column carries a status, as DBA Dash's Performance Summary (PerformanceSummary_Get): CPU OK under
+// the low line, N/A from it to the warning line; the critical wait OK at 0, N/A up to the warning line; a value not
+// held N/A
+const cpuCls = (v: unknown) => v == null ? 'status none' : lvl(v, thresholds.cpu_max) ? 'status ' + lvl(v, thresholds.cpu_max) : Number(v) < cpuLow ? 'status ok' : 'status none';
+const lockCls = (v: unknown) => v == null ? 'status none' : lvl(v, thresholds.lock_ms_s) ? 'status ' + lvl(v, thresholds.lock_ms_s) : Number(v) === 0 ? 'status ok' : 'status none';
 const muted = (t: string, why: string) => el('span', { class: 'meta', title: why }, t);
 const isMs = (r: Row) => r.engine === 'sqlserver';
 
@@ -74,13 +82,18 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
   const rows = [...rowsOf(d.pg), ...rowsOf(d.mssql)];
   const sec = el('section', {}, el('h2', {}, `Performance summary (${rangeLabel(ctx)})${ctx.tag ? ` - ${tagWords(ctx.tag)}` : ''}`));
   const th = el('details', {}, el('summary', {}, 'thresholds'), el('ul', {},
-    el('li', {}, `CPU max: warning over ${thresholds.cpu_max[0]} %, critical over ${thresholds.cpu_max[1]} %`),
-    el('li', {}, `Lock wait: warning over ${thresholds.lock_ms_s[0]} ms/sec, critical over ${thresholds.lock_ms_s[1]} ms/sec`),
-    el('li', {}, 'every other cell is plain; a value not held is a muted word, never 0'),
+    el('li', {}, `CPU max: OK under ${cpuLow} %, N/A from ${cpuLow} % to ${thresholds.cpu_max[0]} %, warning over ${thresholds.cpu_max[0]} %, critical over ${thresholds.cpu_max[1]} % (DBA Dash's lines)`),
+    el('li', {}, `Lock wait: OK at 0, N/A up to ${thresholds.lock_ms_s[0]} ms/sec, warning over ${thresholds.lock_ms_s[0]} ms/sec, critical over ${thresholds.lock_ms_s[1]} ms/sec`),
+    el('li', {}, 'memory grants waiting: OK at 0, warning over 0 (SQL Server only: N/A on PostgreSQL)'),
+    el('li', {}, 'a value not held is a muted word, never 0 (N/A in a column above); every other cell is plain'),
+    el('li', {}, 'compilations per 100 batches: N/A under 5 batch requests a second over the range (too few to judge)'),
     el('li', {}, 'waits: PostgreSQL wait_sample (pg_wait_sampling) by event type; without it Lock alone, from the sessions seen waiting each minute; SQL Server by wait category'),
     el('li', {}, 'SQL Server: CPU from the scheduler monitor (the machine; the SQL Server share in the cell\'s title), transactions/s from Transactions/sec, IO from sys.dm_io_virtual_file_stats; memory columns are SQL Server only'),
     el('li', {}, 'Azure SQL Database: CPU is the database\'s share of its limit from sys.dm_db_resource_stats (mssql_azuredb_resources, VIEW DATABASE STATE), the minutes weighed by their 15-second samples')));
-  sec.append(th);
+  // DBA Dash's View drop-down (D23): {None} and the saved views - this page's state is its grid's layout (and, when a
+  // view is saved with it, the time range)
+  const vc = viewControl(ctx, { read: () => ({}) });
+  sec.append(el('div', { class: 'toolbar', style: 'display:flex;gap:.4rem;align-items:center' }, vc.button), vc.notes, th);
   const link = (r: Row, tab: string) => el('a', { href: href(ctx, { tab, instance: Number(r.instance_id), tag: undefined }) }, String(r.instance));
   const notRead = (r: Row) => r.platform === 'azuresqldb' ? muted('not read', 'no mssql_azuredb_resources read in the range (VIEW DATABASE STATE)')
     : muted('not read', 'no mssql_cpu read in the range (VIEW SERVER STATE)');
@@ -89,13 +102,13 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'engine', fmt: v => v === 'sqlserver' ? 'SQL Server' : 'PostgreSQL' },
     { key: 'cpu_avg', label: 'CPU avg', num: true, fmt: (v, r) => v == null ? (isMs(r) ? notRead(r) : muted('no host read', 'no host sample in the range'))
       : isMs(r) && r.cpu_sql_avg != null ? el('span', { title: `SQL Server ${fmtNum(r.cpu_sql_avg)} %` }, dataBar(v, '')) : dataBar(v, '') },
-    { key: 'cpu_max', label: 'CPU max', num: true, cls: v => lvl(v, thresholds.cpu_max) ? 'status ' + lvl(v, thresholds.cpu_max) : '',
+    { key: 'cpu_max', label: 'CPU max', num: true, cls: cpuCls,
       fmt: (v, r) => v == null ? (isMs(r) ? notRead(r) : muted('no host read', 'no host sample in the range')) : dataBar(v, lvl(v, thresholds.cpu_max)) },
     // sorted by the share of samples at 70 % and over; drawn as the ten buckets
     { key: 'cpu_hot_pct', label: 'CPU histogram', num: true, fmt: (_v, r) => r.cpu_hist == null && isMs(r) ? notRead(r) : histogram(r.cpu_hist) },
     { key: 'active_avg', label: 'active avg', num: true },
     { key: 'active_max', label: 'active max', num: true },
-    { key: 'lock_ms_s', label: 'critical: Lock (ms/s)', num: true, cls: v => lvl(v, thresholds.lock_ms_s) ? 'status ' + lvl(v, thresholds.lock_ms_s) : '',
+    { key: 'lock_ms_s', label: 'critical: Lock (ms/s)', num: true, cls: lockCls,
       fmt: (v, r) => v == null ? muted('-', 'no wait read') : el('span', { title: r.wait_source === 'activity' ? 'from the sessions seen waiting each minute (no pg_wait_sampling)' : String(r.wait_source ?? '') },
         ms(v) + (r.wait_source === 'activity' ? ' *' : '') + (lvl(v, thresholds.lock_ms_s) === 'crit' ? ' critical' : lvl(v, thresholds.lock_ms_s) === 'warn' ? ' warning' : '')) },
     { key: 'io_ms_s', label: 'IO (ms/s)', num: true, fmt: waitCell },
@@ -108,6 +121,18 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'commits_s', label: 'commits/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
     { key: 'rollbacks_s', label: 'rollbacks/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
     { key: 'batch_s', label: 'batch requests/s', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '') : fmtNum(v) },
+    { key: 'compiles_per_100', label: 'compilations per 100 batches', num: true,
+      // task 402: under the floor (the SQL's flag, on the unrounded rate) N/A in words, before 'no value'
+      fmt: (v, r) => !isMs(r) ? na('a SQL Server counter')
+        // the rate shown is rounded to 2 places and the flag reads it unrounded: a rate that rounds up to the floor says 'under'
+        : r.compiles_under_floor === true ? (w => muted(w, w))(`N/A: too few batch requests/s over the range to judge (${Number(r.batch_s) < Number(r.compiles_floor) ? `${fmtNum(r.batch_s)}/s, ` : 'under '}the floor ${fmtNum(r.compiles_floor)}/s)`)
+        : v == null ? absent(r, '', 'no two mssql_cpu reads in the range: a rate needs two')
+        : el('span', { title: 'SQL Compilations per 100 Batch Requests over the range' }, fmtNum(v)) },
+    // task 412: SQLMonitor's figure over the range (its dashboard flags above 180)
+    { key: 'wait_s_core_min', label: 'wait s per core per minute', num: true,
+      fmt: (v, r) => !isMs(r) ? na('a SQL Server figure')
+        : v == null ? absent(r, '', 'no scheduler count (mssql_cpu off, or Azure SQL Database) or under 5 minutes of wait reads in the range')
+        : el('span', { title: 'the waits of the range, benign waits and SQLMonitor\'s per-core list left out, in seconds per scheduler per minute (SQLMonitor flags above 180)' }, fmtNum(v)) },
     { key: 'read_ms', label: 'read latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
       : el('span', { title: String(r.latency_source ?? '') }, ms(v)) },
     { key: 'write_ms', label: 'write latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
@@ -118,13 +143,15 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'mem_total_pct', label: 'memory: total of target', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server measure') : v == null ? absent(r, '', 'no mssql_memory read in the range') : fmtNum(v) + ' %' },
     { key: 'mem_available_pct', label: 'OS memory available', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server measure') : v == null ? absent(r, '', 'no mssql_memory read in the range') : fmtNum(v) + ' %' },
     { key: 'ple_min', label: 'PLE lowest (s)', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server measure') : v == null ? absent(r, '', 'no mssql_memory read in the range') : fmtNum(v) },
-    { key: 'grants_waiting_max', label: 'memory grants waiting', num: true, cls: v => Number(v) > 0 ? 'status warn' : '',
+    { key: 'grants_waiting_max', label: 'memory grants waiting', num: true, cls: (v, r) => !isMs(r) || v == null ? 'status none' : Number(v) > 0 ? 'status warn' : 'status ok',
       fmt: (v, r) => !isMs(r) ? na('a SQL Server measure') : v == null ? absent(r, '', 'no mssql_memory read in the range') : fmtNum(v) },
     { key: 'now_longest_stmt_secs', label: 'longest statement now', num: true, fmt: (v, r) => nowCell(v, r, fmtSecs) },
     { key: 'now_oldest_xact_secs', label: 'oldest transaction now', num: true, fmt: (v, r) => nowCell(v, r, fmtSecs) },
     { key: 'now_blocked', label: 'blocked now', num: true, fmt: (v, r) => nowCell(v, r, fmtNum) },
   ];
   sec.append(el('p', { class: 'meta' }, `${rows.length} instance(s); * = Lock wait estimated from the activity samples`));
-  sec.append(grid(rows, cols, 'No instance in this scope.'));
+  const g = grid(rows, cols, 'No instance in this scope.');
+  g.querySelector('table.grid')?.setAttribute('data-grid-name', 'Performance summary');   // its name in a saved view
+  sec.append(g);
   return sec;
 }

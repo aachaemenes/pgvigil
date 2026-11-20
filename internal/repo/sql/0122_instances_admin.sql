@@ -60,10 +60,10 @@ CREATE TABLE IF NOT EXISTS pgvigil.admin_removed (
   removed_at  timestamptz NOT NULL DEFAULT now(),
   removed_by  text NOT NULL
 );
--- It holds an insert too (the join's w9e, finding 1): a row never read is deleted at its remove, and a first read
--- already in flight would insert it again, active. An insert takes the name's lock first, the lock the remove holds
--- to its commit: a remove still open is waited for, so its admin_removed row is seen (its review: without it an
--- insert that waited on the deleted row went in active).
+-- It holds an insert too: a row never read is deleted at its remove, and a first read already in flight would insert
+-- it again, active. An insert takes the name's lock first, the lock the remove holds to its commit: a remove still
+-- open is waited for, so its admin_removed row is seen (without it an insert that waited on the deleted row went in
+-- active).
 CREATE OR REPLACE FUNCTION pgvigil.admin_keep_removed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'INSERT' THEN
@@ -87,7 +87,7 @@ CREATE TRIGGER admin_keep_removed_insert BEFORE INSERT ON pgvigil.instances
   FOR EACH ROW EXECUTE FUNCTION pgvigil.admin_keep_removed();
 
 -- admin_imported: the instance holds history pgvigil import dbadash wrote, which leaves no collection_dates or
--- mssql_instance row and no version when DBA Dash's ProductVersion is empty (the fold's review, finding 3): the three
+-- mssql_instance row and no version when DBA Dash's ProductVersion is empty: the three
 -- tables it writes whose index leads with instance_id (mssql_cpu_sample has none; DBA Dash's file sizes come with
 -- every instance it monitors)
 CREATE OR REPLACE FUNCTION pgvigil.admin_imported(p_id int) RETURNS boolean LANGUAGE sql STABLE AS $$
@@ -98,8 +98,7 @@ $$;
 
 -- a page instance's row made at its add (no version: import_admin_instance) has its history from the first read that
 -- connects: ensure_instance writes the version then, and first_seen moves to that read (the Diff page's 'history
--- from' reads it) - the join's review of fold 1, finding 3. Never read = no version, whatever the platform: the
--- page's form sends one (onprem, rds, ...) - the join's w9e, finding 4
+-- from' reads it). Never read = no version, whatever the platform: the page's form sends one (onprem, rds, ...)
 CREATE OR REPLACE FUNCTION pgvigil.admin_first_read() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   -- a row DBA Dash's import filled keeps its first_seen: its history is older than pgvigil's first read
@@ -313,7 +312,7 @@ BEGIN
     VALUES (v_name, v_eng, coalesce(nullif(p_payload->>'platform', ''), 'auto'), v_ref, p_payload->>'auth', btrim(p_payload->>'host'),
             nullif(p_payload->>'port', '')::int, nullif(p_payload->>'dbname', ''), nullif(p_payload->>'login', ''), nullif(p_payload->>'options', ''), coalesce(v_tags, '{}'),
             coalesce(nullif(p_payload->>'source', ''), 'page'), p_at, v_user, p_at, v_user);
-    -- active from the add (the join's review, finding 1): a failed connect is recorded for an active row only
+    -- active from the add: a failed connect is recorded for an active row only
     -- (0118's import_connect_failure), and ensure_instance runs only after a connect that succeeded, so a name added
     -- again after a remove, or added while its server is down, would be silent until its server answers. A name
     -- never collected gets its row here (the page's platform, 'auto' until the first read that connects writes the
@@ -330,7 +329,7 @@ BEGIN
   ELSIF v_op IN ('disable', 'enable') THEN
     UPDATE pgvigil.admin_instances SET disabled = (v_op = 'disable'), updated_at = p_at, updated_by = v_user WHERE name = v_name;
     -- a disabled instance leaves the fleet pages' stale and failing checks (they read is_active); enable makes it
-    -- active again at once (the join's review, finding 1: waiting for the next run's ensure_instance left an
+    -- active again at once (waiting for the next run's ensure_instance left an
     -- instance enabled while its server is down silent - no failed connect recorded, no 'server unreachable'); a
     -- row that is missing is made as the add makes it. admin_keep_removed holds nothing: the page row is not disabled.
     IF v_op = 'disable' THEN
@@ -349,7 +348,7 @@ BEGIN
       ON CONFLICT (name) DO UPDATE SET removed_at = EXCLUDED.removed_at, removed_by = EXCLUDED.removed_by;
     UPDATE pgvigil.instances SET is_active = false WHERE name = v_name;
     -- a row the add made and no read ever reached (no version, no SQL Server read, nothing but failed connects) goes
-    -- with the page's row, so the name can be added again with the other engine (the join's w9e, finding 1); its
+    -- with the page's row, so the name can be added again with the other engine; its
     -- 'connect:' rows go with it (ON DELETE CASCADE). A read in flight cannot make it again, active: admin_keep_removed
     -- holds an insert for 5 minutes.
     DELETE FROM pgvigil.instances i

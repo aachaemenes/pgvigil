@@ -44,6 +44,14 @@ number, and the page never sorts or computes with them.
    lists its last 7 days ('not read whole: ...'); the database is in a distributed availability group, whose other side
    pgvigil does not merge ('not judged (the distributed availability group ...)').
 
+When it is decided: at each read of `mssql_restore_chain`, for the instance and for the same database on the other
+members of its group; and again at a read of `mssql_backups` whose availability-group rows changed - a replica's first
+read, a database that joins or leaves a group, a database gone from a replica - for every member of the old and the new
+group that has a chain read of it. The members are known from `mssql_backups`' rows, and the collector reads the two
+collections on their own schedules, so a chain read can come first. Two reads of one group at the same moment wait for
+each other, and the later one decides on both. An instance made inactive or removed leaves its group's verdicts until
+their next chain read.
+
 The verdict per database:
 
 | Verdict | When |
@@ -64,8 +72,8 @@ The verdict per database:
 |---|---|---|
 | the log chain is broken | warning | a database judged for its log backups (as on the Backups tab) whose verdict is a break or a log to NUL, every replica of its group monitored; never for a held gap; not on Amazon RDS or Azure SQL Managed Instance |
 
-The finding reaches the instance's findings and the Summary's Backup LOG cell through the lead's wiring (its
-`pgvigil.findings` arm and the Summary's map); the Backups tab's own findings are 301's.
+The finding reaches the instance's findings and the Summary's Backup LOG cell through its `pgvigil.findings` arm and
+the Summary's map; the Backups tab's own findings are 301's.
 
 Marks on a step: a copy-only full (no differential can follow it), damaged, a snapshot backup, a virtual-device backup
 (restored through the tool that took it; 'Copy the file list' is off for such a chain), a URL or tape backup, the set's

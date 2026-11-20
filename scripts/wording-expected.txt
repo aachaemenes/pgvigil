@@ -1,7 +1,7 @@
 # The wording walk's expected reds (scripts/proof-wording.sh), each source line as it stands in this tree.
 # A row: status | scope | page | kind | word | source | the smallest fix and its file
 #   status  must      the red shows (on at least one page the page pattern matches, in that scope)
-#           may       the demo's state decides; after the FIRST box run each may row that showed becomes must in
+#           may       the demo's state decides; after the FIRST lab run each may row that showed becomes must in
 #                     the same commit as the run's table; from then on this file changes only in
 #                     the commit that changes the page
 #           must-not  a fixed red that must stay gone (a regression row)
@@ -14,7 +14,7 @@
 # The exit is 0 only when every must row shows, no must-not row shows and no red falls outside this file; may rows
 # are reported either way. A red outside the file is a finding of the run (its table), listed after it.
 
-# --- regressions (fixed by f0c821c before the walk; the design pass found them gone at 0d189b8)
+# --- regressions (fixed before the walk, and gone since)
 must-not | pg-instance | ^summary\?i= | prose | QS | pages.ts:648 (n/a cells left out) | -
 must-not | pg-instance | ^summary\?i= | prose | SQL Agent | pages.ts:648 | -
 must-not | pg-instance | ^summary\?i= | prose | Mirroring | pages.ts:648 | -
@@ -25,16 +25,16 @@ must-not | pg-instance | ^rp_finder\?i= | th | QS | reports.ts:153 (gated on any
 must-not | pg-instance | ^rp_finder\?i= | th | Forced Plans | reports.ts:155 | -
 
 # --- a PostgreSQL instance's own pages
-must-not | pg-instance | ^summary\?i= | prose | Memory Dump | pages.ts:649 'Not OK:' links - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-instance | ^summary\?i= | prose | Availability Group | pages.ts:649 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-instance | ^summary\?i= | prose | Last Good Check DB | pages.ts:649 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-instance | ^summary\?i= | prose | Agent Jobs | pages.ts:649 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-instance | ^summary\?i= | prose | Backup LOG | pages.ts:649 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-instance | . | attr | Memory Dump | instheader.ts:181 (the band dot's title, every page of the instance) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-instance | . | attr | Availability Group | instheader.ts:181 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-instance | . | attr | Last Good Check DB | instheader.ts:181 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-instance | . | attr | Agent Jobs | instheader.ts:181 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-instance | . | attr | Backup LOG | instheader.ts:181 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-instance | ^summary\?i= | prose | Memory Dump | pages.ts:649 'Not OK:' links - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-instance | ^summary\?i= | prose | Availability Group | pages.ts:649 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-instance | ^summary\?i= | prose | Last Good Check DB | pages.ts:649 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-instance | ^summary\?i= | prose | Agent Jobs | pages.ts:649 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-instance | ^summary\?i= | prose | Backup LOG | pages.ts:649 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-instance | . | attr | Memory Dump | instheader.ts:181 (the band dot's title, every page of the instance) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-instance | . | attr | Availability Group | instheader.ts:181 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-instance | . | attr | Last Good Check DB | instheader.ts:181 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-instance | . | attr | Agent Jobs | instheader.ts:181 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-instance | . | attr | Backup LOG | instheader.ts:181 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
 must | pg-instance | ^rp_\w+\?i= | tab | Extended Properties | router.ts instanceGroups' Reports (rp_props 'Database Extended Properties') | rp_props named for PostgreSQL ('Database comments') where the instance is PostgreSQL: the tab name per engine in web/src/router.ts, or rp_props out of instanceGroups' Reports
 must | pg-instance | ^rp_\w+\?i= | tab | SQL Login | router.ts instanceGroups' Reports (rp_pwage 'SQL Login Password Age') | rp_pwage named for PostgreSQL ('Role Password Age': VALID UNTIL) in web/src/router.ts
 must | pg-instance | ^rp_props\?i= | heading | Extended Properties | reports.ts (the page's heading) | the heading per engine in web/src/reports.ts
@@ -42,47 +42,47 @@ must | pg-instance | ^rp_pwage\?i= | heading | SQL Login | reports.ts (the page'
 must | pg-instance | ^dbfiles\?i= | th | Filegroup | drives.ts:367 | the filegroup column only where a row is SQL Server (web/src/drives.ts:367)
 
 # --- fleet pages on a PostgreSQL-only tag folder
-must-not | pg-tag | ^summary\?tag= | th | Memory Dump | pages.ts (the Summary's column header) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | th | Availability Group | pages.ts - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | th | Last Good Check DB | pages.ts - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | th | Agent Jobs | pages.ts - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | th | Backup LOG | pages.ts - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | cell | Memory Dump | pages.ts:463 (the tests grid's labels) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | cell | Availability Group | pages.ts:463 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | cell | Last Good Check DB | pages.ts:463 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | cell | Agent Jobs | pages.ts:463 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | cell | Backup LOG | pages.ts:463 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | attr | Memory Dump | pages.ts:350 (the cell link's aria-label) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | prose | Memory Dump | pages.ts:536 (Needs attention: the demo's state) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must | pg-tag | ^(versions|extensions|roles|diff|mssqlrisks|pgrisks|pgthresholds|retention)\?tag= | tab | SQL Server | main.ts:352 ('SQL Server options' in the strip) | the fleet strip filtered by the scope's engines: web/src/main.ts:352
-must | pg-tag | ^(drives|dbspace|dbfiles|mssqltempdb|tablesize|disks|storage|growth|dbchanges|indexes)\?tag= | tab | tempdb | main.ts:352 ('TempDB' in the strip) | the same filter, web/src/main.ts:352
-must | pg-tag | ^mssqlrisks\?tag= | heading | SQL Server | the page's h2 'SQL Server options' | unreachable once main.ts:352 filters the strip
-must | pg-tag | ^mssqltempdb\?tag= | heading | tempdb | the page's h2 'TempDB' | unreachable once main.ts:352 filters the strip
-must | pg-tag | ^rp_\w+\?tag= | tab | Flushed Plans | router.ts rootGroups' Reports (rp_flushed) | rp_flushed out of the strip where the scope holds no SQL Server (web/src/main.ts:352's filter by engine)
-must | pg-tag | ^rp_flushed\?tag= | prose | plan cache | reports.ts:435 ('Each plan cache flush the server recorded: DBCC FREEPROCCACHE ... default trace') | that sentence only where the scope holds SQL Server, or begun 'SQL Server:' (web/src/reports.ts:435)
-must | pg-tag | ^rp_flushed\?tag= | prose | DBCC | reports.ts:435 | the same
-must | pg-tag | ^rp_flushed\?tag= | prose | default trace | reports.ts:435 | the same
+must-not | pg-tag | ^summary\?tag= | th | Memory Dump | pages.ts (the Summary's column header) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | th | Availability Group | pages.ts - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | th | Last Good Check DB | pages.ts - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | th | Agent Jobs | pages.ts - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | th | Backup LOG | pages.ts - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | cell | Memory Dump | pages.ts:463 (the tests grid's labels) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | cell | Availability Group | pages.ts:463 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | cell | Last Good Check DB | pages.ts:463 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | cell | Agent Jobs | pages.ts:463 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | cell | Backup LOG | pages.ts:463 - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | attr | Memory Dump | pages.ts:350 (the cell link's aria-label) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | prose | Memory Dump | pages.ts:536 (Needs attention: the demo's state) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^(versions|extensions|roles|diff|mssqlrisks|pgrisks|pgthresholds|retention)\?tag= | tab | SQL Server | main.ts:352 ('SQL Server options' in the strip) - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | pg-tag | ^(drives|dbspace|dbfiles|mssqltempdb|tablesize|disks|storage|growth|dbchanges|indexes)\?tag= | tab | tempdb | main.ts:352 ('TempDB' in the strip) - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | pg-tag | ^mssqlrisks\?tag= | heading | SQL Server | the page's h2 'SQL Server options' - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | pg-tag | ^mssqltempdb\?tag= | heading | tempdb | the page's h2 'TempDB' - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | pg-tag | ^rp_\w+\?tag= | tab | Flushed Plans | router.ts rootGroups' Reports (rp_flushed) - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | pg-tag | ^rp_flushed\?tag= | prose | plan cache | reports.ts:435 ('Each plan cache flush the server recorded: DBCC FREEPROCCACHE ... default trace') - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | pg-tag | ^rp_flushed\?tag= | prose | DBCC | reports.ts:435 - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | pg-tag | ^rp_flushed\?tag= | prose | default trace | reports.ts:435 - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
 must | pg-tag | ^dbfiles\?tag= | th | Filegroup | drives.ts:367 | the filegroup column only where a row is SQL Server (web/src/drives.ts:367)
 must | pg-tag | ^running\?tag= | th | tempdb | running_fleet.ts:74-77 ('tempdb latch waits', 'tempdb latch wait (ms)', 'tempdb allocation waits', 'tempdb allocation wait (ms)') | those four columns only where the scope holds SQL Server (web/src/running_fleet.ts:74-77)
 
 # --- the reverse: fleet pages on a SQL Server-only tag folder (the first run reads #/pgreplication, #/pgthresholds,
 # #/extensions and #/backups there too: what it finds is a finding)
-must | ms-tag | ^(versions|extensions|roles|diff|mssqlrisks|pgrisks|pgthresholds|retention)\?tag= | tab | PostgreSQL | main.ts:352 ('PostgreSQL options' in the strip) | the fleet strip filtered by the scope's engines: web/src/main.ts:352
-must | ms-tag | ^pgrisks\?tag= | heading | PostgreSQL | pg_dboptions.ts:183 (h2 'PostgreSQL options') | unreachable once main.ts:352 filters the strip
+must-not | ms-tag | ^(versions|extensions|roles|diff|mssqlrisks|pgrisks|pgthresholds|retention)\?tag= | tab | PostgreSQL | main.ts:352 ('PostgreSQL options' in the strip) - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | ms-tag | ^pgrisks\?tag= | heading | PostgreSQL | pg_dboptions.ts:183 (h2 'PostgreSQL options') - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
 
 # --- allowed, never a red (scripts/wording-allow.txt): "PostgreSQL's TempDB" (drives.ts:443, A5)
 
-# --- the first box run's reds outside this file, by cause (none of the fixes built with the walk). The six may rows
+# --- the first lab run's reds outside this file, by cause (none of the fixes built with the walk). The six may rows
 #     above that showed are must now. The Collector page's two (pid, the repository's PostgreSQL) were false reds: an
 #     allow row (A4). The Alerts grid's rows of a tag folder rest on the alerts the demo has open: may.
 must | pg-instance | ^rp_roles\?i= | prose | SQL Login | reports.ts:503 'Type: S SQL login, U Windows login ...; PostgreSQL L ...' | two attributed sentences: 'SQL Server: S a SQL login, U a Windows login, G a Windows group, R a server role.' and 'PostgreSQL: L a login role, R a role that cannot log in.' (web/src/reports.ts:503)
 must | pg-instance | ^(community|customreports)\?i= | tab | Extended Properties | router.ts:48 rootTabs (the Reports group's tab names) | the report's name per engine where the scope holds no SQL Server (web/src/router.ts:48), as the pg-instance rp_ rows
 must | pg-instance | ^(community|customreports)\?i= | tab | SQL Login | router.ts:48 rootTabs (the Reports group's tab names) | the report's name per engine where the scope holds no SQL Server (web/src/router.ts:48), as the pg-instance rp_ rows
-must-not | pg-tag | ^summary\?tag= | attr | Agent Jobs | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | attr | Availability Group | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | attr | Backup LOG | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | attr | Last Good Check DB | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | pg-tag | ^summary\?tag= | button | Memory Dump | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | attr | Agent Jobs | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | attr | Availability Group | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | attr | Backup LOG | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | attr | Last Good Check DB | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | pg-tag | ^summary\?tag= | button | Memory Dump | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
 must-not | pg-tag | ^dbadash\?tag= | th | Memory Dump | dbadash.ts (TAGALL): a folder with no SQL Server instance shows one line and no grid; router.ts pageEngine dbadash 'sqlserver' keeps the page out of that folder's tree and strip | -
 must-not | pg-tag | ^dbadash\?tag= | th | Last Good Check DB | dbadash.ts (TAGALL): a folder with no SQL Server instance shows one line and no grid; router.ts pageEngine dbadash 'sqlserver' keeps the page out of that folder's tree and strip | -
 must-not | pg-tag | ^dbadash\?tag= | th | SQL Agent | dbadash.ts (TAGALL): a folder with no SQL Server instance shows one line and no grid; router.ts pageEngine dbadash 'sqlserver' keeps the page out of that folder's tree and strip | -
@@ -120,31 +120,31 @@ may | pg-tag | ^alerts\?tag= | cell | Forced Plans | alerts.ts:116 alertsView re
 may | pg-tag | ^alerts\?tag= | attr | Query Store | alerts.ts:116 alertsView reads no folder scope | the Alerts tab in a tag folder lists the folder's instances only: alertsView filters its open alerts, history and sends by the scope's instance ids (as reports.ts:51 inScope) - web/src/alerts.ts:116
 may | pg-tag | ^alerts\?tag= | cell | Query Store | alerts.ts:116 alertsView reads no folder scope | the Alerts tab in a tag folder lists the folder's instances only: alertsView filters its open alerts, history and sends by the scope's instance ids (as reports.ts:51 inScope) - web/src/alerts.ts:116
 # the same finding (a page of the tree that reads no folder scope), a third case not walked: the Admin page's Alert settings tab (atab=settings) lists the other engine's built-in rules in a folder (web/src/alerts.ts:641-648)
-must-not | pg-tag | ^alertrules\?tag= | attr | mssql_ | alert_rules.ts:484 (the Thresholds in force grid's read-only title 'mssql_thresholds in the configuration file sets it' on a SQL Server instance's row) - fixed by d27bd83d (TAGALL T2: the grid lists the folder's instances only, alert_rules.ts:324), gone on t-tg-g2 | -
-must | pg-tag | ^mssqltempdb\?tag= | prose | tempdb | mssql_perf.ts:327 (a SQL Server-only page) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
-must | pg-tag | ^mssqltempdb\?tag= | prose | mssql_ | mssql_perf.ts:327 (a SQL Server-only page) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
+must-not | pg-tag | ^alertrules\?tag= | attr | mssql_ | alert_rules.ts:484 (the Thresholds in force grid's read-only title 'mssql_thresholds in the configuration file sets it' on a SQL Server instance's row): the grid lists the folder's instances only (alert_rules.ts:324) | -
+must-not | pg-tag | ^mssqltempdb\?tag= | prose | tempdb | mssql_perf.ts:327 (a SQL Server-only page) - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | pg-tag | ^mssqltempdb\?tag= | prose | mssql_ | mssql_perf.ts:327 (a SQL Server-only page) - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
 must | pg-tag | ^rp_props\?tag= | heading | Extended Properties | reports.ts (the heading is rootTabs' name) | the heading per engine (web/src/reports.ts), with router.ts:48's name
 must | pg-tag | ^(community|customreports|reportmail|rp_actions|rp_dbdeleted|rp_dbnew|rp_deadlocks|rp_dlcharts|rp_failed|rp_finder|rp_flushed|rp_killed|rp_props|rp_pwage|rp_qs|rp_qscharts|rp_recycle|rp_roles|rp_services|rp_tables)\?tag= | tab | Extended Properties | router.ts:48 rootTabs (the Reports group's tab names) | the report's name per engine where the scope holds no SQL Server (web/src/router.ts:48), as the pg-instance rp_ rows
 must | pg-tag | ^(community|customreports|reportmail|rp_actions|rp_dbdeleted|rp_dbnew|rp_deadlocks|rp_dlcharts|rp_failed|rp_finder|rp_flushed|rp_killed|rp_props|rp_pwage|rp_qs|rp_qscharts|rp_recycle|rp_roles|rp_services|rp_tables)\?tag= | tab | SQL Login | router.ts:48 rootTabs (the Reports group's tab names) | the report's name per engine where the scope holds no SQL Server (web/src/router.ts:48), as the pg-instance rp_ rows
 must | pg-tag | ^rp_deadlocks\?tag= | th | SPID | reports.ts:335 'SPID' | the column 'pid' where the row is PostgreSQL (web/src/reports.ts:335)
-must | pg-tag | ^rp_flushed\?tag= | heading | Flushed Plans | router.ts:48 rp_flushed (a SQL Server-only report) | rp_flushed out of a PostgreSQL-only scope: the filter by engine at web/src/main.ts:352, the Reports group's tab list with it
+must-not | pg-tag | ^rp_flushed\?tag= | heading | Flushed Plans | router.ts:48 rp_flushed (a SQL Server-only report) - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
 must | pg-tag | ^rp_roles\?tag= | prose | SQL Login | reports.ts:503 'Type: S SQL login, U Windows login ...; PostgreSQL L ...' | two attributed sentences: 'SQL Server: S a SQL login, U a Windows login, G a Windows group, R a server role.' and 'PostgreSQL: L a login role, R a role that cannot log in.' (web/src/reports.ts:503)
 must | pg-tag | ^rp_pwage\?tag= | heading | SQL Login | reports.ts (the heading is rootTabs' name) | the heading per engine (web/src/reports.ts), with router.ts:48's name
-must-not | pg-tag | ^(community|customreports|reportmail)\?tag= | tab | Flushed Plans | router.ts:48 rp_flushed (a SQL Server-only report) - gone on the join 5c6d561 (j13r 12:41: TAGTREE's filter by engine at main.ts:352 and FLEET's F1 noPostgres) | -
-must | ms-tag | ^pgrisks\?tag= | th | xmin | pg_dboptions.ts:209 (a PostgreSQL-only page) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
-must-not | ms-tag | ^pgrisks\?tag= | attr | vacuum | pg_dboptions.ts:209 (a PostgreSQL-only page) - gone on the join 5c6d561 (j13r 12:41: TAGTREE's filter by engine at main.ts:352 and FLEET's F1 noPostgres) | -
-must-not | ms-tag | ^pgrisks\?tag= | attr | settings | pg_dboptions.ts:209 (a PostgreSQL-only page) - gone on the join 5c6d561 (j13r 12:41: TAGTREE's filter by engine at main.ts:352 and FLEET's F1 noPostgres) | -
-must | ms-tag | ^pgrisks\?tag= | prose | xmin | pg_dboptions.ts:209 (a PostgreSQL-only page) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
+must-not | pg-tag | ^(community|customreports|reportmail)\?tag= | tab | Flushed Plans | router.ts:48 rp_flushed (a SQL Server-only report) - gone (TAGTREE's filter by engine at main.ts:352 and FLEET's noPostgres) | -
+must-not | ms-tag | ^pgrisks\?tag= | th | xmin | pg_dboptions.ts:209 (a PostgreSQL-only page) - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | ms-tag | ^pgrisks\?tag= | attr | vacuum | pg_dboptions.ts:209 (a PostgreSQL-only page) - gone (TAGTREE's filter by engine at main.ts:352 and FLEET's noPostgres) | -
+must-not | ms-tag | ^pgrisks\?tag= | attr | settings | pg_dboptions.ts:209 (a PostgreSQL-only page) - gone (TAGTREE's filter by engine at main.ts:352 and FLEET's noPostgres) | -
+must-not | ms-tag | ^pgrisks\?tag= | prose | xmin | pg_dboptions.ts:209 (a PostgreSQL-only page) - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
 must | ms-tag | ^instances\?tag= | th | xmin | pages.ts:94 (the Instances grid's 'oldest xmin age') | that column only where the scope holds PostgreSQL (web/src/pages.ts:94)
-must-not | ms-tag | ^backups\?tag= | th | WAL | pg_backups.ts:197 'WAL since' and pg_backups.ts:205-207 'Base backups (pgBackRest, barman)': pgBaseBackupsFleetSection, appended by main.ts:143 whatever the scope - gone on the join 5c6d561 (j13r 12:41: TAGTREE's filter by engine at main.ts:352 and FLEET's F1 noPostgres) | -
-must-not | ms-tag | ^backups\?tag= | prose | pgBackRest | pg_backups.ts:197 'WAL since' and pg_backups.ts:205-207 'Base backups (pgBackRest, barman)': pgBaseBackupsFleetSection, appended by main.ts:143 whatever the scope - gone on the join 5c6d561 (j13r 12:41: TAGTREE's filter by engine at main.ts:352 and FLEET's F1 noPostgres) | -
-must-not | ms-tag | ^backups\?tag= | heading | pgBackRest | pg_backups.ts:197 'WAL since' and pg_backups.ts:205-207 'Base backups (pgBackRest, barman)': pgBaseBackupsFleetSection, appended by main.ts:143 whatever the scope - gone on the join 5c6d561 (j13r 12:41: TAGTREE's filter by engine at main.ts:352 and FLEET's F1 noPostgres) | -
-must | ms-tag | ^pgreplication\?tag= | prose | pg_ | pg_backups.ts:335 (a PostgreSQL-only page) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
+must-not | ms-tag | ^backups\?tag= | th | WAL | pg_backups.ts:197 'WAL since' and pg_backups.ts:205-207 'Base backups (pgBackRest, barman)': pgBaseBackupsFleetSection, appended by main.ts:143 whatever the scope - gone (TAGTREE's filter by engine at main.ts:352 and FLEET's noPostgres) | -
+must-not | ms-tag | ^backups\?tag= | prose | pgBackRest | pg_backups.ts:197 'WAL since' and pg_backups.ts:205-207 'Base backups (pgBackRest, barman)': pgBaseBackupsFleetSection, appended by main.ts:143 whatever the scope - gone (TAGTREE's filter by engine at main.ts:352 and FLEET's noPostgres) | -
+must-not | ms-tag | ^backups\?tag= | heading | pgBackRest | pg_backups.ts:197 'WAL since' and pg_backups.ts:205-207 'Base backups (pgBackRest, barman)': pgBaseBackupsFleetSection, appended by main.ts:143 whatever the scope - gone (TAGTREE's filter by engine at main.ts:352 and FLEET's noPostgres) | -
+must-not | ms-tag | ^pgreplication\?tag= | prose | pg_ | pg_backups.ts:335 (a PostgreSQL-only page) - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
 must | ms-tag | ^pgthresholds\?tag= | cell | amcheck | pg_backups.ts:374 (the Keys grid; the page offers PostgreSQL instances and their tags only, q_pg_backups.go:194-197) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
 must | ms-tag | ^pgthresholds\?tag= | cell | WAL | pg_backups.ts:374 (the Keys grid; the page offers PostgreSQL instances and their tags only, q_pg_backups.go:194-197) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
 must | ms-tag | ^pgthresholds\?tag= | prose | amcheck | pg_backups.ts:361 (the page's state-threshold help: 'a database to one database (amcheck)'; the page offers PostgreSQL instances and their tags only, q_pg_backups.go:194-197) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
-must | ms-tag | ^corruption\?tag= | th | amcheck | corruption.ts:45 'amcheck run' | the amcheck column only where the scope holds PostgreSQL (web/src/corruption.ts:45)
-must | ms-tag | ^roles\?tag= | tile | pg_ | roles.ts:167 'monitoring login without pg_monitor' | that tile only where the scope holds PostgreSQL (web/src/roles.ts:167)
+must-not | ms-tag | ^corruption\?tag= | th | amcheck | corruption.ts:45 'amcheck run' - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | ms-tag | ^roles\?tag= | tile | pg_ | roles.ts:167 'monitoring login without pg_monitor' - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
 must | ms-tag | ^slowqueries\?tag= | attr | pg_ | slow.ts:128 (the PostgreSQL server log's page) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
 must | ms-tag | ^running\?tag= | th | idle in transaction | running_fleet.ts:64 'idle in transaction' | that column only where the scope holds PostgreSQL (web/src/running_fleet.ts:64), as the tempdb columns' row
 may | ms-tag | ^alerts\?tag= | cell | pg_ | alerts.ts:116 alertsView reads no folder scope | the Alerts tab in a tag folder lists the folder's instances only: alertsView filters its open alerts, history and sends by the scope's instance ids (as reports.ts:51 inScope) - web/src/alerts.ts:116
@@ -166,26 +166,37 @@ may | ms-tag | ^alerts\?tag= | cell | ACU | alerts.ts:116 alertsView reads no fo
 may | ms-tag | ^alerts\?tag= | cell | settings | alerts.ts:116 alertsView reads no folder scope | the Alerts tab in a tag folder lists the folder's instances only: alertsView filters its open alerts, history and sends by the scope's instance ids (as reports.ts:51 inScope) - web/src/alerts.ts:116
 must | ms-tag | ^alertrules\?tag= | cell | WAL | alert_rules.ts:318 (a rule covering one of the folder's instances is listed whatever its metric's engine: the demo's 'WAL rate' on tag demo, which the SQL Server instances carry too) | Alert rules in a tag folder lists only the rules that can fire on the folder's instances (the metric's engine) - web/src/alert_rules.ts:318
 must | ms-tag | ^alertrules\?tag= | cell | settings | alert_rules.ts:318 (a rule covering one of the folder's instances is listed whatever its metric's engine: the demo's 'WAL rate' on tag demo, which the SQL Server instances carry too) | Alert rules in a tag folder lists only the rules that can fire on the folder's instances (the metric's engine) - web/src/alert_rules.ts:318
-must | ms-tag | ^tablesize\?tag= | th | TOAST | tablesize.ts:66 (a PostgreSQL-only page: '0 PostgreSQL instance(s) in this folder') | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
-must | ms-tag | ^tablesize\?tag= | prose | TOAST | tablesize.ts:66 (a PostgreSQL-only page: '0 PostgreSQL instance(s) in this folder') | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
-must-not | root-pg-row | ^summary(\?|$) | attr | Last Good Check DB | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | root-pg-row | ^summary(\?|$) | attr | Backup LOG | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | root-pg-row | ^summary(\?|$) | attr | Agent Jobs | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
-must-not | root-pg-row | ^summary(\?|$) | attr | Availability Group | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | ms-tag | ^tablesize\?tag= | th | TOAST | tablesize.ts:66 (a PostgreSQL-only page: '0 PostgreSQL instance(s) in this folder') - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | ms-tag | ^tablesize\?tag= | prose | TOAST | tablesize.ts:66 (a PostgreSQL-only page: '0 PostgreSQL instance(s) in this folder') - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
+must-not | root-pg-row | ^summary(\?|$) | attr | Last Good Check DB | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | root-pg-row | ^summary(\?|$) | attr | Backup LOG | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | root-pg-row | ^summary(\?|$) | attr | Agent Jobs | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
+must-not | root-pg-row | ^summary(\?|$) | attr | Availability Group | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed (labelOf / pgLabel, web/src/fleet.ts:64-79) | -
 # --- the third run's reds outside this file (its read unmasked them: the scope's own names, each text node apart, A1 by position)
 must | pg-instance | ^pgstate\?i= | cell | Memory Dump | 0117_summary_dumps.sql:13 (the crash key's label: both engines' halves, on a PostgreSQL threshold page) | the PostgreSQL threshold pages draw the key's PostgreSQL half ('Crashes: time since the newest crash restart'): a label per engine for the key (internal/repo/sql/0117_summary_dumps.sql:13), read by the thresholds grids
 must | pg-tag | ^pgthresholds\?tag= | cell | Memory Dump | 0117_summary_dumps.sql:13 (the crash key's label: both engines' halves, on a PostgreSQL threshold page) | the same label per engine (internal/repo/sql/0117_summary_dumps.sql:13)
 must | ms-tag | ^pgthresholds\?tag= | cell | Aurora | 0103_pg_backups_roles.sql:40 'RDS / Aurora: the backup retention' on pg_backups.ts:374 (the Keys grid; the page offers PostgreSQL instances and their tags only, q_pg_backups.go:194-197) | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
-must | ms-tag | ^disks\?tag= | prose | Aurora | host.ts:118 'On-prem volumes come from system_stats, RDS storage from CloudWatch; an Aurora cluster volume grows by itself' | that sentence only where the scope holds PostgreSQL (web/src/host.ts:118)
+must-not | ms-tag | ^disks\?tag= | prose | Aurora | host.ts:118 'On-prem volumes come from system_stats, RDS storage from CloudWatch; an Aurora cluster volume grows by itself' - gone: under a tag the walk reads only the pages the folder offers (main.ts data-all by the strip's rule, router.ts tagPages) - this page of the other engine is not one of them, and its tab is out of every walked page's strip | -
 
-# --- the fleet Backups and Jobs pages on a tag folder of one engine (red on 5c6d561, j13r 12:41: FLEET's sections
-#     drawn whatever the scope's engines, first walked through TAGTREE's per-tag folders; fixed on the join after it)
+# --- the fleet Backups and Jobs pages on a tag folder of one engine (red before the fix: the fleet pages' sections
+#     drawn whatever the scope's engines, first walked through the tag tree's per-tag folders)
 must-not | pg-tag | ^backups\?tag= | heading | SQL Server | main.ts backups: mssqlBackupsFleetSection only without noSqlServer (pages.ts backups()) | -
 must-not | pg-tag | ^jobs\?tag= | prose | SQL Agent | jobs_fleet_status.ts: the sentence names the schedulers of the engines in view | -
 must-not | ms-tag | ^jobs\?tag= | prose | pg_ | jobs_fleet_status.ts: the sentence names the schedulers of the engines in view | -
 must-not | ms-tag | ^jobs\?tag= | prose | pgAgent | jobs_fleet_status.ts: the sentence names the schedulers of the engines in view | -
 must-not | ms-tag | ^jobs\?tag= | heading | PostgreSQL | jobsreport.ts: no PostgreSQL schedule checks without a PostgreSQL instance in view (pages.ts jobsRoot) | -
 must-not | ms-tag | ^jobs\?tag= | tile | PostgreSQL | jobsreport.ts: no PostgreSQL schedule checks without a PostgreSQL instance in view (pages.ts jobsRoot) | -
-must-not | pg-tag | ^admin_applications\?tag= | prose | tempdb | applications.ts: the databases follow the tree's scope and the sentence names only the system databases of the engines in view (red on 946b61a, j14b) | -
-must-not | pg-tag | ^admin_applications\?tag= | prose | msdb | applications.ts: the databases follow the tree's scope and the sentence names only the system databases of the engines in view (red on 946b61a, j14b) | -
-must-not | pg-tag | ^azuresummary\?tag= | th | Elastic Pool | azuredb.ts azureSummaryView: under a tag that holds no Azure SQL Database no grid of Azure's columns, the words that the tag holds none (red on aa84437f's join, j15b's walk: 'elastic pool' on #/azuresummary?tag=aurora) | -
+must-not | pg-tag | ^admin_applications\?tag= | prose | tempdb | applications.ts: the databases follow the tree's scope and the sentence names only the system databases of the engines in view | -
+must-not | pg-tag | ^admin_applications\?tag= | prose | msdb | applications.ts: the databases follow the tree's scope and the sentence names only the system databases of the engines in view | -
+must-not | pg-tag | ^azuresummary\?tag= | th | Elastic Pool | azuredb.ts azureSummaryView: under a tag that holds no Azure SQL Database no grid of Azure's columns, the words that the tag holds none (red before the fix: 'elastic pool' on #/azuresummary?tag=aurora) | -
+
+# --- the shared settings pages on a PostgreSQL-only tag folder:
+#     each lists every engine's rows whatever the tag; a filter by the tag's engines is the j17 row ENGINE-FILTER
+must | pg-tag | ^pgthresholds\?tag= | cell | Availability Group | 0143_hadr_mssql.sql:46 (the ag_data_loss key's label 'Availability groups: a secondary''s estimated data loss' in the Keys grid) | j17 ENGINE-FILTER: a settings page lists the rows of the tag's engines only
+must | pg-tag | ^alertrules\?tag= | cell | Extended Events | 0300_join_release3.sql:1815-1816 (the metric 'client timeouts per minute' of the group 'Extended Events' in the rule form's metric list) | j17 ENGINE-FILTER: a settings page lists the rows of the tag's engines only
+must | pg-tag | ^admin_counters\?tag= | cell | tempdb | 0152_mssql_counters.sql:129 (the counter catalogue's 'Free Space in tempdb (KB)' row) | j17 ENGINE-FILTER: a settings page lists the rows of the tag's engines only
+must | pg-tag | ^admin_(counters|backupages)\?tag= | prose | mssql_ | metrics.ts:446 ('Read once a day by mssql_counter_catalog on each SQL Server instance.') and admin_protection.ts:18 ('(mssql_thresholds)' in the page's sentence) | j17 ENGINE-FILTER: a settings page lists the rows of the tag's engines only
+must | pg-tag | ^admin_backupages\?tag= | th | Backup LOG | admin_protection.ts:62 (the rows grid's 'log backup' column) | j17 ENGINE-FILTER: a settings page lists the rows of the tag's engines only
+must | pg-tag | ^admin_backupages\?tag= | attr | Backup LOG | admin_protection.ts:33 (the 'Log backup minutes' input's aria-label) | j17 ENGINE-FILTER: a settings page lists the rows of the tag's engines only
+must | pg-tag | ^admin_(counters|backupages)\?tag= | heading | SQL Server | metrics.ts:348 (h2 'Counters (SQL Server)') and admin_protection.ts:12 (h2 'Backup ages (SQL Server)'): the other engine's name in a label | j17 ENGINE-FILTER: a settings page lists the rows of the tag's engines only
+must | pg-tag | ^admin_backupages\?tag= | prose | Backup LOG | admin_protection.ts:18 (the page's sentence: 'its newest log backup older than its log backup minutes') | j17 ENGINE-FILTER: a settings page lists the rows of the tag's engines only

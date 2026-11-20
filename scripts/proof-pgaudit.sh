@@ -33,16 +33,16 @@
 #     exactly one DDL / DROP TABLE with object TABLE public.t2, exactly one MISC_SET / SET with object SETTING
 #     pgaudit.log_catalog; each by the superuser in the test database, its time within the run. The cursor
 #     'pgaudit:serverlog:log' exists.
-#     [Run 1, box job s157-proof1, 2026-11-11 13:33 PST: A and B as expected; C found the CREATE ROLE, the GRANT and
+#     [A lab run: A and B as expected; C found the CREATE ROLE, the GRANT and
 #     the DROP TABLE once each and no SET row. Cause: pgaudit 18.0 writes a SET with the class MISC, never MISC_SET
-#     (box job s157-rawlog), and the collector kept rows by the line's class. Fixed in the collector (the class is
-#     pgaudit.log's: logparse LogClass), the expectation above unchanged. Seen in the same raw log, expected before
-#     run 2: pgaudit cuts a CREATE ROLE's text at PASSWORD, so the role's mark is written before the password; and
+#     (a lab run), and the collector kept rows by the line's class. Fixed in the collector (the class is
+#     pgaudit.log's: logparse LogClass), the expectation above unchanged. Seen in the same raw log, expected from
+#     then on: pgaudit cuts a CREATE ROLE's text at PASSWORD, so the role's mark is written before the password; and
 #     the collector's own session settings are SETs too, so:]
 #     No event row is by the monitoring login: its four session SETs per connection are counted (pgaudit_counts holds
 #     MISC_SET / SET rows with object SETTING statement_timeout and lock_timeout for it), as is every SET of a
 #     setting that is not an audit matter.
-#     [Run 3, box job s157-proof3, 13:42 PST, PostgreSQL 16 + pgaudit 16.1, repository PostgreSQL 13: A, B and C's four
+#     [A later lab run, PostgreSQL 16 + pgaudit 16.1, repository PostgreSQL 13: A, B and C's four
 #     rows as expected (0100 applies on 13); the line above failed: all 16 of the monitoring login's SETs were counted
 #     under default_transaction_read_only. Cause: pgaudit 16.1 writes the whole text of a multi-statement string on
 #     every entry of it (pgvigil's session setup is one such string), and the reader took the text's first statement
@@ -64,12 +64,12 @@
 #  F. the rules. pgaudit_findings holds 'audit rule: role or privilege change' for instance 1 (value '2 ROLE entries
 #     in the last 1 day(s)', the detail naming GRANT and CREATE ROLE) and 'audit rule: audit setting changed by a
 #     session' (value '1 MISC_SET entry in the last 1 day(s)').
-#     [Before run 2, from run 1's row listing: the door's own REVOKE ... FROM PUBLIC and GRANT ... TO <login> are
+#     [From the first lab run's row listing: the door's own REVOKE ... FROM PUBLIC and GRANT ... TO <login> are
 #     audited ROLE entries as well, so the value is '4 ROLE entries in the last 1 day(s)'.]
 #     [With C2 the setting rule counts C's row and C2's: '2 MISC_SET entries' on pgaudit 18, '3' before 18.]
-#     [Before run 6 the window's wording changed in 0100, nothing else: 'in the last 24 hours' for '1 day(s)', 'in
+#     [The window's wording changed in 0100, nothing else: 'in the last 24 hours' for '1 day(s)', 'in
 #     the last hour' for '1 hour(s)'; the three values are graded in the new words.]
-#     [Review fold, before run 6: the words no longer change with the count ('ROLE entries: 4 in the last 24 hours',
+#     [Also: the words no longer change with the count ('ROLE entries: 4 in the last 24 hours',
 #     'failed sign-ins: 12 in the last hour'): an alert's key replaces the numbers, and 'entry' / 'entries' made two keys.] Twelve sign-ins with a wrong password, collect
 #     serverlog: the finding 'audit rule: failed sign-ins' (value '12 failed sign-ins in the last 1 hour(s)'). The
 #     rule switched off (UPDATE pgaudit_rules): the finding gone; on again: back.
@@ -82,18 +82,18 @@
 #  I. a server without pgaudit (the repository server itself as instance 3): status 'off', cell 'not loaded',
 #     log_read 'off', no finding. ALTER ROLE ... SET pgaudit.log = 'all' there: status 'warning', cell 'set, not
 #     loaded', the finding 'shared_preload_libraries' whose detail starts 'pgaudit settings without pgaudit'.
-#  J. [added before run 5] audit entries at WARNING. pgaudit.log_client on and pgaudit.log_level = warning (pgaudit
+#  J. audit entries at WARNING. pgaudit.log_client on and pgaudit.log_level = warning (pgaudit
 #     then writes its lines at WARNING), a marked CREATE TABLE t3 and a marked SELECT as the superuser; collect
 #     serverlog, collect pgaudit. The log reader's events of instance 1 hold no row whose detail, statement or message
 #     carries 'AUDIT:' or the mark (an audit line is not an error event at any level); pgaudit_events holds the CREATE
 #     TABLE of public.t3 (the audit reader takes a WARNING-level entry); the repository's dump holds the mark nowhere.
-#  K. [review fold, before run 6] an imitation: as the app login, DO $$ BEGIN RAISE LOG 'AUDIT: SESSION,1,1,ROLE,
+#  K. an imitation: as the app login, DO $$ BEGIN RAISE LOG 'AUDIT: SESSION,1,1,ROLE,
 #     CREATE ROLE,,,create role <mark>,<none>'; END $$ (log_min_messages lowered for it by the superuser): no
 #     pgaudit_events row names the mark; pgaudit_findings holds 'imitated audit line' with value <app>@<test db>.
-#  I2. [review fold] on the server without pgaudit, ALTER SYSTEM SET pgaudit.log = 'ddl' and a reload (a
+#  I2. on the server without pgaudit, ALTER SYSTEM SET pgaudit.log = 'ddl' and a reload (a
 #     placeholder pg_settings does not list): the cell stays 'set, not loaded' and the settings hold the server row.
 #  Z. both containers and their volumes are gone: the ids docker run returned and their volumes read back, 0 left,
-#     else the run fails (review fold before run 6: Z printed and could not fail). Not proven by this proof:
+#     else the run fails (Z once only printed and could not fail). Not proven by this proof:
 #     parameters (pgaudit.log_parameter is off when the log is read, so every parameters column is NULL either way).
 set -euo pipefail
 cd "$(dirname "$0")/.."

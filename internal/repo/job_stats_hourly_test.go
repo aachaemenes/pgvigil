@@ -17,7 +17,7 @@ import (
 //     departure from DBA Dash, whose JobStats_60MIN keeps every step), exact: three successes of 3, 3 and 4 s in one
 //     hour read '3/3/0 10/4/3', the step rows beside them none; a cancelled run is a failure;
 //   - job_stats_7day reads DBA Dash 4.24.1's numbers (AgentJob7Day.sql): 10 s over 3 runs in one hour and 5 s over 1 in
-//     the next average 4 whole seconds (the review's case: 4.2 in exact arithmetic, 3.8 as the runs' mean), the
+//     the next average 4 whole seconds (4.2 in exact arithmetic, 3.8 as the runs' mean), the
 //     longest 5, the successes 4 in 24 h and 7 days;
 //   - a run in the next month (across the month's end) makes its own month's partition of the hours;
 //   - a PostgreSQL run stored while it runs is not counted; the import that ends it (ON CONFLICT DO UPDATE) and adds a

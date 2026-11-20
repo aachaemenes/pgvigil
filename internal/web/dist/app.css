@@ -511,3 +511,13 @@ a.verdict-link:hover .verdict-sentence, a.verdict-link:focus-visible .verdict-se
 .healthcal-word { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); }
 .healthcal-day h4 { margin: var(--sp-3) 0 var(--sp-1); }
 .healthcal-drills a { margin-right: var(--sp-3); }
+
+/* the chain timeline (mssql_xe.ts): one bar per blocking chain, its longest wait's band */
+.chain-scroll { max-height: 24rem; overflow-y: auto; } .chain-timeline { display: block; width: 100%; height: auto; }
+.chain-tick { stroke: var(--line); stroke-width: 1; } .chain-tick-label { fill: var(--text-muted); font-size: 11px; } .chain-bar.crit { fill: var(--crit); } .chain-bar.warn { fill: var(--warn); } .chain-bar.none { fill: var(--text-muted); }
+.fit-cols .grid td.wide { white-space: nowrap; max-width: none; }   /* Slow Queries' Auto Size Columns (D26): long text on one line, the grid scrolling sideways */
+.view-notes p.view-note { margin: var(--sp-1) 0; font-size: var(--fs-sm); }
+/* the agent door (investigate.ts): a report's texts as the agent wrote them, wrapped, never markup */
+pre.report-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
+.askbox { max-width: 48rem; margin: .4rem 0 .6rem; }
+.inv-detail { margin-top: 1rem; }

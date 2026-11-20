@@ -153,13 +153,13 @@ start_serve
 FROM=$(date -u -d '-6 hours' +%Y-%m-%dT%H:%M:%SZ)
 SERVER="routed in this build"
 if [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/api/pi?instance=$PI&from=$FROM")" = 404 ]; then
-  # the routes are the join's: prove the endpoints in a scratch copy with the wiring block's two lines applied
+  # the routes are the release wiring's: prove the endpoints in a scratch copy with the wiring block's two lines applied
   kill "$SRVPID" 2>/dev/null || true; wait "$SRVPID" 2>/dev/null || true; SRVPID=
   tar --exclude=./web/node_modules --exclude=./bin --exclude=./.git -cf - . | tar -C "$SCRATCH" -xf -
   grep -q 'api.HandleFunc("GET /api/io", s.IO)' "$SCRATCH/internal/web/web.go" || fail "the anchor line of the wiring is gone from web.go"
   sed -i 's|^\(\t*\)api.HandleFunc("GET /api/io", s.IO)$|&\n\1api.HandleFunc("GET /api/pi", s.PILoad)\n\1api.HandleFunc("GET /api/capacity", s.Capacity)|' "$SCRATCH/internal/web/web.go"
   (cd "$SCRATCH" && CGO_ENABLED=0 go build -o "$SCRATCH/pgvigil-wired" ./cmd/pgvigil) || fail "the scratch build with the routes"
-  SRV="$SCRATCH/pgvigil-wired"; SERVER="routed in a scratch build (the join wires them)"
+  SRV="$SCRATCH/pgvigil-wired"; SERVER="routed in a scratch build (the release wiring routes them)"
   start_serve
 fi
 api() { local code; code=$(curl -s -o "$LOG.body" -w '%{http_code}' "$U/api/$1"); [ "$code" = 200 ] || fail "/api/$1 answered $code: $(cat "$LOG.body")"; cat "$LOG.body"; }

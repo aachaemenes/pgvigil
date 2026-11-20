@@ -1,7 +1,7 @@
 // The Jobs tab of a PostgreSQL instance in DBA Dash's shape (task 110): pg_cron's and pgAgent's jobs one line each
 // (the shared grid of mssql_jobs.ts with the database, the user, the command and the job page link), the picked job's
 // history and changes, and every run of the range as the old page had it (pages.ts jobs(): nothing it showed is
-// lost). Data from /api/jobs/history?engine=pg and /api/jobs. The lead points the 'jobs' tab here.
+// lost). Data from /api/jobs/history?engine=pg and /api/jobs. The shell points the 'jobs' tab here.
 // Task 154: the shared panel carries the versions (pg_cron's and pgAgent's scripts with their diffs) and the status
 // against the job thresholds. Task 161 (jobs_running.ts): the pg_cron schedule in words, Run now on a pgAgent job, and
 // under the grid Running now with Stop, the pgAgent step log, the exclusions and the job actions' audit.
@@ -27,19 +27,19 @@ export async function jobsPgView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'datname', label: 'db' }, { key: 'run_as', label: 'run as' },
       { key: 'command', fmt: oneLine },
       { key: 'job_id', label: 'page', fmt: (v, r: Row) => jobLink(ctx, `#${String(v)}`, r.scheduler, Number(v)) },
-      // task 161: the pg_cron schedule in words, Run now on a pgAgent job
+      // task 161: the pg_cron schedule in words, Run now on a pgAgent job; B9c: Enable or Disable
       { key: '_schedule_words', label: 'schedule in words (cron.timezone)', fmt: (_v, r: Row) => r.scheduler === 'pg_cron' ? cronInWords(r.schedule) : '' },
       run,
     ];
     const panel = await jobsPanel(ctx, 'pg', extra);
-    if (run.offNote) sec.append(run.offNote);   // Run now off for the whole instance, where a pgAgent job shows the button
+    if (run.offNote) sec.append(run.offNote);   // Run now / Enable / Disable off for the whole instance, where a row shows the button
     sec.append(panel);
     sec.append(await jobsRunningPanel(ctx, run.stopNote));   // one sentence above for Run now AND Stop: not said again below
     const d = await get<Record<'runs', Table | null>>('jobs', { instance: ctx.instance, ...window_(ctx), part: 'runs' });
     const runCols: Col[] = [
       { key: 'start_time', label: 'start', fmt: fmtTime },
       { key: 'duration_secs', label: 'took', num: true, fmt: fmtSecs },
-      { key: 'status', fmt: runBadge },
+      { key: 'status', fmt: runBadge, cls: v => v == null || v === '' || ['failed', 'internal error', 'aborted'].includes(String(v)) ? '' : v === 'succeeded' ? 'status ok' : 'status none' },
       { key: 'scheduler' }, { key: 'job_name', label: 'job', fmt: (v, r) => jobLink(ctx, String(v ?? r.job_id), r.scheduler, r.job_id) },
       { key: 'run_id', label: 'run', num: true }, { key: 'datname', label: 'db' },
       { key: 'return_message', label: 'message', fmt: oneLine },

@@ -58,7 +58,7 @@
 #     the hand read of RING_BUFFER_RESOURCE_MONITOR: every record id of this server start is stored once (two reads did
 #     not double it), each with the same notification and indicators; sp_PressureDetector's low_memory list (indicator
 #     over 1) is in pgvigil's rows (time within 1 s); at least one record with an indicator of 2 or more. The two source
-#     reads come after read #2: records past it (by id, by time) are not compared [after review s177g-review9].
+#     reads come after read #2: records past it (by id, by time) are not compared [added later].
 #  E. the findings (mssql_memory_findings_between) over reads #0-#2: memory grant timeouts on pgvmem_pool, a low memory
 #     notification, high memory use for In-Memory OLTP and In-Memory OLTP in use; over reads #0-#1 (the newest read is
 #     #1, the grants still held): a memory grant over 15 % of max workspace (the default-pool holder's session), plan
@@ -66,8 +66,8 @@
 #     rules the container cannot provoke, checked on stored rows of their own (a sample with TokenAndPermUserStore at 15 %
 #     and 10.0 % of 2 GB of clerks raises the token-cache finding, at 9.99 % and 5 % none; 1 GB of clerks raises it, 1 KB
 #     less none; the engine service's IFI flag false raises the IFI finding, true none, the flag restored as read; check 46
-#     at 150 MB + 1 KB raises, 150 MB not; the bloat levels at 20 / 30 / 50 % and just over) [edges after review
-#     s177g-review9], each removed after.
+#     at 150 MB + 1 KB raises, 150 MB not; the bloat levels at 20 / 30 / 50 % and just over) [edges added
+#     later], each removed after.
 #  F. `pgvigil serve`: GET /api/mssql/memory over the window: every D13 part answers, its row counts = the functions'.
 #  G. #/mssqlmemory over the window in headless Chromium, light and dark: every D13 section present with its rows (the
 #     pool and semaphore grids, the pressure events, the grants now, the workload groups, the caches, the plan cache by
@@ -81,7 +81,7 @@
 # NOT PROVEN HERE (when B prints DIFFERENT): a live grant timeout (the rule then checked on stored rows in E);
 #   the token-cache and IFI findings on a server that has them (rules checked on stored rows); SQL Server
 #   2016-2019, Azure SQL Managed Instance and Amazon RDS (a read the server refuses is a 'skip' row, read in the code);
-#   the findings arm on the Findings tab (the lead's join line, 0119's header).
+#   the findings arm on the Findings tab (the release migration's line, 0119's header).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"

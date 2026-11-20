@@ -9,6 +9,7 @@
 import { get } from './api';
 import { addChunks, rowAddress } from './move_address';
 import { badge, el, fmtTime, offControl } from './ui';
+import { routeWhy } from './needs';
 
 type Obj = Record<string, unknown>;
 interface Repos { repositories: { name: string; import: boolean }[]; off: string; windows_off: string; gmsa: string; max_add: number; steps: string[] }
@@ -98,6 +99,9 @@ export function moveSection(onAdded: () => void = () => {}): { node: HTMLElement
     let d: MoveData;
     try { d = await get<MoveData>('admin/dbadash_moves', { repo }); } catch (e) { if (my === seq) say(`Not read: ${(e as Error).message}`, true); return; }
     if (my !== seq) return;
+    // the role (B24f): a move needs admin - below it the section is read only with the role's words, after the
+    // server's own reason
+    if (d.off === '') d.off = routeWhy('admin/dbadash_moves') ?? '';
     const ro = d.off !== '';
     // the page's one read-only sentence describes every control that cannot write here (admin_instances.ts' way); a
     // button off for its own reason gets that reason as text beside it (offControl's note)
@@ -171,7 +175,7 @@ export function moveSection(onAdded: () => void = () => {}): { node: HTMLElement
       if (pick.length > d.max_add) { say(`At most ${d.max_add} servers in one add: untick ${pick.length - d.max_add}.`, true); return; }
       add.disabled = true; say('Working…');
       try {
-        // one post per part under the server's 16 KB body (review 206d 13: 50 long names pass it in one)
+        // one post per part under the server's 16 KB body (50 long names pass it in one)
         const base = { op: 'add', repo, auth: auth.value, login: login.value.trim(), password: pw.value };
         const all = pick.map(t => ({ server: String(t.row.server), dbadash_ids: t.row.dbadash_ids, host: t.host.value.trim(), port: t.port.value.trim(), name: t.name.value.trim() }));
         const res: Obj[] = [];
@@ -218,6 +222,8 @@ export function moveSection(onAdded: () => void = () => {}): { node: HTMLElement
       el('h4', {}, 'DBA Dash\'s services'), agents,
     );
     // a running import: the list again in 5 seconds
+    // every control of the section that writes carries the need (the role proof reads it)
+    for (const c of body.querySelectorAll<HTMLElement>('button, input[type=checkbox]')) c.dataset.need = 'admin';
     if (servers.some(s => s.state === 'importing' || (s.job && !(s.job as Obj).ended))) schedule();
   }
 

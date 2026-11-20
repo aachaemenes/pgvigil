@@ -10,7 +10,7 @@
 -- import_indexes is re-created with the inventory part (0030's body kept as it was); drill_index() falls back to the
 -- inventory row for an index with no problem (the index page opens from the inventory grid too).
 -- pgvigil.findings is re-created from 0045 UNCHANGED (no new arm) and purge() from 0049 with one partition parent
--- added, so the next join builds from this file (build-join.sh: SRC 0056, ANCHOR 'index_usage_daily').
+-- added, so the next wiring migration builds from this file (build-join.sh: SRC 0056, ANCHOR 'index_usage_daily').
 -- Rights: the reads stay pg_monitor (pg_stat_user_indexes, pg_index, pg_class, pg_am, pg_get_indexdef).
 
 CREATE TABLE IF NOT EXISTS pgvigil.index_inventory (
@@ -140,7 +140,7 @@ BEGIN
                         AND r->>'problem' = s.problem);
   -- and its inventory rows not in this read (a dropped index). A payload with db rows and no inv rows is 0030's shape (an
   -- older collector) only when a db row counts indexes (the inventory is then left alone); a database read with zero user
-  -- indexes sends no inv row either, and its inventory rows go absent (review 71, finding 2)
+  -- indexes sends no inv row either, and its inventory rows go absent
   UPDATE pgvigil.index_inventory v SET is_present = false, snapshot_at = p_snapshot_at
    WHERE v.instance_id = p_instance_id AND v.is_present
      AND (EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'inv')
@@ -164,7 +164,7 @@ END $$;
 
 -- the inventory of one instance (or one of its databases) with the scans over the last 7 and 30 days (NULL without a day
 -- row that old, or after a counter went backwards) and the problems the collection lists for the index; the largest first,
--- p_limit rows at most (the UI reads one database at a time: 10,000 rows were 5.5 MB of JSON in review 71)
+-- p_limit rows at most (the UI reads one database at a time: 10,000 rows were 5.5 MB of JSON)
 CREATE OR REPLACE FUNCTION pgvigil.index_inventory_read(p_instance_id int, p_dbid bigint DEFAULT NULL, p_limit int DEFAULT 2000)
 RETURNS TABLE (dbid bigint, indexrelid bigint, datname text, schema_name text, table_name text, index_name text, relid bigint,
                access_method text, is_unique boolean, is_primary boolean, is_valid boolean, is_partition boolean, columns text,
@@ -231,7 +231,7 @@ LANGUAGE sql STABLE AS $$
                                       AND f.value = s.datname || ': ' || coalesce(s.schema_name || '.', '') || coalesce(s.index_name, s.indexrelid::text)
    WHERE s.instance_id = p_instance_id AND s.dbid = p_dbid AND s.indexrelid = p_indexrelid
      -- a cleared problem (is_present false) shows only when none is present AND the inventory has no present row: an index
-     -- alive and read (its problem cleared) comes from the inventory below, never from the stale row (review 71, finding 1)
+     -- alive and read (its problem cleared) comes from the inventory below, never from the stale row
      AND (s.is_present OR (NOT EXISTS (SELECT 1 FROM pgvigil.index_state p WHERE p.instance_id = s.instance_id AND p.dbid = s.dbid
                                                                            AND p.indexrelid = s.indexrelid AND p.is_present)
                            AND NOT EXISTS (SELECT 1 FROM pgvigil.index_inventory v2 WHERE v2.instance_id = s.instance_id AND v2.dbid = s.dbid
@@ -387,7 +387,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the corruption column (0023): checksums off, ignore_checksum_failure on, a corruption event in 24 h, amcheck damage
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.corruption_findings WHERE setting <> 'zero_damaged_pages'
     UNION ALL
-    -- the plans slice (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
+    -- plan_findings (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.plan_findings
     UNION ALL
     -- the indexes collection (0030): invalid and duplicate indexes (warning), redundant and unused ones (info)

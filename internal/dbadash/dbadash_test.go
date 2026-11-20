@@ -75,7 +75,7 @@ gmsa: " CORP\\pgvigil-gmsa$ "
 		"gmsa a UPN":          "gmsa: pgvigil-gmsa$@corp.example.com\n",
 		"gmsa name too long":  "gmsa: CORP\\pgvigil-collector$\n",
 		"gmsa FQDN domain":    "gmsa: corp.example.com\\pgvigil$\n",
-		// review 206f 13: the account's 15-character limit at its edge, and '$' only at its end
+		// the account's 15-character limit at its edge, and '$' only at its end
 		"gmsa name of 16": "gmsa: CORP\\abcdefghijklmnop$\n",
 		"gmsa a $ inside": "gmsa: CORP\\a$$\n",
 	}

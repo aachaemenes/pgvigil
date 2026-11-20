@@ -33,7 +33,7 @@ func TestHealthDetail(t *testing.T) {
 		{"no history", nil, ptr("2026-11-14 11:00"), true, true, nil},
 		{"runs, written after the deploy", upgraded, ptr("2026-11-14 10:05"), true, true, true},
 		{"no runs, written after the deploy", upgraded, ptr("2026-11-14 10:05"), true, false, false},
-		{"runs, written before the deploy (the review's case)", upgraded, ptr("2026-11-14 09:30"), true, true, false},
+		{"runs, written before the deploy", upgraded, ptr("2026-11-14 09:30"), true, true, false},
 		{"runs, never written", upgraded, nil, true, true, false},
 		{"the runs not readable", upgraded, ptr("2026-11-14 10:05"), false, nil, "unknown"},
 		{"the runs not readable, written before the deploy", upgraded, ptr("2026-11-14 09:30"), false, nil, false},

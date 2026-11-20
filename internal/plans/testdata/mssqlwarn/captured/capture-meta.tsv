@@ -1,0 +1,60 @@
+server	16.0.4315.2	cpus=4	maxdop=2	ctp=5	last_query_plan_stats=0	image=mcr.microsoft.com/mssql/server:2022-CU27-GDR2-ubuntu-22.04
+case	clean	0x0B38D8CF97D3F1BB	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	ic_seek	0x426A23723D9EA80A	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	ic_none	0xB9B7C4EFD951967E	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	lookup_hit	0xD3983301EA2C7E01	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	lookup_cheap	0x0FB8B665D61D8E3A	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	rid_lookup	0xFB1EFD434945CA8A	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	missing_ix	0x18EAA2C5760FDECB	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	udf_scalar	0x7C221947B3B4A326	2	est=ok	exec=ok	cache=ok	qs=ok	-
+case	udf_clr	0xEC69D0182171B0AB	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	udf_filter	0x8C490B54B5E4D2F9	2	est=ok	exec=ok	cache=ok	qs=ok	-
+case	udf_computed	0x4CC28D77E4C51351	2	est=ok	exec=ok	cache=ok	qs=ok	-
+case	mstvf_fixed	0xE1BB9FEA02252205	3	est=ok	exec=ok	cache=ok	qs=ok	-
+case	mstvf_interleaved	0x2FA3849474AD9EE3	3	est=ok	exec=ok	cache=ok	qs=ok	-
+case	table_var	0x89358397970903F2	1	est=ok	exec=ok	cache=none	qs=ok	-
+case	cursor_dynamic	0x0000000000000000	5	est=ok	exec=ok	cache=ok (by text)	qs=ok (by text)	0x0600050095F9B30EC0FEBB210F00000001000000000000000000000000000000000000000000000000000000
+case	cursor_ff	0x0000000000000000	5	est=ok	exec=ok	cache=ok (by text)	qs=ok (by text)	0x06000500FE9CA92680B612230F00000001000000000000000000000000000000000000000000000000000000
+case	cursor_keyset	0x0000000000000000	5	est=ok	exec=ok	cache=ok (by text)	qs=ok (by text)	0x06000500D305D50350B52E230F00000001000000000000000000000000000000000000000000000000000000
+case	np_a	0x1A49D0B75D4A4301	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	np_b	0x1AA036E2BB7B69A5	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	np_c	0x1575A8ADB7B023A1	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	np_d	0x5F862D9E1149AD28	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	sort_big	0x3A6595B2567F235A	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	sort_topn	0xBDCA3A6F7DB45DB7	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	idx_spool	0xCFD44FBECAB728D4	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	win_spool	0x847A95A1167455A4	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	remote_all	0xB1526200A1EA2D2A	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	remote_small	0x47C8DF1D4A28A337	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	row_goal	0x198B2829FEE0859A	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	stale_hit	0xEE1590CDA8ABF688	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	stale_low	0xFC0833561B676597	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	bad_est	0x5D9D77AC8C9C1F01	2	est=ok	exec=ok	cache=ok	qs=ok	-
+case	adaptive	0x494D7A3C4A3EFCA2	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	back_scan	0xEB43A0A4AECF03CC	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	heap_scan	0xAB4B41BAD85FE5BA	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	forced_ix	0x21C7B7E19754F3B1	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	cs_rowmode	0xC5F2A5F8B67CA24B	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	upd5_narrow	0x90EF7828B243DE06	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	upd5_wide	0xF11B80D8A0F0664F	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	upd4_narrow	0x93EC48D7AFE1C2ED	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	slow_udf	0x8000B2FEB2EB69AD	6	est=ok	exec=ok	cache=ok	qs=ok	-
+case	sort_spill	0xD0C72DDB2C13C869	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	tf_session	0x832B57765136FB5B	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	compile_to	0x10C84FBAB9D08EBD	1	est=ok	exec=ok	cache=none	qs=ok	-
+case	long_compile	0x8F6198B8B72B84D7	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	nonsarg_fn	0xAB17CC7D576FBF9D	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	nonsarg_like	0x7413CFEDDFCC8882	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	nojoin	0x2B137E347BD23DBA	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	nostat	0xCC3A8360CADD33C6	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	cte_writes	0x208AEB8853CA5630	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	tspool_hit	0xED8E465818E77788	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	unparam	0xFC0277215DE8D9B5	3	est=ok	exec=ok	cache=ok	qs=ok	-
+case	ddl_create_index	nohash	1	est=ok	exec=ok	cache=none	qs=ok (by text)	-
+case	ddl_drop_index	nohash	1	est=ok	exec=ok	cache=none	qs=none	-
+case	ddl_create_table	nohash	1	est=ok	exec=ok	cache=none	qs=none	-
+case	ddl_drop_table	nohash	1	est=ok	exec=ok	cache=none	qs=none	-
+case	unparam_full	0x8AF8C24B3A1D2940	3	est=ok	exec=ok	cache=ok	qs=ok	-
+case	unparam_param	0x09E74C3EA51E230E	2	est=ok	exec=ok	cache=ok	qs=ok	-
+case	sel_writes	0x33B4ABE3730FCF66	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	tspool_big	0x131F3FD489EC9089	1	est=ok	exec=ok	cache=ok	qs=ok	-

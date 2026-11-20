@@ -61,7 +61,7 @@ type Choices struct {
 
 // Merge applies the precedence: the policy (the administrator's) over the user's over the defaults.
 func Merge(c Choices) Settings {
-	// the release-feed check is off unless asked for (nothing outbound by default: decisions review F02): the
+	// the release-feed check is off unless asked for (nothing outbound by default): the
 	// administrator's policy UpdateCheck = 1 or the user's own choice turns it on; the policy's 0 turns it off for every
 	// user, and a user may still turn it off for themselves under a policy of 1
 	s := Settings{AttachURL: DefaultAttachURL, UpdateFeed: DefaultFeed, Width: 1280, Height: 800,

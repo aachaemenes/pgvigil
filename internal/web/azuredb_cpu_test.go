@@ -138,4 +138,46 @@ func TestAzureDBCPUOnAStore(t *testing.T) {
 	if got[ss] != "2 62.5 95 [0 0 0 1 0 0 0 0 0 1] scheduler" {
 		t.Errorf("Performance Summary on SQL Server: %q, want 2 samples, 62.5, 95 and its own buckets (30 and 95)", got[ss])
 	}
+
+	// B2a-N2 (the CPU series to hours past 1 day only): two more minutes (base+3, base+6, a sample each);
+	// a 6-hour window at a 3-minute step reads the minutes - three points (base, base+3, base+6), never the one hour row
+	// at base that a window read for any length gives; a 25-hour window steps whole hours and reads the hour: one point,
+	// its average the four minutes' weighed by samples, (10 x 4 + 40 x 2 + 50 + 70) / 8 = 30
+	p2, _ := json.Marshal([]map[string]any{minute(3, 1, 50, 60, []int{0, 0, 0, 0, 0, 1, 0, 0, 0, 0}), minute(6, 1, 70, 80, []int{0, 0, 0, 0, 0, 0, 0, 1, 0, 0})})
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_azuredb_resources($1, now(), $2::jsonb)`, az, string(p2)); err != nil {
+		t.Fatal(err)
+	}
+	points := func(name, q string, from, to time.Time, step int) string {
+		t.Helper()
+		rows, err := pool.Query(ctx, q, az, from, to, step)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			vals, err := rows.Values()
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			at, _ := vals[0].(time.Time)
+			out = append(out, fmt.Sprintf("%s=%v", at.UTC().Format("15:04"), vals[1]))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return fmt.Sprint(out)
+	}
+	at := func(m int) string { return base.Add(time.Duration(m) * time.Minute).Format("15:04") }
+	perfAvg := `SELECT snapshot_at, cpu_avg::float8 FROM (` + sqlPerfMSSQLCPU + `) q`
+	tabAvg := `SELECT snapshot_at, sql_pct::float8 FROM (` + sqlMSSQLCPUSeries + `) q`
+	want6 := fmt.Sprintf("[%s=20 %s=50 %s=70]", at(0), at(3), at(6))
+	for name, q := range map[string]string{"the Performance page": perfAvg, "the CPU tab": tabAvg} {
+		if got := points(name, q, base.Add(-5*time.Hour), base.Add(time.Hour), 180); got != want6 {
+			t.Errorf("%s over 6 hours at a 3-minute step: %s, want %s (the minutes up to a day)", name, got, want6)
+		}
+		if got, want := points(name, q, base.Add(-24*time.Hour), base.Add(time.Hour), 750), fmt.Sprintf("[%s=30]", at(0)); got != want {
+			t.Errorf("%s over 25 hours: %s, want %s (whole hours past a day)", name, got, want)
+		}
+	}
 }

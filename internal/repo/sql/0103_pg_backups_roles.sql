@@ -13,12 +13,12 @@
 --   4. Views: pg_base_backup_status (per instance and tool), pg_crashes (one row per crash restart from the log's crash
 --      events, with the acknowledgement that covers it), pg_stmt_store_state (pg_stat_statements' state), pg_amcheck_age
 --      (the last clean amcheck per database), pg_uptime_state, pg_replication_links (the fleet's primaries and standbys by
---      system identifier); pg_backups_checks (the Summary's rows, check_group named) and pg_backups_findings (the join
+--      system identifier); pg_backups_checks (the Summary's rows, check_group named) and pg_backups_findings (0110
 --      UNION ALLs it into pgvigil.findings).
 --   5. backup_status, backup_rule_hits and backup_findings (0022) again, the archive-age and retention thresholds taken
 --      from pg_thresholds when the UI set one (the config file's backups.archive_warn_minutes otherwise, as before).
 -- Retention: pg_role_changes and pg_thresholds hold a row per change and are not purged; the current tables lose their
--- absent rows past the retention (the purge lines are the join's: docs/backups-postgres.md).
+-- absent rows past the retention (the purge lines are 0110's: docs/backups-postgres.md).
 
 -- ---------------------------------------------------------------------------------------------------------------
 -- 1. Thresholds

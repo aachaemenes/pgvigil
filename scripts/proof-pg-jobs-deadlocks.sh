@@ -9,13 +9,13 @@
 # repository (database pgvigil_repo) and the monitored server (database postgres). What it makes and removes on every
 # exit path: the container (with its volume), the scratch folder; nothing else is touched. The images stay (docker rmi
 # pgvigil-proof-pgcron:<major> removes them).
-# The routes, the tabs and the config's job actions are the lead's files (web.go, serve.go, config.go, router.ts, main.ts,
+# The routes, the tabs and the config's job actions are shared files (web.go, serve.go, config.go, router.ts, main.ts,
 # jobs_pg.ts; logparse.go keeps a deadlock's CONTEXT line): where the tree lacks them, the scratch build applies
 # PGVIGIL_PGJD_WIRING (the slice's wiring patch) and the proof says so.
 #
 # Expected (written before the first run), on each major:
 #  A. migrate applies 0102: job_step_runs and job_exclusions exist, actions_log's CHECK names job_stop in its postgres branch.
-#     [review fold] the config refuses on a PostgreSQL instance actions: [kill] ('unknown action'), [job_stop, job_stop]
+#     the config refuses on a PostgreSQL instance actions: [kill] ('unknown action'), [job_stop, job_stop]
 #     ('twice') and [job_stop] without actions_dsn ('no actions_dsn').
 #  B. pg_cron Stop: a job 'pgv161_sleeper' (select pg_sleep(600), every minute, as the plain login jobber) starts; after
 #     the jobs read, GET /api/jobs/running lists its run with that run's job_pid; POST /api/jobs/actions/stop is 403 without
@@ -24,17 +24,17 @@
 #     job_stop', its running state says off with that reason), and 200 done with the right one: the run ends 'failed' with
 #     'canceling statement due to user request' within 15 s. actions_log then holds for job_stop: door done=1 refused=2,
 #     off refused=1, every row with the UI user, the reason and the job's name; the done row's pid = the job_pid and its
-#     statement 'SELECT pg_cancel_backend(<pid>)'. [review fold] a reason holding a NUL is 400 and a SQL Server instance's
+#     statement 'SELECT pg_cancel_backend(<pid>)'. A reason holding a NUL is 400 and a SQL Server instance's
 #     id 400, neither audited (the job_stop row count unchanged).
 #  C. Running now from crafted rows (a stub instance): a job with 3 successful runs of 10 s and a run started 300 s ago: one
 #     row, ok_runs 3, avg_secs 10, estimated_end = start + 10 s, over_average true; a second job whose running run the newest
 #     read no longer listed is not a row.
 #  D. pgAgent: a pgAgent daemon as the plain login agentrunner; a job 'pgv161_agent' (step 'a nap' select pg_sleep(600), step
-#     'b after' select 1, on error fail, no schedule) and a disabled one. [run s161-proof2, graded: the steps were 'nap' and
+#     'b after' select 1, on error fail, no schedule) and a disabled one. [a lab run, graded: the steps were 'nap' and
 #     'after' and the run stored after=succeeded before nap=failed - pgAgent runs a job's steps in the order of their names,
 #     so 'after' ran first; the names now carry the order, the expectation below is unchanged] Run now: 409 on the disabled job ('disabled'), 409 on the second
-#     instance, 200 done on pgv161_agent (jobnextrun = now()), the run starts within 75 s with step 'a nap' running ([review
-#     fold] its code is a 1,500-character comment then select pg_sleep(600): longer than track_activity_query_size, so
+#     instance, 200 done on pgv161_agent (jobnextrun = now()), the run starts within 75 s with step 'a nap' running (its code
+#     is a 1,500-character comment then select pg_sleep(600): longer than track_activity_query_size, so
 #     the session is found by the cut text's start, while another session of app161 runs another statement on the same
 #     database); Run now again
 #     409 ('running now'); after the jobs and job_steps reads the Running now row has current_step 'a nap'; Stop 200 done with
@@ -45,36 +45,56 @@
 #  E. Exclusions: job_failures holds the two failed jobs; an instance exclusion name 'pgv161_s*' takes the sleeper out
 #     (job_failures 1, job_status 'excluded' with the pattern in its reason); '**' refused, the same exclusion again refused
 #     ('in force already'); a fleet exclusion name 'PGV161_AGENT' (any case) leaves 0; ending both gives 2 again.
-#     [review fold] an add whose body carries ui_user 'spoof' is created_by the UI login.
+#     an add whose body carries ui_user 'spoof' is created_by the UI login.
 #  F. A deadlock between two sessions of app161 (application_name pgv161-a and pgv161-b) on dl161, the activity read while
 #     both sleep inside their transactions: two serverlog reads store exactly one deadlock event; /api/pg/deadlocks gives 1
 #     deadlock, its 2 processes with both pids, the victim the pid that got the error, 2 transaction locks each with one
 #     waiter and one holder, relation dl161 named, 1 group, by_user app161, by_application pgv161-a and pgv161-b, by_relation
-#     dl161; [review fold] total 1 and the trend's buckets sum to 1. The two sessions are waited for (both active in
+#     dl161; total 1 and the trend's buckets sum to 1. The two sessions are waited for (both active in
 #     pg_sleep, bounded at 15 s) before the activity read.
 #  G. A pg_cron job changed twice (schedule, then command) with a jobs read after each: /api/jobs/history's changes carry 3
-#     scripts; v1 -> v2 differ in exactly the schedule line, v2 -> v3 in exactly the command line. [the version views,
-#     the lead 2026-11-14] D's pgAgent job pgv161_agent changed once (step 'b after': select 1 -> select 3) with a jobs read
+#     scripts; v1 -> v2 differ in exactly the schedule line, v2 -> v3 in exactly the command line. [the version views]
+#     D's pgAgent job pgv161_agent changed once (step 'b after': select 1 -> select 3) with a jobs read
 #     after it: its history carries 2 scripts, v1 -> v2 differ in exactly that step's code line.
 #  H. The pages in a headless Chromium: the Deadlocks tab draws the graph (an svg.deadlock-graph with 2 process boxes, 1
 #     victim box, the word VICTIM) and the groups grid has 1 row; the Jobs tab shows Running now, pgAgent steps, the
 #     exclusions and the schedule in words 'at 04:10 every day'; no exception and no console error on either.
-#     [the version views (C01), the lead 2026-11-14; red first: no run of this proof clicked them - uidoor-u3's H has no
+#     [the version views (C01); red first: no run of this proof clicked them: a test's check had no
 #     such line] On the Jobs tab, pgv161_diff (pg_cron) picked by its name: '<job>: versions' with 3 versions, the newest
 #     version's script against the one before in each view - Side by side diff (a table 'side by side diff: ...'): one
 #     removed line holding select 1 and one added line holding select 2, both tinted (against the panel), exactly the
-#     changed token boxed ('1' / '2'; the review's should 1); Inline
+#     changed token boxed ('1' / '2'); Inline
 #     diff (a table 'inline diff: ...'): the same two lines marked - and +, tinted, boxed; Code view (a table 'the script'):
 #     the script alone, no line marked; then pgv161_agent (pgAgent) picked: 2 versions, the same three views over
 #     select 1 -> select 3; each a line 'ok   the version views (<scheduler> <job>): ...'; no exception, no error box.
 #  I. The parser's cases as tests in the scratch copy (the slice owns no test file): a two-process DETAIL; the same under
 #     the 'normalized' policy (every number '?': processes by place, blocked by the next one); a three-process cycle; a
 #     relation lock 'relation 16384 of database 5'; a statement of two lines; a CONTEXT line naming the relation; and the
-#     job action request's shape (pg_cron run now refused, a short reason refused). [review fold] the 'normalized' case is
+#     job action request's shape (pg_cron run now refused, a short reason refused). The 'normalized' case is
 #     the detail as collect.ApplyTextPolicy stores it (one line), and gives 2 locks (one per holder); the demo's one-line
 #     detail gives 2 processes; an empty 'Process N:' line leaves that process without a statement; the statement
 #     targets of a SELECT ... FROM now() ... FROM jobs FOR UPDATE (jobs), '/* app */ UPDATE t' (t) and 'BEGIN; UPDATE t' (t).
 #  J. every container this run made is gone (0 left), and its volume with it.
+#  K. (B9c) Enable and Disable. The door instance's actions: list names job_enable
+#     and job_disable; /api/jobs/running says both on there with actions_login 'pgv161act', and off on the second instance
+#     ('does not name job_enable'). pg_cron (>= 1.4.0 in the PGDG image; its version printed): a job 'pgv_b9c_own'
+#     scheduled as pgv161act (cron.schedule_in_database ... 'pgv161act') and 'pgv_b9c_pg' as postgres. Before any cron
+#     grant, Disable on pgv_b9c_own is 409 'may not call cron.alter_job'; after GRANT USAGE ON SCHEMA cron and GRANT
+#     EXECUTE ON FUNCTION cron.alter_job(...) (the docs' two grants, nothing else): Disable on pgv_b9c_pg is 409 "pg_cron
+#     lets only the job's owner"; Disable on pgv_b9c_own 200 done, cron.job.active false, the detail 'reads false now';
+#     again 409 'already disabled'; Enable 200 done, active true; Enable on the second instance 409 'does not name
+#     job_enable'. pgAgent: a disabled job 'pgv_b9c_sched' with one schedule (03:00 every day); Enable is 409 'may not
+#     change jobenabled' while pgv161act holds no UPDATE (jobenabled); after it, 409 'may not read the job's schedules';
+#     with SELECT on pga_schedule alone an UPDATE ... SET jobenabled = true sent as pgv161act in psql fails naming
+#     pga_exception (pgAgent's trigger as the caller: the docs' grant is needed whole); with SELECT on pga_exception too,
+#     Enable 200 done, jobenabled true and jobnextrun set by the trigger; Enable again 409 'already enabled'; Disable 200
+#     done, jobenabled false, jobnextrun NULL; Disable on the second instance 409. actions_log for the two kinds: door
+#     job_disable done=2 refused=3, job_enable done=2 refused=3; off refused=2 (one each); no row with a pid; the done
+#     rows' statements 'SELECT cron.alter_job(job_id := <id>, active := false|true)' and 'UPDATE pgagent.pga_job SET
+#     jobenabled = true|false WHERE jobid = <id>'.
+#     H gains: the Jobs tab draws Enable or Disable buttons (button.act-job_enable / .act-job_disable, off on this
+#     -no-login serve) and one sentence 'Run now, Enable, Disable and Stop are off for this instance: ...'.
+#     NOT PROVEN here: pg_cron older than 1.4.0 (no image of one), a click on Enable / Disable in the browser.
 set -euo pipefail
 export PATH=$HOME/.local/share/mise/shims:$HOME/go/bin:/usr/local/go/bin:$PATH
 for t in docker psql curl python3 go node npm chromium setsid; do command -v $t >/dev/null || { echo "FAIL: $t missing" >&2; exit 1; }; done
@@ -97,7 +117,7 @@ else
   : "${PGVIGIL_PGJD_WIRING:?the tree lacks the routes: name the wiring patch in PGVIGIL_PGJD_WIRING}"
   WIRING=$(realpath "$PGVIGIL_PGJD_WIRING")
   (cd "$WORK/src" && git apply "$WIRING") || fail "the wiring patch does not apply"
-  echo "binary: wired in a scratch build (the join applies the same patch)"
+  echo "binary: wired in a scratch build (the release holds the same patch)"
 fi
 cat > "$WORK/src/internal/web/pgdl161_proof_test.go" <<'GOTEST'
 package web
@@ -256,6 +276,11 @@ const jb = await until(`(() => { const h = ${heads}; if (!h.some(x => x.startsWi
   return { running: true, steps: h.some(x => x.startsWith('pgAgent steps')), excl: h.includes('Left out of the job checks'),
            words: [...document.querySelectorAll('main td')].some(td => td.textContent.trim() === 'at 04:10 every day') }; })()`, 30000);
 check('the Jobs tab', jb && jb.steps && jb.excl && jb.words, JSON.stringify(jb));
+// B9c: Enable / Disable drawn (off on this -no-login serve) and the one shared sentence names them with Run now and Stop
+const tg = await ev(`({ toggles: document.querySelectorAll('main button.act-job_enable, main button.act-job_disable').length,
+  sentence: [...document.querySelectorAll('main p.meta')].filter(p => p.textContent.startsWith('Run now, Enable, Disable and Stop are off for this instance')).length,
+  stopAgain: [...document.querySelectorAll('main p.meta')].some(p => p.textContent.includes('Stop is off:')) })`);
+check('the Jobs tab: Enable / Disable', tg && tg.toggles > 0 && tg.sentence === 1 && !tg.stopAgain, JSON.stringify(tg));
 await sleep(500);
 thrown.push(...(await ev(errBoxes)).map(x => 'error box: ' + x));
 check('the Jobs tab: no exception, no error', thrown.length === 0, thrown.join(' | ') || 'none');
@@ -326,7 +351,7 @@ run_major() {
   export PGVIGIL_REPO_DSN="$ADM password=$PW dbname=pgvigil_repo" MON_DSN="$ADM password=$PW dbname=postgres" \
          ACT_DSN="host=127.0.0.1 port=$PORT user=pgv161act password=$APW dbname=postgres"
   local CFG=$WORK/cfg-$V.yaml
-  printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances:\n  - name: pgjd-%s\n    dsn: env:MON_DSN\n    actions_dsn: env:ACT_DSN\n    actions: [job_stop, job_start]\n  - name: pgjd-%s-off\n    dsn: env:MON_DSN\n    actions_dsn: env:ACT_DSN\n' "$V" "$V" > "$CFG"
+  printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances:\n  - name: pgjd-%s\n    dsn: env:MON_DSN\n    actions_dsn: env:ACT_DSN\n    actions: [job_stop, job_start, job_enable, job_disable]\n  - name: pgjd-%s-off\n    dsn: env:MON_DSN\n    actions_dsn: env:ACT_DSN\n' "$V" "$V" > "$CFG"
   q() { psql "$ADM dbname=pgvigil_repo" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }   # PGPASSWORD: no password in argv
 
   echo "--- A. migrate"
@@ -568,6 +593,60 @@ PY
   [ "$R" = "2 1 1 2" ] || fail "G: the pgAgent job's versions (count, the removed line, the added line, lines changed): $R"
   echo "G: OK"
 
+  echo "--- K. Enable and Disable (B9c)"
+  local OWN PGJ EJ K0 KR
+  api "jobs/running?instance=$I" >/dev/null
+  [ "$(js "(d['actions']['job_enable']['on'], d['actions']['job_disable']['on'], d.get('actions_login'))")" = "(True, True, 'pgv161act')" ] || fail "K: the door instance's state: $(js "(d['actions'], d.get('actions_login'))")"
+  api "jobs/running?instance=$IOFF" >/dev/null; [[ "$(js "d['actions']['job_enable']['reason']")" == *"does not name job_enable"* ]] || fail "K: the off instance's state: $(js "d['actions']")"
+  echo "  pg_cron $(sq "select extversion from pg_extension where extname = 'pg_cron'")"
+  OWN=$(sq "select cron.schedule_in_database('pgv_b9c_own', '0 4 * * *', 'select 1', 'postgres', 'pgv161act', true)")
+  PGJ=$(sq "select cron.schedule_in_database('pgv_b9c_pg', '0 5 * * *', 'select 1', 'postgres', 'postgres', true)")
+  collect jobs
+  tog() { postj "jobs/actions/$1" "{\"instance_id\":$2,$3,\"job_id\":$4,\"job_name\":\"$5\",\"confirm\":\"$5\",\"reason\":\"proof b9c: toggle\"}" h; }
+  want() { [ "$1" = "$2" ] || fail "K: $4: HTTP $1, want $2: $(cat "$WORK/b")"; [[ "$(js "d['detail']")" == *"$3"* ]] || fail "K: $4: the detail: $(js "d['detail']")"; echo "  ok: $4 -> $1: $(js "d['detail']" | cut -c1-140)"; }
+  K0=$(q "select count(*) from pgvigil.actions_log where action in ('job_enable', 'job_disable')")
+  want "$(tog disable "$I" '"scheduler":"pg_cron"' "$OWN" pgv_b9c_own)" 409 "may not call cron.alter_job" "pg_cron Disable before the grants"
+  sq "grant usage on schema cron to pgv161act; grant execute on function cron.alter_job(bigint, text, text, text, text, boolean) to pgv161act" >/dev/null
+  want "$(tog disable "$I" '"scheduler":"pg_cron"' "$PGJ" pgv_b9c_pg)" 409 "pg_cron lets only the job's owner" "pg_cron Disable on a job of postgres"
+  want "$(tog disable "$I" '"scheduler":"pg_cron"' "$OWN" pgv_b9c_own)" 200 "reads false now" "pg_cron Disable on the actions login's own job"
+  [ "$(sq "select active from cron.job where jobid = $OWN")" = f ] || fail "K: cron.job.active after the Disable"
+  want "$(tog disable "$I" '"scheduler":"pg_cron"' "$OWN" pgv_b9c_own)" 409 "already disabled" "pg_cron Disable again"
+  want "$(tog enable "$I" '"scheduler":"pg_cron"' "$OWN" pgv_b9c_own)" 200 "reads true now" "pg_cron Enable"
+  [ "$(sq "select active from cron.job where jobid = $OWN")" = t ] || fail "K: cron.job.active after the Enable"
+  want "$(tog enable "$IOFF" '"scheduler":"pg_cron"' "$OWN" pgv_b9c_own)" 409 "does not name job_enable" "pg_cron Enable on the second instance"
+  [ "$(sq "select active from cron.job where jobid = $PGJ")" = t ] || fail "K: the job of postgres was changed"
+  EJ=$(sq "with j as (insert into pgagent.pga_job (jobjclid, jobname, jobenabled) values (1, 'pgv_b9c_sched', false) returning jobid),
+           s as (insert into pgagent.pga_schedule (jscjobid, jscname, jscenabled, jscminutes, jschours, jscweekdays, jscmonthdays, jscmonths)
+                 select jobid, 'at 03:00', true, (select array_agg(i = 0) from generate_series(0, 59) i), (select array_agg(i = 3) from generate_series(0, 23) i),
+                        array_fill(false, array[7]), array_fill(false, array[32]), array_fill(false, array[12]) from j returning 1)
+           select jobid from j, (select count(*) from s) c")
+  collect jobs
+  want "$(tog enable "$I" '"scheduler":"pgagent"' "$EJ" pgv_b9c_sched)" 409 "may not change jobenabled" "pgAgent Enable without UPDATE (jobenabled)"
+  sq "grant select (jobid, jobenabled), update (jobenabled) on pgagent.pga_job to pgv161act" >/dev/null
+  want "$(tog enable "$I" '"scheduler":"pgagent"' "$EJ" pgv_b9c_sched)" 409 "may not read the job's schedules" "pgAgent Enable without the schedules' grant"
+  sq "grant select on pgagent.pga_schedule to pgv161act" >/dev/null
+  if PGPASSWORD=$APW psql "host=127.0.0.1 port=$PORT user=pgv161act dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "update pgagent.pga_job set jobenabled = true where jobid = $EJ" >"$WORK/kx" 2>&1; then
+    fail "K: an enable as pgv161act without SELECT on pga_exception went through: pgAgent's trigger does not need it (the docs' grant is too wide)"; fi
+  grep -q "pga_exception" "$WORK/kx" || fail "K: the enable without pga_exception failed on something else: $(cat "$WORK/kx")"
+  echo "  as the source says: without SELECT on pga_exception the trigger fails: $(head -1 "$WORK/kx")"
+  [ "$(sq "select jobenabled from pgagent.pga_job where jobid = $EJ")" = f ] || fail "K: the failed update changed the job"
+  sq "grant select on pgagent.pga_exception to pgv161act" >/dev/null
+  want "$(tog enable "$I" '"scheduler":"pgagent"' "$EJ" pgv_b9c_sched)" 200 "jobenabled set to true" "pgAgent Enable"
+  # a boolean || text reads true / false (as C's row does), never psql's t / f
+  [ "$(sq "select jobenabled || ' ' || (jobnextrun is not null) from pgagent.pga_job where jobid = $EJ")" = "true true" ] || fail "K: the job after the Enable: $(sq "select jobenabled, jobnextrun from pgagent.pga_job where jobid = $EJ")"
+  want "$(tog enable "$I" '"scheduler":"pgagent"' "$EJ" pgv_b9c_sched)" 409 "already enabled" "pgAgent Enable again"
+  want "$(tog disable "$I" '"scheduler":"pgagent"' "$EJ" pgv_b9c_sched)" 200 "jobenabled set to false" "pgAgent Disable"
+  [ "$(sq "select jobenabled || ' ' || (jobnextrun is null) from pgagent.pga_job where jobid = $EJ")" = "false true" ] || fail "K: the job after the Disable: $(sq "select jobenabled, jobnextrun from pgagent.pga_job where jobid = $EJ")"
+  want "$(tog disable "$IOFF" '"scheduler":"pgagent"' "$EJ" pgv_b9c_sched)" 409 "does not name job_disable" "pgAgent Disable on the second instance"
+  KR=$(q "select string_agg(n || ':' || action || ':' || outcome || '=' || c, ' ' order by n, action, outcome) from (select case instance_id when $I then 'door' else 'off' end n, action, outcome, count(*) c
+          from pgvigil.actions_log where instance_id in ($I, $IOFF) and action in ('job_enable', 'job_disable') group by 1, 2, 3) x")
+  [ "$KR" = "door:job_disable:done=2 door:job_disable:refused=3 door:job_enable:done=2 door:job_enable:refused=3 off:job_disable:refused=1 off:job_enable:refused=1" ] || fail "K: actions_log holds '$KR'"
+  [ "$(q "select count(*) from pgvigil.actions_log where action in ('job_enable', 'job_disable') and pid is not null")" = 0 ] || fail "K: a toggle row carries a pid"
+  [ "$(q "select string_agg(statement, ' ; ' order by action_id) from pgvigil.actions_log where instance_id = $I and action in ('job_enable', 'job_disable') and outcome = 'done'")" \
+    = "SELECT cron.alter_job(job_id := $OWN, active := false) ; SELECT cron.alter_job(job_id := $OWN, active := true) ; UPDATE pgagent.pga_job SET jobenabled = true WHERE jobid = $EJ ; UPDATE pgagent.pga_job SET jobenabled = false WHERE jobid = $EJ" ] \
+    || fail "K: the done rows' statements: $(q "select action, statement from pgvigil.actions_log where instance_id = $I and action in ('job_enable', 'job_disable') and outcome = 'done' order by action_id")"
+  echo "K: OK ($KR; $(( $(q "select count(*) from pgvigil.actions_log where action in ('job_enable', 'job_disable')") - K0 )) attempts)"
+
   echo "--- H. the pages"
   WPORT=$((41000 + RANDOM % 9000))
   "$BIN" serve -config "$CFG" -dsn env:PGVIGIL_REPO_DSN -listen "127.0.0.1:$WPORT" -no-login >"$WORK/web-$V.log" 2>&1 & WEBPID=$!
@@ -586,7 +665,7 @@ PY
 
   kill "$SRVPID" 2>/dev/null; wait "$SRVPID" 2>/dev/null || true; SRVPID=
   docker rm -f -v "$CT" >/dev/null; CT=
-  echo "PostgreSQL $V: PASS (A-H)"
+  echo "PostgreSQL $V: PASS (A-H, K)"
 }
 
 for V in $PGS; do run_major "$V"; done
@@ -596,4 +675,5 @@ left=$(docker ps -a --format '{{.Names}}' | grep -c "^pgv161-.*-$SUF$" || true)
 vleft=0; for v in $VOLS; do docker volume inspect "$v" >/dev/null 2>&1 && vleft=$((vleft + 1)); done
 [ "$vleft" = 0 ] || fail "J: $vleft volume(s) of this run left"
 echo "J: OK (0 containers and 0 of the run's $(echo $VOLS | wc -w) volumes left)"
-echo "proof-pg-jobs-deadlocks: PASS (I, A-H on PostgreSQL $PGS, J)"
+echo "NOT PROVEN: pg_cron older than 1.4.0, a click on Enable / Disable in a browser (H draws them on a -no-login serve, off)"
+echo "proof-pg-jobs-deadlocks: PASS (I, A-H and K on PostgreSQL $PGS, J)"

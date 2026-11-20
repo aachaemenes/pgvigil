@@ -228,7 +228,7 @@ func TestServerlogCheck(t *testing.T) {
 }
 
 // A single line longer than the run's budget (a large literal, a parameters DETAIL) once left the cursor where it
-// was: every run re-read the same bytes and stored nothing after that line (review 1, finding 2).
+// was: every run re-read the same bytes and stored nothing after that line.
 func TestServerlogLineOverBudget(t *testing.T) {
 	lp, err := compilePrefix("%m [%p] %q%u@%d ")
 	if err != nil {
@@ -260,7 +260,7 @@ func TestServerlogLineOverBudget(t *testing.T) {
 }
 
 // log_timezone "localtime" (or a POSIX rule) is no zone Go loads: the lines' abbreviations are read through the
-// server's pg_timezone_abbrevs; once they fell back to UTC, 8 hours off (review 1, finding 3). An abbreviation
+// server's pg_timezone_abbrevs; once they fell back to UTC, 8 hours off. An abbreviation
 // neither knows drops the line with a collector_error row.
 func TestServerlogZones(t *testing.T) {
 	lp, err := compilePrefix("%m [%p] %q%u@%d ")
@@ -307,8 +307,7 @@ func TestServerlogZones(t *testing.T) {
 	}
 }
 
-// pg_ls_logdir's modification has whole seconds: a file closed in the same second as from was skipped
-// (review 1, finding 6).
+// pg_ls_logdir's modification has whole seconds: a file closed in the same second as from was skipped.
 func TestServerlogModifiedSecond(t *testing.T) {
 	lp, err := compilePrefix("%m [%p] %q%u@%d ")
 	if err != nil {

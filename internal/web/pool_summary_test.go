@@ -118,7 +118,7 @@ func TestPoolSummaryCellOnAStore(t *testing.T) {
 		}
 	}
 	// a newest minute without the percentage (the view's NULL): not read, with its reason - never an empty OK whose
-	// detail reads "null" (the wire review's finding 3)
+	// detail reads "null"
 	send(0, nil)
 	if in := read()[ids[0]]; in.sampled || in.value != "" || in.critical+in.warn != 0 || len(in.detail) != 1 || !strings.HasSuffix(in.detail[0], ": the newest minute holds no allocated storage percentage") {
 		t.Fatalf("a minute without the percentage: %+v; want not read with its reason", in)

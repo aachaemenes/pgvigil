@@ -185,7 +185,7 @@ $$;
 -- refresh_compare_findings: the instance's regressions of the 24 hours to p_at (10 or more on a ratio, 1,000 calls or
 -- more in the window; 'partial', 'not run' and 'no baseline' never fire: no ratio); returns the rows kept. The
 -- compare is read whole (no row cap before the gate): a cap by ratio first let quiet statements with large ratios
--- (a few calls at a new pages-a-call figure) use up the rows ahead of a real regression (the join review).
+-- (a few calls at a new pages-a-call figure) use up the rows ahead of a real regression.
 CREATE OR REPLACE FUNCTION pgvigil.refresh_compare_findings(p_instance_id int, p_at timestamptz DEFAULT now())
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE

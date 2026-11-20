@@ -13,13 +13,14 @@
 import { get, Row, rowsOf, Table } from './api';
 import { tagScopeIds, tagWords } from './fleet';
 import type { Ctx } from './router';
-import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props } from './ui';
+import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, props } from './ui';
+import { buildDocs, errorCell } from './doclinks';
 
 // The tab key of the instance page and of the fleet page (the router's entries carry the same keys).
 export const mssqlChecksTab = 'mssqlchecks';
 export const mssqlChecksFleetTab = 'mssqlrisks';
 
-type Parts = Record<'state' | 'areas' | 'findings' | 'options' | 'flags' | 'build' | 'databases' | 'columns' | 'suspect'
+type Parts = Record<'state' | 'areas' | 'findings' | 'options' | 'flags' | 'build' | 'build_docs' | 'databases' | 'columns' | 'suspect'
   | 'alerts' | 'operators' | 'alerting' | 'identity' | 'identity_scan', Table | null>;
 type FleetParts = Record<'risks' | 'cells' | 'options', Table | null>;
 
@@ -56,7 +57,7 @@ const verdict = (status: unknown, severity: unknown): string => {
     default: return 'no rule';
   }
 };
-const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'info');
+const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const yn = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
 const titled = (text: string, title: string): Node => title ? el('span', { title }, text) : document.createTextNode(text);
 
@@ -78,11 +79,19 @@ export async function mssqlChecksView(ctx: Ctx): Promise<HTMLElement> {
     return sec;
   }
   switch (view) {
-    case 'options': sec.append(...optionsView(rowsOf(d.options))); break;
+    case 'options': {
+      // task 409: where an expected value is in force for an option, the option is judged by it (the Configuration
+      // tab's Checks set it); a server that does not answer the route leaves the day-one verdicts as they are
+      let expect: Row[] = [], expectErr = '';
+      try { expect = rowsOf((await get<Record<'in_force', Table | null>>('mssql/config_expect', { instance: ctx.instance, part: 'in_force' })).in_force).filter(r => r.kind === 'config'); }
+      catch (e) { expect = []; expectErr = e instanceof Error ? e.message : String(e); }
+      sec.append(...optionsView(rowsOf(d.options), expect, expectErr));
+      break;
+    }
     case 'databases': sec.append(...databasesView(rowsOf(d.databases), rowsOf(d.columns), q.get('risk') ?? '')); break;
     case 'flags': sec.append(...flagsView(rowsOf(d.flags))); break;
-    case 'build': sec.append(...buildView(rowsOf(d.build)[0], rowsOf(d.suspect))); break;
-    case 'alerts': sec.append(...alertsView(rowsOf(d.alerts), rowsOf(d.operators), rowsOf(d.alerting)[0])); break;
+    case 'build': sec.append(...buildView(rowsOf(d.build)[0], rowsOf(d.suspect), rowsOf(d.build_docs)[0] ?? {})); break;
+    case 'alerts': sec.append(...alertsView(rowsOf(d.alerts), rowsOf(d.operators), rowsOf(d.alerting)[0], alertsScript(ctx, rowsOf(d.findings), rowsOf(d.areas)))); break;
     case 'identity': sec.append(...identityView(rowsOf(d.identity), rowsOf(d.identity_scan))); break;
     case 'findings': sec.append(findingsGrid(rowsOf(d.findings))); break;
     default: sec.append(...summaryView(rowsOf(d.areas), rowsOf(d.findings)));
@@ -94,8 +103,8 @@ export async function mssqlChecksView(ctx: Ctx): Promise<HTMLElement> {
 function summaryView(areas: Row[], findings: Row[]): HTMLElement[] {
   const cols: Col[] = [
     { key: 'area', fmt: v => link(areaNames[String(v)] ?? String(v), x => x.set('cv', areaView[String(v)] ?? 'summary')) },
-    // an area the last run could not read is not coloured: its findings are the last known, its cell says so
-    { key: 'value', label: 'state', cls: (_v, r) => r.sampled !== true || r.is_read !== true ? '' : statusCls(Number(r.critical) ? 'crit' : Number(r.warning) ? 'warn' : 'ok'),
+    // an area the last run could not read is N/A (grey): its findings are the last known, its cell says so
+    { key: 'value', label: 'state', cls: (_v, r) => r.sampled !== true || r.is_read !== true ? 'status none' : statusCls(Number(r.critical) ? 'crit' : Number(r.warning) ? 'warn' : 'ok'),
       fmt: (v, r) => r.sampled !== true ? el('span', { class: 'meta' }, 'not read')
         : titled(r.is_read !== true ? `not read now (last read ${fmtTime(r.read_at)}): ${String(v ?? '')}` : String(v ?? ''), Array.isArray(r.detail) ? r.detail.map(String).join('\n') : '') },
     { key: 'verdict', fmt: (_v, r) => r.sampled !== true ? '' : r.is_read !== true ? 'not read now'
@@ -113,24 +122,36 @@ function summaryView(areas: Row[], findings: Row[]): HTMLElement[] {
 }
 
 // every sys.configurations option, worst first: the value in use coloured by its verdict (DBA Dash's Configuration grid)
-function optionsView(rows: Row[]): HTMLElement[] {
-  const n = (s: string) => rows.filter(r => r.is_present !== false && r.status === s).length;
+function optionsView(rows: Row[], expect: Row[] = [], expectErr = ''): HTMLElement[] {
+  // task 409: the expected value in force for an option (its name without case), and what it makes of the value in use;
+  // an option the server no longer lists is not read, never judged on its last value
+  const want = new Map(expect.map(e => [String(e.key).toLowerCase(), e]));
+  const exp = (r: Row) => r.is_present === false ? undefined : want.get(String(r.name).toLowerCase());
+  const met = (r: Row) => Number(r.value_in_use) === Number(exp(r)?.value);
+  const expWords = (r: Row) => `${met(r) ? 'as expected' : 'deviates: expected ' + String(exp(r)?.value)} (set at ${String(exp(r)?.set_at)})`;
+  // the verdict that counts: the expectation's where one is in force, else the day-one rule's; worst first
+  const eff = (r: Row): string => r.is_present === false ? 'none' : exp(r) ? (met(r) ? 'ok' : 'warn') : String(r.status ?? 'none');
+  const rank: Record<string, number> = { crit: 0, warn: 1, ok: 2, none: 3 };
+  rows = [...rows].sort((a, b) => (rank[eff(a)] ?? 3) - (rank[eff(b)] ?? 3));
+  const n = (s: string) => rows.filter(r => r.is_present !== false && eff(r) === s).length;
   const cols: Col[] = [
     { key: 'name', label: 'option' },
-    { key: 'value_in_use', label: 'in use', num: true, cls: (_v, r) => statusCls(r.status),
-      fmt: (v, r) => titled(fmtNum(v), 'best practice: ' + verdict(r.status, r.severity)) },
+    { key: 'value_in_use', label: 'in use', num: true, cls: (v, r) => r.is_present === false ? '' : statusCls(eff(r)) || (v == null || v === '' ? '' : 'status none'),
+      fmt: (v, r) => titled(fmtNum(v), exp(r) ? 'expected value: ' + expWords(r) : 'best practice: ' + verdict(r.status, r.severity)) },
     { key: 'default_value', label: 'default', num: true, fmt: fmtNum },
-    { key: 'advised', label: 'advised', fmt: (v, r) => r.status === 'warn' || r.status === 'crit' ? String(v ?? '') : '' },
-    { key: 'status', label: 'verdict', fmt: (v, r) => verdict(v, r.severity) },
-    { key: 'value_set', label: 'set', num: true, fmt: (v, r) => r.pending === true ? el('span', {}, fmtNum(v), ' ', badge('not in use yet', 'warn')) : fmtNum(v) },
-    { key: 'detail', label: 'why', wide: true },
-    { key: 'rule' },
+    { key: 'advised', label: 'advised', fmt: (v, r) => exp(r) ? '' : r.status === 'warn' || r.status === 'crit' ? String(v ?? '') : '' },
+    { key: 'status', label: 'verdict', fmt: (v, r) => exp(r) ? expWords(r) : verdict(v, r.severity) },
+    { key: 'value_set', label: 'set', num: true, fmt: (v, r) => r.pending === true ? el('span', {}, fmtNum(v), ' ', badge('not in use yet', 'warn')) : fmtNum(v), cls: (v, r) => r.pending === true || v == null ? '' : eff(r) === 'ok' ? 'status ok' : 'status none' },
+    { key: 'detail', label: 'why', wide: true, fmt: (v, r) => exp(r) ? 'judged by the expected value set on the Configuration tab' : String(v ?? '') },
+    { key: 'rule', fmt: (v, r) => exp(r) ? 'expected value' : String(v ?? '') },
   ];
   return [
     el('p', { class: 'meta' }, `${fmtNum(rows.length)} options: ${fmtNum(n('crit'))} critical, ${fmtNum(n('warn'))} deviate, ${fmtNum(n('ok'))} at their `
-      + `default or best practice, ${fmtNum(n('none'))} without a known default. Green: at the default or the best practice. Yellow: a `
+      + `default, best practice or expected value, ${fmtNum(n('none'))} without a known default. Green: at the default or the best practice. Yellow: a `
       + 'warning or an advice rule is broken (a value only off its default is advice). Red: a critical rule is broken. The defaults '
-      + 'are sp_Blitz\'s table; the rules sp_Blitz\'s, sp_PerfCheck\'s, dbachecks\' and Glenn Berry\'s, each named in its row.'),
+      + 'are sp_Blitz\'s table; the rules sp_Blitz\'s, sp_PerfCheck\'s, dbachecks\' and Glenn Berry\'s, each named in its row. '
+      + 'An option with an expected value in force (the Configuration tab\'s Checks) is judged by that value alone: green when it is met, yellow when not.'),
+    ...(expectErr ? [el('p', { class: 'empty' }, `The expected values were not read (${expectErr}): the verdicts below are the day-one rules', while the findings leave out an option that has an expected value.`)] : []),
     grid(rows, cols, 'No option read yet.'),
   ];
 }
@@ -147,7 +168,7 @@ function databasesView(dbs: Row[], columns: Row[], risk: string): HTMLElement[] 
     const key = String(c.key);
     cols.push({
       key: 'opt_' + key, label: String(c.label),
-      cls: (_v, r) => { const x = dev(r)[key]; return x ? statusCls(x.status) : opts(r)[key] != null && c.best ? 'status ok' : ''; },
+      cls: (_v, r) => { const x = dev(r)[key]; return x ? statusCls(x.status) : opts(r)[key] == null || opts(r)[key] === '' ? '' : c.best ? 'status ok' : 'status none'; },
       fmt: (_v, r) => {
         const v = opts(r)[key], x = dev(r)[key];
         const text = v == null ? '' : key === 'last_good_checkdb' && v !== 'never' ? fmtTime(v) : typeof v === 'number' ? fmtNum(v) : String(v);
@@ -163,7 +184,7 @@ function databasesView(dbs: Row[], columns: Row[], risk: string): HTMLElement[] 
     el('p', { class: 'meta' }, risk
       ? el('span', {}, `${fmtNum(shown.length)} database(s) whose ${label} deviates. `, link('All databases', x => x.delete('risk')))
       : `${fmtNum(dbs.length)} databases. Green: the value meets its rule. Yellow: a warning or an advice rule is broken. Red: a critical `
-        + 'rule is broken. Uncoloured: a column shown, not judged. A cell\'s title says the rule and why; hover a heading-less value for what '
+        + 'rule is broken. Grey (N/A): a value shown, not judged. A cell\'s title says the rule and why; hover a heading-less value for what '
         + 'it is held to.'),
     grid(shown.map(flatten), cols, risk ? 'No database deviates on this option.' : 'No database read yet.'),
   ];
@@ -181,7 +202,7 @@ const flatten = (r: Row): Row => {
 function flagsView(rows: Row[]): HTMLElement[] {
   const cols: Col[] = [
     { key: 'flag', num: true },
-    { key: 'is_on', label: 'state', cls: (_v, r) => statusCls(r.status), fmt: (v, r) => r.is_present === false ? 'no longer on' : v === true ? 'on' : 'off' },
+    { key: 'is_on', label: 'state', cls: (_v, r) => statusCls(r.status) || 'status none', fmt: (v, r) => r.is_present === false ? 'no longer on' : v === true ? 'on' : 'off' },
     { key: 'status', label: 'verdict', fmt: (v, r) => verdict(v, r.severity) },
     { key: 'detail', label: 'what it does', wide: true }, { key: 'rule' },
     { key: 'first_seen', label: 'in this state since', fmt: fmtTime },
@@ -190,13 +211,13 @@ function flagsView(rows: Row[]): HTMLElement[] {
     grid(rows, cols, 'No trace flag is on globally.')];
 }
 
-function buildView(b: Row | undefined, suspect: Row[]): HTMLElement[] {
+function buildView(b: Row | undefined, suspect: Row[], docs: Row): HTMLElement[] {
   const out: HTMLElement[] = [el('h3', {}, 'Build')];
   if (!b) out.push(el('p', { class: 'empty' }, 'No read yet.'));
   else {
     const st = el('span', { class: statusCls(b.status) }, b.known !== true ? 'not weighed' : b.newer === true ? 'newer than the catalogue' : Number(b.behind) === 0 ? 'the newest build' : `${String(b.behind)} build(s) behind, ${String(b.cus_behind)} cumulative update(s)`);
     out.push(props([
-      ['version', String(b.product_version ?? '')], ['state', st],
+      ['version', el('span', {}, String(b.product_version ?? ''), ' ', buildDocs(docs))], ['state', st],
       ['update', [b.branch, b.update_name ? `(${String(b.update_name)})` : ''].filter(Boolean).map(String).join(' ')],
       ['released', String(b.release_date ?? '')],
       ['newest of the major', b.newest_build == null ? '' : `${String(b.newest_branch)}, build ${String(b.newest_build)}, released ${String(b.newest_release_date)}`],
@@ -214,17 +235,48 @@ function buildView(b: Row | undefined, suspect: Row[]): HTMLElement[] {
   return out;
 }
 
-function alertsView(alerts: Row[], ops: Row[], g: Row | undefined): HTMLElement[] {
+// the alerts area's findings that the script answers (agentalerts.go: sp_Blitz 61, 30 and 96)
+const scriptChecks = new Set(['no alerts for severity 19 to 25', 'alerts missing for some severities', 'no alerts for corruption errors']);
+
+// alertsScript (C13, B9d): 'The script that creates them', beside a missing-alert finding - or, where the area was not
+// read, with the area's own note (why it was not read), with words that say so (the script checks the server itself). Where the
+// platform rules alerts out the server says why and there is no script. pgvigil prints the script and never runs it.
+function alertsScript(ctx: Ctx, findings: Row[], areas: Row[]): HTMLElement | null {
+  const area = areas.find(a => a.area === 'alerts');
+  const missing = findings.some(f => f.area === 'alerts' && scriptChecks.has(String(f.check_name)));
+  const unread = area != null && area.is_read !== true;
+  if (!missing && !unread) return null;
+  const box = el('div', { class: 'agent-alerts-script' }, el('p', { class: 'meta', role: 'status' }, 'Reading the script that creates them...'));
+  void get<{ applicable: boolean; reason?: string; operator?: string; script?: string }>('mssql/agent-alerts-script', { instance: ctx.instance }).then(s => {
+    if (!s.applicable) { box.replaceChildren(el('p', { class: 'meta' }, `The script that creates them: not applicable: ${s.reason ?? ''}.`)); return; }
+    const text = s.script ?? '';
+    const said = el('span', { class: 'meta', role: 'status' });
+    const copy = el('button', { type: 'button' }, 'Copy');
+    copy.addEventListener('click', () => { void copyText(text).then(ok => { said.textContent = ok ? ' Copied.' : ' Not copied: select the text and copy it.'; }); });
+    box.replaceChildren(el('details', { 'data-sheet': 'agent alerts script' }, el('summary', {}, 'The script that creates them'),
+      el('p', { class: 'meta' },
+        ...(unread && !missing ? [`The alerts were not read on this instance${area?.note ? ` (${String(area.note)})` : ''}: the script checks the server itself before it creates anything. `] : []),
+        'pgvigil prints this and never runs it: the server\'s DBA reads it and runs it as a sysadmin. It creates only what is missing and changes no setting. ',
+        s.operator ? `Each alert e-mails the operator ${s.operator} (enabled and with an address at the last read). ` : 'No enabled operator with an e-mail address was read: name one in its @operator line, or the alerts notify nobody. ',
+        'The Availability Group alerts are made only where Availability Groups are on, and are not proven to fire. Undo: pgvigil mssql-agent-alerts -print -drop.'),
+      el('p', {}, copy, said),
+      el('pre', { class: 'sql', style: 'white-space:pre;max-height:28rem;overflow:auto;margin:0' }, text)));
+  }, (e: unknown) => { box.replaceChildren(errorBox(e)); });
+  return box;
+}
+
+function alertsView(alerts: Row[], ops: Row[], g: Row | undefined, script: HTMLElement | null): HTMLElement[] {
   return [
     el('h3', {}, 'Alerts'),
     grid(alerts, [
-      { key: 'name' }, { key: 'severity', num: true }, { key: 'message_id', label: 'error', num: true },
+      { key: 'name' }, { key: 'severity', num: true }, { key: 'message_id', label: 'error', num: true, fmt: errorCell },
       { key: 'enabled', cls: v => v === true ? 'status ok' : 'status warn', fmt: yn },
-      { key: 'notifies', label: 'operators notified', num: true, cls: (v, r) => r.enabled === true && Number(v) === 0 && r.has_job !== true ? 'status warn' : '' },
+      { key: 'notifies', label: 'operators notified', num: true, cls: (v, r) => v == null || v === '' ? '' : r.enabled !== true ? 'status none' : Number(v) === 0 && r.has_job !== true ? 'status warn' : 'status ok' },
       { key: 'verdict', fmt: (_v, r) => r.enabled !== true ? 'disabled' : Number(r.notifies) === 0 && r.has_job !== true ? 'tells nobody' : 'in order' },
       { key: 'has_job', label: 'starts a job', fmt: yn }, { key: 'include_event_description', label: 'error text in the message', fmt: yn },
       { key: 'occurrence_count', label: 'raised', num: true }, { key: 'last_occurrence_at', label: 'last raised', fmt: fmtTime },
     ], 'No alert is defined: a severe error is written to the log and nobody is told.'),
+    ...(script ? [script] : []),
     el('h3', {}, 'Operators'),
     el('p', { class: 'meta' }, g ? (g.failsafe_read !== true ? 'The fail-safe operator was not readable with the login\'s rights.'
       : g.failsafe_operator ? `Fail-safe operator: ${String(g.failsafe_operator)}.` : 'No fail-safe operator is set.') : ''),
@@ -239,14 +291,14 @@ function identityView(cols: Row[], scans: Row[]): HTMLElement[] {
   const unscanned = scans.filter(s => s.scanned !== true);
   return [
     el('p', { class: 'meta' }, `${fmtNum(scans.length - unscanned.length)} database(s) scanned, ${fmtNum(unscanned.length)} not (each says why below). `
-      + 'Listed: the identity columns at 10 % of their type\'s range or more. Yellow from 75 %, red from 90 %: at the limit every insert fails. '
+      + 'Listed: the identity columns at 10 % of their type\'s range or more. Yellow from the warning line, red from the critical line (75 % and 90 %, or the instance\'s identity_warn_pct and identity_crit_pct; a finding names the lines in force): at the limit every insert fails. '
       + 'The rate is taken against a read up to seven days back.'
       + (cols.length >= 500 ? ' The 500 fullest columns are listed; the area cell counts every one.' : '')),
     grid(cols, [
       { key: 'database_name', label: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' },
       { key: 'column_name', label: 'column' }, { key: 'type_name', label: 'type' },
-      { key: 'pct_used', label: '% used', num: true, cls: (_v, r) => statusCls(r.status), fmt: fmtNum },
-      { key: 'status', label: 'verdict', fmt: v => v === 'crit' ? 'critical (90 % and more)' : v === 'warn' ? 'warning (75 % and more)' : 'under 75 %' },
+      { key: 'pct_used', label: '% used', num: true, cls: (v, r) => statusCls(r.status) || (v == null || v === '' ? '' : 'status ok'), fmt: fmtNum },
+      { key: 'status', label: 'verdict', fmt: v => v === 'crit' ? 'critical' : v === 'warn' ? 'warning' : 'under the warning line' },
       { key: 'last_value', label: 'last value', num: true, fmt: fmtNum }, { key: 'max_value', label: 'limit', num: true, fmt: fmtNum },
       { key: 'per_day', label: 'per day', num: true, fmt: fmtNum }, { key: 'days_left', label: 'days left', num: true, fmt: fmtNum },
     ], 'No identity column at 10 % of its range or more.'),
@@ -299,9 +351,9 @@ export async function mssqlChecksFleetView(ctx: Ctx): Promise<HTMLElement> {
     ...risks.map(([k, , risk]) => count(k, risk)),
     { key: 'max_vlf', label: 'max VLF count', num: true, fmt: fmtNum },
     // an instance whose options were never read has no count to colour
-    { key: 'option_critical', label: 'options critical', num: true, cls: (v, r) => r.options_read_at == null ? '' : Number(v) > 0 ? 'status crit' : 'status ok',
+    { key: 'option_critical', label: 'options critical', num: true, cls: (v, r) => r.options_read_at == null ? 'status none' : Number(v) > 0 ? 'status crit' : 'status ok',
       fmt: (v, r) => r.options_read_at == null ? 'not read' : Number(v) > 0 ? el('a', { href: to(r.instance_id, 'options') }, fmtNum(v)) : '0' },
-    { key: 'option_warning', label: 'options warning', num: true, cls: (v, r) => r.options_read_at == null ? '' : Number(v) > 0 ? 'status warn' : 'status ok',
+    { key: 'option_warning', label: 'options warning', num: true, cls: (v, r) => r.options_read_at == null ? 'status none' : Number(v) > 0 ? 'status warn' : 'status ok',
       fmt: (v, r) => r.options_read_at == null ? 'not read' : Number(v) > 0 ? el('a', { href: to(r.instance_id, 'options') }, fmtNum(v)) : '0' },
     { key: 'option_advice', label: 'options off their default', num: true, fmt: fmtNum },
     { key: 'databases_read_at', label: 'read', fmt: v => v == null ? 'not yet' : fmtTime(v) },
@@ -325,7 +377,7 @@ export async function mssqlChecksFleetView(ctx: Ctx): Promise<HTMLElement> {
   });
   const pcols: Col[] = [{ key: 'name', label: 'option' }, ...insts.map(([id, name]): Col => ({
     key: 'i' + id, label: name, num: true,
-    cls: (_v, r) => statusCls(by.get(`${String(r.name)}|${id}`)?.status),
+    cls: (v, r) => statusCls(by.get(`${String(r.name)}|${id}`)?.status) || (v == null || v === '' ? '' : 'status none'),
     fmt: (v, r) => { const o = by.get(`${String(r.name)}|${id}`); return o ? titled(fmtNum(v), `${verdict(o.status, o.severity)}${o.detail ? ': ' + String(o.detail) : ''}`) : ''; },
   })), { key: 'differs', label: `differs ${across}`, fmt: yn }];
   sec.append(el('h3', {}, `Server options ${across}`),

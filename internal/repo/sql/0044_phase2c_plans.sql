@@ -1,8 +1,8 @@
--- 0044: the wave C join for the plans slice (0029: plans from pg_store_plans, auto_explain and the on-demand EXPLAIN,
+-- 0044: wires in the plan findings (0029: plans from pg_store_plans, auto_explain and the on-demand EXPLAIN,
 -- the ten plan rules). The findings view gains the plan rules (the last 7 days' plans, one row per instance and rule,
 -- the worst example named); purge() gains the plans table's retention (a CURRENT table, one row per plan_key updated
 -- in place: rows whose captured_at is older than the window go; no partition, no is_present). Both bodies are 0043's
--- with the additions (a frozen file is never edited; a later join re-creates them again with its own).
+-- with the additions (a frozen file is never edited; a later migration re-creates them again with its own).
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (
@@ -140,7 +140,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the corruption column (0023): checksums off, ignore_checksum_failure on, a corruption event in 24 h, amcheck damage
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.corruption_findings WHERE setting <> 'zero_damaged_pages'
     UNION ALL
-    -- the plans slice (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
+    -- the plan findings (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.plan_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;

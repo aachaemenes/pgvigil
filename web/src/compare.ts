@@ -67,6 +67,14 @@ function setsCell(byRole: Map<string, Row[]> | null, out: HTMLElement): (v: unkn
     return box;
   };
 }
+// setsCls: the cell's status - N/A when the sessions' SETs were not read, OK when none of its sets is a planner one
+function setsCls(byRole: Map<string, Row[]> | null): (v: unknown, r: Row) => string {
+  return (_, r) => {
+    if (!byRole) return 'status none';
+    const roles = Array.isArray(r.usenames) ? r.usenames.map(String) : [];
+    return roles.flatMap(k => byRole.get(setsKey(k, r.datname)) ?? []).some(x => x.fires) ? '' : 'status ok';
+  };
+}
 
 function cols(onOpen: (r: Row) => void, byRole: Map<string, Row[]> | null, out: HTMLElement): Col[] {
   return [
@@ -75,27 +83,27 @@ function cols(onOpen: (r: Row) => void, byRole: Map<string, Row[]> | null, out: 
       b.addEventListener('click', () => onOpen(r));
       return b;
     } },
-    { key: 'max_ratio', label: 'largest ratio', num: true, fmt: ratio },
+    { key: 'max_ratio', label: 'largest ratio', num: true, fmt: ratio, cls: (v, r) => v == null || (Number(v) >= ratioMin && Number(r.calls) >= callsMin) ? '' : Number(r.calls) >= callsMin ? 'status ok' : 'status none' },
     { key: 'max_ratio_of', label: 'of' },
     { key: 'calls', num: true, fmt: whole },
     { key: 'd1_calls', label: 'calls 1 day earlier', num: true, fmt: baseline('d1') },
     { key: 'd7_calls', label: 'calls 7 days earlier', num: true, fmt: baseline('d7') },
-    { key: 'd1_calls_ratio', label: 'calls x 1 d', num: true, fmt: ratio },
-    { key: 'd7_calls_ratio', label: 'calls x 7 d', num: true, fmt: ratio },
+    { key: 'd1_calls_ratio', label: 'calls x 1 d', num: true, fmt: ratio, cls: (v, r) => v == null || (Number(v) >= ratioMin && Number(r.calls) >= callsMin) ? '' : Number(r.calls) >= callsMin ? 'status ok' : 'status none' },
+    { key: 'd7_calls_ratio', label: 'calls x 7 d', num: true, fmt: ratio, cls: (v, r) => v == null || (Number(v) >= ratioMin && Number(r.calls) >= callsMin) ? '' : Number(r.calls) >= callsMin ? 'status ok' : 'status none' },
     { key: 'total_exec_ms', label: 'total time', num: true, fmt: ms },
-    { key: 'd1_total_ratio', label: 'time x 1 d', num: true, fmt: ratio },
-    { key: 'd7_total_ratio', label: 'time x 7 d', num: true, fmt: ratio },
+    { key: 'd1_total_ratio', label: 'time x 1 d', num: true, fmt: ratio, cls: (v, r) => v == null || (Number(v) >= ratioMin && Number(r.calls) >= callsMin) ? '' : Number(r.calls) >= callsMin ? 'status ok' : 'status none' },
+    { key: 'd7_total_ratio', label: 'time x 7 d', num: true, fmt: ratio, cls: (v, r) => v == null || (Number(v) >= ratioMin && Number(r.calls) >= callsMin) ? '' : Number(r.calls) >= callsMin ? 'status ok' : 'status none' },
     { key: 'mean_exec_ms', label: 'mean', num: true, fmt: ms },
     { key: 'd1_mean_exec_ms', label: 'mean 1 d', num: true, fmt: ms },
     { key: 'd7_mean_exec_ms', label: 'mean 7 d', num: true, fmt: ms },
     { key: 'pages_per_call', label: 'pages a call', num: true, fmt: whole },
     { key: 'd1_pages_per_call', label: 'pages a call 1 d', num: true, fmt: baseline('d1') },
     { key: 'd7_pages_per_call', label: 'pages a call 7 d', num: true, fmt: baseline('d7') },
-    { key: 'd1_ppc_ratio', label: 'pages x 1 d', num: true, fmt: ratio },
-    { key: 'd7_ppc_ratio', label: 'pages x 7 d', num: true, fmt: ratio },
+    { key: 'd1_ppc_ratio', label: 'pages x 1 d', num: true, fmt: ratio, cls: (v, r) => v == null || (Number(v) >= ratioMin && Number(r.calls) >= callsMin) ? '' : Number(r.calls) >= callsMin ? 'status ok' : 'status none' },
+    { key: 'd7_ppc_ratio', label: 'pages x 7 d', num: true, fmt: ratio, cls: (v, r) => v == null || (Number(v) >= ratioMin && Number(r.calls) >= callsMin) ? '' : Number(r.calls) >= callsMin ? 'status ok' : 'status none' },
     { key: 'datname', label: 'database' },
     { key: 'usenames', label: 'roles' },
-    { key: 'sets', label: 'session SETs of its roles in its database (window)', fmt: setsCell(byRole, out) },
+    { key: 'sets', label: 'session SETs of its roles in its database (window)', fmt: setsCell(byRole, out), cls: setsCls(byRole) },
     // cut to one line here (23 columns squeeze a wrapping cell into a tall row); the whole text in the title and the history
     { key: 'query', fmt: v => { const t = String(v ?? ''); return el('span', { title: t }, t.length > 80 ? t.slice(0, 80) + '...' : t); } },
   ];

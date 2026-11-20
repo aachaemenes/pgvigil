@@ -10,6 +10,7 @@ import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid, tile } from './ui';
+import { errorCell } from './doclinks';
 
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlAuditTab = 'mssqlaudit';
@@ -18,7 +19,7 @@ type Part = 'state' | 'read' | 'status' | 'findings' | 'audits' | 'specs' | 'by_
 type Parts = Record<Part, Table | null>;
 
 const text = (v: unknown) => v == null ? '' : String(v);
-const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 // prose in a grid cell: wraps inside a block that keeps its own width (a grid wider than the page squeezes a plain
 // wrapping cell to a few characters and its row grows to hundreds of pixels)
 const PROSE = 'display:inline-block;min-width:22rem;max-width:40rem;white-space:normal';
@@ -39,7 +40,7 @@ const categoryOf = new Map<number, string>();
 function stateBadge(v: unknown): HTMLElement {
   const s = text(v);
   return badge(s === 'failed' ? 'failed' : s === 'stopped' ? 'not started' : s || 'unknown',
-    s === 'started' ? 'ok' : s === 'failed' ? 'crit' : s === 'stopped' || s === 'shutting down' ? 'warn' : '');
+    s === 'started' ? 'ok' : s === 'failed' ? 'crit' : s === 'stopped' || s === 'shutting down' ? 'warn' : 'none');
 }
 
 // what became of an audit's events at the last read
@@ -49,19 +50,19 @@ function readCell(v: unknown, r: Row): string | Node {
     case 'read':
       return el('span', { style: PROSE }, badge('read', 'ok'), ` ${fmtNum(r.new_events ?? 0)} listed, ${fmtNum(r.counted_events ?? 0)} counted at the last read`, note ? `. ${note}` : '');
     case 'waiting':
-      return el('span', { style: PROSE }, badge('nothing read yet', ''), ` ${note}`);
+      return el('span', { style: PROSE }, badge('nothing read yet', 'none'), ` ${note}`);
     case 'behind':
       return el('span', { style: PROSE }, badge('behind', 'warn'), ` ${note}`);
     case 'no right':
-      return el('span', { style: PROSE }, badge('health only', ''), ` ${note}`);
+      return el('span', { style: PROSE }, badge('health only', 'none'), ` ${note}`);
     case 'not readable':
-      return el('span', { style: PROSE }, badge('not readable through T-SQL', ''), ` ${note}`);
+      return el('span', { style: PROSE }, badge('not readable through T-SQL', 'none'), ` ${note}`);
     case 'error':
       return el('span', { style: PROSE }, badge('read failed', 'warn'), ` ${note}`);
     case '':
       return '';
   }
-  return el('span', { style: PROSE }, badge('not read', ''), ` ${note}`);
+  return el('span', { style: PROSE }, badge('not read', 'none'), ` ${note}`);
 }
 
 const fileLimit = (r: Row): string => {
@@ -94,7 +95,7 @@ const specCols: Col[] = [
   { key: 'scope', fmt: (v, r) => v === 'database' ? `database ${text(r.database_name)}` : 'server' },
   { key: 'name', label: 'specification' },
   { key: 'is_enabled', label: 'state', fmt: v => v === true ? badge('on', 'ok') : badge('off', 'warn') },
-  { key: 'audit_name', label: 'audit', fmt: (v, r) => v == null ? badge('no such audit on this server', 'warn') : `${text(v)} (${r.audit_state === 'stopped' ? 'not started' : text(r.audit_state)})` },
+  { key: 'audit_name', label: 'audit', fmt: (v, r) => v == null ? badge('no such audit on this server', 'warn') : `${text(v)} (${r.audit_state === 'stopped' ? 'not started' : text(r.audit_state)})`, cls: (v, r) => v == null ? '' : r.audit_state === 'started' ? 'status ok' : r.audit_state === 'failed' ? 'crit' : r.audit_state === 'stopped' || r.audit_state === 'shutting down' ? 'warn' : 'status none' },
   { key: 'action_count', label: 'actions', num: true },
   { key: 'actions', label: 'what it records', fmt: prose },
   { key: 'modified', label: 'modified (server clock)' },
@@ -108,14 +109,15 @@ const findingCols: Col[] = [
 const eventCols: Col[] = [
   { key: 'event_at', label: 'when', fmt: fmtTime },
   { key: 'category', fmt: v => categoryLabel[text(v)] ?? text(v) },
-  { key: 'action', fmt: (v, r) => r.succeeded === false && r.category !== 'failed sign-in' ? el('span', {}, text(v), ' ', badge('denied', 'warn')) : text(v) },
+  { key: 'action', fmt: (v, r) => r.succeeded === false && r.category !== 'failed sign-in' ? el('span', {}, text(v), ' ', badge('denied', 'warn')) : text(v), cls: (v, r) => v == null || v === '' || (r.succeeded === false && r.category !== 'failed sign-in') ? '' : r.succeeded === true ? 'status ok' : 'status none' },
   { key: 'class_name', label: 'on a' },
   { key: 'login_name', label: 'login', fmt: (v, r) => r.session_login ? `${text(v)} (session: ${text(r.session_login)})` : text(v) },
   { key: 'target_login', label: 'for login / user', fmt: (v, r) => [text(v), text(r.target_user)].filter((x, i, a) => x && a.indexOf(x) === i).join(' / ') },
   { key: 'database_name', label: 'database' },
   { key: 'object_name', label: 'object', fmt: (v, r) => [text(r.schema_name), text(v)].filter(Boolean).join('.') },
   { key: 'client_ip', label: 'from' }, { key: 'application' }, { key: 'host' },
-  { key: 'reason', fmt: (v, r) => prose(r.error_state != null ? `${reasonOf(v)} (error ${text(r.error_number)}, state ${text(r.error_state)})` : reasonOf(v)) },
+  { key: 'reason', fmt: (v, r) => r.error_state != null ? el('span', {}, prose(`${reasonOf(v)} (error ${text(r.error_number)}, state ${text(r.error_state)})`), ' ', errorCell(r.error_number))
+    : prose(reasonOf(v)) },
   { key: 'statement', wide: true },
   { key: 'audit_name', label: 'audit' },
 ];

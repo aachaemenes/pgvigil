@@ -10,7 +10,7 @@
 --                              keep: the executable's file name and the cluster node name
 --   mssql_table_size           each read's largest tables of each database (sys.dm_db_partition_stats): rows, reserved,
 --                              used, data and index KB; one row per read, so the growth per day is a difference. Kept
---                              until purge() takes it: the line is the lead's (0110), an index on snapshot_at serves it
+--                              until purge() takes it: the line is 0110's, an index on snapshot_at serves it
 --   mssql_failed_logins        the error log's 'Login failed' lines (error 18456), read by this collection itself: the
 --                              error log reader passes them over (sp_LogHunter's noise list), DBA Dash's FailedLogins
 --                              collection reads them the same way; the login, the client and the reason taken apart
@@ -232,8 +232,8 @@ BEGIN
     PERFORM pgvigil.report_props_apply(p_instance_id, p_snapshot_at, p_payload);
   END IF;
 
-  -- the table sizes are history: every read's rows are kept (purge() takes them past the retention once the lead's
-  -- 0110 line is in)
+  -- the table sizes are history: every read's rows are kept (purge() takes them past the retention once the release
+  -- join's 0110 line is in)
   INSERT INTO pgvigil.mssql_table_size (instance_id, snapshot_at, database_name, schema_name, table_name, row_count,
       reserved_kb, used_kb, data_kb, index_kb)
   SELECT p_instance_id, p_snapshot_at, r->>'database_name', r->>'schema_name', r->>'table_name', (r->>'row_count')::bigint,

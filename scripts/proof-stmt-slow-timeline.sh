@@ -18,7 +18,7 @@
 # collectors' shape (import_mssql_xe, import_mssql_jobs, import_jobs): the slow capture and msdb's history are
 # proven against a real SQL Server by proof-mssql-xe.sh and proof-jobs-history.sh.
 #
-# The routes are the lead's lines in web.go: where the tree lacks them the proof builds a scratch copy with exactly
+# The routes are lines in web.go: where the tree lacks them the proof builds a scratch copy with exactly
 # those four lines and says so.
 #
 # Expected (written before the first run; T = the proof's start, the API window [T - 1 h, now]):
@@ -55,13 +55,13 @@
 #     T-3 h (ended before the window): S lists 1 run, outcome failed, failed_step '2 load'; with scheduler=sqlagent
 #     &job=J: steps 2 rows (1 succeeded, 2 failed). The fleet: 5 runs.
 #  H. The page's arithmetic (jobs_timeline.ts atOnce, run under node): runs [0,10) [5,15) [20,30) -> peak 2; back to
-#     back [0,10) [10,20) -> peak 1; one run -> peak 1; none -> peak 0; [review fold] a run of no length [100,100]
+#     back [0,10) [10,20) -> peak 1; one run -> peak 1; none -> peak 0; [added later] a run of no length [100,100]
 #     -> peak 1; [0,50) with two of no length inside at 10 and 20 -> peak 2, no step below 0.
 #  I. 400s: slow/groups min=-1, group=bogus, top=0, tz with ';', db of 129 characters; slow/events value with
 #     null=1, bucket=10, failed=2; stmttrend without queryid or shape, both, queryid=x, shape=XYZ; jobs/timeline
 #     scheduler alone, scheduler=cron, a job on the fleet.
 #
-#  J. [review fold, written before the rerun; imported after D-I so their counts stand]
+#  J. [added later, written before the rerun; imported after D-I so their counts stand]
 #     J1 one more SQL Server event of shape K on S, sp_statement_completed (5.9 s, OK, Sales): the default (calls)
 #        still counts S total 3; events=all counts 4.
 #     J2 a second SQL Server instance S2 with two calls, program_name '' and 'x': group=app on S2 gives the groups
@@ -101,7 +101,7 @@ trap cleanup EXIT
 for t in initdb pg_ctl psql curl python3 go node; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 for p in $PORT $API_PORT; do ss -ltn | grep -qE "(127\.0\.0\.1|\[::1\]|\*|0\.0\.0\.0):$p\b" && fail "port $p is taken"; done
 
-# ---- the binary: the given one where the tree is wired, else a scratch build with the lead's four lines
+# ---- the binary: the given one where the tree is wired, else a scratch build with the wiring's four lines
 if grep -q '/api/slow/groups' internal/web/web.go; then
   WIRED="wired in the tree"
 else
@@ -118,7 +118,7 @@ s = s.replace(old, old + '\tapi.HandleFunc("GET /api/slow/groups", s.SlowGroups)
 open(p, "w").write(s)
 PY
   (cd "$SCRATCH" && CGO_ENABLED=0 go build -o "$SCRATCH/pgvigil-wired" ./cmd/pgvigil) || fail "the scratch build with the wiring"
-  BIN=$SCRATCH/pgvigil-wired; WIRED="wired in a scratch build (the join applies the same four lines)"
+  BIN=$SCRATCH/pgvigil-wired; WIRED="wired in a scratch build (the release holds the same four lines)"
 fi
 echo "binary: $WIRED"
 
@@ -291,7 +291,7 @@ for path, p, want in [
 sys.exit(1 if bad else 0)
 PY
 
-echo "--- J. the review fold's cases"
+echo "--- J. the later cases"
 q "select pgvigil.import_mssql_xe($S, now(), \$j\$[$(ev 1499 5900000 OK Sales | sed 's/"rpc_completed"/"sp_statement_completed"/; s/"sst-1499"/"sst-stmt"/')]\$j\$::jsonb)" >/dev/null
 S2=$(q "select pgvigil.ensure_instance('proof-sst-mssql2-$SUF', 'onprem', '16.0', 160000, false, '{}', 'sqlserver')")
 q "select pgvigil.import_mssql_xe($S2, now(), \$j\$[$(ev 1100 2000000 OK Sales | sed 's/"program_name":"erp-app"/"program_name":""/; s/"sst-1100"/"sst2-a"/'),$(ev 1000 2000000 OK Sales | sed 's/"program_name":"erp-app"/"program_name":"x"/; s/"sst-1000"/"sst2-b"/')]\$j\$::jsonb)" >/dev/null
@@ -302,7 +302,7 @@ q "select pgvigil.import_mssql_jobs($S, now(), \$j\$[$MJS,{\"kind\":\"run\",\"hi
 q "select pgvigil.import_jobs($P, now(), \$j\$[$JOB$(run 6 30 '' running)]\$j\$::jsonb)" >/dev/null
 q "update pgvigil.job_runs set snapshot_at = now() - interval '1 hour' where instance_id=$P and run_id=6" >/dev/null
 export S2
-python3 -I - <<'PY' || fail "the review fold's API checks (above)"
+python3 -I - <<'PY' || fail "J's API checks (above)"
 import json, os, sys, urllib.parse, urllib.request
 E = os.environ; bad = []
 def get(path, **p):

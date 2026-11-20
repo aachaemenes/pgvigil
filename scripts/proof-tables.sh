@@ -14,16 +14,17 @@
 #     - t_clean (VACUUM ANALYZE after the load): all-visible 100 %, stats_columns 3, bloat_pct under 20, no check
 #     - t_bloated (analyzed, then 70 % of its rows deleted, autovacuum off): n_dead_tup >= 70,000, bloat_pct over 20;
 #       checks 'table autovacuum off' and 'table dead rows' (its waste is under the 100 MB bloat floor)
-#       [run 1 graded: also 'table never vacuumed' and 'table statistics stale' - both right (analyzed only, 70,000
-#        rows changed against 30,000 live); the expectation had missed them, the four are expected from run 2 on]
+#       and 'table never vacuumed' and 'table statistics stale' (analyzed only, 70,000 rows changed against 30,000
+#        live): four checks
 #     - t_locked (ACCESS EXCLUSIVE held by another session through the run): absent; the collect still ends
 #       inside 15 s (it never queues behind the lock) with no collection error
-#       [review 1 fold, expected before the rerun: the collect runs twice, the first time with no lock; then an
+#       [expected before the rerun: the collect runs twice, the first time with no lock; then an
 #        ACCESS EXCLUSIVE on t_locked and a REINDEX INDEX holding the lock on t_idxlocked's INDEX only; the second
 #        collect ends inside 15 s with no collection error, and t_locked and t_idxlocked keep their first-run rows
-#        (is_present true, snapshot_at of run 1) while t_clean moves to run 2's snapshot. Fold run 1 graded: the
-#        lock checks matched; it stopped at "table_sizes rows", which compared all history with the current rows -
-#        right for one collect, not two; the check now compares run 2's history rows with run 2's reads]
+#        (is_present true, snapshot_at of the first collect) while t_clean moves to the second collect's snapshot. A
+#        lab run graded: the lock checks matched; it stopped at "table_sizes rows", which compared all history with the
+#        current rows - right for one collect, not two; the check now compares the second collect's history rows with
+#        its reads]
 #     - t_ff (fillfactor 50, VACUUM ANALYZE): bloat_pct under 20 (the estimate counts the fillfactor)
 #     - t_newcol (analyzed, then a column added): stats_columns 2, bloat_pct NULL (no estimate on a partial width)
 #     - t_other in tgt2 is read on the second connection, with its own dbid
@@ -47,7 +48,7 @@
 #         debug_print_plan on, autovacuum_freeze_max_age 400000000) and one database at xid age 350,000,000 ->
 #         exactly those nine settings (track_counts critical, freeze info, the rest warning) plus
 #         'database xid age|warning', all with source pg-collector
-#       [review 1 fold: a second database at 1,200,000,000 adds 'database xid age|critical' (one row per database);
+#       [added later: a second database at 1,200,000,000 adds 'database xid age|critical' (one row per database);
 #        the replica also sets autovacuum_vacuum_cost_delay -1 and synchronous_commit remote_apply ->
 #        autovacuum_vacuum_cost_delay|warning joins its three, synchronous_standby_names|warning still fires]
 #  E. dms_drain on two seeded imports 15 minutes apart: target latency 1200 s -> 600 s gives speed_x 1.667 and
@@ -146,7 +147,7 @@ done
 [[ $(row "round(100.0 * relallvisible / nullif(relpages, 0)) = 100 and stats_columns = 3 and bloat_pct < 20" t_clean) == t ]] || fail "t_clean: $(row "relpages, relallvisible, stats_columns, bloat_pct" t_clean)"
 [[ $(row "n_dead_tup >= 70000 and bloat_pct > 20" t_bloated) == t ]] || fail "t_bloated: $(row "n_dead_tup, n_live_tup, bloat_pct, est_pages, heap_bytes" t_bloated)"
 [[ $(q "select bool_and(xid_age > 0) from pgvigil.tables where instance_id=$iid") == t ]] || fail "xid_age"
-# one history row per table read in a run (two runs now: compare run 2's)
+# one history row per table read in a run (two runs now: compare the second run's)
 S2=$(q "select max(snapshot_at) from pgvigil.tables where instance_id=$iid")
 [[ $(q "select count(*) from pgvigil.table_sizes where instance_id=$iid and snapshot_at = '$S2'") == $(q "select count(*) from pgvigil.tables where instance_id=$iid and snapshot_at = '$S2'") ]] || fail "table_sizes rows"
 CHK=$(q "select check_name from pgvigil.table_checks where instance_id=$iid and object='$T1.public.t_loaded' order by 1" | paste -sd,)

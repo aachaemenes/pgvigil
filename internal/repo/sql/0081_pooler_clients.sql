@@ -33,7 +33,7 @@
 -- activity snapshot are taken by two collections in the same minute, seconds apart: both times are returned, and a
 -- transaction-mode pairing (which client a server serves) can change between them.
 --
--- Retention: pooler_conn_sample joins purge()'s list of partition parents in the wave's join migration (the lead's).
+-- Retention: pooler_conn_sample joins purge()'s list of partition parents in the wave's join migration.
 -- PostgreSQL 13 or later (no date_bin, no 14+ function).
 
 CREATE TABLE IF NOT EXISTS pgvigil.pooler_conn_sample (

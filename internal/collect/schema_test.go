@@ -86,11 +86,10 @@ func TestSchemaDDLLogSQL(t *testing.T) {
 		"GRANT SELECT ON public.pgvigil_ddl_log TO <login>;", "REVOKE ALL ON public.pgvigil_ddl_log FROM PUBLIC;",
 		"-- DROP EVENT TRIGGER pgvigil_ddl_end; DROP EVENT TRIGGER pgvigil_ddl_drop;",
 		"CREATE EVENT TRIGGER pgvigil_ddl_end", "CREATE EVENT TRIGGER pgvigil_ddl_drop",
-		// temporary objects and extension scripts are not logged (the review fold: a temp table per request filled it)
+		// temporary objects and extension scripts are not logged (a temp table per request would fill it)
 		"WHERE NOT in_extension AND schema_name IS DISTINCT FROM 'pg_temp'", "WHERE original AND NOT is_temporary",
 		"DELETE only",
-		// the join review's fold: one transaction behind the publication guard, a one-second lock wait at most, no
-		// password kept
+		// one transaction behind the publication guard, a one-second lock wait at most, no password kept
 		"BEGIN;   -- pgvigil_ddl_log", "COMMIT;  -- pgvigil_ddl_log", "DO $guard$", "WHERE puballtables",
 		"pg_publication_namespace", "set_config('pgvigil.publication_ok', 'on', true)", "SET lock_timeout = '1s'",
 		"'CREATE USER MAPPING'", "'ALTER USER MAPPING'", "'CREATE SERVER'", "'ALTER SERVER'", "'CREATE SUBSCRIPTION'",
@@ -115,21 +114,73 @@ func TestSchemaDDLLogSQL(t *testing.T) {
 }
 
 // TestSchemaObjectsSQL: the read leaves out the catalogs, temporary relations and extension members, and the NOT NULL
-// constraints of PostgreSQL 18; identities are pg_identify_object's (the event trigger's text).
+// constraints of PostgreSQL 18; identities are pg_identify_object's (the event trigger's text). Both variants (task
+// A26-PG, the pass's N10): every check on each; neither names prosqlbody (PostgreSQL 13 has no such column); the old
+// variant never calls pg_get_function_sqlbody; the new one reads it once per function, the old expression beside it.
 func TestSchemaObjectsSQL(t *testing.T) {
-	for _, want := range []string{
-		"nspname NOT IN ('pg_catalog', 'information_schema')", "'^pg_(toast|temp_|toast_temp_)'", "deptype = 'e'",
-		"relpersistence <> 't'", "k.contype <> 'n'", "NOT g.tgisinternal", "pg_identify_object('pg_class'::regclass, c.oid, a.attnum)",
-		"LIMIT $1",
-		// the review fold: PostgreSQL 18's virtual columns, and the function attributes a CREATE OR REPLACE can change
-		"attgenerated = 'v'", "pg_get_function_arguments(p.oid)", "p.proparallel", "p.proleakproof", "p.procost",
-	} {
-		if !strings.Contains(schemaObjectsSQL, want) {
-			t.Errorf("schemaObjectsSQL lacks %q", want)
+	for name, q := range map[string]string{"schemaObjectsSQL": schemaObjectsSQL, "schemaObjectsSQLBody": schemaObjectsSQLBody} {
+		for _, want := range []string{
+			"nspname NOT IN ('pg_catalog', 'information_schema')", "'^pg_(toast|temp_|toast_temp_)'", "deptype = 'e'",
+			"relpersistence <> 't'", "k.contype <> 'n'", "NOT g.tgisinternal", "pg_identify_object('pg_class'::regclass, c.oid, a.attnum)",
+			"LIMIT $1",
+			// PostgreSQL 18's virtual columns, and the function attributes a CREATE OR REPLACE can change
+			"attgenerated = 'v'", "pg_get_function_arguments(p.oid)", "p.proparallel", "p.proleakproof", "p.procost",
+			// A26-PG: the old expression stays in both, body_prev in the read
+			schemaBodyOld, "NULL::text AS body, NULL::text AS body_prev", "definition, owner, acl, body, body_prev",
+		} {
+			if !strings.Contains(q, want) {
+				t.Errorf("%s lacks %q", name, want)
+			}
+		}
+		for _, bad := range []string{"md5(", "prosqlbody", "{{"} {
+			if strings.Contains(q, bad) {
+				t.Errorf("%s holds %q", name, bad)
+			}
 		}
 	}
-	if strings.Contains(schemaObjectsSQL, "md5(") {
-		t.Error("md5() fails on a FIPS server: the body is hashed in Go")
+	if strings.Contains(schemaObjectsSQL, "pg_get_function_sqlbody") {
+		t.Error("schemaObjectsSQL calls pg_get_function_sqlbody: PostgreSQL 13 has none")
+	}
+	if !strings.Contains(schemaObjectsSQL, "p.proacl::text, "+schemaBodyOld+", NULL::text\n") {
+		t.Error("schemaObjectsSQL's function body is not the old expression with a NULL body_prev")
+	}
+	for _, want := range []string{
+		"CROSS JOIN LATERAL (SELECT pg_get_function_sqlbody(p.oid) AS body OFFSET 0) sb",
+		"coalesce(sb.body, " + schemaBodyOld + ")", "CASE WHEN sb.body IS NOT NULL THEN " + schemaBodyOld + " END",
+	} {
+		if !strings.Contains(schemaObjectsSQLBody, want) {
+			t.Errorf("schemaObjectsSQLBody lacks %q", want)
+		}
+	}
+	if n := strings.Count(schemaObjectsSQLBody, "pg_get_function_sqlbody("); n != 1 {
+		t.Errorf("schemaObjectsSQLBody names pg_get_function_sqlbody %d times, want once (its lateral, kept a subquery by OFFSET 0)", n)
+	}
+}
+
+// TestSchemaBodyChoice: the probe's outcomes (task A26-PG, the pass's S1 and the 'fails if absent' decision): 13 reads as
+// before with no note; 14 / 18 with the function read SQL-standard bodies; a 14+ server without it, or where the login
+// may not run it (the probe asks for EXECUTE), reads as before and says so.
+func TestSchemaBodyChoice(t *testing.T) {
+	for _, c := range []struct {
+		version  int
+		has      bool
+		want     bool
+		wantNote string
+	}{
+		{130023, false, false, ""},
+		{140025, true, true, ""},
+		{180006, true, true, ""},
+		{140025, false, false, "pg_get_function_sqlbody is absent or not executable by the monitoring login on PostgreSQL 14: "},
+		{180006, false, false, "pg_get_function_sqlbody is absent or not executable by the monitoring login on PostgreSQL 18: "},
+	} {
+		got, note := schemaBodyChoice(c.version, c.has)
+		if got != c.want || (c.wantNote == "" && note != "") || (c.wantNote != "" && !strings.HasPrefix(note, c.wantNote)) {
+			t.Errorf("schemaBodyChoice(%d, %v) = %v, %q; want %v, %q...", c.version, c.has, got, note, c.want, c.wantNote)
+		}
+	}
+	if !strings.Contains(schemaBodyProbeSQL, "coalesce(has_function_privilege(to_regprocedure('pg_catalog.pg_get_function_sqlbody(oid)'), 'EXECUTE'), false)") ||
+		!strings.Contains(schemaBodyProbeSQL, "current_setting('server_version_num')::int") {
+		t.Errorf("schemaBodyProbeSQL: %s", schemaBodyProbeSQL)
 	}
 }
 
@@ -157,7 +208,7 @@ func TestSchemaDDLCursor(t *testing.T) {
 }
 
 // TestSchemaDefHash: the definition's own hash is kept beside the whole hash, so a change past the cut is seen when the
-// owner changes in the same read (the join review: the fourth diff INSERT needed owner and ACL equal).
+// owner changes in the same read (before, the fourth diff INSERT needed owner and ACL equal).
 func TestSchemaDefHash(t *testing.T) {
 	long1, long2 := strings.Repeat("x", schemaMaxDef+10)+"1", strings.Repeat("x", schemaMaxDef+10)+"2"
 	a := Row{"object_kind": "view", "definition": long1, "owner": "app"}
@@ -229,3 +280,82 @@ func TestSchemaPayloadCap(t *testing.T) {
 // runBatched is RunOnce's batch path, wired in collect.go by the wave's join (the slice does not own collect.go); the
 // proof's section G runs it end to end.
 var _ = runBatched
+
+// A26: under query_text full a function's body is stored as text after its hashed form, with what
+// may be a password masked; the hash and def_hash are the same bytes as under none (and as before A26), so a change of
+// the policy, or the upgrade, records no change; the hashed form rides for the payload cap's fall-back and never
+// reaches the import.
+func TestSchemaFinishModeBodies(t *testing.T) {
+	mk := func() Row {
+		return Row{"kind": "obj", "object_kind": "function", "identity": "public.f(integer)", "owner": "app", "acl": "",
+			"definition": "function returns integer language plpgsql",
+			"body":       "begin perform dblink_connect('host=x sslkey=/k/client.key'); return 1; end"}
+	}
+	full, none := mk(), mk()
+	schemaFinishMode([]Row{full}, "full")
+	schemaFinish([]Row{none})
+	if full["hash"] != none["hash"] || full["def_hash"] != none["def_hash"] {
+		t.Fatalf("the hashes differ by policy: %v / %v and %v / %v", full["hash"], full["def_hash"], none["hash"], none["def_hash"])
+	}
+	fd, nd := full["definition"].(string), none["definition"].(string)
+	if !strings.HasPrefix(fd, nd+"\n") || !strings.Contains(fd, "dblink_connect") {
+		t.Errorf("under full the definition is not the hashed form and the body's text: %q", fd)
+	}
+	if strings.Contains(fd, "/k/client.key") {
+		t.Errorf("maskBody's sslkey rule did not mask: %q", fd)
+	}
+	// a body the DDL log's test matches keeps no text under any policy - each case the masks missed (the code before
+	// the masks stored their text)
+	const withheld = "(body text not kept: it names a password or a secret)"
+	for _, body := range []string{
+		"begin execute 'alter role app password ''Hunter2'''; end",
+		"begin perform dblink_connect('postgresql://app:Hunter2xyz@h/db'); end",
+		"begin perform dblink_connect('host=h password = Hunter2'); end",
+		"begin execute format('alter role %I password %L', r, 'Hunter2'); end",
+		"begin create server s foreign data wrapper w options (host 'h'); end",
+	} {
+		r := mk()
+		r["body"] = body
+		schemaFinishMode([]Row{r}, "full")
+		d := r["definition"].(string)
+		if strings.Contains(d, "Hunter2") || strings.Contains(d, "begin") || !strings.HasSuffix(d, "\n"+withheld) {
+			t.Errorf("a body naming a secret stores %q, want its hashed form and %q", d, withheld)
+		}
+		h := mk()
+		h["body"] = body
+		schemaFinish([]Row{h})
+		if h["hash"] != r["hash"] {
+			t.Errorf("a withheld body's hash differs by policy: %v / %v", h["hash"], r["hash"])
+		}
+	}
+	if full[schemaHashedKey] != nd {
+		t.Errorf("the fall-back form %q, want the hashed form %q", full[schemaHashedKey], nd)
+	}
+	if _, ok := none[schemaHashedKey]; ok {
+		t.Error("a hash-only row carries a fall-back form")
+	}
+	if def := func() string { r := mk(); schemaFinishMode([]Row{r}, ""); return r["definition"].(string) }(); def != fd {
+		t.Errorf("no policy (the configuration's default, full) stores %q", def)
+	}
+	// a body change is still a change
+	ch := mk()
+	ch["body"] = strings.Replace(ch["body"].(string), "return 1", "return 2", 1)
+	schemaFinishMode([]Row{ch}, "full")
+	if ch["hash"] == full["hash"] {
+		t.Error("a body change left the hash")
+	}
+	// the cap's fall-back puts the hashed form back; the drop takes the key out before the import
+	rows := []Row{full}
+	if !schemaHashesOnly(rows) || full["definition"] != nd {
+		t.Errorf("schemaHashesOnly left %q", full["definition"])
+	}
+	again := mk()
+	schemaFinishMode([]Row{again}, "full")
+	schemaDropHashed([]Row{again})
+	if _, ok := again[schemaHashedKey]; ok {
+		t.Error("schemaDropHashed left the fall-back form in the row")
+	}
+	if schemaPayloadSize([]Row{{schemaHashedKey: strings.Repeat("x", 1000)}}) > 100 {
+		t.Error("the fall-back form counts toward the payload's size")
+	}
+}

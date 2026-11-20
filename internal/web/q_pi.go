@@ -6,7 +6,7 @@ import (
 
 // The Performance Insights and Serverless capacity API (phase 3 wave E, task 56): an instance's Load tab
 // (GET /api/pi -> s.PILoad) and the Capacity section of its Host tab (GET /api/capacity -> s.Capacity). The routes
-// are wired in Handler at the wave's join; PIOverviewCheck is the line the join adds to overviewChecks for a Summary
+// are wired in Handler; PIOverviewCheck is the line the release wiring adds to overviewChecks for a Summary
 // cell (check_group "pi").
 
 // PIOverviewCheck is the Summary check over every row of pi_findings ("cache starved by the ACU floor").
@@ -70,7 +70,7 @@ t AS (
 SELECT s.tokenized_id, q.db_id, round(s.load_hours::numeric, 3)::float8 AS load_hours,
        round((s.load_hours / nullif(t.hours, 0))::numeric, 3)::float8 AS avg_sessions,
        round((100 * s.load_hours / nullif(t.load_hours, 0))::numeric, 1)::float8 AS share_pct, s.hours,
-       q.digest, q.full_text, q.text_status, q.last_seen
+       q.digest AS "digest@stmt", q.full_text AS "full_text@stmt", q.text_status, q.last_seen
   FROM s CROSS JOIN t
   LEFT JOIN pgvigil.pi_sql q ON q.instance_id = $1 AND q.tokenized_id = s.tokenized_id
  ORDER BY s.load_hours DESC, s.tokenized_id

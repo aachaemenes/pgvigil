@@ -25,9 +25,9 @@
 --   mssql_tempdb          the current layout per instance: data and log files, sizes, growth, the CPU count, the
 --                         recommended minimum of data files, the trace flags, memory-optimized metadata.
 --   mssql_tempdb_files    tempdb's files as last read.
--- mssql_perf_findings     the slice's findings in the findings columns (the join adds the arm to pgvigil.findings).
+-- mssql_perf_findings     the performance findings in the findings columns (0077 adds the arm to pgvigil.findings).
 --
--- Partition parents for purge() (the join adds them): mssql_cpu_sample, mssql_sched_sample, mssql_memory_sample,
+-- Partition parents for purge() (0077 adds them): mssql_cpu_sample, mssql_sched_sample, mssql_memory_sample,
 -- mssql_memory_clerk, mssql_fileio_read, mssql_fileio_sample. Until that migration these tables are not purged.
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_cpu_sample (

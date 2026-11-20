@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// The Slow queries handler's parameter checks need no database (the route is the lead's: the test calls it).
+// The Slow queries handler's parameter checks need no database (the route is web.go's: the test calls the handler).
 func TestSlowQueriesParams(t *testing.T) {
 	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	for _, c := range []struct{ q, want string }{

@@ -289,9 +289,13 @@ func osRelease() string {
 // key this list does not know (a new one, a misspelt one) is masked, never shown.
 var keepKeys = map[string]bool{
 	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
-	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
-	// doors: (the page door's switch, on or off)
-	"page_instance_reads": true,
+	"histogram": true, "index_fragmentation": true,
+	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true, "read_tools": true,
+	// doors: (the page door's switch, on or off; task 403b K5: the Slack door's switch)
+	"page_instance_reads": true, "slack_actions": true,
+	// tasks 403a / B24k: a channel's digest hour, the Zabbix mode and plain opt-in, the Azure cloud
+	"digest_hour": true, "mode": true, "allow_plain": true, "cloud": true,
+	"backup_files": true, "auto_close_databases": true, "verify_timeout": true,
 	// alerts:
 	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
 	"clear_after": true, "port": true, "tls": true, "format": true,
@@ -301,32 +305,65 @@ var keepKeys = map[string]bool{
 	"every": true, "rule": true, "compare": true, "warning": true, "critical": true,
 	// reports: daily_checks: the switch, its hour and its zone (the addresses, the user and the channel are masked)
 	"enabled": true, "at": true, "tz": true,
+	// export: its knobs and the kind of destination; its name, paths, bucket, container and endpoint name the site
+	"type": true, "settle_minutes": true, "max_window_age_hours": true, "max_windows_per_run": true, "final_after_hours": true,
+	"snapshot_max_bytes": true, "statement_timeout": true,
 }
 
 // keepTrees are the keys under which every value is a setting: collection names with their intervals, threshold
 // names with their numbers (a threshold that is no number, backup_exclude's database patterns, is masked), action
 // names, the tag keys the tree groups by.
-var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "disabled": true, "actions": true, "group_by": true}
+var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "disabled": true, "actions": true, "group_by": true, "carry": true}
 
 // knownKeys are the keys of the configuration file (the yaml tags of config.Config, alerts.Settings and
 // collect.CustomCheck, and custom: itself; TestReportKnowsEveryConfigKey holds the list to them). A key that is not
 // one of them is written as <masked-key-N>: a name of the reader's own making can name the site.
 var knownKeys = map[string]bool{
-	"repository": true, "dsn": true, "instances": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
+	"repository": true, "dsn": true, "instances": true, "views": true, "shared_editors": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
+	"password_secret": true, "ref": true,
+	"web": true, "readyz_without_login": true, // B6.4: the probes
 	"doors": true, "page_instance_reads": true, "reports_dsn": true,
+	"page_cloud_blocks": true, "page_aws_profiles": true,
 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
+	"gcp": true, "project": true, "instance": true, "credentials_file": true, "replicas": true,
 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
+	"histogram": true, "stats_dsn": true, "index_fragmentation": true,
 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
-	"latency_warn_secs": true, "archive_warn_minutes": true, "import": true, "gmsa": true,
+	"azure": true, "subscription": true, "resource_group": true, // B24p; "server" and "cloud" are S2's alert channel keys below
+	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "backup_files": true, "reads": true, "auto_close_databases": true, "verify_timeout": true,
+	"import": true, "gmsa": true,
 	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,
 	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
 	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,
 	"helo": true, "url": true, "format": true, "dir": true, "routing_key": true,
 	"alerts_base_url": true, "opsgenie": true, "api_key": true, "max_per_hour": true, "templates": true, "subject": true, "line": true,
 	"custom": true, "description": true, "sql": true, "every": true, "rule": true, "value": true, "compare": true,
+	// custom: a SQL Server check (ST6): its procedure and its database are masked (a name of the site), its engine is a setting
+	"procedure": true, "database": true,
 	"warning": true, "critical": true,
 	"reports": true, "daily_checks": true, "enabled": true, "at": true, "tz": true, "as": true, "channel": true,
+	// tasks 403a / 403b / B24k (alerts.Settings): a channel's digest and checks, Pushover, Zabbix, Azure Monitor, the
+	// Slack bot and the Slack door's apps (a token, a secret or an address under them is shown as its env: name only)
+	"digest_hour": true, "checks": true, "pushover": true, "token": true, "user": true, "device": true, "zabbix": true,
+	"mode": true, "server": true, "key": true, "tls_ca": true, "tls_cert": true, "tls_key": true, "tls_server_issuer": true,
+	"tls_server_subject": true, "allow_plain": true, "azuremonitor": true, "endpoint": true, "dcr_id": true, "stream": true,
+	"tenant": true, "client_id": true, "client_secret": true, "cloud": true, "login_url": true, "slack": true,
+	"bot_token": true, "api_url": true, "app_id": true, "slack_actions": true, "slack_apps": true,
+	"team_id": true, "enterprise_id": true, "signing_secret": true, "users": true,
+	"export": true, "state_dir": true, "destination": true, "type": true, "path": true, "bucket": true, "prefix": true,
+	"account_url": true, "container": true, "connection_string": true, "sas_url": true,
+	"settle_minutes": true, "max_window_age_hours": true, "max_windows_per_run": true, "final_after_hours": true,
+	"snapshot_max_bytes": true, "statement_timeout": true, "carry": true, "tables": true, "exclude": true,
+	// the keys of config.Config's later blocks: the collector's probe
+	// (B24h), the agent door, /metrics (B24d: metrics: and a page door's prometheus_metrics), the request worker (CQ-A:
+	// cq: and an instance's DBA Dash allow-lists community_allow / jobs_allow, ST4), Patroni's REST read (376: its
+	// client certificate's files), the SQL Server counters' edits (401) and the schema read's databases (A26)
+	"probe": true, "probe_every_minute": true, "agents": true,
+	"metrics": true, "cache_seconds": true, "databases": true, "max_databases": true, "include_databases": true, "prometheus_metrics": true,
+	"cq": true, "workers": true, "result_keep": true, "via": true, "community_allow": true, "jobs_allow": true,
+	"patroni": true, "cert_file": true, "key_file": true,
+	"mssql_counters": true, "add": true, "remove": true, "object": true, "counter": true, "mssql_schema": true,
 }
 
 // safeValue is the shape of a setting: a word, a number, a duration, a clock range, a time zone. A value of another
@@ -345,7 +382,7 @@ var (
 // address (its path is the token), a routing key.
 func secretKey(k string) bool {
 	k = strings.ToLower(k)
-	for _, w := range []string{"dsn", "pass", "pwd", "secret", "token", "key", "url", "credential", "auth", "sig", "pgbouncer"} {
+	for _, w := range []string{"dsn", "pass", "pwd", "secret", "token", "key", "url", "credential", "auth", "sig", "pgbouncer", "connection"} {
 		if strings.Contains(k, w) {
 			return true
 		}

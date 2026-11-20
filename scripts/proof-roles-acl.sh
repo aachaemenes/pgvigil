@@ -54,7 +54,7 @@
 #  D. role_flags and role_is_platform: role_flags(super, login, connlimit 5, valid until 2030-01-01) =
 #     'superuser,login,connection limit 5,valid until 2030-01-01 00:00 UTC'; role_is_platform: rds rdsadmin t,
 #     onprem rdsadmin f, any pg_monitor t, any oid 10 t, azure azure_pg_admin t, onprem app f.
-#  [review 1 fold, expected before the rerun:]
+#  [expected before the rerun:]
 #  B2'. the superuser read's rules come back in rule_number order = (file_name, line_number) order; the collection
 #      status ok (no database the superuser may not connect to)
 #  C2. x a fourth time: app_x gets config ['search_path=app'], database b is not read (no db row, noconnect [b])

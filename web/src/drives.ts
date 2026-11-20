@@ -18,6 +18,7 @@ import { hrefWith } from './dbinfo';
 import { mssqlFilesTab } from './mssql_storage';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid } from './ui';
 import { loadAckSafe, offBeside, onDoor, pageNote, seatWhy } from './ack';
+import { needControl, needWords } from './needs';
 
 type Parts<K extends string> = Record<K, Table | null>;
 const lsGet = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -33,6 +34,10 @@ function ago(secs: unknown): string {
 }
 const statusWord: Record<string, string> = { critical: 'Critical', warning: 'Warning', ok: 'OK', unknown: 'Size not read' };
 const statusKind: Record<string, string> = { critical: 'crit', warning: 'warn', ok: 'ok', unknown: '' };
+// a grey N/A cell's words when the mouse rests on it
+const noThreshold = 'no threshold set';
+// a status the thresholds do not give ('Size not read') is N/A, as every other cell of a status column carries one
+const naStatus = (v: unknown) => v == null || v === '' || statusKind[String(v)] ? '' : 'status none';
 const statusColor: Record<string, string> = { critical: 'var(--crit)', warning: 'var(--warn)', ok: 'var(--ok)', unknown: 'var(--muted)' };
 
 // the folder's instances (a tag folder: its own; the root: every one) and each instance's engine
@@ -93,6 +98,10 @@ function configureDialog(p: Place, inForce: string, own: Row | undefined, after:
   const save = el('button', { type: 'submit' }, 'Set'), inherit = el('button', { type: 'button' }, 'Inherit'), back = el('button', { type: 'button' }, 'Back');
   // nothing of this level's own to end: Inherit is off with that reason beside it (it already inherits)
   if (!own) offBeside(inherit, 'this level has no threshold of its own: it already inherits the level above');
+  // the role (B24f): a threshold needs admin - below it both are off, described by one sentence of the dialog's
+  // (one note, not one per button)
+  const roleP = el('p', { class: 'meta off-reason' }, needWords('drives/thresholds'));
+  needControl(save, 'drives/thresholds', { note: roleP }); needControl(inherit, 'drives/thresholds', { note: roleP });
   const form = el('form', { method: 'dialog' }, el('h3', {}, `Drive space thresholds: ${p.where}`),
     el('p', {}, 'A drive with less free space than the warning per cent is a warning, less than the critical per cent a critical. '
       + 'The drive\'s own threshold wins, then its instance\'s, a tag\'s (when two of the instance\'s tags carry one, the tag first by name), the root\'s; the default is warning under 20 %, critical under 10 %. '
@@ -100,7 +109,7 @@ function configureDialog(p: Place, inForce: string, own: Row | undefined, after:
     el('p', { class: 'meta' }, `In force now: ${inForce}.`),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, 'Warning under (% free) ', warn)),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, 'Critical under (% free) ', crit)),
-    msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', back));
+    roleP, msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', back));
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:36rem', 'aria-label': `Drive space thresholds: ${p.where}` }, form);
   let done = false;
   const close = () => { dlg.close(); dlg.remove(); if (done) after(); };
@@ -204,6 +213,7 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
     const cfgWhy = seatWhy(ad, 'thresholds', Number(r.instance_id), String(r.instance));
     if (cfgWhy) offBeside(cfg, cfgWhy, offNote(Number(r.instance_id)));
     else cfg.addEventListener('click', () => configureDialog(own, `warning under ${pct(r.warn_pct)}, critical under ${pct(r.crit_pct)} (${levelWords(r)})`, ownRow(thresholds, own), () => void draw()));
+    needControl(cfg, 'drives/thresholds', { can: ad.can });
     const hist = el('button', { type: 'button', class: 'link', 'aria-expanded': 'false', 'aria-label': `History of ${String(r.drive)} on ${String(r.instance)}` }, 'History');
     const histBox = el('div');
     hist.addEventListener('click', () => {
@@ -246,6 +256,7 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
   // is not the demo's points at the page's one sentence; a level wider than one instance says its own reason beside it
   const scopeWhy = seatWhy(ad, 'thresholds', ctx.instance ?? undefined, instName);
   if (scopeWhy) offBeside(configure, scopeWhy, offNote(ctx.instance ?? undefined));
+  needControl(configure, 'drives/thresholds', { can: ad.can });
   await draw();
   return sec;
 }
@@ -254,9 +265,13 @@ function drivesGrid(ctx: Ctx, rows: Row[], folder: boolean): HTMLElement {
   const cols: Col[] = [
     ...(folder ? [{ key: 'instance', fmt: (v: unknown, r: Row) => el('a', { href: instHref(ctx, r.instance_id, 'drives') }, String(v ?? '')) } as Col] : []),
     { key: 'drive' }, { key: 'label', label: 'volume' },
-    { key: 'status', fmt: v => badge(statusWord[String(v)] ?? String(v), statusKind[String(v)] ?? '') },
+    { key: 'status', fmt: v => badge(statusWord[String(v)] ?? String(v), statusKind[String(v)] ?? ''), cls: naStatus },
     { key: 'total_bytes', label: 'size', num: true, fmt: fmtBytes }, { key: 'used_bytes', label: 'used', num: true, fmt: fmtBytes },
-    { key: 'free_bytes', label: 'free', num: true, fmt: fmtBytes }, { key: 'free_pct', label: 'free %', num: true },
+    // the measured cell carries the drive's status, as DBA Dash colours its Free %: free % the status its thresholds give
+    // (N/A where none applies), free the N/A grey (the thresholds are percents: no size threshold is set); the status
+    // column stays
+    { key: 'free_bytes', label: 'free', num: true, fmt: v => el('span', { title: noThreshold }, fmtBytes(v)), cls: () => 'status none' },
+    { key: 'free_pct', label: 'free %', num: true, fmt: (v, r) => statusKind[String(r.status)] ? fmtNum(v) : el('span', { title: noThreshold }, fmtNum(v)), cls: (_v, r) => statusKind[String(r.status)] || 'status none' },
     { key: 'warn_pct', label: 'warning under %', num: true }, { key: 'crit_pct', label: 'critical under %', num: true },
     { key: 'threshold_level', label: 'threshold set on', fmt: (v, r) => v === 'tag' ? `tag ${String(r.threshold_tag)}` : String(v ?? '') },
     { key: 'engine' }, { key: 'source', label: 'read from' }, { key: 'snapshot_at', label: 'updated', fmt: fmtTime },
@@ -342,24 +357,82 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
   const daySel = el('select', { id: 'dbs-days' }, ...days.map(n => el('option', { value: String(n) }, `${n} days`)));
   daySel.value = String(day);
   const refresh = el('button', { type: 'button' }, 'Refresh');
+  // Unit and Decimal places, DBA Dash's DB Space pickers: MB / GB / TB (default GB; 1 GB = 1024 MB) and 0 - 3 decimals
+  // (default 1). One choice for every DB Space page, kept in this browser under the grid tools' prefix (so a mailed DB
+  // Space reads in the unit its schedule was made in); the default is kept as no key; a stored value it does not know
+  // is the default. A pick draws the grids again from the data already read
+  const units = ['MB', 'GB', 'TB'], places = [0, 1, 2, 3];
+  const keyU = 'pgvigil.grid.dbspace.size-unit', keyD = 'pgvigil.grid.dbspace.size-decimals';
+  let unit = lsGet(keyU) ?? 'GB'; if (!units.includes(unit)) unit = 'GB';
+  let dp = Number(lsGet(keyD) ?? 1); if (!places.includes(dp)) dp = 1;
+  const unitSel = el('select', { id: 'dbs-unit' }, ...units.map(u => el('option', { value: u }, u))) as HTMLSelectElement;
+  const dpSel = el('select', { id: 'dbs-dp' }, ...places.map(n => el('option', { value: String(n) }, String(n)))) as HTMLSelectElement;
+  unitSel.value = unit; dpSel.value = String(dp);
+  const keep = (k: string, v: string, dflt: string) => { try { if (v === dflt) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* private window */ } };
+  // the grid's sort and filters by column KEY (the keys stay, a unit changes only the headings): read from the clicks and
+  // typing on the drawn grid, given again to the grid drawn in the new unit
+  let sort: { key: string; asc: boolean } | undefined, replaying = false;
+  // a filter remembers the unit it was typed in: a bare number in a size column ('>5' under GB) is the same size in the
+  // next unit ('>5120' under MB), so a pick never changes which rows a filter keeps
+  const filt = new Map<string, { v: string; unit: string }>();
+  const sizeKeys = new Set(['allocated', 'used', 'data', 'log']);
+  const plainNum = (t: string) => {   // the number typed, as JavaScript reads one (the locale's grouping and decimal mark read as the grid's filter reads them)
+    const x = t.replace(/[\s\u00a0\u202f]+(?=\d)/g, ''), dot = x.lastIndexOf('.'), comma = x.lastIndexOf(',');
+    const dec = (1.5).toLocaleString().includes(',') ? ',' : '.';
+    const js = dot >= 0 && comma >= 0 ? (dot > comma ? x.replace(/,/g, '') : x.replace(/\./g, '').replace(',', '.'))
+      : comma >= 0 ? (dec === ',' && x.indexOf(',') === comma ? x.replace(',', '.') : x.replace(/,/g, '')) : x;
+    return Number(js);
+  };
+  const rescaled = (k: string, f: { v: string; unit: string }): string => {
+    const m = /^\s*(>=|<=|>|<|=)\s*(-?[\d.,\s\u00a0\u202f]*\d)\s*$/.exec(f.v);
+    if (!sizeKeys.has(k) || f.unit === unit || !m) return f.v;
+    const n = plainNum(m[2]);
+    return Number.isFinite(n) ? `${m[1]}${Number((n * 1024 ** (units.indexOf(f.unit) - units.indexOf(unit))).toPrecision(12))}` : f.v;
+  };
+  const follow = (box: HTMLElement, cols: Col[]) => {
+    const t = box.querySelector('table.grid'); if (!t) return;
+    const ths = [...t.querySelectorAll(':scope > thead > tr:first-child > th')];
+    const ins = [...t.querySelectorAll<HTMLInputElement>('thead input.filter')];
+    ths.forEach((th, j) => th.addEventListener('click', () => { if (replaying) return; const k = cols[j]?.key; if (!k) return; sort = { key: k, asc: sort?.key === k ? !sort.asc : true }; }));
+    ins.forEach((inp, j) => inp.addEventListener('input', () => { if (replaying) return; const k = cols[j]?.key; if (!k) return; if (inp.value.trim()) filt.set(k, { v: inp.value, unit }); else filt.delete(k); }));
+    replaying = true;
+    if (sort) { const j = cols.findIndex(c => c.key === sort!.key); const th = ths[j] as HTMLElement | undefined; if (th) { th.click(); if (!sort.asc) th.click(); } }
+    for (const [k, f] of filt) {
+      const j = cols.findIndex(c => c.key === k), inp = ins[j], v = rescaled(k, f);
+      filt.set(k, { v, unit });
+      if (inp) { inp.value = v; inp.dispatchEvent(new Event('input')); }
+    }
+    replaying = false;
+  };
+  let last: { d: Parts<'instances' | 'databases' | 'history'>; sc: Awaited<ReturnType<typeof scope>> } | undefined;
   async function draw() {
-    let d: Parts<'instances' | 'databases' | 'history'>;
-    let sc: Awaited<ReturnType<typeof scope>>;
     try {
-      sc = await scope(ctx);
-      d = await get<Parts<'instances' | 'databases' | 'history'>>('dbspace', { ...sc.params, days: day });
+      const sc = await scope(ctx);
+      last = { d: await get<Parts<'instances' | 'databases' | 'history'>>('dbspace', { ...sc.params, days: day }), sc };
     } catch (e) { body.replaceChildren(errorBox(e)); return; }
-    // the GB columns (DBA Dash's unit, the folder's grid and an instance's alike) hold the GB figure rounded to 0.1 and show
-    // it with one decimal always, as DBA Dash does ('12.0', the locale's form: fr-FR '12,0'); the export writes the number
-    // under '0.0' (export.ts typed: a figure in fixed decimals)
-    const toGB = (v: unknown) => v == null ? null : Math.round(Number(v) / GB * 10) / 10;
-    const fmtGB = (v: unknown) => v == null || v === '' ? '' : Number(v).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    render();
+  }
+  function render() {
+    if (!last) return;
+    const { d, sc } = last;
+    // a size in the unit picked, EXACT (bytes / 1024^p: the figure and the cell's format round, the value does not), shown
+    // with exactly the decimals picked in the locale's form ('12.0', fr-FR '12,0'); the export writes the number under
+    // that many decimals (export.ts typed: a figure in fixed decimals)
+    const div = 1024 ** (2 + units.indexOf(unit));   // MB 1024^2, GB 1024^3, TB 1024^4 (DBA Dash's divisors)
+    const inUnit = (v: unknown) => v == null ? null : Number(v) / div;
+    const fig = (v: unknown) => v == null || v === '' ? '' : Number(v).toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
+    const head = (w: string) => `${w} (${unit})`;
+    // a size column whose figures all show 0 while its bytes are above 0 (TB with no decimal): said under the grid
+    // (only when EVERY size column that holds bytes shows 0: one column of small logs is no grid of zeros)
+    const allZero = (rows: Row[], keys: string[]) => { const live = keys.filter(k => rows.some(r => Number(r[k]) > 0)); return live.length > 0 && live.every(k => rows.every(r => r[k] == null || Number(fig(r[k]).replace(/[^\d]/g, '')) === 0)); };
+    const zeroNote = (rows: Row[], keys: string[]) => allZero(rows, keys)
+      ? el('p', { class: 'meta' }, `Every figure shows 0 in ${unit} with ${dp} decimal${dp === 1 ? '' : 's'}: pick a smaller unit or more decimals to see the sizes.`) : '';
     if (!ctx.instance) {
-      const rows: Row[] = rowsOf(d.instances).map((r): Row => ({ ...r, allocated_gb: toGB(r.allocated_bytes), used_gb: toGB(r.used_bytes) }));
+      const rows: Row[] = rowsOf(d.instances).map((r): Row => ({ ...r, allocated: inUnit(r.allocated_bytes), used: inUnit(r.used_bytes) }));
       const cols: Col[] = [
         { key: 'instance', label: 'name', fmt: (v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace') }, String(v ?? '')) },
-        { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtGB(v) },
-        { key: 'used_gb', label: 'used (GB)', num: true, fmt: (v, r) => v == null ? (r.engine === 'postgres' ? 'not read' : '') : fmtGB(v) },
+        { key: 'allocated', label: head('allocated'), num: true, fmt: v => fig(v) },
+        { key: 'used', label: head('used'), num: true, fmt: (v, r) => v == null ? (r.engine === 'postgres' ? 'not read' : '') : fig(v) },
         { key: 'databases', num: true }, { key: 'engine' },
         { key: 'history', label: 'history', fmt: (_v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace'), 'aria-label': `View the history of ${String(r.instance)}` }, 'View') },
       ];
@@ -368,31 +441,38 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
           + 'Used: the space used inside SQL Server\'s files where every file\'s was read; a PostgreSQL file holds no unallocated space to read, so it is not given there.'),
         // the DB Space row: the pie takes the room its grid leaves (app.css .dbs-row), as DBA Dash's DB Space pie does
         el('div', { class: 'cards dbs-row', style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
-          grid(rows, cols, 'No database size read yet.'),
-          donutChart('DB Space (allocated)', rows.map(r => ({ label: String(r.instance), value: Number(r.allocated_bytes ?? 0), href: instHref(ctx, r.instance_id, 'dbspace') })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })));
+          followed(grid(rows, cols, 'No database size read yet.'), cols),
+          donutChart('DB Space (allocated)', rows.map(r => ({ label: String(r.instance), value: Number(r.allocated_bytes ?? 0), href: instHref(ctx, r.instance_id, 'dbspace') })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })),
+        zeroNote(rows, ['allocated', 'used']));
       return;
     }
-    const dbs: Row[] = rowsOf(d.databases).map((r): Row => ({ ...r, allocated_gb: toGB(r.allocated_bytes), used_gb: toGB(r.used_bytes), data_gb: toGB(r.data_bytes), log_gb: toGB(r.log_bytes) }));
+    const dbs: Row[] = rowsOf(d.databases).map((r): Row => ({ ...r, allocated: inUnit(r.allocated_bytes), used: inUnit(r.used_bytes), data: inUnit(r.data_bytes), log: inUnit(r.log_bytes) }));
     const hist = rowsOf(d.history), engine = rowsOf(d.instances)[0]?.engine;
     const cols: Col[] = [
       // the name opens the database, as its slice does (DBA Dash's Name drill)
       { key: 'database', fmt: (v, r) => { const to = dbSlice(ctx, engine, r); return to ? el('a', { href: to }, String(v ?? '')) : String(v ?? ''); } },
-      { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtGB(v) },
-      { key: 'used_gb', label: 'used (GB)', num: true, fmt: v => v == null ? (engine === 'postgres' ? 'not read' : '') : fmtGB(v) },
+      { key: 'allocated', label: head('allocated'), num: true, fmt: v => fig(v) },
+      { key: 'used', label: head('used'), num: true, fmt: v => v == null ? (engine === 'postgres' ? 'not read' : '') : fig(v) },
       // a PostgreSQL database has no data and log files of its own to size: those two columns are SQL Server's only
-      ...(engine === 'postgres' ? [] : [{ key: 'data_gb', label: 'data (GB)', num: true, fmt: (v: unknown) => fmtGB(v) }, { key: 'log_gb', label: 'log (GB)', num: true, fmt: (v: unknown) => fmtGB(v) }] as Col[]),
+      ...(engine === 'postgres' ? [] : [{ key: 'data', label: head('data'), num: true, fmt: (v: unknown) => fig(v) }, { key: 'log', label: head('log'), num: true, fmt: (v: unknown) => fig(v) }] as Col[]),
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ];
     body.replaceChildren(
       el('div', { class: 'dbs-row', style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
-        grid(dbs, cols, 'No database size read yet.'),
+        followed(grid(dbs, cols, 'No database size read yet.'), cols),
         // a database opens its own page: PostgreSQL's database page, SQL Server's files of that database (dbSlice)
         donutChart('DB Space by database', dbs.map(r => ({ label: String(r.database), value: Number(r.allocated_bytes ?? 0), href: dbSlice(ctx, engine, r) })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })),
+      zeroNote(dbs, ['allocated', 'used', 'data', 'log']),
       lineChart(`History: the databases' space over ${day} days`, hist, [{ key: 'allocated_bytes', label: 'allocated' }, { key: 'used_bytes', label: 'used' }], v => fmtBytes(v)));
   }
+  const followed = (box: HTMLElement, cols: Col[]) => { follow(box, cols); return box; };
   daySel.addEventListener('change', () => { day = Number(daySel.value); lsSet('pgvigil.dbspaceDays', String(day)); void draw(); });
   refresh.addEventListener('click', () => void draw());
-  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', ctx.instance ? el('label', { for: 'dbs-days' }, 'History ', daySel) : ''), body);
+  unitSel.addEventListener('change', () => { unit = unitSel.value; keep(keyU, unit, 'GB'); render(); });
+  dpSel.addEventListener('change', () => { dp = Number(dpSel.value); keep(keyD, String(dp), '1'); render(); });
+  // the toolbar stays outside the drawn area: a pick keeps the focus on its select
+  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('label', { for: 'dbs-unit' }, 'Unit ', unitSel), ' ',
+    el('label', { for: 'dbs-dp' }, 'Decimal places ', dpSel), ' ', ctx.instance ? el('label', { for: 'dbs-days' }, 'History ', daySel) : ''), body);
   await draw();
   return sec;
 }
@@ -445,7 +525,7 @@ export async function dbFilesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'free_bytes', label: 'free', num: true, fmt: fmtBytes }, { key: 'free_pct', label: 'free %', num: true },
       { key: 'max_size_bytes', label: 'max size', num: true, fmt: (v, r) => v == null ? (r.engine === 'sqlserver' ? 'unlimited' : '') : fmtBytes(v) },
       { key: 'growth' }, { key: 'drive' },
-      { key: 'status', fmt: v => badge(statusWord[String(v)] ?? String(v), statusKind[String(v)] ?? '') },
+      { key: 'status', fmt: v => badge(statusWord[String(v)] ?? String(v), statusKind[String(v)] ?? ''), cls: naStatus },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ];
     body.replaceChildren(

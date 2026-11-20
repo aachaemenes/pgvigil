@@ -6,7 +6,7 @@
 #   -Bundle  <folder>   the extracted pgvigil-offline-<v>-windows-amd64
 #   -PgBin   <folder>   PostgreSQL's bin folder, 16 or newer (the role rules uninstall -drop-repository checks)
 #   -Work    <folder>   a scratch folder on local disk (default C:\pgvigil-uninstall-proof; removed at the end)
-# Expected (written before its first run; NOT run by this project yet: the sandbox was another lane's):
+# Expected (written before its first run; NOT run yet: the Windows sandbox was in use):
 #  N   no network adapter is up
 #  S   install.ps1 -From the bundle -App -UpdateCheck: the service pgvigil, the app machine-wide, the HKLM Run value,
 #      the Programs and Features entry, the policy key, the machine PATH entry; pgvigil-app install -user: this user's

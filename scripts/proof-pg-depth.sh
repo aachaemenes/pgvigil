@@ -50,11 +50,11 @@
 #     and sequence_state's last_value / pct_used equal the hand read; the mon instance's run status 'ok' with no MD5 row.
 #     Undo (ALTER SEQUENCE ... AS bigint, ALTER COLUMN ... TYPE bigint, SET search_path, VALIDATE, the rows deleted,
 #     REVOKE) -> no tgt finding. MD5 on the superuser instance 'su': a role with an MD5 password -> 'MD5 password|warning';
-#     re-set with SCRAM -> gone. [fold s155-proof4: on 13 'mon' and
-#     'postgres' (and 'mon_min', review fold) too - 13 hashes with md5 by default - true hits]
+#     re-set with SCRAM -> gone. [changed after a lab run: on 13 'mon' and
+#     'postgres' (and 'mon_min') too - 13 hashes with md5 by default - true hits]
 #  L  slru: baseline read; a transaction with 200,000 subtransactions held open while another session scans its rows ->
 #     the subtransaction cache's blks_read rises, slru_sample's newest value equals pg_stat_slru by hand and 'subtransaction
-#     SLRU reads|warning'; the transaction ended, a read with no new reads -> gone. [fold s155-proof5:
+#     SLRU reads|warning'; the transaction ended, a read with no new reads -> gone. [changed after a lab run:
 #     max_locks_per_transaction=8000 so the lock table holds every subtransaction; the block's handler catches
 #     division_by_zero only, so a short seed fails loudly]
 #  B  index_bloat: bt (1,000,000 rows, primary key), 90 % deleted, VACUUM + ANALYZE -> bt_pkey's estimate within 15 points
@@ -63,12 +63,12 @@
 #  X  dead rows, one rule (task 167): dr with autovacuum off, 300,000 rows, 150,000 deleted, collect tables -> 0016's
 #     table_checks 'table dead rows|warning' for tgt.public.dr and no 'dead rows' row in pg_depth_findings; VACUUM -> gone.
 #  every collect's collection_dates status is 'ok'.
-#  NOT PROVEN on PostgreSQL 16 (the lead's ruling, 2026-11-11 15:47 PST): L, the subtransaction SLRU seed - three runs on 16 failed: about 12,000 of 200,000 subtransactions made (the lock table full, swallowed by the seed's handler),
+#  NOT PROVEN on PostgreSQL 16 (ruled 2026-11-11): L, the subtransaction SLRU seed - three runs on 16 failed: about 12,000 of 200,000 subtransactions made (the lock table full, swallowed by the seed's handler),
 #   then a precheck that cannot see the open transaction's pending counters, then 300,000 made but the scan touched the cache
 #   8 times (cause unknown); it passed on 16 once (run 4).
 #  PGVIGIL_DEPTH_SKIP=L leaves L out on every version run and says so: the version's log prints 'NOT PROVEN [pg<v>] L
 #  (skipped)' and the last line reads 'PASS: proof-pg-depth on <versions>; L: NOT PROVEN (skipped)', never a bare PASS.
-#  [review s155-1 fold, expected before its run: D also seeds a SECURITY DEFINER procedure p_sd and a NOT VALID domain check
+#  [added later, expected before its run: D also seeds a SECURITY DEFINER procedure p_sd and a NOT VALID domain check
 #   posint_chk (so 8 tgt findings: NOT VALID x2, SECURITY DEFINER x2), their undo is each row's own fix_sql run as written
 #   (ALTER ROUTINE, ALTER DOMAIN); a sequence counting down to 0 reads pct_used NULL and the read still succeeds; a
 #   pg_monitor-only login 'min' reads dbchecks with status ok, s_int readable false / last_value NULL, no sequence finding,
@@ -129,7 +129,7 @@ run_version() (
   q() { sql pgvigil_repo "$1"; }
   sql postgres "select 1" >/dev/null || fail "the server did not come up"
   # the failing archiver through ALTER SYSTEM, not the command line: a command-line setting outranks ALTER SYSTEM, so W1's
-  # undo would never take (s155-proof1)
+  # undo would never take (a lab run)
   sql postgres "alter system set archive_command = '/bin/false'" >/dev/null; sql postgres "select pg_reload_conf()" >/dev/null
   for d in pgvigil_repo tgt tgt2; do sql postgres "create database $d" >/dev/null; done
   sql postgres "create role mon login password '$MPW' in role pg_monitor" >/dev/null
@@ -273,7 +273,7 @@ EOF
   [[ $(wal timeline_id tl) == 2 && $(wal timeline_id tl) == $(psql "$TL_DSN" -XAtq -c "select $tl_expr") ]] || fail "tl's timeline after the promotion: $(wal timeline_id tl)"
   [[ $(fnd 'timeline changed' '' tl) == 'timeline changed|warning|timeline 1 -> 2' ]] || fail "timeline finding: '$(fnd 'timeline changed' '' tl)'"
   echo "create role mon login password '$MPW' in role pg_monitor; create database tgt;" > "$WORK/other-$VER.sql"
-  # md5 in its pg_hba: it takes an MD5 or a SCRAM password (13's initdb hashes with md5, s155-proof4)
+  # md5 in its pg_hba: it takes an MD5 or a SCRAM password (13's initdb hashes with md5, a lab run)
   docker exec -u postgres "$CT" bash -c 'initdb -D /tmp/other -U postgres >/tmp/initdb.log 2>&1 && echo "host all all all md5" >> /tmp/other/pg_hba.conf && pg_ctl -D /tmp/other -o "-p 5434 -c listen_addresses=*" -l /tmp/other.log -w start >/dev/null' || fail "the other cluster"
   docker exec -i -u postgres "$CT" psql -h /var/run/postgresql -p 5434 -d postgres -XAtq < "$WORK/other-$VER.sql" >/dev/null || fail "the other cluster's login"
   export TL_DSN="host=127.0.0.1 port=$P3 user=mon password=$MPW dbname=tgt"
@@ -366,8 +366,8 @@ EOF
     holder=$!
     # the open transaction reached its sleep: its 300,000 subtransactions all exist (the handler catches division_by_zero
     # only, so any other error - 'out of shared memory' when the lock table cannot hold every subtransaction's xid lock,
-    # s155-proof5 - aborts the block and the sleep never runs). Its own SLRU counters stay pending in its backend until
-    # its transaction ends, so they cannot be read here (s155-final1).
+    # a lab run - aborts the block and the sleep never runs). Its own SLRU counters stay pending in its backend until
+    # its transaction ends, so they cannot be read here (a lab run).
     waitfor postgres "select count(*) from pg_stat_activity where query = 'select pg_sleep(120)' and state = 'active'" 1 60
     slru_all="select string_agg(name || ' read ' || blks_read || ' hit ' || blks_hit || ' zeroed ' || blks_zeroed || ' written ' || blks_written, '; ') from pg_stat_slru where lower(name) in ('subtrans', 'subtransaction')"
     for scan in 1 2; do

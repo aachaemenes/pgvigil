@@ -90,12 +90,22 @@ const sqlWaitsQueries = sqlWaitsBase + `
    GROUP BY queryid, qh
 )
 SELECT q.queryid, q.samples, q.wait_secs, q.top_wait,
-       left(coalesce(st.query, qt.query), 2000) AS query
+       left(coalesce(st.query, qt.query), 2000) AS "query@stmt"
   FROM q
   LEFT JOIN pgvigil.statement_text st ON st.instance_id = $1 AND st.queryid = q.queryid AND q.queryid <> 0
   LEFT JOIN pgvigil.query_text qt ON qt.query_hash = q.query_hash
  ORDER BY q.samples DESC, q.queryid
  LIMIT 50`
+
+// sqlWaitsPoison (task 405, Changed 19 on S4): PerformanceMonitor's poison wait at the window's
+// end (0156's pg_poison_wait_findings): each finding with its top statements, their text from statement_text as the
+// collector stored it (the query_text policy and the credential mask applied there, before the store: never a raw
+// text; the instance's policy now applied again at read: TEXT-NOW's stmt), or the one info row 'not judged: needs
+// pg_wait_sampling' where no wait_sample row was written in a day.
+const sqlWaitsPoison = `
+SELECT p.severity, p.check_name, p.object, p.at, p.detail, p.query AS "query@stmt"
+  FROM pgvigil.pg_poison_wait_findings($1, $2) p
+ ORDER BY CASE p.severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, p.object`
 
 // sqlWaitsState: the waits collection's last run on the instance (why it is skipped, where it is).
 const sqlWaitsState = `
@@ -106,7 +116,7 @@ SELECT c.status, c.note, c.snapshot_at
 // sqlWaitsLockTree: the blocking tree of the newest activity snapshot at or before the window's end.
 const sqlWaitsLockTree = `
 SELECT l.snapshot_at, l.top_blocker, l.level, l.pid, l.blocked_by, l.blocked, l.state, l.wait, l.xact_start, l.query_start,
-       l.state_change, l.datname, l.usename, l.application_name, left(qt.query, 1000) AS query
+       l.state_change, l.datname, l.usename, l.application_name, left(qt.query, 1000) AS "query@stmt"
   FROM pgvigil.lock_tree($1, $2) l
   LEFT JOIN pgvigil.query_text qt ON qt.query_hash = l.query_hash
  ORDER BY l.top_blocker, l.path`
@@ -124,6 +134,7 @@ func (s *Server) Waits(w http.ResponseWriter, r *http.Request) {
 		{"series", sqlWaitsSeries, []any{id, from, to}},
 		{"queries", sqlWaitsQueries, []any{id, from, to}},
 		{"locktree", sqlWaitsLockTree, []any{id, to}},
+		{"poison", sqlWaitsPoison, []any{id, to}},
 	})
 }
 

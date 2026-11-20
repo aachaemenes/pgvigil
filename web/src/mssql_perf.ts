@@ -4,8 +4,10 @@
 // mssql_tempdb hourly). Every chart shares the range's time axis.
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
+import { mssqlSessionsPart } from './mssql_sessions';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
+import { waitDocs } from './doclinks';
 
 // The tab keys of the slice's pages (the router's entries carry the same keys).
 export const mssqlCpuTab = 'mssqlcpu';
@@ -14,7 +16,7 @@ export const mssqlFileIOTab = 'mssqlfileio';
 export const mssqlTempdbTab = 'mssqltempdb';
 export const mssqlConnectionsTab = 'mssqlconnections';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const pct = (v: unknown) => v == null ? '-' : fmtNum(v) + ' %';
 const kb = (v: unknown) => v == null ? '-' : fmtBytes(Number(v) * 1024);
 const ms = (v: unknown) => v == null ? '' : fmtNum(v) + ' ms';
@@ -119,8 +121,14 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
     }
   }
   const box2 = el('div', { class: 'charts' });
-  box2.append(lineChart('CPU scheduler trend', sched,
-    [{ key: 'runnable_tasks', label: 'runnable tasks' }, { key: 'runnable_max', label: 'runnable tasks (max)' }, { key: 'work_queue', label: 'work queue' }, { key: 'pending_io', label: 'pending disk IO' }]));
+  // the schedulers that failed to create a worker come from mssql_counters' reads: a range with none of them leaves
+  // the series out and says why
+  const fw = sched.some(r => r.failed_to_create_worker != null);
+  const trend = lineChart('CPU scheduler trend', sched,
+    [{ key: 'runnable_tasks', label: 'runnable tasks' }, { key: 'runnable_max', label: 'runnable tasks (max)' }, { key: 'work_queue', label: 'work queue' }, { key: 'pending_io', label: 'pending disk IO' },
+      ...(fw ? [{ key: 'failed_to_create_worker', label: 'schedulers that failed to create a worker' }] : [])]);
+  if (!fw && sched.length) trend.append(el('p', { class: 'meta' }, 'Schedulers that failed to create a worker: not read in this range (mssql_counters is off for this instance, or has not read yet).'));
+  box2.append(trend);
   box2.append(lineChart('Workers', sched, [{ key: 'current_workers', label: 'current workers' }, { key: 'active_workers', label: 'active workers' }, { key: 'max_workers', label: 'max worker threads' }]));
   box2.append(lineChart('Batch requests and compilations per second', counters,
     [{ key: 'batch_s', label: 'batch requests/s' }, { key: 'transactions_s', label: 'transactions/s' }, { key: 'compiles_s', label: 'compilations/s' }, { key: 'recompiles_s', label: 'recompilations/s' }]));
@@ -141,7 +149,7 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
 // (sp_PressureDetector's) and the plan cache by type with its bloat level.
 type MemoryParts = 'latest' | 'series' | 'clerks' | 'clerk_stats' | 'checks' | 'pools_window' | 'semaphores_window' | 'pools_newest'
   | 'semaphores_newest' | 'pool_series' | 'rmon' | 'rmon_hourly' | 'caches' | 'plancache' | 'plancache_types' | 'plancache_trend'
-  | 'grants_now' | 'rg' | 'skipped';
+  | 'grants_now' | 'rg' | 'skipped' | 'suggestion';
 const mbOf = (v: unknown) => v == null ? '-' : fmtNum(Math.round(Number(v) / 102.4) / 10) + ' MB';
 const grantWindowCols = (bySem: boolean): Col[] => [
   { key: 'pool_name', label: 'pool', fmt: (v, r) => String(v ?? 'pool ' + String(r.pool_id)) },
@@ -197,6 +205,10 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(props([
     ['max server memory', l.max_server_memory_mb == null ? 'not read (mssql_instance)' : `${fmtNum(l.max_server_memory_mb)} MB`
       + (l.physical_kb ? ` (${fmtNum(Math.round(100 * Number(l.max_server_memory_mb) * 1024 / Number(l.physical_kb)))} % of physical)` : '')],
+    // task 405 (Fixed 8 on S4): PerformanceMonitor's number beside the setting (0156's
+    // mssql_memory_suggestion, the one the Server options check states; none on a Managed Instance)
+    ...rowsOf(d.suggestion).slice(0, 1).map(sg => ['PerformanceMonitor\'s suggestion', `${fmtNum(sg.suggested_mb)} MB (${String(sg.status)}; `
+      + `leaving ${fmtNum(sg.reserve_mb)} MB of ${fmtNum(sg.ram_mb)} MB for the OS): ${String(sg.message ?? '')}`] as [string, string]),
     ['SQL Server process working set', kb(l.process_kb) + (l.process_low ? ' - the process had a low-memory notification' : '')],
     ['committed / target', `${kb(l.committed_kb)} of ${kb(l.committed_target_kb)}`],
     ['memory grants', `${fmtNum(l.sem_granted ?? 0)} granted (${kb(l.sem_granted_kb)} of a ${kb(l.sem_target_kb)} target), ${fmtNum(l.sem_waiting ?? 0)} waiting; `
@@ -237,6 +249,7 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(pcBox);
   sec.append(grid(stats, [
     { key: 'clerk_type', label: 'clerk type' },
+    { key: 'clerk_name', label: 'what it is', fmt: v => v == null ? el('span', { class: 'meta', title: 'a clerk type the name list (Telegraf\'s) does not hold' }, 'not named') : String(v) },
     { key: 'current_kb', label: 'pages (current)', num: true, fmt: kb },
     { key: 'current_pct', label: '% of clerks', num: true, fmt: pct },
     { key: 'max_kb', label: 'max', num: true, fmt: kb },
@@ -274,12 +287,13 @@ export async function mssqlFileIOView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'database_name', label: 'database' },
     { key: 'file_name', label: 'file' },
     { key: 'type_desc', label: 'type' },
-    { key: 'read_ms', label: 'read latency', num: true, fmt: ms, cls: (v, row) => row.type_desc !== 'LOG' && Number(v) >= 50 ? 'warn' : '' },
+    { key: 'read_ms', label: 'read latency', num: true, fmt: ms, cls: (v, row) => v == null ? '' : row.type_desc === 'LOG' ? 'status none' : Number(v) >= 50 ? 'warn' : 'status ok' },
     { key: 'reads', num: true },
     { key: 'read_bytes', label: 'read', num: true, fmt: fmtBytes },
     // task 177 D14: sp_PressureDetector's KB per read and per write (file stats)
     { key: '_kb_read', label: 'KB per read', num: true, fmt: (_v, row) => Number(row.reads) > 0 ? fmtNum(Math.round(10 * Number(row.read_bytes) / 1024 / Number(row.reads)) / 10) : '' },
-    { key: 'write_ms', label: 'write latency', num: true, fmt: ms, cls: (v, row) => row.type_desc === 'LOG' && Number(v) >= 20 ? 'warn' : '' },
+    { key: 'write_ms', label: 'write latency', num: true, fmt: ms, cls: (v, row) => v == null ? '' : row.type_desc === 'LOG' ? (Number(v) >= 20 ? 'warn' : 'status ok')
+      : row.type_desc === 'ROWS' ? (Number(v) > 100 ? 'warn' : 'status ok') : 'status none' },   // data files as the check 'slow data file writes' (0124)
     { key: 'writes', num: true },
     { key: 'write_bytes', label: 'written', num: true, fmt: fmtBytes },
     { key: '_kb_write', label: 'KB per write', num: true, fmt: (_v, row) => Number(row.writes) > 0 ? fmtNum(Math.round(10 * Number(row.write_bytes) / 1024 / Number(row.writes)) / 10) : '' },
@@ -296,11 +310,11 @@ export async function mssqlFileIOView(ctx: Ctx): Promise<HTMLElement> {
 const tempdbCols = (fleet: boolean, ctx: Ctx): Col[] => [
   ...(fleet ? [{ key: 'instance', fmt: (v: unknown, row: Row) => el('a', { href: href(ctx, { tab: mssqlTempdbTab, instance: Number(row.instance_id) }) }, String(v ?? '')) }] : []),
   { key: 'data_files', label: '# data files', num: true },
-  { key: 'insufficient_files', label: 'insufficient files', fmt: v => v == null ? 'not weighed' : v ? badge('yes', 'warn') : 'no' },
+  { key: 'insufficient_files', label: 'insufficient files', fmt: v => v == null ? 'not weighed' : v ? badge('yes', 'warn') : 'no', cls: v => v == null ? 'status none' : v ? '' : 'status ok' },
   { key: 'recommended_files', label: 'recommended (minimum)', num: true },
   { key: 'log_files', label: '# log files', num: true },
-  { key: 'even_size', label: 'even sized', fmt: v => v ? 'yes' : badge('no', 'warn') },
-  { key: 'even_growth', label: 'even growth', fmt: v => v ? 'yes' : badge('no', 'warn') },
+  { key: 'even_size', label: 'even sized', fmt: v => v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
+  { key: 'even_growth', label: 'even growth', fmt: v => v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
   { key: 'total_mb', label: 'total size (MB)', num: true },
   { key: 'log_mb', label: 'log (MB)', num: true },
   { key: 'file_mb', label: 'file size (MB)', num: true },
@@ -431,6 +445,11 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
   grid(rmon, [
     { key: 'sample_at', label: 'time', fmt: fmtTime },
     { key: 'notification', label: 'notification' },
+    // PerformanceMonitor 3.13.0's Node column (sql-memory.js pressureColumns): each memory node writes its own record of
+    // one event, so the column shows only when the rows hold 2 or more distinct nodes (a record read before the node
+    // column has none: 'not read')
+    ...(new Set(rmon.map(r => r.memory_node_id).filter(v => v != null)).size >= 2
+      ? [{ key: 'memory_node_id', label: 'node', num: true, fmt: (v: unknown) => v == null ? 'not read' : String(v) }] : []),
     { key: 'ind_process', label: 'process', num: true },
     { key: 'ind_system', label: 'system', num: true },
     { key: 'avail_phys_kb', label: 'available physical', num: true, fmt: mbOf },
@@ -502,7 +521,7 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
     { key: 'is_next_candidate', label: 'next candidate', fmt: yes },
     { key: 'is_small', label: 'small query', fmt: yes },
     { key: 'pool_id', label: 'pool', num: true },
-    { key: 'wait_type', label: 'longest wait', fmt: (v, r) => v == null ? '' : String(v) + ' ' + ms(r.wait_ms) },
+    { key: 'wait_type', label: 'longest wait', fmt: (v, r) => v == null ? '' : el('span', {}, String(v) + ' ' + ms(r.wait_ms), waitDocs(v)) },
     { key: 'statement', label: 'statement', wide: true },
   ], 'No query held or waited for a memory grant at the newest read.'));
 
@@ -607,8 +626,9 @@ export async function mssqlConnectionsView(ctx: Ctx): Promise<HTMLElement> {
   const s = rowsOf(d.summary)[0], series = rowsOf(d.series);
   const sec = el('section', {}, el('h2', {}, `Connections (${rangeLabel(ctx)})`));
   if (!s) { sec.append(empty('sessions', 'mssql_activity', 'every 5 minutes')); return sec; }
-  sec.append(el('p', { class: 'meta' }, 'From sys.dm_exec_sessions every 5 minutes: the totals count the sessions over 50; the groups count the user sessions over 50 '
-    + 'with a program name, pgvigil\'s own left out (PerformanceMonitor\'s Sessions and Sessions by Application). Waiting for memory: the requests '
+  sec.append(el('p', { class: 'meta' }, 'From sys.dm_exec_sessions every 5 minutes: the totals count every session, background being the system sessions '
+    + '(the server\'s is_user_process flag, the one rule of this page; PerformanceMonitor counts the sessions over 50); the groups count the user sessions '
+    + 'with a program name, pgvigil\'s own left out (PerformanceMonitor\'s Sessions by Application). Waiting for memory: the requests '
     + 'whose wait type names memory at the requests read nearest the sessions read.'));
   sec.append(el('h3', {}, `Sessions (${fmtTime(s.snapshot_at)})`), el('div', { class: 'tiles' },
     tile('connections', fmtNum(s.sessions)), tile('running', fmtNum(s.running)), tile('sleeping', fmtNum(s.sleeping)),
@@ -631,6 +651,7 @@ export async function mssqlConnectionsView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Sessions by application'), grid(rowsOf(d.applications), cols('application'), 'No user session with a program name at the newest read.'));
   sec.append(el('h3', {}, 'Sessions by host'), grid(rowsOf(d.hosts), cols('host'), 'No user session with a host name at the newest read.'));
   sec.append(el('h3', {}, 'Sessions by database'), grid(rowsOf(d.databases), cols('database'), 'No user session at the newest read.'));
+  sec.append(await mssqlSessionsPart(ctx)); // task 413
   sec.append(el('p', { class: 'meta' }, 'The sessions running now: ', el('a', { href: href(ctx, { tab: 'mssql_running' }) }, 'Running queries'), '.'));
   return sec;
 }

@@ -68,7 +68,7 @@ ALTER TABLE pgvigil.mssql_blocked_reports
   ADD COLUMN IF NOT EXISTS blocking_currentdb             text,
   ADD COLUMN IF NOT EXISTS blocking_wait_resource         text,
   ADD COLUMN IF NOT EXISTS blocking_wait_ms               bigint,
-  ADD COLUMN IF NOT EXISTS blocking_sql_handle            text,     -- the first frame with a handle: the lead's identity
+  ADD COLUMN IF NOT EXISTS blocking_sql_handle            text,     -- the first frame with a handle: the lead blocker's identity
   ADD COLUMN IF NOT EXISTS blocking_stmtstart             int,
   ADD COLUMN IF NOT EXISTS blocking_stmtend               int;
 

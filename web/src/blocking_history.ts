@@ -14,10 +14,39 @@ import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+import { waitDocs } from './doclinks';
 import { sqlCell, whatIsThis } from './sqlview';
 
+// a cell's list of wait types (an array, or text with ', ' between), each with its documentation links (task 412)
+const waitList = (v: unknown): HTMLElement | string => {
+  const ts = (Array.isArray(v) ? v.map(String) : String(v ?? '').split(',')).map(t => t.trim()).filter(Boolean);
+  return ts.length ? el('span', {}, ...ts.flatMap((t, i) => [i ? ', ' : '', t, waitDocs(t)])) : '';
+};
+
 type PgParts = 'meta' | 'summary' | 'episodes' | 'trend' | 'xmin_summary' | 'xmin_pins' | 'xmin_now';
-type MsParts = 'meta' | 'trend' | 'deadlock_trend' | 'pairs';
+type MsParts = 'meta' | 'trend' | 'deadlock_trend' | 'pairs' | 'by_login' | 'by_program' | 'chains';
+
+// stackBy: a by_login / by_program part as a stacked chart's rows - one row per step, each series the running total of
+// the names under it (lineChart's stacked form), the names by their sum over the range, 'Other' on top
+export function stackBy(part: Row[]): { rows: Row[]; series: { key: string; label: string }[] } {
+  const sum = new Map<string, number>();
+  for (const r of part) sum.set(String(r.who), (sum.get(String(r.who)) ?? 0) + Number(r.blocked ?? 0));
+  const names = [...sum.keys()].filter(n => n !== 'Other').sort((a, b) => sum.get(b)! - sum.get(a)! || a.localeCompare(b));
+  if (sum.has('Other')) names.push('Other');
+  const at = new Map<string, Row>();
+  for (const r of part) {
+    const k = String(r.snapshot_at), row = at.get(k) ?? { snapshot_at: r.snapshot_at };
+    row['v' + names.indexOf(String(r.who))] = Number(r.blocked ?? 0);
+    at.set(k, row);
+  }
+  const rows = [...at.values()].sort((a, b) => Date.parse(String(a.snapshot_at)) - Date.parse(String(b.snapshot_at))).map(r => {
+    let t = 0;
+    const o: Row = { snapshot_at: r.snapshot_at };
+    names.forEach((_, i) => { t += Number(r['v' + i] ?? 0); o['s' + i] = t; });
+    return o;
+  });
+  return { rows, series: names.map((n, i) => ({ key: 's' + i, label: n })) };
+}
 
 const sampledNote = 'From the activity samples (pg_stat_activity once a minute: active and idle-in-transaction sessions and every blocker a Lock '
   + 'waiter names). A chain shorter than a minute can fall between two captures, so every count is a floor. A head blocks others and is not '
@@ -37,6 +66,8 @@ const stepWord = (meta: Row | undefined) => {
 };
 const secs = (v: unknown) => v == null ? '' : fmtSecs(v);
 const stateCell = (v: unknown) => String(v ?? '').startsWith('idle in transaction') ? badge(String(v), 'warn') : String(v ?? '');
+// stateCls: a state other than idle in transaction is OK (the column's check judged it); none stays plain
+const stateCls = (v: unknown) => v == null || v === '' || String(v).startsWith('idle in transaction') ? '' : 'status ok';
 
 export async function pgBlockingHistory(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', { class: 'blocking-history' }, el('h3', {}, `Blocking history (${rangeLabel(ctx)}) `, whatIsThis(sampledNote, 'Blocking history')));
@@ -67,7 +98,7 @@ export async function pgBlockingHistory(ctx: Ctx): Promise<HTMLElement> {
       { key: 'first_at', label: 'first seen', fmt: fmtTime },
       { key: 'head_pid', label: 'root pid', num: true, fmt: v => String(v) },
       { key: 'head_datname', label: 'database' }, { key: 'head_usename', label: 'user' }, { key: 'head_application', label: 'application' },
-      { key: 'last_state', label: 'root state', fmt: stateCell },
+      { key: 'last_state', label: 'root state', fmt: stateCell, cls: stateCls },
       { key: 'idle_in_txn_samples', label: 'idle in transaction', num: true, fmt: (v, r) => Number(v) ? `${fmtNum(v)} of ${fmtNum(r.samples)}` : 'no' },
       { key: 'xact_secs', label: 'transaction age', num: true, fmt: secs },
       { key: 'victims', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '' },
@@ -108,7 +139,7 @@ function xminSection(d: Record<PgParts, Table | null>): HTMLElement {
     { key: 'pinned_samples', label: 'held the oldest xmin', num: true, fmt: v => `${fmtNum(v)} of ${fmtNum(withX)}` },
     { key: 'peak_xmin_age', label: 'peak xmin age', num: true },
     { key: 'peak_at', label: 'at', fmt: fmtTime },
-    { key: 'state_at_peak', label: 'state then', fmt: stateCell },
+    { key: 'state_at_peak', label: 'state then', fmt: stateCell, cls: stateCls },
     { key: 'xact_secs_at_peak', label: 'transaction age then', num: true, fmt: secs },
     { key: 'usename', label: 'user' }, { key: 'datname', label: 'database' }, { key: 'application_name', label: 'application' },
     { key: 'backend_type', label: 'backend' }, { key: 'samples', label: 'captures with an xmin', num: true },
@@ -124,9 +155,11 @@ export async function mssqlBlockingTrend(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', { class: 'blocking-history' }, el('h3', {}, `Blocking over the range (${rangeLabel(ctx)})`));
   try {
     const q = { instance: ctx.instance, ...window_(ctx) };
-    const [d, p] = await Promise.all([
+    const [d, p, bl, bp] = await Promise.all([
       get<Record<MsParts, Table | null>>('blocking/history', { ...q, part: 'trend' }),
       get<Record<MsParts, Table | null>>('blocking/history', { ...q, part: 'pairs' }),
+      get<Record<MsParts, Table | null>>('blocking/history', { ...q, part: 'by_login' }),
+      get<Record<MsParts, Table | null>>('blocking/history', { ...q, part: 'by_program' }),
     ]);
     const trend: Row[] = rowsOf(d.trend).map(r => ({
       ...r,
@@ -153,6 +186,11 @@ export async function mssqlBlockingTrend(ctx: Ctx): Promise<HTMLElement> {
       lineChart(`Longest and summed wait behind blockers (per ${per})`, trend,
         [{ key: 'longest_wait_s', label: 'longest wait' }, { key: 'summed_wait_s', label: 'summed wait (one snapshot)' }], v => fmtSecs(Math.floor(v))),
       lineChart(`Blocked-process reports (per ${per})`, trend, [{ key: 'reports', label: 'reports' }, { key: 'blocked_transactions', label: 'blocked transactions' }])));
+    // who led the chains (SQLMonitor's blocked sessions per lead-blocker login and program): the 8 with the most by name
+    const byL = stackBy(rowsOf(bl.by_login)), byP = stackBy(rowsOf(bp.by_program));
+    if (byL.rows.length) sec.append(el('div', { class: 'charts' },
+      lineChart(`Blocked sessions by lead-blocker login (the most in one snapshot, per ${per})`, byL.rows, byL.series, v => fmtNum(v), { stacked: true }),
+      lineChart(`Blocked sessions by lead-blocker program (the most in one snapshot, per ${per})`, byP.rows, byP.series, v => fmtNum(v), { stacked: true })));
     const pairs = rowsOf(p.pairs);
     // the note is the title of a 'what is this' link, as the page's other notes (mssql_running.ts): a page is its grids
     sec.append(el('h4', {}, 'Who blocked whom (the minute snapshots) ', whatIsThis('One row per blocked session and the session that blocked it, from the Running queries snapshots of the range: '
@@ -163,10 +201,10 @@ export async function mssqlBlockingTrend(ctx: Ctx): Promise<HTMLElement> {
         { key: 'head_session_id', label: 'head of its chain', num: true, fmt: v => v == null ? '' : String(v) },
         { key: 'snapshots', label: 'snapshots', num: true },
         { key: 'longest_wait_ms', label: 'longest wait', num: true, fmt: v => v == null ? '' : fmtSecs(Math.floor(Number(v) / 1000)) },
-        { key: 'wait_types', label: 'wait types' }, { key: 'wait_resources', label: 'resources', wide: true },
+        { key: 'wait_types', label: 'wait types', fmt: v => waitList(v) }, { key: 'wait_resources', label: 'resources', wide: true },
         { key: 'database_name', label: 'database' }, { key: 'blocked_login', label: 'blocked login' }, { key: 'blocked_program', label: 'blocked program' },
         { key: 'blocking_login', label: 'blocking login' }, { key: 'blocking_program', label: 'blocking program' },
-        { key: 'blocking_status', label: 'blocking status', fmt: v => v === 'sleeping' ? badge('sleeping', 'warn') : String(v ?? '') },
+        { key: 'blocking_status', label: 'blocking status', fmt: v => v === 'sleeping' ? badge('sleeping', 'warn') : String(v ?? ''), cls: v => v == null || v === '' || v === 'sleeping' ? '' : 'status ok' },
         { key: 'first_at', label: 'first seen', fmt: fmtTime },
         // the SQL Server tab reads at= from the address itself (href writes it for the PostgreSQL tab only; running_fleet.ts)
         { key: 'last_at', label: 'last seen', fmt: (v) => el('a', { href: `${href(ctx, { tab: 'mssql_running' })}&at=${encodeURIComponent(String(v))}`, title: 'The Running queries snapshot where this pair was last seen' }, fmtTime(v)) },

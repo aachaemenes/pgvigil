@@ -57,3 +57,23 @@ A statement cell is a button: a click, or Enter, opens the whole text in a dialo
 - `GET /api/running/fleet`: the fleet page's rows (`rows`).
 - `GET /api/running/snapshots?instance=<id>[&at=<RFC 3339>]`: the snapshot shown (the newest at or before `at`), the one before, the one after and the newest (`steps`).
 - `GET /api/activity?instance=<id>[&at=]` and `GET /api/mssql/running?instance=<id>&from=&to=[&at=]`: one snapshot in full.
+
+## pgvigil's own sessions (hidden by default)
+
+The Running queries and Waiting tasks reads leave out pgvigil's own sessions unless you ask for them (own=1; the page's
+'Show pgvigil's own sessions' switch), and say how many they left out. The collector decides 'own' on the server itself:
+a backend whose application_name starts with `pgvigil` AND whose session user is the collector's login;
+the actions door's sessions (`pgvigil-actions*`) are never own. A session that blocks or is blocked, runs a request or a
+transaction over 60 seconds, sits idle in a transaction over 60 seconds, is
+shown even when it is pgvigil's own. A backend another tool opens under the collector's login with an application_name starting
+with `pgvigil` is pgvigil's by this rule and is hidden by default too.
+
+On the page: the switch reads `Show pgvigil's own sessions (n hidden)`, n being what this read left out (with a wait
+filter: `(n hidden in this snapshot)`, the whole snapshot's count), and rides the page's address (`own=1`), so a link,
+Earlier / Later / Latest and a reload keep it, and it stays on between Running queries and Waiting tasks of one
+instance; ticking it keeps the snapshot on screen. A row of pgvigil's own that is shown carries the word `pgvigil`
+beside its id, its title saying why it is shown (an alert's page marks them too). The session counts above the grids
+are the whole server's: a line beside the switch says how many of those sessions are pgvigil's own ('n of the sessions
+above are pgvigil's own'; Waiting tasks: 'n of the waiting tasks above'), and Waiting tasks' Longest wait follows the
+switch. A read stored before pgvigil began to mark its own sessions (migration 0265) says so under the switch: nothing
+in it is hidden. An alert's page always shows pgvigil's own sessions: a blocking head is never hidden from an alert.

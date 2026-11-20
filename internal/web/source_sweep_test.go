@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestSweepStart (task 205's review, part b, finding 1): a host with no configured region sweeps from the first kept
+// TestSweepStart: a host with no configured region sweeps from the first kept
 // region that is not silent (STS is asked there too), else the first kept.
 func TestSweepStart(t *testing.T) {
 	for _, c := range []struct {
@@ -29,7 +29,7 @@ func TestSweepStart(t *testing.T) {
 	}
 }
 
-// TestSourceSweepNotesOnAStore (task 205's review, part b): on a migrated repository (PGVIGIL_REPO_TEST_DSN, its
+// TestSourceSweepNotesOnAStore: on a migrated repository (PGVIGIL_REPO_TEST_DSN, its
 // owner; skipped without it) -
 // (1) a weekly sweep tried, whatever its outcome, is not tried again by the loop for 7 days (sweep_tried_at);
 // (2) a region is silent (left out of the hourly read) only while its 'not reachable' note is under 7 days old;

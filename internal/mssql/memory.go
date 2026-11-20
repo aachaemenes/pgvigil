@@ -113,7 +113,9 @@ const memoryNumaSQL = `SELECT 'numa' AS kind,
   (SELECT CAST(COUNT(*) AS int) FROM sys.dm_os_nodes WHERE node_id > 0 AND node_state_desc NOT LIKE N'%DAC') AS other_nodes`
 
 // memoryRmonSQL: PerformanceMonitor 3.12.0 MemoryPressureEventsCollector's read (the time in UTC from ms_ticks, to
-// the millisecond) with the record's id and sp_PressureDetector's available physical and virtual memory.
+// the millisecond) with the record's id, its memory node (3.13.0's NodeId: each node writes its own record of one
+// event; 0156 stores one copy), the ring time (sys.dm_os_ring_buffers.timestamp: a record's identity across reads and
+// nodes, as PerformanceMonitor keys it) and sp_PressureDetector's available physical and virtual memory.
 const memoryRmonSQL = `DECLARE @ms_ticks bigint, @now datetime2(7) = SYSUTCDATETIME(), @start datetime;
 SELECT @ms_ticks = ms_ticks, @start = sqlserver_start_time FROM sys.dm_os_sys_info;
 SELECT 'rmon' AS kind, CAST(t.record.value('(/Record/@id)[1]', 'bigint') AS bigint) AS record_id,
@@ -122,6 +124,8 @@ SELECT 'rmon' AS kind, CAST(t.record.value('(/Record/@id)[1]', 'bigint') AS bigi
   CAST(t.record.value('(/Record/ResourceMonitor/Notification)[1]', 'nvarchar(100)') AS nvarchar(100)) AS notification,
   t.record.value('(/Record/ResourceMonitor/IndicatorsProcess)[1]', 'int') AS ind_process,
   t.record.value('(/Record/ResourceMonitor/IndicatorsSystem)[1]', 'int') AS ind_system,
+  t.record.value('(/Record/ResourceMonitor/NodeId)[1]', 'int') AS memory_node_id,
+  t.timestamp AS ring_ms,
   t.record.value('(/Record/MemoryRecord/AvailablePhysicalMemory)[1]', 'bigint') AS avail_phys_kb,
   t.record.value('(/Record/MemoryRecord/AvailableVirtualAddressSpace)[1]', 'bigint') AS avail_vas_kb
 FROM (SELECT dorb.timestamp, CONVERT(xml, dorb.record) AS record FROM sys.dm_os_ring_buffers AS dorb

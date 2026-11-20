@@ -12,7 +12,9 @@
 #   PGVIGIL_COMMUNITY_DIR   a folder with the community scripts to install on the SQL Server: frk-install-all.sql
 #                           (the First Responder Kit's Install-All-Scripts.sql), darlingdata.sql (DarlingData's
 #                           Install-All/DarlingData.sql) and sp_WhoIsActive.sql. This script fetches nothing. A file
-#                           missing: its tools' runs are NOT PROVEN, said so.
+#                           missing: its tools' runs are NOT PROVEN, said so; part N's SQL Server rows that read the
+#                           tools and U2 / U3's live SQL Server rows need all three (each tool not installed has a hard
+#                           need there), U's sp_WhoIsActive form needs sp_WhoIsActive.sql.
 #   PGVIGIL_BIN             a binary with the wiring (the routes /api/customreports and /api/community); default: built
 #                           here. The web bundle must carry the pages (internal/web/dist/app.js names 'Custom reports'):
 #                           the page part U fails without.
@@ -62,23 +64,23 @@
 #  P. PostgreSQL instances: report 'pgcr t' (postgres: count(*) AS n FROM t WHERE n >= @min_n) on pgcr-a with min_n 2:
 #     done, n = 1 (t holds 1 and 2); on pgcr-su: refused, 'superuser'; on the tag env:pgcr: two runs, done and refused,
 #     two log rows. 'insert into t values (9)' on pgcr-a: failed, 'read-only transaction', t still 2 rows. A function
-#     report public.pgcr_fn with k = 7: one row k 7, sq 49. [review 1 fold] min_n 'abc': 400, nothing sent, one log row
+#     report public.pgcr_fn with k = 7: one row k 7, sq 49. min_n 'abc': 400, nothing sent, one log row
 #     run / refused naming the parameter.
 #  F. folders: folder_add Ops; a report saved into Ops/Daily: the folders read lists Ops and Ops/Daily; move to Ops: its
 #     folder Ops; folder_rename Ops -> Team/Ops: the report in Team/Ops and the folders Team, Team/Ops, Team/Ops/Daily;
 #     folder_delete Team: refused (it holds a report) with one 'refused' log row; the report moved to the top,
 #     folder_delete Team: done, no folder under Team left. Folders a_b, axb and axb/x: renaming a_b to c_d leaves axb and
-#     axb/x as they are (the folders read: axb, axb/x, c_d). [review 1 fold] Up/B/B/x renamed up: Up/B -> Up leaves Up,
+#     axb/x as they are (the folders read: axb, axb/x, c_d). Up/B/B/x renamed up: Up/B -> Up leaves Up,
 #     Up/B, Up/B/x.
-#  M. SQL Server 2022 (community): the instance's tools: 14 (13 procedures and Glenn Berry's), every procedure installed
-#     in master, enabled; in tempdb: every procedure not installed, each with its URL. sp_WhoIsActive's form: @filter in
+#  M. SQL Server 2022 (community): the instance's tools: 14 (13 procedures and Glenn Berry's), the given kits' procedures
+#     installed in master (all 13 with the three scripts, none with no kit), enabled; in tempdb: every procedure not installed, each with its URL. sp_WhoIsActive's form: @filter in
 #     the parameters with a help text, @destination_table, @return_schema, @schema and @help left out. Runs, each one log
 #     row: sp_WhoIsActive (show_own_spid 1): done, one set, at least 1 row; sp_Blitz: done, at least 1 set with rows;
 #     sp_BlitzFirst (Seconds 1): done, at least 1 set; sp_PressureDetector: done, at least 1 set; sp_BlitzIndex
 #     (DatabaseName pgcr_seed): done, at least 1 set. Recorded, not graded (their outcome depends on the server's
 #     contents and the reader's rights): sp_BlitzCache, sp_BlitzWho, sp_BlitzLock, sp_QuickieStore, sp_HealthParser,
 #     sp_HumanEventsBlockViewer, sp_LogHunter, sp_IndexCleanup - each answers 200 with an outcome and a log row.
-#     sp_BlitzFirst with OutputDatabaseName: 400, nothing run, one log row community_run / refused [review 1 fold];
+#     sp_BlitzFirst with OutputDatabaseName: 400, nothing run, one log row community_run / refused;
 #     sp_BlitzFirst's form leaves out @OutputDatabaseName and @LogMessage, sp_BlitzCache's @AI and @AIURL. sp_Blitz
 #     looked for in tempdb: params 404 and the run
 #     refused, both naming the First Responder Kit's URL. On pgcr-msa (sa): the tools page disabled with 'sysadmin',
@@ -149,13 +151,13 @@
 #     a login there: a plain serve has no demo instance) refused in its run row ('instance <name> has no read login
 #     in this server's configuration file', nothing sent), a procedure's run and Glenn Berry's script's (one query's text) alike;
 #     on the demo serve 403 ('Running a tool needs a signed-in user ...').
-#     [the fold of review 20261112-222929] a real PostgreSQL instance tagged demo on the plain -no-login serve: its
+#     a real PostgreSQL instance tagged demo on the plain -no-login serve: its
 #     ordinary line, no demo words, GET /api/community/sample 404 (only an instance this pgvigil demo seeded is a demo
 #     instance); the panels' instances are the first demo SQL Server and PostgreSQL instance
 #     on another platform than the test server's (azuresqlmi, aurora): each line ends 'not <instance>, <its platform's
 #     words>, where the same run returns other rows.' and the mark '(<words>)'; the picker's are on the test server's
 #     platform (sqlserver, onprem): 'not <instance>.' with no clause; every line and mark says 'captured <day> UTC';
-#     the sample grid's menu 'Copy the rows as Markdown' and 'as HTML with the colours' hand the clipboard the mark
+#     the sample grid's menu 'Copy > As Markdown > Standard' and 'Copy > Grid' (HTML in the colours beside the words) hand the clipboard the mark
 #     first (the tools' grid's copy carries none); the exported sample CSV opened by the bar's Tools > Open Grid or
 #     Data Set reads as the sample's own columns and rows, its note starting with the mark.
 #     [the panel in view, 1500 x 1100] every tool's panel, after its click, after 'Open sample' from the top of the page
@@ -174,6 +176,35 @@
 #     to ...'; pgcr-np: Top statements off 'created in postgres but not loaded' beside 'not created in the database
 #     pgcr_nx', each its description. The paused instance is the check that times out (it accepts the connection and
 #     never answers, as a hanging listener does).
+#  V. the community tools' versions (DBA Dash's Check Versions; nothing deployed, nothing run): with the three scripts of
+#     PGVIGIL_COMMUNITY_DIR installed in master, GET /api/community (fresh) gives each procedure its version read from
+#     its own text, the tested one and a word: the First Responder Kit's six 8.34, Darling Data's release of 2026-11-01
+#     with each procedure's own (sp_PressureDetector and sp_QuickieStore 6.11, sp_HumanEventsBlockViewer 5.11,
+#     sp_HealthParser and sp_LogHunter 3.11, sp_IndexCleanup 2.11), sp_WhoIsActive 2200.20260409, every one 'the tested
+#     version', no mixed-versions note; the reply's install_script says nothing to install. A database
+#     pgcr_v of stubs (sp_BlitzCache at 8.30, sp_Blitz at 8.40, sp_PressureDetector without a version line; each would
+#     raise an error if run): 'older than tested', 'newer than tested (not tested by pgvigil)', 'version not read', the
+#     rest 'not installed'; version_notes says the Kit's procedures are at mixed versions; install_script holds
+#     Install-DbaFirstResponderKit, Install-DbaDarlingData and Install-DbaWhoIsActive, each with -Database pgcr_v, and
+#     the comment naming -LocalFile and the tested releases; no stub ran (sys.dm_exec_procedure_stats holds none of
+#     pgcr_v). RED (ebf9a9c): no version on any tool, no install_script.
+#  UV. the versions on the page (headless Chromium, signed in, light; after U, before U2): pgcr-msr's Community tools page
+#     draws 'Installed community tools' under the tools, its columns procedure | kit | database | installed here (its
+#     text, read now) | its date | tested by pgvigil | status, one row per procedure GET /api/community gives a version word, each row's cells equal to
+#     that reply's (the same database, the page's own check), the status cell the word itself in its badge (ok for the
+#     tested version, warn for older and unread); master: 13 rows, every one 'the tested version', no mixed-versions note;
+#     'Print the install script' opens on its summary's click to the reply's install_script exactly ('nothing to install'),
+#     the click sending no request, its Copy button's status line 'Copied' or 'Not copied: select the text below ...';
+#     pgcr_v (the stubs of V again) typed and Look again: its four
+#     words on their rows (warn on the older and the unread), the note 'First Responder Kit: mixed versions' above the grid
+#     with its badge, the printed script's three installs for pgcr_v; nothing run (no custom_report_log row; no stub in
+#     sys.dm_exec_procedure_stats). U's axe rows on the SQL Server community page read the grid too (0 expected).
+#     RED (ebf9a9c): not reached (V reds first); on its own no 'Installed community tools' heading.
+#  DV. the demo's versions (the demo serve, no login, as the 8080 demo): on the first demo SQL Server instance off and on
+#     the test server's platform, the page's grid of 13 rows, every one 'the tested version' at the tested version and date
+#     of its kit (8.34 2026-07-02; Darling Data each procedure's own of 2026-11-01; 2200.20260409 2026-04-09), the database cell empty (no server stands
+#     behind it), no note, the script 'nothing to install' equal to the demo serve's own reply; no custom_report_log row.
+#     RED (ebf9a9c): not reached; on its own no 'Installed community tools' heading on a demo instance.
 #  A. the audit: the log's run rows (run, community_run, community_help) = the runs this proof made.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -378,6 +409,8 @@ post() { code -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d
 post3() { code -b "$JAR3" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "$2" "$U3/api/$1"; }
 getc() { code -b "$JAR" "$U/api/$1"; }
 js() { python3 -c "import json,sys; d=json.load(open('$WORK/body')); print($1)"; }
+# tl: like js, with t = the community reply's tools by id (V, UV, DV and the rows after them)
+tl() { python3 -c "import json; d=json.load(open('$WORK/body')); t={x['id']: x for x in d['tools']}; print($1)"; }
 logn() { q "select count(*) from pgvigil.custom_report_log"; }
 runlog() { q "select count(*) from pgvigil.custom_report_log where op in ('run', 'community_run', 'community_help')"; }
 [[ $(getc customreports) == 200 ]] || fail "GET /api/customreports: $(cat "$WORK/body") (the serve must carry the wiring)"
@@ -539,8 +572,47 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   if [[ ${#INSTALLED[@]} == 3 ]]; then
     [[ $(js "sum(1 for t in d['tools'] if t['kind']=='proc' and t['installed'])") == 13 ]] || fail "M: not every procedure installed: $(js "[t['name'] for t in d['tools'] if t['kind']=='proc' and not t['installed']]")"
   fi
+  # the procedures installed in master are exactly the given kits' own (a fresh container: none with no kit), and the
+  # line says how many, never 'installed' where none are
+  kg=""; for f in "${INSTALLED[@]}"; do case $f in frk-install-all.sql) kg+="First Responder Kit|" ;; darlingdata.sql) kg+="Darling Data|" ;; sp_WhoIsActive.sql) kg+="sp_WhoIsActive|" ;; esac; done
+  [[ $(js "sum(1 for t in d['tools'] if t['kind']=='proc' and t['installed'] is None)") == 0 ]] || fail "M: master's procedures not read (installed null): $(js "[t['name'] for t in d['tools'] if t['kind']=='proc' and t['installed'] is None]")"
+  mins=$(js "sorted(t['name'] for t in d['tools'] if t['kind']=='proc' and t['installed'])")
+  mwant=$(js "sorted(t['name'] for t in d['tools'] if t['kind']=='proc' and t['group'] in '$kg'.split('|')[:-1])")
+  [[ $mins == "$mwant" ]] || fail "M: the procedures installed in master are not the given kits' own: installed $mins, the kits' $mwant"
+  mn=$(js "sum(1 for t in d['tools'] if t['kind']=='proc' and t['installed'])")
+  if [[ ${#INSTALLED[@]} == 0 ]]; then mw="$mn of 13 procedures installed in master (no community kit given)"
+  else kl=$(printf '%s, ' "${INSTALLED[@]}"); mw="$mn of 13 procedures installed in master, exactly the given kits' (${kl%, })"; fi
   [[ $(getc "community?instance=$MRID&database=tempdb") == 200 && $(js "sum(1 for t in d['tools'] if t['kind']=='proc' and t['installed'] is False and t['url'])") == 13 ]] || fail "M: tempdb: $(cat "$WORK/body")"
-  ok "M: 14 tools on $MSR, the procedures installed in master; none in tempdb, each with its URL"
+  ok "M: 14 tools on $MSR, $mw; none in tempdb, each with its URL"
+  # ---- V: each procedure's version against the tested one, read from its own text; the install script printed
+  if [[ ${#INSTALLED[@]} == 3 ]]; then
+    [[ $(getc "community?instance=$MRID&fresh=1") == 200 ]] || fail "V: GET community: $(cat "$WORK/body")"
+    V1=$(tl "'|'.join(sorted('%s=%s/%s' % (x['name'], x.get('version'), x.get('version_word')) for x in d['tools'] if x['kind'] == 'proc'))")
+    [[ $V1 == "sp_Blitz=8.34/the tested version|sp_BlitzCache=8.34/the tested version|sp_BlitzFirst=8.34/the tested version|sp_BlitzIndex=8.34/the tested version|sp_BlitzLock=8.34/the tested version|sp_BlitzWho=8.34/the tested version|sp_HealthParser=3.11/the tested version|sp_HumanEventsBlockViewer=5.11/the tested version|sp_IndexCleanup=2.11/the tested version|sp_LogHunter=3.11/the tested version|sp_PressureDetector=6.11/the tested version|sp_QuickieStore=6.11/the tested version|sp_WhoIsActive=2200.20260409/the tested version" ]] || fail "V: master's versions: $V1"
+    [[ $(js "len(d.get('version_notes') or [])") == 0 ]] || fail "V: master's notes (one release per kit): $(js "d.get('version_notes')")"
+    [[ $(js "str(d.get('install_script', '')).count('Install-Dba')") == 0 && $(js "'nothing to install' in str(d.get('install_script', ''))") == True ]] || fail "V: master's script: $(js "d.get('install_script')")"
+    ok "V: every procedure in master at its own version of the tested release (the Kit 8.34; Darling Data 6.11 / 5.11 / 3.11 / 2.11 of 2026-11-01; 2200.20260409), no mixed-versions note; the script says nothing to install"
+    # the stubs (each would raise if run), made again for the page's rows (UV)
+    vstubs() {
+      sq "CREATE DATABASE pgcr_v" >/dev/null
+      sq "EXEC('CREATE PROCEDURE dbo.sp_BlitzCache AS BEGIN DECLARE @Version varchar(30), @VersionDate datetime; SELECT @Version = ''8.30'', @VersionDate = ''20250101''; RAISERROR(''a stub: never run'', 16, 1); END');
+          EXEC('CREATE PROCEDURE dbo.sp_Blitz AS BEGIN DECLARE @Version varchar(30), @VersionDate datetime; SELECT @Version = ''8.40'', @VersionDate = ''20270101''; RAISERROR(''a stub: never run'', 16, 1); END');
+          EXEC('CREATE PROCEDURE dbo.sp_PressureDetector AS BEGIN RAISERROR(''a stub: never run'', 16, 1); END');" pgcr_v >/dev/null
+    }
+    vstubs
+    [[ $(getc "community?instance=$MRID&database=pgcr_v&fresh=1") == 200 ]] || fail "V: GET community pgcr_v: $(cat "$WORK/body")"
+    V2=$(tl "'|'.join('%s=%s/%s' % (k, t[k].get('version'), t[k].get('version_word')) for k in ('sp_BlitzCache', 'sp_Blitz', 'sp_PressureDetector', 'sp_WhoIsActive'))")
+    [[ $V2 == "sp_BlitzCache=8.30/older than tested|sp_Blitz=8.40/newer than tested (not tested by pgvigil)|sp_PressureDetector=None/version not read|sp_WhoIsActive=None/not installed" ]] || fail "V: pgcr_v's words: $V2"
+    [[ $(js "any('First Responder Kit' in n and 'mixed versions' in n for n in d.get('version_notes') or [])") == True ]] || fail "V: no mixed-versions note: $(js "d.get('version_notes')")"
+    VS=$(js "d.get('install_script') or ''")
+    for c in Install-DbaFirstResponderKit Install-DbaDarlingData Install-DbaWhoIsActive; do
+      grep -qE "^$c .*-Database 'pgcr_v'" <<< "$VS" || fail "V: the script lacks $c for pgcr_v: $VS"
+    done
+    grep -q -- "-LocalFile" <<< "$VS" && grep -q "8\.34" <<< "$VS" && grep -q "release of 2026-11-01" <<< "$VS" || fail "V: the script's comment on -LocalFile and the tested releases: $VS"
+    [[ $(sq "SELECT COUNT(*) FROM sys.dm_exec_procedure_stats WHERE database_id = DB_ID('pgcr_v')") == 0 ]] || fail "V: a stub ran"
+    sq "DROP DATABASE pgcr_v" >/dev/null
+    ok "V: pgcr_v older / newer / version not read / not installed, the Kit's mixed versions said, the script's three installs for pgcr_v with -LocalFile named; no stub ran"
+  else NOTPROVEN+=("V: the versions need all three community scripts (PGVIGIL_COMMUNITY_DIR)"); fi
   have() { for f in "${INSTALLED[@]}"; do [[ $f == "$1" ]] && return 0; done; return 1; }
   if have sp_WhoIsActive.sql; then
     tick; [[ $(post community/params "{\"instance_id\":$MRID,\"tool\":\"sp_WhoIsActive\"}") == 200 ]] || fail "M: the form: $(cat "$WORK/body")"
@@ -617,9 +689,15 @@ fi
 ok "Q: 10 reads; running, settings, table sizes (t); the superuser refused"
 
 # ---- N: before the click (task B3 DONE-1) ----------------------------------------------------------------------------------
-tl() { python3 -c "import json; d=json.load(open('$WORK/body')); t={x['id']: x for x in d['tools']}; print($1)"; }
 fresh() { getc "community?instance=$1&fresh=1${2:+&database=$2}"; }   # past the 60 s keep: the checks run again
-if [[ -z "$SKIP_MSSQL" ]]; then
+# N's SQL Server rows that read the tools want all three kits in master (a tool not installed has a hard need, so a kit
+# missing turns them red by the kit, not by the code): a kit missing = NOT PROVEN, said with the kits it lacks
+N_MSSQL=""
+if [[ -z "$SKIP_MSSQL" && ${#INSTALLED[@]} != 3 ]]; then
+  nmiss=""; for f in frk-install-all.sql darlingdata.sql sp_WhoIsActive.sql; do [[ " ${INSTALLED[*]} " == *" $f "* ]] || nmiss+="${nmiss:+, }$f"; done
+  NOTPROVEN+=("N (the three community kits not installed: $nmiss): its SQL Server rows that read the tools (needs, declines, sibling pairs, the grant, the narrow login)")
+elif [[ -z "$SKIP_MSSQL" ]]; then
+  N_MSSQL=1
   [[ $(fresh "$MRID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "d['enabled']") == True && $(tl "d['checked_at'] is not None") == True ]] || fail "N: $MSR's instance needs: $(head -c 600 "$WORK/body")"
   [[ $(tl "[(n['hard'], n['state']) for n in t['sp_LogHunter']['needs']]") == "[(True, 'needs')]" && $(tl "t['sp_LogHunter']['state']") == needs && $(tl "t['sp_LogHunter']['on']") == False \
      && $(tl "t['sp_LogHunter']['needs'][0]['what']") == *xp_readerrorlog* && $(tl "t['sp_LogHunter']['needs'][0]['how']") == "USE [master]; GRANT EXECUTE ON sys.xp_readerrorlog TO [pgcr_reader];" ]] \
@@ -676,7 +754,7 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   echo "rec  N: sp_BlitzCache run anyway with master at 120: $bcr"
   [[ $(fresh "$MRID") == 200 && $(tl "t['sp_BlitzCache']['on']") == True ]] || fail "N: sp_BlitzCache with master back at $cl: $(tl "t['sp_BlitzCache']")"
   ok "N: master at compatibility level 120: sp_BlitzCache off before the click with the level named; master back at $cl, on again"
-  # the sibling pairs (the lead 15:50): EXECUTE revoked on the sibling, the tool run with the form's defaults; the code's
+  # the sibling pairs: EXECUTE revoked on the sibling, the tool run with the form's defaults; the code's
   # list says hard (a default run fails) or a note (it ends done) - a pair the run contradicts fails here
   hard=(); disagree=()
   # the pairs are the code's own list (toolSiblings in q_community.go): a pair added there and not here fails
@@ -734,6 +812,9 @@ if [[ -z "$SKIP_MSSQL" ]]; then
      && $(tl "t['sp_Blitz']['needs'][0]['how']") == "USE [master]; GRANT EXECUTE ON dbo.[sp_Blitz] TO [pgcr_narrow];" \
      && $(tl "any('a user database the read login can reach' in n['what'] for n in t['sp_IndexCleanup']['needs'])") == True ]] || fail "N: the narrow login: $(tl "[(x['id'], x['state'], [n['what'][:60] for n in x['needs']]) for x in d['tools']]")"
   ok "N: $MSN (narrow login): 13 procedures off, each with its GRANT line; sp_IndexCleanup without a reachable database; Glenn's on"
+fi
+# the rows below need no kit (the instance's own reason, the -no-login serve, the pause): they run on every SQL Server run
+if [[ -z "$SKIP_MSSQL" ]]; then
   [[ $(fresh "$MAID") == 200 && $(tl "d['enabled']") == False && $(tl "[n['hard'] for n in d['needs']]") == "[True]" && $(tl "d['needs'][0]['what']") == *sysadmin* \
      && $(tl "d['needs'][0]['how']") == *"not a sysadmin"* && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 ]] || fail "N: the sa instance: $(tl "d['needs']")"
   [[ $(code "$U2/api/community?instance=$MRID") == 200 && $(tl "d['needs'][0]['what']") == "Running a tool needs a signed-in user: this server runs without the UI login (pgvigil serve -no-login, or pgvigil demo -serve)." \
@@ -753,9 +834,11 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   [[ $c == 200 && $ms -le 6000 && $(tl "sorted(set(x['state'] for x in d['tools']))") == "['not_checked']" && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 \
      && $(tl "len(d['tools'])") == 14 && $(tl "d['needs'][0]['what']") == "not checked: the checks of $MSR took over 5 s"* ]] || fail "N: the paused instance ($ms ms): $(tl "[(x['id'], x['state']) for x in d['tools']][:4]"), $(tl "d['needs']")"
   ok "N: $MSR paused: answered in $ms ms, 14 of 14 tools 'not checked' ($(tl "d['needs'][0]['what'][:90]")), none on"
-  for _ in $(seq 1 25); do [[ $(fresh "$MRID") == 200 && $(tl "t['sp_WhoIsActive']['state']") == ready ]] && break; sleep 2; done
-  [[ $(tl "t['sp_WhoIsActive']['state']") == ready ]] || fail "N: $MSR unpaused is not ready again: $(tl "t['sp_WhoIsActive']")"
-  ok "N: unpaused: sp_WhoIsActive ready again"
+  # checked again after the pause: ready with sp_WhoIsActive.sql installed, its 'not installed' need (needs) without it
+  wst=ready; [[ " ${INSTALLED[*]} " == *" sp_WhoIsActive.sql "* ]] || wst=needs
+  for _ in $(seq 1 25); do [[ $(fresh "$MRID") == 200 && $(tl "t['sp_WhoIsActive']['state']") == "$wst" ]] && break; sleep 2; done
+  [[ $(tl "t['sp_WhoIsActive']['state']") == "$wst" ]] || fail "N: $MSR unpaused is not $wst again: $(tl "t['sp_WhoIsActive']")"
+  ok "N: unpaused: sp_WhoIsActive $wst again"
 fi
 t0=$(date +%s%N); c=$(fresh "$DID") || c="curl: $?"; ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 [[ $c == 200 && $ms -le 6000 && $(tl "sorted(set(x['state'] for x in d['tools']))") == "['not_checked']" && $(tl "len(d['tools'])") == 10 \
@@ -834,7 +917,7 @@ JS
   sleep 2; [[ $(logn) == "$L4" ]] || fail "H4: the no-key serve's page ran the store report on open (a log row)"
   ok "H4: the no-key serve's page of a store report: Run off (aria-disabled) with the words in its p.said paragraph (the one report mail carries), and no run on open (no log row)"
   cat > "$WORK/pages.mjs" <<'JS'
-const [port, U, axePath, dl, cookie, srep, msr, pga, msa] = process.argv.slice(2);
+const [port, U, axePath, dl, cookie, srep, msr, pga, msa, wia] = process.argv.slice(2);   // wia '1': sp_WhoIsActive installed
 const fs = await import('node:fs');
 const axeSrc = fs.readFileSync(axePath, 'utf8');
 const ver = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
@@ -887,9 +970,11 @@ for (const theme of ['light', 'dark']) {
   await axe(`${theme} editor`);
   if (msr) {
     await open(`#/community?i=${msr}`, `!!document.querySelector('main h3') && [...document.querySelectorAll('main button.link')].some(b => b.textContent === 'sp_WhoIsActive')`);
-    await ev(`[...document.querySelectorAll('main button.link')].find(b => b.textContent === 'sp_WhoIsActive').click(); 1`);
-    if (!await until(`[...document.querySelectorAll('main button')].some(b => b.textContent === 'Run sp_WhoIsActive')`)) throw new Error('the sp_WhoIsActive form did not open');
-    await axe(`${theme} community sqlserver`);
+    if (wia === '1') {   // not installed, the tool is off (a hard need) and its click opens nothing
+      await ev(`[...document.querySelectorAll('main button.link')].find(b => b.textContent === 'sp_WhoIsActive').click(); 1`);
+      if (!await until(`[...document.querySelectorAll('main button')].some(b => b.textContent === 'Run sp_WhoIsActive')`)) throw new Error('the sp_WhoIsActive form did not open');
+    }
+    await axe(`${theme} community sqlserver${wia === '1' ? '' : ' (sp_WhoIsActive not installed: no form)'}`);
   }
   if (msa && theme === 'light') {
     // B3: before the click - the reader's page has the 'before it runs' column; the sa page says why every tool is off
@@ -908,10 +993,12 @@ console.log(JSON.stringify(out));
 // the two CDP sockets keep node alive after the last line (Node 26's WebSocket): close them and exit, or the proof waits forever
 ws.close(); bws.close(); process.exit(0);
 JS
-  timeout 900 node "$WORK/pages.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$WORK/dl" "$COOKIE" "$SREP" "${MRID:-}" "$AID" "${MAID:-}" > "$WORK/pages.json" 2>"$WORK/pages.err" || fail "U: the page driver: $(tail -5 "$WORK/pages.err")"
-  python3 - "$WORK/pages.json" "$WORK/dl" "$INSTL" "${PGVIGIL_PYLIB:-}" <<'PY' || fail "U: see above"
+  WIA=""; if [[ -z "$SKIP_MSSQL" && " ${INSTALLED[*]} " == *" sp_WhoIsActive.sql "* ]]; then WIA=1; fi
+  if [[ -z "$SKIP_MSSQL" && -z "$WIA" ]]; then NOTPROVEN+=("U: sp_WhoIsActive.sql not installed: its form on pgcr-msr's community page (axe with the form open) and its 'ready' cell"); fi
+  timeout 900 node "$WORK/pages.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$WORK/dl" "$COOKIE" "$SREP" "${MRID:-}" "$AID" "${MAID:-}" "$WIA" > "$WORK/pages.json" 2>"$WORK/pages.err" || fail "U: the page driver: $(tail -5 "$WORK/pages.err")"
+  python3 - "$WORK/pages.json" "$WORK/dl" "$INSTL" "${PGVIGIL_PYLIB:-}" "$WIA" <<'PY' || fail "U: see above"
 import json, sys, zipfile, re, os
-d = json.load(open(sys.argv[1])); dl = sys.argv[2]; long_name = sys.argv[3]; pylib = sys.argv[4]
+d = json.load(open(sys.argv[1])); dl = sys.argv[2]; long_name = sys.argv[3]; pylib = sys.argv[4]; wia = sys.argv[5] == '1'
 bad = [p for p in d['pages'] if p['violations']]
 for p in d['pages']:
     print(('viol ' if p['violations'] else 'ok   ') + 'U: axe ' + p['label'] + ': ' + (json.dumps(p['violations']) if p['violations'] else '0 violations'))
@@ -919,8 +1006,9 @@ m = d.get('msa')
 if m is not None:
     assert m['n'] == 14 and m['off'] == 14 and 'sysadmin' in m['box'] and m['box'].startswith('Before a tool can run on'), f"U: the sa page: {m['off']} of {m['n']} tool buttons off with 'sysadmin' on hover; its box: {m['box'][:200]!r}"
     assert m['deco'] == 'none' and m['color'] != m['accent'], f"U: a disabled tool button is drawn like a link: text-decoration {m['deco']!r}, colour {m['color']} (accent {m['accent']}) - the wiring's app.css line"
-    assert (d.get('msrReady') or '').startswith('ready'), f"U: sp_WhoIsActive's 'before it runs' cell on pgcr-msr: {d.get('msrReady')!r}"
-    print(f"ok   U: [B3] pgcr-msa: 'Before a tool can run' names sysadmin, {m['off']} of {m['n']} tool buttons off with it on hover, drawn off ({m['color']}, no underline); pgcr-msr: sp_WhoIsActive 'ready'")
+    if wia:
+        assert (d.get('msrReady') or '').startswith('ready'), f"U: sp_WhoIsActive's 'before it runs' cell on pgcr-msr: {d.get('msrReady')!r}"
+    print(f"ok   U: [B3] pgcr-msa: 'Before a tool can run' names sysadmin, {m['off']} of {m['n']} tool buttons off with it on hover, drawn off ({m['color']}, no underline); pgcr-msr: sp_WhoIsActive " + ("'ready'" if wia else f"{(d.get('msrReady') or '')[:60]!r} (not installed: not graded)"))
 cells = d['cells'] or []
 assert cells, 'U: no rows read from the report grid'
 for c in cells:
@@ -967,6 +1055,134 @@ except ImportError:
     print('note U: openpyxl is not installed here: the workbook open is not checked by it')
 if bad: sys.exit(1)
 PY
+  # ---- UV / DV: the versions on the page (the community tools' versions; nothing run) - a tab of its own
+  cat > "$WORK/versions.mjs" <<'JS'
+// UV / DV's page rows (headless Chromium over CDP; written by proof-customreports.sh):
+//   <port> <base URL> <cookie or ''> <instance id> [<database>]
+// Opens the instance's Community tools page (with a database: typed, then Look again), reads what it drew under
+// 'Installed community tools' (the notes, the grid, the printed script after its summary's click) and prints one JSON
+// object; the shell grades it.
+const [port, base, cookie, inst, db] = process.argv.slice(2);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const t = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
+const ws = new WebSocket(t.webSocketDebuggerUrl);
+await new Promise((r, j) => { ws.addEventListener('open', r); ws.addEventListener('error', j); });
+let id = 0; const wait = new Map(); const reqs = [];
+ws.addEventListener('message', m => {
+  const d = JSON.parse(m.data);
+  if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); }
+  if (d.method === 'Network.requestWillBeSent') reqs.push(d.params.request.method + ' ' + d.params.request.url);
+});
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr) => {
+  const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
+  if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 400));
+  return d.result?.result?.value;
+};
+const until = async (expr, ms = 30000) => { for (const t0 = Date.now(); Date.now() - t0 < ms; await sleep(200)) if (await ev(expr)) return true; return false; };
+await cmd('Page.enable'); await cmd('Runtime.enable'); await cmd('Network.enable');
+await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
+if (cookie) await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: base });
+const out = { db: db || '', heading: false };
+try {
+  await cmd('Page.navigate', { url: `${base}#/community?i=${inst}` });
+  if (!await until(`!!document.querySelector('main table.grid button.link')`)) throw new Error('the page did not render: ' + await ev(`document.querySelector('main')?.innerText.slice(0, 300)`));
+  if (db) {
+    await ev(`(() => { window.__old = document.querySelector('main table.grid'); const i = [...document.querySelectorAll('main input')].find(x => /^Database the/.test(x.getAttribute('aria-label') || ''));
+      i.value = ${JSON.stringify(db)}; [...document.querySelectorAll('main button')].find(b => b.textContent === 'Look again').click(); return 1; })()`);
+    if (!await until(`!!window.__old && !window.__old.isConnected && !!document.querySelector('main table.grid button.link')`)) throw new Error('Look again did not redraw the page');
+  }
+  await sleep(400);
+  Object.assign(out, await ev(`(() => {
+    const sq = s => (s ?? '').replace(/\\s+/g, ' ').trim();
+    const h = [...document.querySelectorAll('main h3')].find(x => x.textContent === 'Installed community tools');
+    if (!h) return { heading: false };
+    const notes = []; let g = null;
+    for (let e = h.nextElementSibling; e && !g && e.tagName !== 'H3'; e = e.nextElementSibling) {
+      if (e.matches('p.meta')) notes.push({ text: sq(e.textContent), badge: sq(e.querySelector('.badge')?.textContent) });
+      g = e.matches('table.grid') ? e : e.querySelector('table.grid');
+    }
+    if (!g) return { heading: true, notes };
+    const cols = [...g.querySelectorAll('thead tr:first-child th')].map(th => sq((th.querySelector('.th-label') ?? th).textContent));
+    const si = cols.indexOf('status');
+    const rows = [...g.querySelectorAll('tbody tr')].map(tr => { const c = [...tr.children]; const o = {}; cols.forEach((k, i) => { o[k] = sq(c[i]?.textContent); });
+      o._badge = c[si]?.querySelector('.badge')?.className ?? ''; return o; });
+    return { heading: true, notes, cols, rows };
+  })()`));
+  // the printed script: its summary clicked (a details element opens; nothing is asked of the server)
+  const n0 = reqs.length;
+  await ev(`(() => { const s = document.querySelector('main details.install-script > summary'); if (s) s.click(); return 1; })()`);
+  await sleep(500);
+  Object.assign(out, await ev(`(() => { const d = document.querySelector('main details.install-script'); const p = d?.querySelector('pre');
+    return { open: !!d?.open, script: p ? p.textContent : null, shown: !!p && p.getClientRects().length > 0,
+      copy: !!d && [...d.querySelectorAll('button')].some(b => b.textContent === 'Copy') }; })()`));
+  out.sent = reqs.slice(n0).filter(u => /\/api\/community/.test(u));
+  // Copy: the status line beside it says what happened (the clipboard's API, or the textarea fallback, or select it)
+  await ev(`(() => { const b = [...document.querySelectorAll('main details.install-script button')].find(x => x.textContent === 'Copy'); if (b) b.click(); return 1; })()`);
+  await until(`!!document.querySelector('main details.install-script [role=status]')?.textContent`, 5000);
+  out.said = await ev(`document.querySelector('main details.install-script [role=status]')?.textContent ?? null`);
+} catch (e) { out.error = String(e?.message ?? e).slice(0, 400); }
+console.log(JSON.stringify(out));
+await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`).catch(() => {});
+ws.close(); process.exit(0);
+JS
+  # UV's grader: the page's rows against the API's reply for the same instance and database
+  uvgrade() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1])); a = json.load(open(sys.argv[2])); db = sys.argv[3]
+assert not p.get('error'), f"UV {db}: the driver: {p.get('error')}"
+assert p.get('heading'), f"UV {db}: no 'Installed community tools' heading on the page"
+want_cols = ['procedure', 'kit', 'database', 'installed here (its text, read now)', 'its date', 'tested by pgvigil', 'status']
+assert p.get('cols') == want_cols, f"UV {db}: the grid's columns {p.get('cols')}"
+api = {t['name']: t for t in a['tools'] if t['kind'] == 'proc' and t.get('version_word')}
+rows = {r['procedure']: r for r in p.get('rows') or []}
+assert set(rows) == set(api) and len(rows) == len(p['rows']), f"UV {db}: the page's rows {sorted(rows)}, the reply's {sorted(api)}"
+bad = []
+for n, t in api.items():
+    r = rows[n]
+    want = {'kit': t['group'], 'database': t.get('where') or '', 'installed here (its text, read now)': t.get('version') or '', 'its date': t.get('version_date') or '',
+            'tested by pgvigil': t.get('tested') or '', 'status': t['version_word']}
+    got = {k: r[k] for k in want}
+    if got != want: bad.append((n, got, want))
+    kind = 'ok' if t['version_word'] == 'the tested version' else 'warn' if t['version_word'] in ('older than tested', 'version not read') else ''
+    cls = r['_badge'].split()
+    if 'badge' not in cls or (kind and kind not in cls): bad.append((n, 'badge', r['_badge'], kind))
+assert not bad, f"UV {db}: cells unlike the reply's: {bad[:4]}"
+assert p.get('script') == a.get('install_script') and p.get('open') and p.get('shown') and p.get('copy'), \
+    f"UV {db}: the printed script (open {p.get('open')}, shown {p.get('shown')}, Copy {p.get('copy')}): page {str(p.get('script'))[:200]!r}, reply {str(a.get('install_script'))[:200]!r}"
+assert not p.get('sent'), f"UV {db}: opening the script sent {p['sent']}"
+assert p.get('said') in ('Copied', 'Not copied: select the text below and copy it'), f"UV {db}: Copy's status line: {p.get('said')!r}"
+words = {n: r['status'] for n, r in rows.items()}
+notes = p.get('notes') or []
+if db == 'master':
+    assert len(rows) == 13 and set(words.values()) == {'the tested version'} and not notes, f"UV master: {len(rows)} rows, words {sorted(set(words.values()))}, notes {notes}"
+    assert 'nothing to install' in p['script'], f"UV master: the script {p['script'][:200]!r}"
+    print("ok   UV: master on the page: 13 rows equal to the reply, every one 'the tested version' (badge ok), no note; the script printed as the reply's ('nothing to install') with its Copy button, its opening sent nothing")
+else:
+    w4 = {k: words.get(k) for k in ('sp_BlitzCache', 'sp_Blitz', 'sp_PressureDetector', 'sp_WhoIsActive')}
+    assert w4 == {'sp_BlitzCache': 'older than tested', 'sp_Blitz': 'newer than tested (not tested by pgvigil)', 'sp_PressureDetector': 'version not read', 'sp_WhoIsActive': 'not installed'}, f"UV pgcr_v: {w4}"
+    mix = [n for n in notes if 'First Responder Kit: mixed versions' in n['text']]
+    assert mix and mix[0]['badge'] == 'mixed versions', f"UV pgcr_v: the mixed-versions note above the grid: {notes}"
+    for c in ('Install-DbaFirstResponderKit', 'Install-DbaDarlingData', 'Install-DbaWhoIsActive'):
+        assert any(l.startswith(c + ' ') and "-Database 'pgcr_v'" in l for l in p['script'].splitlines()), f"UV pgcr_v: the printed script lacks {c} for pgcr_v"
+    print(f"ok   UV: pgcr_v on the page after Look again: {len(rows)} rows equal to the reply, older / newer / version not read / not installed on their rows, '{mix[0]['text'][:90]}' above the grid, the printed script's three installs for pgcr_v")
+PY
+  }
+  if [[ -z "$SKIP_MSSQL" ]] && [[ ${#INSTALLED[@]} == 3 ]]; then
+    L0=$(logn)
+    timeout 120 node "$WORK/versions.mjs" "$CDP" "$U/" "$COOKIE" "$MRID" "" > "$WORK/uv-master.json" 2>"$WORK/uv.err" || fail "UV: the page driver (master): $(tail -3 "$WORK/uv.err")"
+    [[ $(getc "community?instance=$MRID") == 200 ]] || fail "UV: GET community: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/uv-master-api.json"
+    uvgrade "$WORK/uv-master.json" "$WORK/uv-master-api.json" master || fail "UV: see above"
+    vstubs
+    timeout 120 node "$WORK/versions.mjs" "$CDP" "$U/" "$COOKIE" "$MRID" pgcr_v > "$WORK/uv-v.json" 2>>"$WORK/uv.err" || fail "UV: the page driver (pgcr_v): $(tail -3 "$WORK/uv.err")"
+    [[ $(getc "community?instance=$MRID&database=pgcr_v") == 200 ]] || fail "UV: GET community pgcr_v: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/uv-v-api.json"
+    uvgrade "$WORK/uv-v.json" "$WORK/uv-v-api.json" pgcr_v || fail "UV: see above"
+    [[ $(sq "SELECT COUNT(*) FROM sys.dm_exec_procedure_stats WHERE database_id = DB_ID('pgcr_v')") == 0 ]] || fail "UV: a stub ran"
+    sq "DROP DATABASE pgcr_v" >/dev/null
+    [[ $(logn) == "$L0" ]] || fail "UV: the page's reads wrote custom_report_log row(s)"
+    ok "UV: no stub ran and no custom_report_log row from the page's reads; pgcr_v dropped"
+  else NOTPROVEN+=("UV: the versions on the page need the SQL Server part and all three community scripts (PGVIGIL_COMMUNITY_DIR)"); fi
   # ---- U2 (B3 DONE-1): every tool clicked and run, keyboard and accessibility tree, the off look, the DOM check, the demo
   cat > "$WORK/buttons.mjs" <<'JS'
 // B3 DONE-1's page rows (headless Chromium over CDP; written by proof-customreports.sh part U2 and run twice):
@@ -1039,15 +1255,36 @@ const axOff = async () => {
   }
   return rows;
 };
+const press = async (k, code, vk, mods = 0) => {
+  await cmd('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
+  await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
+};
+const OFFB = 'main table.grid button.link[aria-disabled="true"]';
 const tabWalk = async (max) => {
-  // from the page's own heading (the bar and the tree come first in the document: not this page's controls)
+  // from the page's own heading (the bar and the tree come first in the document: not this page's controls), Tab; a grid
+  // is ONE tab stop, its current cell (the ARIA grid pattern, task GM): in each grid Tab reaches, Ctrl+Home, then each row
+  // holding an off tool: Home, ArrowRight to its column, F2 onto the cell's button (read), Escape back to the cell, Down
   await ev(`(() => { const h = document.querySelector('main h2'); h.setAttribute('tabindex', '-1'); h.focus(); return 1; })()`);
-  const reached = new Set();
+  const reached = new Set(), walked = new Set();
+  const onOff = () => ev(`(() => { const e = document.activeElement; return e?.matches?.(${JSON.stringify(OFFB)}) ? e.textContent.trim() : ''; })()`);
   for (let i = 0; i < max; i++) {
-    await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
-    await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
-    const x = await ev(`(() => { const e = document.activeElement; return e && e.matches && e.matches('main table.grid button.link[aria-disabled="true"]') ? e.textContent.trim() : ''; })()`);
-    if (x) reached.add(x);
+    await press('Tab', 'Tab', 9);
+    const at = await ev(`(() => { const e = document.activeElement; if (e?.matches?.(${JSON.stringify(OFFB)})) return { off: e.textContent.trim() };
+      const t = e?.closest?.('main table.grid'); return t && e.matches('td, th') ? { grid: [...document.querySelectorAll('main table.grid')].indexOf(t) } : {}; })()`);
+    if (at.off) reached.add(at.off);
+    if (at.grid === undefined || walked.has(at.grid)) continue;
+    walked.add(at.grid);
+    const plan = await ev(`[...[...document.querySelectorAll('main table.grid')][${at.grid}].querySelectorAll(':scope > tbody > tr:not(.trend-row)')].map(tr => [...tr.children].findIndex(td => !!td.querySelector(${JSON.stringify(OFFB)})))`);
+    await press('Home', 'Home', 36, 2);   // Ctrl+Home: the first row's first cell
+    for (let r = 0; r < plan.length; r++) {
+      if (r > 0) await press('ArrowDown', 'ArrowDown', 40);
+      if (plan[r] < 0) continue;
+      await press('Home', 'Home', 36);
+      for (let k = 0; k < plan[r]; k++) await press('ArrowRight', 'ArrowRight', 39);
+      await press('F2', 'F2', 113);
+      const x = await onOff(); if (x) reached.add(x);
+      await press('Escape', 'Escape', 27);
+    }
   }
   return [...reached];
 };
@@ -1193,14 +1430,15 @@ if (mode === 'live') {
 } else if (mode === 'state') {
   // U3: each step opens a community page (or the fleet page and its picker), optionally types the database and clicks
   // Look again (until a tool is on, when asked), then reads every tool: on or off, the reason it is described by, the
-  // 'before it runs' cell; and optionally clicks a tool, fills its parameters, runs it and reads what the page drew
+  // 'before it runs' cell (found by its column's heading: the grid's columns are not fixed - KITWATCH's version column
+  // stands before it); and optionally clicks a tool, fills its parameters, runs it and reads what the page drew
   const [U, cookie, specFile, shots] = a;
   await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: U });
   const spec = JSON.parse(fs.readFileSync(specFile, 'utf8'));
   out.steps = [];
   const tools = () => ev(`[...document.querySelectorAll('main table.grid button.link')].map(b => ({ name: b.textContent.trim(), off: b.getAttribute('aria-disabled') === 'true',
     desc: (b.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).map(i => document.getElementById(i)?.textContent ?? '').join(' ').replace(/\\s+/g, ' ').trim().slice(0, 400),
-    cell: (b.closest('tr')?.cells?.[2]?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 400) }))`);
+    cell: (b.closest('tr')?.cells?.[[...(b.closest('table')?.querySelectorAll('thead th') ?? [])].findIndex(h => /before it runs/.test(h.textContent))]?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 400) }))`);
   const lookAgain = async () => {
     const t0 = Date.now();
     await ev(`(() => { window.__old = document.querySelector('main table.grid'); [...document.querySelectorAll('main button')].find(b => b.textContent === 'Look again').click(); return 1; })()`);
@@ -1398,19 +1636,16 @@ if (mode === 'live') {
     const miss = await ev(`(() => { const td = ${cell}; if (!td) return 'the cell went away after the scroll';
       const r = td.getBoundingClientRect();
       td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
-      const bs = [...document.querySelectorAll('.menu [role=menuitem]')];
-      if (!bs.length) return 'no menu opened on the cell (a text selection on the page keeps the browser menu instead)';
-      const b = bs.find(x => x.textContent.trim() === ${JSON.stringify(item)});
-      if (!b) return ${JSON.stringify(item)} + ' not among: ' + bs.map(x => x.textContent.trim()).join(' | ');
-      b.click(); return ''; })()`);
+      if (!document.querySelector('.menu')) return 'no menu opened on the cell (a text selection on the page keeps the browser menu instead)';
+      return (path => { const lab = x => [...x.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(); for (const l of path) { const boxes = [...document.querySelectorAll('.menu')], box = boxes[boxes.length - 1], bs = box ? [...box.querySelectorAll(':scope > button')] : []; const b = bs.find(x => lab(x) === l); if (!b) return l + ' not among: ' + bs.map(lab).join(' | '); b.click(); } return ''; })(${JSON.stringify(item.split(' > '))}); })()`);   // item: a path through the grid menu (task GM)
     if (miss) return { error: miss };
     if (!await until(`window.__clips.length > ${n}`, 5000)) return { error: 'nothing reached the clipboard in 5 s after ' + item };
     return await ev(`window.__clips[${n}]`);
   };
   out.clip = {
-    md: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy the rows as Markdown'),
-    html: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy the rows as HTML with the colours'),
-    tools: await copyFrom(`[...document.querySelectorAll('main table.grid tbody td')].find(td => !td.closest('[data-sample]') && td.closest('table').querySelector('button.link'))`, 'Copy the rows as Markdown'),
+    md: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy > As Markdown > Standard'),
+    html: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy > Grid'),
+    tools: await copyFrom(`[...document.querySelectorAll('main table.grid tbody td')].find(td => !td.closest('[data-sample]') && td.closest('table').querySelector('button.link'))`, 'Copy > As Markdown > Standard'),
   };
   // the exported sample CSV opened by the bar's Tools > Open Grid or Data Set: the sample's own columns and rows
   out.reopen = null;
@@ -1470,7 +1705,7 @@ console.log(JSON.stringify(out));
 ws.close(); process.exit(0);
 JS
   SHOTS=${PGVIGIL_SHOTS:-$WORK/shots}
-  if [[ -z "$SKIP_MSSQL" ]]; then
+  if [[ -n "$N_MSSQL" ]]; then   # the live rows read the state N's SQL Server rows leave ($XES, the grant, threshold 5)
     timeout 1500 node "$WORK/buttons.mjs" live "$CDP" "$U/" "$COOKIE" "$U2/" "$MRID" "$MAID" "$AID" "$SREP" "$WORK/glenn.sql" "$SHOTS" > "$WORK/buttons.json" 2>"$WORK/buttons.err" || { rc=$?; fail "U2: the live driver ended $rc$([[ $rc == 124 ]] && echo ' (killed at its 1500 s cap)'): $(tail -5 "$WORK/buttons.err")"; }
     VIEWBAD="$WORK/view-bad.txt" python3 - "$WORK/buttons.json" "$XES" <<'PY' || fail "U2: see above"
 import json, sys
@@ -1498,8 +1733,8 @@ else:
     open(os.environ['VIEWBAD'], 'a').write(f"U2 sp_Blitz's form after its click: {v}\n")
 ax, tab = d['msaAx'], d['msaTab']
 assert len(ax) == 14 and all(x['same'] for x in ax), f"U2: the sa page's off tools in the accessibility tree: {[(x['name'], x['same'], x['axDesc'][:60]) for x in ax]}"
-assert sorted(tab) == sorted(x['name'] for x in ax), f"U2: Tab reached {len(tab)} of the {len(ax)} off tools: {sorted(set(x['name'] for x in ax) - set(tab))} missing"
-print(f"ok   U2: pgcr-msa: Tab reaches all {len(tab)} off tools; each one's accessibility-tree description is the reason beside it ('{ax[0]['axDesc'][:70]}')")
+assert sorted(tab) == sorted(x['name'] for x in ax), f"U2: the keyboard (Tab, the grid's arrows, F2) reached {len(tab)} of the {len(ax)} off tools: {sorted(set(x['name'] for x in ax) - set(tab))} missing"
+print(f"ok   U2: pgcr-msa: the keyboard reaches all {len(tab)} off tools (Tab to the grid, the arrows, F2: the grid pattern); each one's accessibility-tree description is the reason beside it ('{ax[0]['axDesc'][:70]}')")
 c = d['msaClick']; assert c['clicked'] and c['sent'] == 0 and not c['error'], f"U2: a mouse click on an off tool: {c}"
 lk = d['look']
 for t in ('light', 'dark'):
@@ -1530,7 +1765,7 @@ b = json.load(open(sys.argv[1]))['bv']
 assert b['sessionInput'] == 'system_health' and 'no running session captures the blocked process report' in b['filled'] and b['result'] == 'ran' and b['badge'] == 'done' and not b['error'], f"U2: the state (c) default click: {b}"
 print(f"ok   U2: sp_HumanEventsBlockViewer's default click in state (c) (threshold 5, no session): system_health filled, the note shown ('{b['filled'][:80]}...'), Ran at, done")
 PY
-    # ---- U3: each state of the checks as the page draws it (the lead's item 8): clicks in Chromium on the instance's
+    # ---- U3: each state of the checks as the page draws it: clicks in Chromium on the instance's
     # page, and on the fleet page's picker for the states a picker could get wrong
     state() { timeout 400 node "$WORK/buttons.mjs" state "$CDP" "$U/" "$COOKIE" "$WORK/spec.json" "$SHOTS" > "$WORK/state-$1.json" 2>"$WORK/state-$1.err" || fail "U3: the driver ($1): $(tail -5 "$WORK/state-$1.err")"; }
     # threshold 0 (read live, no collection after the change): the default click; the procedure's own refusals drawn as
@@ -1599,6 +1834,7 @@ assert not T(u)['sp_WhoIsActive']['off'] and u['looks'] < 6, f"U3: unpaused: {u[
 print(f"ok   U3: unpaused: sp_WhoIsActive on again after {u['looks']} Look again click(s)")
 PY
     sq "EXEC sys.sp_configure 'blocked process threshold (s)', 5; RECONFIGURE;" >/dev/null || true
+  elif [[ -z "$SKIP_MSSQL" ]]; then NOTPROVEN+=("U2, U3: the live page rows and the SQL Server states need part N's SQL Server rows (the three community kits)")
   else NOTPROVEN+=("U2: the live page rows need the SQL Server part"); fi
   # U3 on PostgreSQL: the stopped instance on its page and on the picker; 55000 beside 42P01 on the cluster that does not
   # load pg_stat_statements
@@ -1624,9 +1860,9 @@ if len(steps) > 2:
     assert nc['off'] and 'pg_stat_statements is not created in the database pgcr_nx' in nc['desc'], f"U3: not created: {nc}"
     print(f"ok   U3: Top statements off on the cluster without the library: 'created in postgres but not loaded' (55000) beside 'not created in the database pgcr_nx', each its description")
 PY
-  # [fold 2: review 20261112-222929 finding 1] a REAL instance tagged demo on a plain serve (-no-login: it keeps no
-  # PostgreSQL door) is never a demo instance - only one this running pgvigil demo seeded is: its ordinary line, no
-  # demo words, no sample (before the fold the tag alone decided: 'is a demo instance' and the samples)
+  # a REAL instance tagged demo on a plain serve (-no-login: it keeps no PostgreSQL door) is never a demo instance -
+  # only one this running pgvigil demo seeded is: its ordinary line, no demo words, no sample (before the fix the tag
+  # alone decided: 'is a demo instance' and the samples)
   q "update pgvigil.instances set tags = array_append(tags, 'demo') where instance_id = $AID and not 'demo' = any (tags)" >/dev/null
   tick; C1=$(code "$U2/api/community?instance=$AID"); cp "$WORK/body" "$WORK/real-demo-tag.json"
   T1=$(js "'is a demo instance' in json.dumps(d) or any(t.get('sample') for t in d.get('tools', []))"); N1=$(js "(d.get('needs') or [{}])[0].get('what', '')")
@@ -1664,7 +1900,7 @@ d = json.load(open(sys.argv[1])); real_ms = sys.argv[2] == 'sqlserver'; dl = sys
 # each instance's name and platform as the repository holds them (never the name the page's own API answered)
 ids = [a.split('=', 2) for a in sys.argv[7:11]]
 names = {i: n for i, n, _ in ids}; plat = {i: p for i, _, p in ids}
-# the line's end and the mark's as review 20261112-222929 D2 words them: an instance off the test server's platform is
+# the line's end and the mark's words: an instance off the test server's platform is
 # named with its platform; the test server's own (a SQL Server container, a PostgreSQL cluster: sqlserver, onprem) not
 words = {('sqlserver', 'azuresqlmi'): 'an Azure SQL Managed Instance', ('postgres', 'aurora'): 'an Aurora PostgreSQL instance',
          ('postgres', 'rds'): 'an Amazon RDS for PostgreSQL instance', ('postgres', 'azure'): 'an Azure Database for PostgreSQL server',
@@ -1762,14 +1998,14 @@ firsts = {n: zc.read(n).decode('utf-8-sig').split('\r\n', 1)[0].strip('"') for n
 bad = [n for n, f in firsts.items() if (f == p['mark']) != ('sp_Blitz' in n)]
 assert not bad and sum(1 for n in firsts if 'sp_Blitz' in n) == 2, f"S: the CSV files' first lines: {[(n, f[:60]) for n, f in firsts.items()]} (wrong: {bad})"
 print(f"ok   S: Export CSV: exactly the panel's 2 files start with the mark ({', '.join(n for n in firsts if 'sp_Blitz' in n)}), none of the other {len(firsts) - 2}")
-# the grid menu's copies (review 20261112-222929 finding 2): the sample's mark first in both, the tools' grid's none
+# the grid menu's copies: the sample's mark first in both, the tools' grid's none
 c = d.get('clip') or {}; md, hc, tc = c.get('md') or {}, c.get('html') or {}, c.get('tools') or {}
-unmd = re.sub(r'\\([\\|*_`<\[\]])', r'\1', md.get('text', ''))
-assert unmd.startswith(p['mark'] + '\n\n') and '|' in unmd.split('\n\n', 1)[1], f"S: Copy the rows as Markdown: {md}"
-assert hc.get('plain', '').startswith(p['mark'] + '\n') and hc.get('html', '').startswith('<p>') and html.unescape(re.sub(r'<[^>]+>', '', hc['html'].split('</p>', 1)[0])) == p['mark'] and '<table' in hc['html'], f"S: Copy the rows as HTML: {str(hc)[:400]}"
+unmd = re.sub(r'\\([\\|*_`<\[\]])', r'\1', md.get('text', '')).replace('&amp;', '&')
+assert unmd.startswith(p['mark'] + '\n\n') and '|' in unmd.split('\n\n', 1)[1], f"S: Copy > As Markdown > Standard: {md}"
+assert hc.get('plain', '').startswith(p['mark'] + '\n') and hc.get('html', '').startswith('<p>') and html.unescape(re.sub(r'<[^>]+>', '', hc['html'].split('</p>', 1)[0])) == p['mark'] and '<table' in hc['html'], f"S: Copy > Grid (HTML): {str(hc)[:400]}"
 assert tc.get('kind') == 'text' and 'stored sample of' not in tc.get('text', '') and '|' in tc.get('text', ''), f"S: the tools' grid's copy: {str(tc)[:300]}"
-print(f"ok   S: the sample grid's menu: 'Copy the rows as Markdown' and 'as HTML with the colours' hand the clipboard the mark first (Markdown {len(md['text'])} chars, HTML {len(hc['html'])}); the tools' grid's copy carries none")
-# the exported sample CSV opened by Tools > Open Grid or Data Set (finding 3): the sample's own columns and rows, the mark in the note
+print(f"ok   S: the sample grid's menu: 'Copy > As Markdown > Standard' and 'Copy > Grid' hand the clipboard the mark first (Markdown {len(md['text'])} chars, HTML {len(hc['html'])}); the tools' grid's copy carries none")
+# the exported sample CSV opened by Tools > Open Grid or Data Set: the sample's own columns and rows, the mark in the note
 ro = d.get('reopen') or {}
 assert ro and not ro.get('error') and ro['cols'] == ro['shown']['cols'] and ro['rows'] == ro['shown']['rows'] and ro['cols'] > 1 \
     and (p['mark'] + f". {ro['rows']} rows, {ro['cols']} columns.") in ro['note'], f"S: the sample CSV opened again: {ro}"
@@ -1798,6 +2034,36 @@ r = d['real']
 assert not r['demoLine'] and r['nologin'] and r['off'] == (14 if real_ms else 10) and r['samples'] == 0 and r['sampleStatus'] == 404, f"S: the real instance served beside the demo: {r}"
 print(f"ok   S: pgvigil demo -serve -config: the real instance shows its own state (-no-login, {r['off']} off), never the demo line, no sample (GET /api/community/sample 404)")
 PY
+  # ---- DV: the demo's versions, as the 8080 demo shows them (the demo serve, no login): invented at the tested version
+  L0=$(logn)
+  for dv in "$DMS" "$DMS2"; do
+    timeout 120 node "$WORK/versions.mjs" "$CDP" "$U4/" "" "$dv" "" > "$WORK/dv-$dv.json" 2>"$WORK/dv.err" || fail "DV: the page driver ($dv): $(tail -3 "$WORK/dv.err")"
+    [[ $(code "$U4/api/community?instance=$dv") == 200 ]] || fail "DV: GET community on the demo serve ($dv): $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/dv-$dv-api.json"
+    python3 - "$WORK/dv-$dv.json" "$WORK/dv-$dv-api.json" "$(ident "$dv")" <<'PY' || fail "DV: see above"
+import json, sys
+p = json.load(open(sys.argv[1])); a = json.load(open(sys.argv[2])); who = sys.argv[3]
+# each procedure's own version in its kit's tested release, and the release's date
+own = {'sp_Blitz': '8.34', 'sp_BlitzFirst': '8.34', 'sp_BlitzCache': '8.34', 'sp_BlitzIndex': '8.34', 'sp_BlitzLock': '8.34', 'sp_BlitzWho': '8.34',
+       'sp_PressureDetector': '6.11', 'sp_QuickieStore': '6.11', 'sp_HumanEventsBlockViewer': '5.11', 'sp_HealthParser': '3.11', 'sp_LogHunter': '3.11',
+       'sp_IndexCleanup': '2.11', 'sp_WhoIsActive': '2200.20260409'}
+date = {'First Responder Kit': '2026-07-02', 'Darling Data': '2026-11-01', 'sp_WhoIsActive': '2026-04-09'}
+assert not p.get('error'), f"DV {who}: the driver: {p.get('error')}"
+assert a.get('demo') is True, f"DV {who}: the demo serve's reply is not a demo instance's"
+assert p.get('heading'), f"DV {who}: no 'Installed community tools' heading on the demo's page"
+rows = p.get('rows') or []
+bad = [r for r in rows if r['status'] != 'the tested version' or r['installed here (its text, read now)'] != own.get(r['procedure']) or r['its date'] != date.get(r['kit'])
+       or r['tested by pgvigil'] != r['installed here (its text, read now)'] or r['database'] != '' or 'ok' not in r['_badge'].split()]
+assert len(rows) == 13 and not bad, f"DV {who}: {len(rows)} rows; unlike the tested version: {bad[:3]}"
+api = [t for t in a['tools'] if t['kind'] == 'proc']
+assert len(api) == 13 and all(t.get('version_word') == 'the tested version' for t in api), f"DV {who}: the reply's words {sorted({str(t.get('version_word')) for t in api})}"
+assert not p.get('notes'), f"DV {who}: notes {p.get('notes')}"
+assert p.get('script') == a.get('install_script') and 'nothing to install' in (p.get('script') or '') and p.get('open') and p.get('copy'), f"DV {who}: the script {str(p.get('script'))[:200]!r}"
+assert not p.get('sent'), f"DV {who}: opening the script sent {p['sent']}"
+assert p.get('said') in ('Copied', 'Not copied: select the text below and copy it'), f"DV {who}: Copy's status line: {p.get('said')!r}"
+print(f"ok   DV: {who}: 13 rows, every one 'the tested version' at its kit's tested version and date, no database, no note; the script 'nothing to install' as the demo serve's reply")
+PY
+  done
+  [[ $(logn) == "$L0" ]] || fail "DV: the demo's pages wrote custom_report_log row(s)"
 fi
 
 echo

@@ -935,7 +935,7 @@ func TestMoveXEForeignOnAStore(t *testing.T) {
 	check("a read without the marker", "DBADash_1:true", base.Add(time.Minute), 1)
 	read(base.Add(3*time.Minute), true)
 	check("a read that listed none", "", base.Add(3*time.Minute), 0)
-	// review 206e 7: an unchanged list is not rewritten (only the read's own row moves); a change rewrites it
+	// an unchanged list is not rewritten (only the read's own row moves); a change rewrites it
 	read(base.Add(4*time.Minute), true, "DBADash_1", "DBADash_AdHoc")
 	check("a list again", "DBADash_1:true,DBADash_AdHoc:false", base.Add(4*time.Minute), 2)
 	var before, after string
@@ -952,7 +952,7 @@ func TestMoveXEForeignOnAStore(t *testing.T) {
 	check("a session gone", "DBADash_1:true", base.Add(6*time.Minute), 1)
 }
 
-// TestMoveCountKept (review 206f 5): a count is kept on the move with who counted; counts that are not an object are
+// TestMoveCountKept: a count is kept on the move with who counted; counts that are not an object are
 // refused.
 func TestMoveCountKept(t *testing.T) {
 	ctx, pool, sfx := moveStore(t)
@@ -985,7 +985,7 @@ func TestMoveListStates(t *testing.T) {
 		srv("NOTYET"): "not yet", srv("IMPONLY"): "imported only", srv("COLL"): "collected by pgvigil", srv("MOVING"): "moving",
 		srv("COLLECTING"): "collecting", srv("READY"): "ready to switch", srv("PARTIAL"): "partial", srv("TWICE"): "moving",
 		srv("DISABLED"): "disabled",
-		// reviews 206d 2 / 206e 1 / 206e 6: the latest run decides, a run cut off says so, a moved server stays listed
+		// the latest run decides, a run cut off says so, a moved server stays listed
 		// once DBA Dash stops listing it
 		srv("IMPORTING"): "importing", srv("INTERRUPTED"): "import interrupted", srv("FAILED"): "import failed",
 		srv("OKTHENFAIL"): "import failed", srv("MOVEDGONE"): "collecting",
@@ -1001,7 +1001,7 @@ func TestMoveListStates(t *testing.T) {
 		ids[s] = k
 		n += 10
 	}
-	// review 206f 11: one server whose Instance DBA Dash holds in two cases is one row with both ids
+	// one server whose Instance DBA Dash holds in two cases is one row with both ids
 	moveRepo(ctx, t, pool, repo, srv("CASEX"), 300)
 	moveRepo(ctx, t, pool, repo, strings.ToLower(srv("CASEX")), 301)
 	want[srv("CASEX")], ids[srv("CASEX")] = "not yet", []int{300, 301}
@@ -1075,7 +1075,7 @@ func TestMoveListStates(t *testing.T) {
 		if fmt.Sprint(k) != fmt.Sprint(ids[s]) {
 			t.Errorf("%s: InstanceIDs %v, want %v", s, k, ids[s])
 		}
-		// review 206d 9: the move's own InstanceIDs (the page's command), on a moved server only
+		// the move's own InstanceIDs (the page's command), on a moved server only
 		if moved := state != "not yet" && state != "imported only" && state != "collected by pgvigil"; moved != (len(mk) == len(ids[s])) {
 			t.Errorf("%s (%s): the move's InstanceIDs %v, want %v", s, state, mk, ids[s])
 		}

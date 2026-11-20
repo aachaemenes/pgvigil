@@ -17,7 +17,7 @@
 --   role_member_closure     every membership through any depth, per instance (rebuilt by the import)
 --   role_flags              a role's attributes as one comparable text (the history's value)
 --   role_is_platform        whether a role is the server's or the platform's own (not an application role)
---   role_findings           the role rules, in pgvigil.findings' columns (the join unions it in)
+--   role_findings           the role rules, in pgvigil.findings' columns (a later migration unions it in)
 --   role_fleet              per instance: the superusers and login roles, with what they are members of
 
 CREATE TABLE IF NOT EXISTS pgvigil.role_state (

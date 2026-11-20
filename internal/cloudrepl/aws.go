@@ -1,0 +1,366 @@
+// Package cloudrepl reads the provider replica metrics of Amazon RDS and Google Cloud SQL (task 390b): a resource's
+// replication topology and status, and each replica's lag, through the providers' own APIs - no SQL connection, and a
+// replica pgvigil does not connect to still has its lag. Every call is a read; nothing is written in any cloud.
+package cloudrepl
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/aws/smithy-go"
+)
+
+// Resource is one provider database resource as read: its role in a replication chain, its source and replicas (each
+// lag is to the DIRECT upstream; a replica that is also a source is Cascaded), its own status and its replication
+// status (RDS StatusInfos' 'read replication' row; Cloud SQL's replication state).
+type Resource struct {
+	Provider   string   // aws | gcp
+	ID         string   // the RDS DB instance's ARN (DBInstanceArn), or project:instance (lower case): 390b ID (a)
+	Engine     string   // the provider's engine name (postgres, sqlserver-se, POSTGRES_16)
+	Region     string   //
+	Role       string   // source | replica | standalone
+	SourceID   string   // a replica's direct upstream
+	ReplicaIDs []string // a source's direct replicas
+	Cascaded   bool     // a replica that is also a source
+	Status     string   // DBInstanceStatus (available, rebooting ...) or the Cloud SQL state (RUNNABLE ...)
+	ReplStatus string   // replicating | error | stopped | terminated (RDS); Running | Stopped | Error (Cloud SQL); "" = not reported yet
+	ReplNote   string   // the provider's words when the replication status is not normal
+}
+
+// Point is one datapoint of a replica's series: replica_lag (s) or replica_byte_lag (bytes).
+type Point struct {
+	ResourceID string
+	Metric     string
+	Unit       string
+	At         time.Time
+	Value      float64
+}
+
+// Throttled is a provider's throttle answer: the read is skipped until the next interval (the design fold 15).
+type Throttled struct{ Door, Code, Message string }
+
+func (t *Throttled) Error() string {
+	return fmt.Sprintf("%s throttled the read (%s: %s): the next read at the next interval", t.Door, t.Code, t.Message)
+}
+
+// RDSAPI is the one RDS call P1 makes.
+type RDSAPI interface {
+	DescribeDBInstances(ctx context.Context, in *rds.DescribeDBInstancesInput, opt ...func(*rds.Options)) (*rds.DescribeDBInstancesOutput, error)
+}
+
+// CWAPI is the one CloudWatch call P1 makes.
+type CWAPI = cloudwatch.GetMetricDataAPIClient
+
+const (
+	// awsListAge: a region's listing serves every instance of one run (the collection runs every 5 minutes): one paged
+	// DescribeDBInstances a region and run (the design fold 15)
+	awsListAge = 4 * time.Minute
+	// lagWindow: ReplicaLag's window each run (four of the collection's intervals: one missed run loses nothing; the
+	// import keeps one row per datapoint)
+	lagWindow = 20 * time.Minute
+)
+
+// AWSReader is P1: a region's RDS and CloudWatch clients (one credential chain, the instance's aws: block) and the
+// run's listings.
+type AWSReader struct {
+	RDS    func(ctx context.Context, region string) (RDSAPI, error)
+	CW     func(ctx context.Context, region string) (CWAPI, error)
+	Events func(ctx context.Context, region string) (RDSEventsAPI, error) // P3 (events.go)
+	// Caller is the credential's partition and account (sts:GetCallerIdentity: no IAM right needed), read once a
+	// reader: the instance's own key when the run has no listing of it (a refused DescribeDBInstances, a resting door)
+	Caller func(ctx context.Context, region string) (partition, account string, err error)
+	Now    func() time.Time
+
+	mu     sync.Mutex
+	lists  map[string]awsList
+	part   string
+	acct   string
+	callOK bool
+}
+
+type awsList struct {
+	at  time.Time
+	dbs map[string]rdstypes.DBInstance
+}
+
+// list: every DB instance of the region by its lower-case identifier, read once a run (every page); a refusal or a
+// throttle is never kept
+func (r *AWSReader) list(ctx context.Context, region string) (map[string]rdstypes.DBInstance, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.Now()
+	if l, ok := r.lists[region]; ok && now.Sub(l.at) < awsListAge && !now.Before(l.at) {
+		return l.dbs, nil
+	}
+	api, err := r.RDS(ctx, region)
+	if err != nil {
+		return nil, err
+	}
+	dbs := map[string]rdstypes.DBInstance{}
+	var marker *string
+	for page := 0; page < 100; page++ {
+		out, err := api.DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{Marker: marker, MaxRecords: aws.Int32(100)})
+		if err != nil {
+			return nil, awsErr("rds:DescribeDBInstances", region, err)
+		}
+		for _, d := range out.DBInstances {
+			dbs[strings.ToLower(aws.ToString(d.DBInstanceIdentifier))] = d
+		}
+		if aws.ToString(out.Marker) == "" {
+			break
+		}
+		marker = out.Marker
+	}
+	if r.lists == nil {
+		r.lists = map[string]awsList{}
+	}
+	r.lists[region] = awsList{at: now, dbs: dbs}
+	return dbs, nil
+}
+
+// Read is one instance's read: its own resource, its direct source and replicas (each in its own region: a
+// cross-region replica is named by its ARN), and each replica's ReplicaLag; every resource and point keyed by its
+// lower-cased ARN (390b ID (a)). A refused listing still reads the instance's own lag (it may be a replica), keyed by
+// the caller identity, and returns the refusal's sentence as a note; a throttle is *Throttled.
+func (r *AWSReader) Read(ctx context.Context, region, dbInstance string) ([]Resource, []Point, []string, error) {
+	id := strings.ToLower(strings.TrimSpace(dbInstance))
+	var notes []string
+	dbs, err := r.list(ctx, region)
+	if err != nil {
+		var th *Throttled
+		if errors.As(err, &th) {
+			return nil, nil, nil, err
+		}
+		own, kerr := r.selfID(ctx, region, id)
+		if kerr != nil {
+			return nil, nil, nil, fmt.Errorf("%v; and the instance's own key: %v", err, kerr)
+		}
+		notes = append(notes, err.Error())
+		pts, lerr := r.lag(ctx, region, []lagRef{{id, own}})
+		if lerr != nil {
+			if errors.As(lerr, &th) {
+				return nil, nil, nil, lerr
+			}
+			notes = append(notes, lerr.Error())
+		}
+		return nil, pts, notes, nil
+	}
+	self, ok := dbs[id]
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("the DB instance %q is not in %s's DescribeDBInstances answer (the aws: block's db_instance or region)", id, region)
+	}
+	own := arnOf(self)
+	if own == "" {
+		return nil, nil, nil, fmt.Errorf("the DB instance %q has no DBInstanceArn in %s's DescribeDBInstances answer", id, region)
+	}
+	res := []Resource{awsResource(self, region)}
+	lagOf := map[string][]lagRef{} // region: the replicas whose lag is read there
+	if src := aws.ToString(self.ReadReplicaSourceDBInstanceIdentifier); src != "" {
+		lagOf[region] = append(lagOf[region], lagRef{id, own})
+		_, sid, sregion := awsRef(src, own)
+		if s, err := r.find(ctx, sregion, sid); err == nil {
+			res = append(res, awsResource(s, sregion))
+		} else {
+			notes = append(notes, err.Error())
+		}
+	}
+	for _, ref := range self.ReadReplicaDBInstanceIdentifiers {
+		key, rid, rregion := awsRef(ref, own)
+		lagOf[rregion] = append(lagOf[rregion], lagRef{rid, key})
+		if x, err := r.find(ctx, rregion, rid); err == nil {
+			res = append(res, awsResource(x, rregion))
+		} else {
+			notes = append(notes, err.Error())
+		}
+	}
+	regions := make([]string, 0, len(lagOf))
+	for k := range lagOf {
+		regions = append(regions, k)
+	}
+	sort.Strings(regions)
+	var pts []Point
+	for _, rg := range regions {
+		p, err := r.lag(ctx, rg, lagOf[rg])
+		if err != nil {
+			var th *Throttled
+			if errors.As(err, &th) {
+				return nil, nil, nil, err
+			}
+			notes = append(notes, err.Error())
+			continue
+		}
+		pts = append(pts, p...)
+	}
+	return res, pts, notes, nil
+}
+
+// find: one DB instance of a region's listing (with its ARN: the resource's key)
+func (r *AWSReader) find(ctx context.Context, region, id string) (rdstypes.DBInstance, error) {
+	dbs, err := r.list(ctx, region)
+	if err != nil {
+		return rdstypes.DBInstance{}, err
+	}
+	d, ok := dbs[id]
+	if !ok {
+		return rdstypes.DBInstance{}, fmt.Errorf("the DB instance %q is not in %s's DescribeDBInstances answer", id, region)
+	}
+	if arnOf(d) == "" {
+		return rdstypes.DBInstance{}, fmt.Errorf("the DB instance %q has no DBInstanceArn in %s's DescribeDBInstances answer", id, region)
+	}
+	return d, nil
+}
+
+// selfID: the instance's own key - its listed DBInstanceArn when a listing of the region is held, else built from the
+// credential's partition and account (Caller, read once a reader) and the block's region and identifier, so a refused
+// listing or a resting door names the same resource a listed read does
+func (r *AWSReader) selfID(ctx context.Context, region, id string) (string, error) {
+	r.mu.Lock()
+	if l, ok := r.lists[region]; ok {
+		if d, ok := l.dbs[id]; ok && arnOf(d) != "" {
+			r.mu.Unlock()
+			return arnOf(d), nil
+		}
+	}
+	part, acct, ok := r.part, r.acct, r.callOK
+	r.mu.Unlock()
+	if !ok {
+		if r.Caller == nil {
+			return "", errors.New("no listing of the instance and no sts:GetCallerIdentity reader to name it")
+		}
+		var err error
+		if part, acct, err = r.Caller(ctx, region); err != nil {
+			return "", fmt.Errorf("sts:GetCallerIdentity: %v", err)
+		}
+		part, acct = strings.ToLower(part), strings.ToLower(acct)
+		if part == "" || acct == "" {
+			return "", errors.New("sts:GetCallerIdentity named no partition or account")
+		}
+		r.mu.Lock()
+		r.part, r.acct, r.callOK = part, acct, true
+		r.mu.Unlock()
+	}
+	return strings.Join([]string{"arn", part, "rds", region, acct, "db", id}, ":"), nil
+}
+
+// lagRef: a replica as CloudWatch names it (the DBInstanceIdentifier dimension) and as pgvigil keys it (its ARN)
+type lagRef struct{ ident, key string }
+
+// lag: ReplicaLag (AWS/RDS, seconds, Maximum over 60 s) of the replicas over the window, every datapoint, keyed by
+// each replica's ARN
+func (r *AWSReader) lag(ctx context.Context, region string, ids []lagRef) ([]Point, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	api, err := r.CW(ctx, region)
+	if err != nil {
+		return nil, err
+	}
+	now := r.Now().UTC().Truncate(time.Minute)
+	in := &cloudwatch.GetMetricDataInput{StartTime: aws.Time(now.Add(-lagWindow)), EndTime: aws.Time(now), ScanBy: cwtypes.ScanByTimestampAscending}
+	for i, id := range ids {
+		in.MetricDataQueries = append(in.MetricDataQueries, cwtypes.MetricDataQuery{Id: aws.String(fmt.Sprintf("q%d", i)), ReturnData: aws.Bool(true),
+			MetricStat: &cwtypes.MetricStat{Period: aws.Int32(60), Stat: aws.String("Maximum"), Unit: cwtypes.StandardUnitSeconds,
+				Metric: &cwtypes.Metric{Namespace: aws.String("AWS/RDS"), MetricName: aws.String("ReplicaLag"),
+					Dimensions: []cwtypes.Dimension{{Name: aws.String("DBInstanceIdentifier"), Value: aws.String(id.ident)}}}}})
+	}
+	var out []Point
+	for page := 0; page < 50; page++ {
+		res, err := api.GetMetricData(ctx, in)
+		if err != nil {
+			return nil, awsErr("cloudwatch:GetMetricData", region, err)
+		}
+		for _, m := range res.MetricDataResults {
+			var k int
+			if _, err := fmt.Sscanf(aws.ToString(m.Id), "q%d", &k); err != nil || k < 0 || k >= len(ids) {
+				continue
+			}
+			for j := range m.Timestamps {
+				if j < len(m.Values) && m.Values[j] >= 0 { // a negative value is no lag
+					out = append(out, Point{ResourceID: ids[k].key, Metric: "replica_lag", Unit: "s", At: m.Timestamps[j].UTC(), Value: m.Values[j]})
+				}
+			}
+		}
+		if aws.ToString(res.NextToken) == "" {
+			break
+		}
+		in.NextToken = res.NextToken
+	}
+	return out, nil
+}
+
+// awsResource: one DB instance's topology and status, keyed by ARNs (its own, its source's, its replicas')
+func awsResource(d rdstypes.DBInstance, region string) Resource {
+	own := arnOf(d)
+	x := Resource{Provider: "aws", ID: own, Engine: aws.ToString(d.Engine), Region: region, Status: aws.ToString(d.DBInstanceStatus)}
+	if src := aws.ToString(d.ReadReplicaSourceDBInstanceIdentifier); src != "" {
+		x.SourceID, _, _ = awsRef(src, own)
+	}
+	for _, ref := range d.ReadReplicaDBInstanceIdentifiers {
+		key, _, _ := awsRef(ref, own)
+		x.ReplicaIDs = append(x.ReplicaIDs, key)
+	}
+	switch {
+	case x.SourceID != "":
+		x.Role, x.Cascaded = "replica", len(x.ReplicaIDs) > 0
+	case len(x.ReplicaIDs) > 0:
+		x.Role = "source"
+	default:
+		x.Role = "standalone"
+	}
+	for _, s := range d.StatusInfos {
+		if strings.EqualFold(aws.ToString(s.StatusType), "read replication") {
+			x.ReplStatus = aws.ToString(s.Status)
+			if !aws.ToBool(s.Normal) {
+				x.ReplNote = aws.ToString(s.Message)
+			}
+		}
+	}
+	return x
+}
+
+// arnOf: a listed DB instance's key, its DBInstanceArn lower-cased ("" when the answer has none)
+func arnOf(d rdstypes.DBInstance) string {
+	return strings.ToLower(strings.TrimSpace(aws.ToString(d.DBInstanceArn)))
+}
+
+// awsRef: a replica or source as RDS names it - an identifier in the naming instance's own region and account, or an
+// ARN (arn:<partition>:rds:<region>:<account>:db:<identifier>) in another region - as its key (a lower-cased ARN), its
+// identifier and its region; a bare identifier takes the partition, region and account of `own`, the naming
+// instance's ARN (pgvigil writes no partition of its own)
+func awsRef(ref, own string) (key, id, region string) {
+	ref = strings.ToLower(strings.TrimSpace(ref))
+	if p := strings.Split(ref, ":"); len(p) >= 7 && p[0] == "arn" && p[2] == "rds" && p[5] == "db" {
+		return ref, p[6], p[3]
+	}
+	o := strings.Split(own, ":")
+	if len(o) < 7 {
+		return "", ref, ""
+	}
+	return strings.Join([]string{o[0], o[1], "rds", o[3], o[4], "db", ref}, ":"), ref, o[3]
+}
+
+// awsErr: an AWS refusal in words (the call, the region, the code and message, the right) or *Throttled
+func awsErr(call, region string, err error) error {
+	var ae smithy.APIError
+	if errors.As(err, &ae) {
+		switch ae.ErrorCode() {
+		case "Throttling", "ThrottlingException", "RequestLimitExceeded", "TooManyRequestsException", "RequestThrottled":
+			return &Throttled{Door: call + " in " + region, Code: ae.ErrorCode(), Message: ae.ErrorMessage()}
+		case "ExpiredToken", "ExpiredTokenException", "InvalidClientTokenId", "UnrecognizedClientException", "InvalidSignatureException":
+			// the credential itself: never worded as a missing right
+			return fmt.Errorf("%s in %s refused (%s: %s): the sign-in was refused or has expired", call, region, ae.ErrorCode(), ae.ErrorMessage())
+		}
+		return fmt.Errorf("%s in %s refused (%s: %s): the identity needs %s", call, region, ae.ErrorCode(), ae.ErrorMessage(), call)
+	}
+	return fmt.Errorf("%s in %s: %w", call, region, err)
+}

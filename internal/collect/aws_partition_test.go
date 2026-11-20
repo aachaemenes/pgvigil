@@ -2,6 +2,7 @@ package collect
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,7 +72,7 @@ func TestDMSResourceIDIsPartitionFree(t *testing.T) {
 }
 
 // No Go source of pgvigil and no migration names an AWS endpoint, a partition or a region: a government fleet's
-// regions come from the config alone, and a name table moved into SQL is the same knowledge (task 205's review). The
+// regions come from the config alone, and a name table moved into SQL is the same knowledge. The
 // scan covers every non-test .go file under the module root except internal/demo, whose synthetic fleet carries
 // example ARNs and regions as data, and every .sql file under internal/repo/sql (web/, docs/ and the built
 // internal/web/dist hold neither; the skips are by path, so internal/web's Go is scanned).
@@ -102,6 +103,8 @@ func TestHardCodedAWSScanFinds(t *testing.T) {
 	plant("internal/x/x.go", "package x\n\nconst host = \".amazonaws.com\"\n")
 	plant("internal/x/x_test.go", "package x\n\nconst r = \"us-east-1\"\n")
 	plant("internal/demo/d.go", "package demo\n\nconst r = \"us-east-2\"\n")
+	// a listed exception holds its file's name once: not a hit
+	plant("internal/export/dest_s3.go", "package export\n\nconst r = \"us-east-1\"\nconst h = \".amazonaws.com.\"\n")
 	hits, err := hardCodedAWS(root)
 	if err != nil {
 		t.Fatal(err)
@@ -110,9 +113,31 @@ func TestHardCodedAWSScanFinds(t *testing.T) {
 	if len(hits) != 2 || !strings.Contains(got, "0999_x.sql: us-gov-") || !strings.Contains(got, "x.go: .amazonaws.com") {
 		t.Fatalf("the scan found %q, want the planted migration's us-gov- and x.go's .amazonaws.com only", got)
 	}
+	// an exception is one use in its own file: a second use there is a hit
+	plant("internal/export/dest_s3.go", "package export\n\nconst r = \"us-east-1\"\nconst s = \"us-east-1\"\n")
+	if hits, err = hardCodedAWS(root); err != nil || !strings.Contains(strings.Join(hits, "; "), "dest_s3.go: us-east-1 (2 uses") {
+		t.Fatalf("a listed name used twice in its file: %q, %v; want a hit", hits, err)
+	}
 }
 
-// hardCodedAWS lists each scanned file under root that holds a forbidden name, as "<path>: <name>".
+// awsExceptions are the names a file may hold, each ONCE, with the product reason the scan cannot tell from a
+// hard-coded partition; a second use in that file, or the name in any other file, is a hit.
+var awsExceptions = []struct{ file, name, why string }{
+	{"internal/export/dest_s3.go", "us-east-1", "s3CompatibleRegion: the signing region of an S3-compatible store named by its endpoint when neither the destination nor the AWS configuration names one (such a store signs with any region, the SDK needs one); never used for an AWS host"},
+	{"internal/export/dest_s3.go", ".amazonaws.com", "awsHost: tells an AWS endpoint from an S3-compatible one, so that an AWS host with no region is refused instead of signing with s3CompatibleRegion"},
+}
+
+func awsExcepted(rel, name string) bool {
+	for _, e := range awsExceptions {
+		if e.file == rel && e.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// hardCodedAWS lists each scanned file under root that holds a forbidden name, as "<path>: <name>" (a listed
+// exception used more than once: "<path>: <name> (<n> uses; its exception is one)").
 func hardCodedAWS(root string) ([]string, error) {
 	forbidden := []string{"arn:aws:", "arn:aws-us-gov:", ".amazonaws.com", "us-east-1", "us-east-2", "us-west-", "us-gov-"}
 	var hits []string
@@ -138,7 +163,11 @@ func hardCodedAWS(root string) ([]string, error) {
 			return err
 		}
 		for _, f := range forbidden {
-			if strings.Contains(string(b), f) {
+			switch n, ex := strings.Count(string(b), f), awsExcepted(filepath.ToSlash(rel), f); {
+			case n == 0 || (n == 1 && ex):
+			case ex:
+				hits = append(hits, fmt.Sprintf("%s: %s (%d uses; its exception is one)", p, f, n))
+			default:
 				hits = append(hits, p+": "+f)
 			}
 		}

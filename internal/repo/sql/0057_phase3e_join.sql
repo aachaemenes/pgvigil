@@ -1,4 +1,4 @@
--- 0057: the join of phase 3 wave E (the export 54, the DBADash door 55, Performance Insights and the Serverless cache rule
+-- 0057: wires in phase 3 wave E (the export 54, the DBADash door 55, Performance Insights and the Serverless cache rule
 -- 56, baseline compare 57, session SETs 58, the index inventory 71). pgvigil.findings re-created from 0056's definition
 -- with three arms: pi_findings (0053: cache starved by the ACU floor), compare_findings (0054: a statement's calls, time
 -- or pages per call up tenfold against the same window one or seven days earlier, from the hourly cache), and
@@ -7,8 +7,8 @@
 -- them). purge() re-created from 0056's body with pi_load and serverless_sample among the partition parents it drops, and
 -- six retention deletes: pi_sql by last_seen; dbadash_summary_history by snapshot_at, keeping each instance's newest row
 -- (the current status is read from it); dbadash_instances no longer present; session_sets_sample by snapshot_at;
--- session_sets by last_seen; compare_findings_cache by computed_at. A frozen file is never edited; a later join
--- re-creates both again with its own additions.
+-- session_sets by last_seen; compare_findings_cache by computed_at. A frozen file is never edited; a later
+-- migration re-creates both again with its own additions.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (
@@ -146,7 +146,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the corruption column (0023): checksums off, ignore_checksum_failure on, a corruption event in 24 h, amcheck damage
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.corruption_findings WHERE setting <> 'zero_damaged_pages'
     UNION ALL
-    -- the plans slice (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
+    -- the plan findings (0029): estimates off by 10x, spills, a nested loop over a large outer, a filter removing most rows, a lossy bitmap scan, index-only heap fetches, JIT, trigger time, workers not launched, a CTE scanned twice
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.plan_findings
     UNION ALL
     -- the indexes collection (0030): invalid and duplicate indexes (warning), redundant and unused ones (info)

@@ -114,7 +114,7 @@ SELECT s.instance_id, s.platform, s.snapshot_at, s.data_checksums,
 -- ---------------------------------------------------------------------------------------------------------
 -- the corruption rules, in pgvigil.findings' columns: instance_id, severity, setting, value, is_set, suggested,
 -- platforms, detail, source, at. The zero_damaged_pages row repeats the settings rule of pgvigil.findings for the
--- Corruption tab; the join's arm for this view leaves it out of pgvigil.findings.
+-- Corruption tab; the release migration's arm for this view leaves it out of pgvigil.findings.
 -- ---------------------------------------------------------------------------------------------------------
 CREATE OR REPLACE VIEW pgvigil.corruption_findings AS
 -- checksums off: a damaged page is read as good data. Self-managed: a warning with the way to turn them on. A managed

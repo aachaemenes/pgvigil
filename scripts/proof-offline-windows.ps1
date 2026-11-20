@@ -7,7 +7,7 @@
 #   -OldExe  <file>     pgvigil_v0.3.0_windows_amd64_fips.exe, checked against its release SHA256SUMS beforehand
 #   -PgBin   <folder>   PostgreSQL's bin folder
 #   -Work    <folder>   a scratch folder on local disk (default C:\pgvigil-offline-proof; removed at the end)
-# Expected (written before its first run; NOT run by this project yet: the sandbox was another lane's):
+# Expected (written before its first run; NOT run yet: the Windows sandbox was in use):
 #  N   no network adapter is up (Get-NetAdapter shows none Up)
 #  A   install.ps1 -From the bundle: 'signature not verified here', '(plain build) checksum verified'; the service
 #      pgvigil exists (Stopped: repo.dsn empty yet) under NT SERVICE\pgvigil; %ProgramFiles%\pgvigil\pgvigil.exe prints

@@ -1,4 +1,4 @@
--- 0039: the wave A join for the IO collection (0031: the platform's storage metrics of RDS and Aurora instances
+-- 0039: wires in the IO collection (0031: the platform's storage metrics of RDS and Aurora instances
 -- and the DMS replication instances' IO). The findings view gains the IO rules (a draining burst balance, a deep
 -- queue, high latency, a replication instance whose IO did not scale); purge() gains the cloud_io_sample and
 -- dms_ri_sample partitions. Both bodies are 0038's with the additions (a frozen file is never edited; a later

@@ -2,7 +2,8 @@
 // with its size (its partitions, indexes and TOAST included), what the retention does to it, the time column a row
 // delete compares, the table whose rows keep it ('same as'), its oldest partition or oldest row, the days that
 // oldest row is from now (the actual retention), and what a purge with a given age would drop. The rules are read
-// from pgvigil.purge() as installed (q_retention.go), so the page follows the function. The age itself is the -days
+// from pgvigil.purge() and the collector's beat functions as installed (q_retention.go), so the page follows the
+// functions. The age itself is the -days
 // of 'pgvigil purge', which the operator schedules; the page takes an age to preview and keeps it in this browser.
 // Data: /api/retention?days=N.
 import { get, Table, rowsOf } from './api';
@@ -62,13 +63,13 @@ export async function retentionView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'table_name', label: 'Table' },
       { key: 'size_bytes', label: 'Size', num: true, fmt: fmtBytes },
       { key: 'rows_estimate', label: 'Rows (estimate)', num: true, fmt: fmtNum },
-      { key: 'retention', label: 'Retention', cls: (_v, r) => r.note != null && String(r.note).startsWith('partitioned') ? 'warn' : '' },
+      { key: 'retention', label: 'Retention', cls: (v, r) => r.note != null && String(r.note).startsWith('partitioned') ? 'warn' : v == null || v === '' ? '' : 'status ok' },   // 'kept whole' too: the check judges it (only a partitioned one warns)
       { key: 'column_name', label: 'By column' },
       { key: 'same_as', label: 'Same as' },
       { key: 'partitions', label: 'Partitions', num: true, fmt: v => Number(v) > 0 ? fmtNum(v) : '' },
       { key: 'oldest_partition', label: 'Oldest partition', fmt: day },
       { key: 'oldest_row', label: 'Oldest row', fmt: day },
-      { key: 'actual_days', label: 'Actual retention (days)', num: true, fmt: (v, r) => v == null ? '' : late(r, days) ? `${fmtNum(v)} (older than the age allows)` : fmtNum(v), cls: (_v, r) => late(r, days) ? 'warn' : '' },
+      { key: 'actual_days', label: 'Actual retention (days)', num: true, fmt: (v, r) => v == null ? '' : late(r, days) ? `${fmtNum(v)} (older than the age allows)` : fmtNum(v), cls: (v, r) => v == null ? '' : late(r, days) ? 'warn' : r.judged === true ? 'status ok' : 'status none' },
       { key: 'would_drop', label: `Partitions a purge at ${days} days drops`, num: true, fmt: v => Number(v) > 0 ? fmtNum(v) : '' },
       { key: 'would_drop_bytes', label: 'Size it frees', num: true, fmt: v => Number(v) > 0 ? fmtBytes(v) : '' },
       { key: 'note', label: 'Note', wide: true },
@@ -92,7 +93,7 @@ export async function retentionView(ctx: Ctx): Promise<HTMLElement> {
   apply.addEventListener('click', go);
   age.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
   sec.append(
-    el('p', { class: 'meta' }, 'The repository keeps every series until pgvigil purge removes it: a monthly partition once its whole month is older than the purge age (a daily one its day), the row-level tables their rows older than it, some under conditions of their own (the rules are read from the purge functions as installed). ',
+    el('p', { class: 'meta' }, 'The repository keeps every series until pgvigil purge removes it: a monthly partition once its whole month is older than the purge age (a daily one its day), the row-level tables their rows older than it, some under conditions of their own; the collector\'s own tables are trimmed by its beat at a fixed age, whatever the purge age (the rules are read from the purge functions and the collector\'s beat functions as installed). ',
       'The age is the -days of the scheduled pgvigil purge (deploy/pgvigil-purge.timer runs it with 30); this page does not change it.'),
     el('p', { class: 'meta' }, el('label', { for: 'ret-days' }, 'Purge age to preview (days) '), age, ' ', apply),
     body);

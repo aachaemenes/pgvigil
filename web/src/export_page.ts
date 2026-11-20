@@ -1,5 +1,5 @@
-// The page sheet: sheet 1 of the bar's workbook, the page as it shows it, top to bottom (the design lines E2-1' to
-// E2-14', notes/teams/pdfp-relw2c-s2-report.md): the title rows, then every block of #main the page shows, in page
+// The page sheet: sheet 1 of the bar's workbook, the page as it shows it, top to bottom (the export design's lines
+// E2-1' to E2-14'): the title rows, then every block of #main the page shows, in page
 // order - a heading, a line of text (a note, a meta line, the header strip's top line), a grid with the rows it draws
 // (at most GRID_PAGE) and its 'The first 200 of n rows' line pointing at the grid's own sheet, a property card, cards
 // side by side (tiles, the header strip's chips, the health calendar's days: one column each), a closed disclosure's

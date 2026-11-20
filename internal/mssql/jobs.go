@@ -130,9 +130,11 @@ OUTER APPLY (SELECT COUNT(*) AS schedules, SUM(CAST(s.enabled AS int)) AS enable
 ORDER BY j.name`
 
 // jobStepsSQL: one row per step. The command is read for the job's definition (its versions, task 110) and masked
-// before it leaves the collector (collect.MaskJobText): a step's command can hold a password.
+// before it leaves the collector (collect.MaskJobText): a step's command can hold a password. Twice the kept
+// length is read, masked, then cut (jobStepCommandMax): a key across the kept length is masked whole, never cut
+// first; one across the read's own end is masked to the end of the text read.
 var jobStepsSQL = `SELECT 'step' AS kind, st.job_id, st.step_id, CAST(st.step_name AS nvarchar(128)) AS step_name,
-  CAST(LEFT(st.command, 8000) AS nvarchar(max)) AS command, CAST(DATALENGTH(st.command) / 2 AS int) AS command_chars, st.flags, st.on_success_action, st.on_success_step_id, st.on_fail_action, st.on_fail_step_id,
+  CAST(LEFT(st.command, 16000) AS nvarchar(max)) AS command, CAST(DATALENGTH(st.command) / 2 AS int) AS command_chars, st.flags, st.on_success_action, st.on_success_step_id, st.on_fail_action, st.on_fail_step_id,
   st.retry_attempts, st.retry_interval, CAST(st.output_file_name AS nvarchar(260)) AS output_file, CAST(px.name AS nvarchar(128)) AS proxy,
   CAST(st.subsystem AS nvarchar(40)) AS subsystem, CAST(st.database_name AS nvarchar(128)) AS database_name,
   st.last_run_outcome AS last_outcome,
@@ -151,6 +153,9 @@ var jobSchedulesSQL = `SELECT 'schedule' AS kind, x.job_id, s.schedule_id, CAST(
 FROM msdb.dbo.sysjobschedules x
 JOIN msdb.dbo.sysschedules s ON s.schedule_id = x.schedule_id
 ORDER BY x.job_id, s.name, s.schedule_id`
+
+// jobStepCommandMax is how much of a step's command is kept (the script says when a command is longer).
+const jobStepCommandMax = 8000
 
 // jobHistoryMark is the mark of a sysjobhistory row (h).
 const jobHistoryMark = `CAST(CHECKSUM(CAST(h.job_id AS nvarchar(36)), h.step_id, h.run_date, h.run_time) AS bigint)`
@@ -204,13 +209,20 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Info, cur
 	if err != nil {
 		return nil, err
 	}
+	// a job's description is its author's text and may carry a connection string: masked as a step's command is
+	// (pgAgent's description is, through the definition), before the row, the version and the script are built
+	for _, j := range rows {
+		if d, ok := j["description"].(string); ok {
+			j["description"] = collect.MaskJobText(d)
+		}
+	}
 	steps, err := QueryRows(ctx, conn, jobStepsSQL)
 	if err != nil {
 		return nil, err
 	}
 	for _, st := range steps {
 		if c, ok := st["command"].(string); ok {
-			st["command"] = collect.MaskJobText(c)
+			st["command"] = cutRunes(collect.MaskJobText(c), jobStepCommandMax)
 		}
 	}
 	schedules, err := QueryRows(ctx, conn, jobSchedulesSQL)
@@ -239,7 +251,7 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Info, cur
 		if err != nil {
 			return nil, err
 		}
-		return append(append(rows, runs...), collect.Row{"kind": "read", "cursor": false}), nil
+		return maskRunText(append(append(rows, runs...), collect.Row{"kind": "read", "cursor": false})), nil
 	}
 	last, haveLast, err := cursor(ctx, JobsCursorSource)
 	if err != nil {
@@ -276,8 +288,28 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Info, cur
 			break
 		}
 	}
-	return append(rows, collect.Row{"kind": "read", "cursor": true},
-		collect.Row{"kind": "cursor", "last_history_id": next, "mark": nextMark}), nil
+	return maskRunText(append(rows, collect.Row{"kind": "read", "cursor": true},
+		collect.Row{"kind": "cursor", "last_history_id": next, "mark": nextMark})), nil
+}
+
+// maskRunText masks a run's output as a step's command is masked (collect.MaskJobText), so docs/jobs.md's "a run's
+// output" holds for SQL Server too: a history row's message is what the step printed (a command it ran, a
+// connection string), and a job's last outcome message is the Agent's summary of the last run. msdb keeps 4,000
+// characters of each and the Agent cuts a step's output shorter still: a key cut there is masked to the end.
+func maskRunText(rows []collect.Row) []collect.Row {
+	for _, r := range rows {
+		k := ""
+		switch r["kind"] {
+		case "run":
+			k = "message"
+		case "job":
+			k = "last_message"
+		}
+		if t, ok := r[k].(string); ok && k != "" {
+			r[k] = collect.MaskJobText(t)
+		}
+	}
+	return rows
 }
 
 // jobsReadFrom is where a read starts: a little behind the cursor while the row at the cursor is still the row

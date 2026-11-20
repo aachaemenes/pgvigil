@@ -57,7 +57,7 @@ Not proven by these runs: a Windows host other than the SQL Server 2016 server a
 
 ## Collections
 
-Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Forty-two collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
@@ -65,17 +65,24 @@ Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one che
 | `mssql_traceflags` | 1 hour | the trace flags on globally (`DBCC TRACESTATUS(-1)`) and their history | any login | not run | [jobs and configuration history](jobs.md) |
 | `mssql_services` | 5 min | is SQL Server Agent running, is Database Mail started, the memory dump files | VIEW SERVER STATE | not run | this page |
 | `mssql_requests` | 1 min | what runs now and who blocks whom | VIEW SERVER STATE | runs | [running queries](sqlserver-running.md) |
+| `mssql_sessions` | 1 min | sessions and requests by user / system (the server's `is_user_process` over every session) and status, the waiting tasks of user sessions (benign waits left out); pgvigil's own sessions counted apart | VIEW SERVER STATE | not run | the Connections page's Sessions and requests |
 | `mssql_waits` | 1 min | the wait counters, as the difference between two reads | VIEW SERVER STATE | runs (the database's own waits) | [running queries](sqlserver-running.md) |
 | `mssql_waiting_tasks` | 1 min | every task of every waiting request (`sys.dm_os_waiting_tasks` with `sys.dm_exec_requests`, PerformanceMonitor's read), its resource decoded to database, object and index, and the THREADPOOL waiters | VIEW SERVER STATE | runs (VIEW DATABASE STATE; not proven there) | the Waiting tasks tab |
 | `mssql_xe` | 1 min | the Extended Events sessions a DBA created from pgvigil's script: deadlocks, blocked-process reports, slow batches, cancelled requests, availability group events | VIEW SERVER STATE | runs (database-scoped sessions) | [Extended Events](sqlserver-xe.md) |
 | `mssql_ag` | 1 min | Always On availability groups | Always On enabled, VIEW SERVER STATE, VIEW ANY DEFINITION | not run | [availability, jobs, backups](sqlserver-hadr.md) |
 | `mssql_mirroring` | 1 min | database mirroring | VIEW SERVER STATE for the queues | not run | [availability, jobs, backups](sqlserver-hadr.md) |
-| `mssql_logshipping` | 5 min | msdb's log shipping monitor tables | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
-| `mssql_replication` | 5 min | the distribution database, on a distributor | a user in the distribution database with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
+| `mssql_logshipping` | 5 min | msdb's log shipping monitor tables and the restore history of every restoring database | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
+| `mssql_replication` | 5 min | each published database (every server); the distribution database and the agents' jobs, on a distributor | VIEW SERVER STATE; a user in the distribution database and in msdb with db_datareader | not run | [replication](sqlserver-replication.md) |
 | `mssql_jobs` | 5 min | SQL Server Agent: jobs, steps, schedules, what runs now, the history | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
+| `mssql_fci` | 1 min | a failover cluster instance's nodes and owner, where SERVERPROPERTY('IsClustered') is 1 | VIEW SERVER STATE | not run | [availability, jobs, backups](sqlserver-hadr.md) |
 | `mssql_backups` | 1 hour | every database's last full, differential and log backup | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
 | `mssql_storage` | 1 hour | every database file with its size, growth and volume | VIEW ANY DEFINITION; VIEW SERVER STATE for the volumes | not run yet | [storage and row versions](sqlserver-storage.md) |
 | `mssql_versionstore` | 1 min | tempdb's version store and the transaction that holds it | VIEW SERVER STATE | not run yet | [storage and row versions](sqlserver-storage.md) |
+| `mssql_storage_depth` | 1 hour | the default data and log paths, the fixed drives, the data and log files no database lists | as `mssql_cpu`; VIEW ANY DEFINITION for the orphaned files; SQL Server 2017 and later for the drives and folders | not run | [storage depth](sqlserver-storage.md#storage-depth-task-407) |
+| `mssql_tables` | 6 hours (on by default; off per instance in its `disabled` list) | every user table: type, compression, partitions, rows and sizes, kept when they change | as `mssql_cpu`; VIEW ANY DEFINITION | not run | [storage depth](sqlserver-storage.md#storage-depth-task-407) |
+| `mssql_confcheck` | 1 hour | what the configuration checks judge and nothing else reads: @@SERVERNAME against the server's name, every server event session and whether it runs, the error log files kept, master's startup procedures, per database its state, recovery model, Query Store, a secondary's role and its database-scoped MAXDOP, the linked servers and who is mapped at each | any login for the names and the databases; VIEW SERVER STATE for the event sessions, the platform and the CPUs; VIEW ANY DEFINITION for the startup procedures (and, with ALTER ANY LINKED SERVER, ALTER ANY LOGIN, setupadmin or sysadmin, to see every linked server); a user in a database for its scoped MAXDOP | not run | [configuration checks](sqlserver-checks.md#configuration-checks-task-409) |
+| `mssql_linkedserver_test` | 1 hour, only on an instance that carries the tag `pgvigil:linkedserver-test` | `sys.sp_testlinkedserver` for each linked server of a SQL Server provider, two a run, each in its turn | as the collector's login maps at each linked server | not run | [configuration checks](sqlserver-checks.md#configuration-checks-task-409) |
+| `mssql_maintenance` | 1 hour | Ola Hallengren's maintenance solution: in every database the login can enter its objects and version and its CommandLog forward from a cursor (at most 50,000 rows a database a run, times in UTC); each database's data purity flag (DBCC DBINFO, once a day) | VIEW DEFINITION (or VIEW ANY DEFINITION) to see the solution's procedures; SELECT on dbo.CommandLog for its history; a user in a database for its purity flag (enough on 2022; 2017 and 2019 refuse a login that is not sysadmin, 2571) | not run | [maintenance](sqlserver-checks.md#maintenance-task-410) |
 | `mssql_cpu` | 1 min | CPU (the scheduler monitor ring buffer), scheduler pressure, batch requests / compilations / transactions per second | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE is enough) | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
 | `mssql_memory` | 1 min | the machine's and the server's memory, the memory clerks, memory grants, Page life expectancy | as `mssql_cpu` | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
 | `mssql_fileio` | 1 min | read and write latency and bytes per database file, as the difference between two reads | as `mssql_cpu`; VIEW ANY DEFINITION for the files' names and types (partial without it) | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
@@ -90,9 +97,11 @@ Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one che
 | `mssql_running_plans` | off (1 min once on) | the plan of a running query past DBA Dash 4.25.0's thresholds (1 s of CPU, 50 MB granted, 10 s running, or two requests on one plan), kept once an hour per plan; off for every instance until an admin ticks its running plans box on Admin > Instances, or an instance of this file names it in `schedules: {mssql_running_plans: 1m}` | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md#plans-of-running-queries) |
 | `mssql_live_plans` | off (1 min once on) | the plan with its operator counters of a request past 60 s of CPU or 5 minutes running unblocked, 10 a read at most; SQL Server 2016 SP1, 2017 CU26, 2019 CU12 and later, Managed Instance, Azure SQL Database; before 2019 lightweight profiling needs trace flag 7412; switched on with `schedules: {mssql_live_plans: 1m}` | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md#plans-of-running-queries) |
 | `mssql_indexes` | 6 hours | each user database's indexes with their usage and size, the missing-index DMVs | VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE; SELECT on msdb.dbo.restorehistory | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+| `mssql_constraints` | 6 hours | each user database's untrusted foreign keys and check constraints (dbachecks' rules) | VIEW ANY DEFINITION, CONNECT ANY DATABASE | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
 | `mssql_stats` | 6 hours | each user database's statistics with their age, modifications and sample | as `mssql_indexes`; db_datareader for the sample rates | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
 | `mssql_errorlog` | 5 min | the error log forward from a date cursor: errors of severity 17+, sp_LogHunter's search strings, the instance's own | EXECUTE on xp_readerrorlog; the archives: securityadmin (2022+: VIEW SERVER STATE) | not run | [readers](sqlserver-readers.md) |
 | `mssql_defaulttrace` | 5 min | the default trace forward: file growths and shrinks, DBCC commands, DDL | ALTER TRACE | not run | [readers](sqlserver-readers.md) |
+| `mssql_schema` | 15 min (off without `mssql_schema.databases`) | the schema history of the named databases: every object's definition, what changed between two reads, who by the default trace | VIEW ANY DEFINITION, CONNECT ANY DATABASE; SELECT on msdb.dbo.restorehistory | runs (its one database, at the daily read: no default trace; not proven there) | [schema snapshots](schema.md#sql-server-mssql_schema) |
 | `mssql_syshealth` | 5 min | system_health's sp_server_diagnostics results (SYSTEM, RESOURCE, QUERY_PROCESSING, IO_SUBSYSTEM) | VIEW SERVER STATE | not run | [readers](sqlserver-readers.md) |
 | `mssql_reports` | 1 hour | server role members, SQL logins with their password age, the error log's failed logins, the services' files, extended properties and the largest tables of each database | VIEW ANY DEFINITION (role members, logins, properties), VIEW SERVER STATE (services; with VIEW ANY DEFINITION the table sizes), EXECUTE on xp_readerrorlog or securityadmin (the failed logins; 2022 and later VIEW SERVER STATE or VIEW ANY ERROR LOG) | not run | [reports](reports.md) |
 
@@ -135,9 +144,14 @@ CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
 GRANT EXECUTE ON master.sys.xp_readerrorlog TO [pgvigil_monitor];
 ```
 
-On Azure SQL Database the login block is the first three lines only, run in `master` (or a contained user in the database, with `VIEW DATABASE STATE`); not proven here.
+On Azure SQL Database the login block is the first three lines only, run in `master` (or a contained user in the database, with `VIEW DATABASE STATE` and, for the schema read, `VIEW DEFINITION` in the database); not proven here.
 
 A collection that needs a right the login lacks does not fail the instance: it stores what it could read, and its row on the Collections page says `partial` with the missing right.
+
+The DBA's own SQL - [custom checks](custom.md#sql-server-checks) and [custom reports](customreports.md) - runs only as
+this login with no right more: one more server right, an impersonation, or a right that writes in any database (a
+database-wide `EXECUTE`, a grant on a schema or an object, a schema it owns) refuses it, by the right's name; `EXECUTE`
+on one procedure is the grant a procedure needs.
 
 ## Agent, Database Mail and memory dumps (`mssql_services`, every 5 minutes)
 

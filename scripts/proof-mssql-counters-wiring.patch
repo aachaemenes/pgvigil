@@ -1,0 +1,1002 @@
+diff --git c/internal/config/config.go i/internal/config/config.go
+index 6e260406..9cb07e47 100644
+--- c/internal/config/config.go
++++ i/internal/config/config.go
+@@ -57,6 +57,9 @@ type Config struct {
+ 	// Serve's own repository login holds pgvigil_auth (it reads the UI's password hashes), so without this key a store
+ 	// report is refused with words, never run as serve's login (REPORT ROLE, internal/web/reportrole.go).
+ 	ReportsDSNRaw string `yaml:"reports_dsn"`
++	// MSSQLCounters adds counters to every SQL Server instance's counter list or removes them (docs/configuration.md,
++	// 'mssql_counters'); an instance's own lines are narrower and win.
++	MSSQLCounters CounterEdits `yaml:"mssql_counters"`
+ 	// Flags carries command-line choices; never read from the file.
+ 	Flags Flags `yaml:"-"`
+ }
+@@ -144,6 +147,10 @@ type Instance struct {
+ 	// http://<the dsn's host>:8008 (docs/backups-postgres.md); nil = the default, asked only while a Patroni session
+ 	// is connected.
+ 	Patroni *Patroni `yaml:"patroni"`
++	// MSSQLCounters adds counters to this SQL Server instance's counter list or removes them (docs/configuration.md).
++	MSSQLCounters CounterEdits `yaml:"mssql_counters"`
++	// MSSQLCountersRoot is the file's root mssql_counters, copied here by Validate (the runner reads one instance).
++	MSSQLCountersRoot CounterEdits `yaml:"-"`
+ }
+ 
+ // Patroni is the patroni: block of a postgres instance: URL is http(s)://host:port (another port, or https); CAFile
+@@ -156,6 +163,64 @@ type Patroni struct {
+ 	KeyFile  string `yaml:"key_file"`
+ }
+ 
++// CounterEdits are pgvigil.yaml's additions to and removals from the SQL Server counter list.
++type CounterEdits struct {
++	Add    []CounterRef `yaml:"add"`
++	Remove []CounterRef `yaml:"remove"`
++}
++
++// CounterRef names a counter: its object (without the instance's prefix) and name, one instance of it or every one
++// (instance empty), and for an addition its kind (” from the type read; 'count' for a 65792 counter that counts since
++// the server started).
++type CounterRef struct {
++	Object   string `yaml:"object" json:"object"`
++	Counter  string `yaml:"counter" json:"counter"`
++	Instance string `yaml:"instance" json:"inst,omitempty"`
++	Kind     string `yaml:"kind" json:"kind,omitempty"`
++}
++
++// CounterInUse says what reads a counter (” = nothing); the SQL Server collector sets it (a removal of a counter in
++// use is refused).
++var CounterInUse = func(_, _ string) string { return "" }
++
++// validateCounterEdits checks one mssql_counters block.
++func validateCounterEdits(where string, e CounterEdits) error {
++	for _, set := range []struct {
++		name string
++		refs []CounterRef
++	}{{"add", e.Add}, {"remove", e.Remove}} {
++		for i, r := range set.refs {
++			if strings.TrimSpace(r.Object) == "" || strings.TrimSpace(r.Counter) == "" {
++				return fmt.Errorf("%s.mssql_counters.%s[%d]: object and counter are required", where, set.name, i)
++			}
++			if len(r.Object) > 128 || len(r.Counter) > 128 || len(r.Instance) > 128 {
++				return fmt.Errorf("%s.mssql_counters.%s[%d]: a name is 128 characters at most", where, set.name, i)
++			}
++			switch r.Kind {
++			case "", "count", "rate", "gauge":
++			default:
++				return fmt.Errorf("%s.mssql_counters.%s[%d]: kind must be empty, count, rate or gauge (got %q)", where, set.name, i, r.Kind)
++			}
++			// a DMV column's arithmetic is pgvigil's own (the collector would ignore a kind): refused in words
++			if r.Kind != "" && strings.HasPrefix(strings.ToLower(r.Object), "sys.dm_os_") {
++				return fmt.Errorf("%s.mssql_counters.%s[%d]: %s / %s is a DMV column: its kind is fixed by pgvigil, leave kind empty", where, set.name, i, r.Object, r.Counter)
++			}
++			if set.name == "remove" {
++				if why := CounterInUse(r.Object, r.Counter); why != "" {
++					return fmt.Errorf("%s.mssql_counters.remove[%d]: %s / %s is read by %s and stays in the list", where, i, r.Object, r.Counter, why)
++				}
++			}
++			// a counter a page or a rule reads keeps the arithmetic its type gives (a gauge kind on Errors/sec stores no rate)
++			if set.name == "add" && r.Kind != "" {
++				if why := CounterInUse(r.Object, r.Counter); why != "" {
++					return fmt.Errorf("%s.mssql_counters.add[%d]: %s / %s is read by %s: its kind stays as SQL Server types it", where, i, r.Object, r.Counter, why)
++				}
++			}
++		}
++	}
++	return nil
++}
++
+ // DBADashRepo is one DBADash repository of the dbadash: list.
+ type DBADashRepo struct {
+ 	// Name is the tree folder's name ("DBADash: <name>") and the repository's key in pgvigil; it must be unique.
+@@ -532,12 +597,19 @@ func (c *Config) Validate() error {
+ 	if err := c.validateGMSA(); err != nil {
+ 		return err
+ 	}
++	if err := validateCounterEdits("root", c.MSSQLCounters); err != nil {
++		return err
++	}
+ 	seen := map[string]bool{}
+ 	for i := range c.Instances {
+ 		in := &c.Instances[i]
+ 		if strings.TrimSpace(in.Name) == "" {
+ 			return fmt.Errorf("instances[%d]: name is required", i)
+ 		}
++		if err := validateCounterEdits(fmt.Sprintf("instance %q", in.Name), in.MSSQLCounters); err != nil {
++			return err
++		}
++		in.MSSQLCountersRoot = c.MSSQLCounters
+ 		if seen[in.Name] {
+ 			return fmt.Errorf("instance %q is listed twice", in.Name)
+ 		}
+@@ -682,12 +754,24 @@ func Resolve(v string) string {
+ 	}
+ }
+ 
++// renamedCollections: a collection whose read moved to another (task 401: the counters of mssql_cpu and mssql_activity
++// are mssql_counters' and mssql_counters_db's): a site that disabled the old one keeps the read off.
++var renamedCollections = map[string]string{"mssql_cpu": "mssql_counters", "mssql_activity": "mssql_counters_db"}
++
++// followingCollections: a collection that reads the same source as another and is off whenever that one is (the
++// counter catalogue reads sys.dm_os_performance_counters like mssql_counters: a site that switched the counters off,
++// or mssql_cpu before them, keeps that DMV unread - F7).
++var followingCollections = map[string]string{"mssql_counter_catalog": "mssql_counters"}
++
+ // Interval returns the effective interval of a collection for an instance:
+ // the instance's override, then the global override, then the page's default (PageDefaults), then the
+ // collection's default; zero = disabled.
+ func (c *Config) Interval(in Instance, collection string, def time.Duration) time.Duration {
+ 	for _, d := range in.Disabled {
+-		if d == collection {
++		if d == collection || renamedCollections[d] == collection {
++			return 0
++		}
++		if f := followingCollections[collection]; f != "" && (d == f || renamedCollections[d] == f) {
+ 			return 0
+ 		}
+ 	}
+diff --git c/internal/config/config_test.go i/internal/config/config_test.go
+index 9a299756..3b0ce69b 100644
+--- c/internal/config/config_test.go
++++ i/internal/config/config_test.go
+@@ -254,3 +254,36 @@ func TestInlinePassword(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// A site that disabled mssql_cpu (the counters' old home) or mssql_counters keeps sys.dm_os_performance_counters
++// unread: the counters and the daily catalogue are off; the per-database counters follow mssql_activity only (task
++// 401).
++func TestCounterOptOut(t *testing.T) {
++	c := &Config{}
++	for _, off := range []string{"mssql_cpu", "mssql_counters"} {
++		in := Instance{Disabled: []string{off}}
++		for _, col := range []string{"mssql_counters", "mssql_counter_catalog"} {
++			if got := c.Interval(in, col, time.Hour); got != 0 {
++				t.Fatalf("disabled %s: %s runs every %v", off, col, got)
++			}
++		}
++		if got := c.Interval(in, "mssql_counters_db", time.Hour); got != time.Hour {
++			t.Fatalf("disabled %s: mssql_counters_db %v, want 1h", off, got)
++		}
++	}
++	if got := c.Interval(Instance{Disabled: []string{"mssql_activity"}}, "mssql_counters_db", time.Hour); got != 0 {
++		t.Fatalf("disabled mssql_activity: mssql_counters_db runs every %v", got)
++	}
++}
++
++// A kind on a DMV column is refused in words (the collector's arithmetic for a DMV column is its own); a DMV column
++// with no kind passes.
++func TestCounterEditsDMVKind(t *testing.T) {
++	err := validateCounterEdits("root", CounterEdits{Add: []CounterRef{{Object: "sys.dm_os_schedulers", Counter: "yield_count", Kind: "rate"}}})
++	if err == nil || !strings.Contains(err.Error(), "is a DMV column: its kind is fixed by pgvigil") {
++		t.Fatalf("a kind on a DMV column: %v", err)
++	}
++	if err := validateCounterEdits("root", CounterEdits{Add: []CounterRef{{Object: "sys.dm_os_schedulers", Counter: "yield_count"}}}); err != nil {
++		t.Fatalf("a DMV column with no kind: %v", err)
++	}
++}
+diff --git c/internal/config/inventory.go i/internal/config/inventory.go
+index c2d14054..52961fe5 100644
+--- c/internal/config/inventory.go
++++ i/internal/config/inventory.go
+@@ -71,9 +71,10 @@ func RefOK(v string) bool {
+ }
+ 
+ // Merge gives the file's instances, then the page's enabled ones the file does not name, each made an Instance the
+-// way Validate makes a file instance (platform auto when empty, the file-level query_text). A page instance that
+-// breaks a rule is left out with its reason in skipped (the page refuses those on write; this guards a hand edit).
+-func Merge(file []Instance, page []PageInstance, queryText string) (all []Instance, skipped []string) {
++// way Validate makes a file instance (platform auto when empty, the file-level query_text, the file's root
++// mssql_counters lines). A page instance that breaks a rule is left out with its reason in skipped (the page refuses
++// those on write; this guards a hand edit).
++func Merge(file []Instance, page []PageInstance, queryText string, root CounterEdits) (all []Instance, skipped []string) {
+ 	all = append(all, file...)
+ 	inFile := map[string]bool{}
+ 	for _, in := range file {
+@@ -109,7 +110,7 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
+ 		if plat == "" {
+ 			plat = "auto"
+ 		}
+-		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText})
++		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText, MSSQLCountersRoot: root})
+ 		// task 406: an instance whose running plans box is ticked on the page (off for every instance until an admin ticks
+ 		// it) reads them each minute, unless the file's global schedules: names mssql_running_plans (0 = off for all)
+ 		if p.Engine == EngineSQLServer && p.RunningPlans {
+@@ -168,8 +169,8 @@ func Diff(old, cur []Instance) (stop, start []string) {
+ // hold (nil = always) says whether this collector holds the page's instances (one collector of a repository does:
+ // sched's page_inventory lock). One that does not collects the file's instances only, says so once, and asks again
+ // each tick: when the holder ends, the next to take the lock reads the page's list at once.
+-func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, apply func([]Instance)) {
+-	WatchInventoryRaw(ctx, log, src, hold, file, queryText, every, nil, false, func(all []Instance, _ []PageInstance, _ int64) { apply(all) })
++func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, root CounterEdits, every time.Duration, apply func([]Instance)) {
++	WatchInventoryRaw(ctx, log, src, hold, file, queryText, root, every, nil, false, func(all []Instance, _ []PageInstance, _ int64) { apply(all) })
+ }
+ 
+ // WatchInventoryRaw is WatchInventory for serve's doors: apply also gets the page's raw rows (a disabled row and a row
+@@ -178,7 +179,7 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader,
+ // a receive on wake reads at once (serve's own write, so this serve's doors follow before it replies); with reapply,
+ // every tick applies the last rows again although the generation did not move (serve re-resolves a page door whose
+ // credential could not be read).
+-func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, wake <-chan struct{}, reapply bool, apply func(all []Instance, page []PageInstance, gen int64)) {
++func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, root CounterEdits, every time.Duration, wake <-chan struct{}, reapply bool, apply func(all []Instance, page []PageInstance, gen int64)) {
+ 	if every <= 0 {
+ 		every = 15 * time.Second
+ 	}
+@@ -201,7 +202,7 @@ func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReade
+ 					toldOther = true
+ 				}
+ 				if held || have == -1 { // lost the lock, or never had it: the file's list alone
+-					all, _ := Merge(file, nil, queryText)
++					all, _ := Merge(file, nil, queryText, root)
+ 					apply(all, nil, 0)
+ 				}
+ 				held, have, failing = false, -3, false
+@@ -233,13 +234,13 @@ func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReade
+ 			failing = true
+ 			if have == -1 { // the first read failed: run the file's instances meanwhile (once, not each tick), generation -1
+ 				have = -2
+-				all, _ := Merge(file, nil, queryText)
++				all, _ := Merge(file, nil, queryText, root)
+ 				apply(all, nil, -1)
+ 			}
+ 			return
+ 		}
+ 		failing = false
+-		all, skipped := Merge(file, page, queryText)
++		all, skipped := Merge(file, page, queryText, root)
+ 		for _, s := range skipped {
+ 			log.Warn("instances: a page instance is left out", "why", s)
+ 		}
+diff --git c/internal/config/inventory_runningplans_test.go i/internal/config/inventory_runningplans_test.go
+index 93dcffda..a2f81d0e 100644
+--- c/internal/config/inventory_runningplans_test.go
++++ i/internal/config/inventory_runningplans_test.go
+@@ -14,7 +14,7 @@ func TestRunningPlansSwitch(t *testing.T) {
+ 		{Name: "p_on", Engine: EngineSQLServer, DSNRef: "file:/x/p_on", RunningPlans: true},
+ 		{Name: "pg_on", Engine: EnginePostgres, DSNRef: "file:/x/pg_on", RunningPlans: true},
+ 	}
+-	all, skipped := Merge(file, page, "full")
++	all, skipped := Merge(file, page, "full", CounterEdits{})
+ 	if len(skipped) != 0 || len(all) != 4 {
+ 		t.Fatalf("merge: %d instances, skipped %v", len(all), skipped)
+ 	}
+diff --git c/internal/config/inventory_test.go i/internal/config/inventory_test.go
+index 46bb1ca4..cc450fb8 100644
+--- c/internal/config/inventory_test.go
++++ i/internal/config/inventory_test.go
+@@ -27,7 +27,9 @@ func TestMergeKeepsFileFirstAndSkipsBadPageRows(t *testing.T) {
+ 		{Name: "inline", Engine: EnginePostgres, DSNRef: "host=x password=y"},            // a connection string, never run
+ 		{Name: "eng", Engine: "oracle", DSNRef: "file:/x/eng.dsn"},
+ 	}
+-	all, skipped := Merge(file, page, "normalized")
++	// the file's root mssql_counters lines reach a page instance too (the runner reads them from it)
++	root := CounterEdits{Remove: []CounterRef{{Object: "Deprecated Features", Counter: "Usage", Instance: "sp_dboption"}}}
++	all, skipped := Merge(file, page, "normalized", root)
+ 	var names []string
+ 	for _, in := range all {
+ 		names = append(names, in.Name)
+@@ -41,6 +43,9 @@ func TestMergeKeepsFileFirstAndSkipsBadPageRows(t *testing.T) {
+ 	if all[1].Platform != "auto" || all[1].QueryText != "normalized" || all[1].DSNRaw != "file:/etc/pgvigil/instances/sql1.dsn" {
+ 		t.Fatalf("sql1 = %+v", all[1])
+ 	}
++	if len(all[1].MSSQLCountersRoot.Remove) != 1 || all[1].MSSQLCountersRoot.Remove[0] != root.Remove[0] {
++		t.Fatalf("sql1's root counter lines = %+v, want the file's root %+v", all[1].MSSQLCountersRoot, root)
++	}
+ 	if len(skipped) != 4 {
+ 		t.Fatalf("skipped %v, want 4 (pg1, bad ref, inline, eng)", skipped)
+ 	}
+@@ -95,7 +100,7 @@ func TestWatchInventoryAppliesOnlyWhenTheGenerationMoves(t *testing.T) {
+ 	ctx, cancel := context.WithCancel(context.Background())
+ 	done := make(chan struct{})
+ 	go func() {
+-		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
++		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", CounterEdits{}, 20*time.Millisecond, func(all []Instance) {
+ 			var n []string
+ 			for _, in := range all {
+ 				n = append(n, in.Name)
+@@ -435,7 +440,7 @@ func TestWatchInventoryFailedFirstReadAppliesTheFileOnce(t *testing.T) {
+ 	ctx, cancel := context.WithCancel(context.Background())
+ 	done := make(chan struct{})
+ 	go func() {
+-		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
++		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", CounterEdits{}, 20*time.Millisecond, func(all []Instance) {
+ 			var n []string
+ 			for _, in := range all {
+ 				n = append(n, in.Name)
+@@ -481,7 +486,7 @@ func TestWatchInventoryRawFailedFirstReadIsUnread(t *testing.T) {
+ 	ctx, cancel := context.WithCancel(context.Background())
+ 	defer cancel()
+ 	gens := make(chan int64, 16)
+-	go WatchInventoryRaw(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, nil, "full", 20*time.Millisecond, nil, false,
++	go WatchInventoryRaw(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, nil, "full", CounterEdits{}, 20*time.Millisecond, nil, false,
+ 		func(_ []Instance, _ []PageInstance, gen int64) { gens <- gen })
+ 	select {
+ 	case g := <-gens:
+@@ -518,7 +523,7 @@ func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
+ 	}
+ 	seen := make(chan got, 16)
+ 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+-	go WatchInventoryRaw(ctx, log, src, nil, nil, "full", time.Hour, wake, false, func(all []Instance, page []PageInstance, gen int64) {
++	go WatchInventoryRaw(ctx, log, src, nil, nil, "full", CounterEdits{}, time.Hour, wake, false, func(all []Instance, page []PageInstance, gen int64) {
+ 		seen <- got{len(all), page, gen}
+ 	})
+ 	first := <-seen
+@@ -541,7 +546,7 @@ func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
+ 	ctx2, cancel2 := context.WithCancel(context.Background())
+ 	defer cancel2()
+ 	n := make(chan int64, 16)
+-	go WatchInventoryRaw(ctx2, log, src, nil, nil, "full", 20*time.Millisecond, nil, true, func(_ []Instance, _ []PageInstance, gen int64) { n <- gen })
++	go WatchInventoryRaw(ctx2, log, src, nil, nil, "full", CounterEdits{}, 20*time.Millisecond, nil, true, func(_ []Instance, _ []PageInstance, gen int64) { n <- gen })
+ 	for i := 0; i < 3; i++ {
+ 		select {
+ 		case g := <-n:
+diff --git c/internal/mssql/activity.go i/internal/mssql/activity.go
+index dc8b2fe2..6d40fa37 100644
+--- c/internal/mssql/activity.go
++++ i/internal/mssql/activity.go
+@@ -25,9 +25,6 @@ import (
+ //     tasks) and sys.dm_db_session_space_usage (the session's finished tasks) summed per session over 50, kept when
+ //     the allocations are over 0, the 20 largest by allocations, with the running tasks' part apart and the session's
+ //     login, program, host, status, open transactions and last request's end.
+-//   - The per-database performance counters (the Databases and Database Replica objects of perfmonCounters, every
+-//     database but the system ones) as 'perfmon' rows: per-database counters every 5 minutes, the instance's every
+-//     minute (cpu.go).
+ //   - sp_PressureDetector's CPU details from sys.dm_os_sys_info: the columns it lists that this server has
+ //     (socket_count, numa_node_count, cpu_count, cores_per_socket, hyperthread_ratio, softnuma_configuration_desc,
+ //     scheduler_total_count, scheduler_count), found in sys.all_columns as sp_PressureDetector finds them (L3843-3881).
+@@ -105,14 +102,6 @@ GROUP BY u.session_id
+ HAVING SUM(u.ua + u.ia) > 0
+ ORDER BY SUM(u.ua + u.ia) DESC`
+ 
+-// activityDBCounterSQL: the per-database objects of perfmonCounters (cpuCounterRows keeps them with perDB).
+-var activityDBCounterSQL = `SELECT CAST(RTRIM(object_name) AS nvarchar(128)) AS object, CAST(RTRIM(counter_name) AS nvarchar(128)) AS counter,
+-  CAST(RTRIM(instance_name) AS nvarchar(128)) AS instance, CAST(cntr_value AS bigint) AS value, CAST(cntr_type AS bigint) AS type
+-FROM sys.dm_os_performance_counters
+-WHERE (RTRIM(object_name) LIKE N'%:Databases' OR RTRIM(object_name) LIKE N'%:Database Replica')
+-  AND counter_name IN (` + perfmonInList() + `)
+-  AND RTRIM(instance_name) NOT IN (` + perfmonSkipInList() + `)`
+-
+ // cpuInfoColumns: sp_PressureDetector's CPU details, in its order; a server lists only those sys.dm_os_sys_info has.
+ var cpuInfoColumns = []string{"socket_count", "numa_node_count", "cpu_count", "cores_per_socket", "hyperthread_ratio",
+ 	"softnuma_configuration_desc", "scheduler_total_count", "scheduler_count"}
+@@ -141,7 +130,7 @@ func (activityCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]col
+ 		out = append(out, keep(rows)...)
+ 	}
+ 	apart("sys.dm_db_session_space_usage", activityTempdbSQL, func(r []collect.Row) []collect.Row { return r })
+-	apart("sys.dm_os_performance_counters", activityDBCounterSQL, func(r []collect.Row) []collect.Row { return cpuCounterRows(r, true) })
++	// the per-database counters are mssql_counters_db's (task 401): one writer per series
+ 	if q, err := cpuInfoSQL(ctx, conn); err != nil {
+ 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.dm_os_sys_info", "message": err.Error()})
+ 	} else if q != "" {
+diff --git c/internal/mssql/activity_test.go i/internal/mssql/activity_test.go
+index 142e4d1d..a4b4f41b 100644
+--- c/internal/mssql/activity_test.go
++++ i/internal/mssql/activity_test.go
+@@ -7,72 +7,28 @@ import (
+ 	"github.com/aachaemenes/pgvigil/internal/collect"
+ )
+ 
+-// One read of the counters gives the four throughput counters as 'counter' rows exactly as before (counter, value)
+-// and the listed counters as 'perfmon' rows; the per-database objects go to the 5-minute read only, the system
+-// names nowhere.
+-func TestCPUCounterRowsSplit(t *testing.T) {
++// One read of the counters gives the four throughput counters as 'counter' rows exactly as before (counter, value);
++// every other counter is mssql_counters' (task 401) and leaves this read.
++func TestCPUCounterRows(t *testing.T) {
+ 	rows := []collect.Row{
+ 		{"object": "SQLServer:SQL Statistics", "counter": "Batch Requests/sec", "instance": "", "value": int64(900), "type": int64(272696576)},
+ 		{"object": "SQLServer:Databases", "counter": "Transactions/sec", "instance": "_Total", "value": int64(50), "type": int64(272696576)},
+ 		{"object": "SQLServer:Databases", "counter": "Transactions/sec", "instance": "sales", "value": int64(12), "type": int64(272696576)},
+-		{"object": "SQLServer:Databases", "counter": "Log Bytes Flushed/sec", "instance": "master", "value": int64(7), "type": int64(272696576)},
+ 		{"object": "MSSQL$NAMED:General Statistics", "counter": "Processes blocked", "instance": "", "value": int64(0), "type": int64(65792)},
+-		{"object": "SQLServer:Workload Group Stats", "counter": "Queued requests", "instance": "internal", "value": int64(3), "type": int64(65792)},
+-		{"object": "SQLServer:Workload Group Stats", "counter": "Queued requests", "instance": "default", "value": int64(2), "type": int64(65792)},
+-		{"object": "SQLServer:Plan Cache", "counter": "Cache Hit Ratio", "instance": "_Total", "value": int64(5), "type": int64(537003264)},
+ 	}
+-	inst := cpuCounterRows(rows, false)
+-	var counters, perfmon []collect.Row
+-	for _, r := range inst {
+-		switch r["kind"] {
+-		case "counter":
+-			counters = append(counters, r)
+-		case "perfmon":
+-			perfmon = append(perfmon, r)
+-		}
+-	}
+-	if len(counters) != 2 || counters[0]["counter"] != "Batch Requests/sec" || counters[1]["counter"] != "Transactions/sec" || len(counters[1]) != 3 {
+-		t.Fatalf("the 'counter' rows: %v (want Batch Requests/sec and _Total Transactions/sec, keys kind, counter, value)", counters)
+-	}
+-	want := map[string]bool{"SQL Statistics|Batch Requests/sec|_Total": true, "General Statistics|Processes blocked|_Total": true,
+-		"Workload Group Stats|Queued requests|default": true}
+-	if len(perfmon) != len(want) {
+-		t.Fatalf("instance 'perfmon' rows: %v", perfmon)
+-	}
+-	for _, r := range perfmon {
+-		k := r["object"].(string) + "|" + r["counter"].(string) + "|" + r["instance"].(string)
+-		if !want[k] {
+-			t.Errorf("unexpected perfmon row %s (a per-database object, a system name or an unlisted counter)", k)
+-		}
+-	}
+-	db := cpuCounterRows(rows, true)
+-	if len(db) != 2 {
+-		t.Fatalf("per-database rows: %v (want _Total and sales Transactions/sec; master left out; no 'counter' rows)", db)
+-	}
+-	for _, r := range db {
+-		if r["kind"] != "perfmon" || r["object"] != "Databases" || r["instance"] == "master" {
+-			t.Errorf("per-database row %v", r)
+-		}
++	got := cpuCounterRows(rows)
++	if len(got) != 2 || got[0]["counter"] != "Batch Requests/sec" || got[1]["counter"] != "Transactions/sec" || len(got[1]) != 3 || got[1]["kind"] != "counter" {
++		t.Fatalf("the 'counter' rows: %v (want Batch Requests/sec and _Total Transactions/sec, keys kind, counter, value)", got)
+ 	}
+ }
+ 
+-// The counter list is PerformanceMonitor's 61 names, no name twice, and the read's IN lists quote a name with a quote.
+-func TestPerfmonListAndQuoting(t *testing.T) {
+-	seen := map[string]bool{}
+-	for _, c := range perfmonCounters {
+-		if seen[c] {
+-			t.Errorf("%q twice", c)
+-		}
+-		seen[c] = true
+-	}
+-	if len(perfmonCounters) != 61 {
+-		t.Errorf("%d names, want 61", len(perfmonCounters))
+-	}
++// The read's IN lists quote a name with a quote; the CPU read names the four throughput counters only.
++func TestNListAndCPUCounterSQL(t *testing.T) {
+ 	if got := nList([]string{"a'b", "c"}); got != "N'a''b', N'c'" {
+ 		t.Errorf("nList = %s", got)
+ 	}
+-	if !strings.Contains(cpuCounterSQL, "N'Wait for the worker'") || !strings.Contains(activityDBCounterSQL, "N'mssqlsystemresource'") {
+-		t.Error("the reads do not carry the list or the system names")
++	if !strings.Contains(cpuCounterSQL, "N'SQL Re-Compilations/sec'") || strings.Contains(cpuCounterSQL, "N'Wait for the worker'") {
++		t.Error("the CPU read is not the four throughput counters alone")
+ 	}
+ }
+ 
+diff --git c/internal/mssql/cpu.go i/internal/mssql/cpu.go
+index aeeaf4c7..e3024895 100644
+--- c/internal/mssql/cpu.go
++++ i/internal/mssql/cpu.go
+@@ -27,10 +27,8 @@ import (
+ //   - Throughput: sys.dm_os_performance_counters' Batch Requests/sec, SQL Compilations/sec, SQL Re-Compilations/sec
+ //     and Databases _Total Transactions/sec, which count since the server started: the import stores each
+ //     interval's rate per second (no rate across a restart or a counter that went down).
+-//   - The performance counters (task 177 D14): the same read of sys.dm_os_performance_counters also returns the
+-//     counters of sp_PressureDetector's perfmon list and PerformanceMonitor's (perfmonCounters), every instance but
+-//     sp_PressureDetector's system names, as rows of their own kind 'perfmon' for mssql_counter_sample (0124); the
+-//     per-database objects (Databases, Database Replica) are read every 5 minutes by mssql_activity, not here.
++//   - The performance counters of task 177 D14 (sp_PressureDetector's perfmon list and PerformanceMonitor's) are
++//     mssql_counters' and mssql_counters_db's list since task 401 (counters.go): this read takes the four above only.
+ //   - The schedulers taken offline (VISIBLE OFFLINE) and the NUMA nodes online and in all, the DAC's node left out
+ //     (PerformanceMonitor's CpuSchedulerStatsCollector), in the scheduler statement.
+ //
+@@ -119,18 +117,14 @@ CROSS JOIN (SELECT CAST(COUNT(*) AS bigint) AS nodes_total,
+               FROM sys.dm_os_nodes WHERE node_state_desc NOT LIKE N'%DAC%') n
+ WHERE s.status = N'VISIBLE ONLINE'`
+ 
+-// cpuCounterSQL: the cumulative throughput counters and the instance-level performance counters, in one read.
+-// object_name carries the instance's prefix (SQLServer: or MSSQL$<name>:) and is nchar padded with blanks: trimmed
+-// before the match. cpuCounterRows splits the rows into the two kinds.
++// cpuCounterSQL: the four cumulative throughput counters. object_name carries the instance's prefix (SQLServer: or
++// MSSQL$<name>:) and is nchar padded with blanks: trimmed before the match.
+ var cpuCounterSQL = `SELECT CAST(RTRIM(object_name) AS nvarchar(128)) AS object, CAST(RTRIM(counter_name) AS nvarchar(128)) AS counter,
+   CAST(RTRIM(instance_name) AS nvarchar(128)) AS instance, CAST(cntr_value AS bigint) AS value, CAST(cntr_type AS bigint) AS type
+ FROM sys.dm_os_performance_counters
+ WHERE (RTRIM(object_name) LIKE N'%:SQL Statistics'
+        AND counter_name IN (N'Batch Requests/sec', N'SQL Compilations/sec', N'SQL Re-Compilations/sec'))
+-   OR (RTRIM(object_name) LIKE N'%:Databases' AND counter_name = N'Transactions/sec' AND instance_name = N'_Total')
+-   OR (counter_name IN (` + perfmonInList() + `)
+-       AND RTRIM(object_name) NOT LIKE N'%:Databases' AND RTRIM(object_name) NOT LIKE N'%:Database Replica'
+-       AND RTRIM(instance_name) NOT IN (` + perfmonSkipInList() + `))`
++   OR (RTRIM(object_name) LIKE N'%:Databases' AND counter_name = N'Transactions/sec' AND instance_name = N'_Total')`
+ 
+ func (cpuCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
+ 	if err := perfState(ctx, conn, info, "sys.dm_os_ring_buffers and sys.dm_os_schedulers"); err != nil {
+@@ -148,7 +142,7 @@ func (cpuCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]colle
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	out = append(out, cpuCounterRows(counters, false)...)
++	out = append(out, cpuCounterRows(counters)...)
+ 	// the ring buffer is read on its own: a server that refuses it (a build without the record) keeps the rest
+ 	ring, err := QueryRows(ctx, conn, cpuRingSQL)
+ 	if err != nil {
+@@ -191,27 +185,8 @@ func cpuRows(ring []collect.Row, linux bool) []collect.Row {
+ 	return out
+ }
+ 
+-// perfmonCounters is the counter list of task 177 D14: PerformanceMonitor's (PerfmonStatsCollector.DefaultCounters,
+-// 3.12.0, 61 names), which is sp_PressureDetector's perfmon list (sp_PressureDetector.sql, darlingdata-20261101,
+-// L2373-2386, 59 names) and the two Database Replica names. Every instance of each is read; sp_PressureDetector's
+-// system names (perfmonSkip) are left out.
+-var perfmonCounters = []string{
+-	"Forwarded Records/sec", "Table Lock Escalations/sec", "Page reads/sec", "Page writes/sec", "Checkpoint pages/sec", "Requests completed/sec",
+-	"Transactions/sec", "Lock Requests/sec", "Lock Wait Time (ms)", "Lock Waits/sec", "Number of Deadlocks/sec", "Log Flushes/sec", "Page lookups/sec",
+-	"Granted Workspace Memory (KB)", "Lock Memory (KB)", "Memory Grants Pending", "SQL Cache Memory (KB)", "Background writer pages/sec",
+-	"Stolen Server Memory (KB)", "Target Server Memory (KB)", "Total Server Memory (KB)", "Lazy writes/sec", "Readahead pages/sec",
+-	"Batch Requests/sec", "SQL Compilations/sec", "SQL Re-Compilations/sec", "Longest Transaction Running Time", "Log Bytes Flushed/sec",
+-	"Lock waits", "Log buffer waits", "Log write waits", "Memory grant queue waits", "Network IO waits", "Log Flush Write Time (ms)",
+-	"Non-Page latch waits", "Page IO latch waits", "Page latch waits", "Thread-safe memory objects waits", "Wait for the worker",
+-	"Active parallel threads", "Active requests", "Blocked tasks", "Query optimizations/sec", "Queued requests", "Reduced memory grants/sec",
+-	"Version Store Size (KB)", "Free Space in tempdb (KB)", "Active Temp Tables", "Processes blocked", "Full Scans/sec", "Index Searches/sec",
+-	"Page Splits/sec", "Free list stalls/sec", "Workfiles Created/sec", "Worktables Created/sec", "Temp Tables Creation Rate", "Version Generation rate (KB/s)",
+-	"Version Cleanup rate (KB/s)", "Lock Timeouts/sec",
+-	"Transaction Delay", "Mirrored Write Transactions/sec",
+-}
+-
+ // perfmonSkip: the instance names sp_PressureDetector leaves out of its perfmon read (the system databases, and the
+-// internal workload group and resource pool).
++// internal workload group and resource pool); counters.go leaves them out of every counter read.
+ var perfmonSkip = []string{"internal", "master", "model", "msdb", "model_msdb", "model_replicatedmaster", "mssqlsystemresource"}
+ 
+ func nList(names []string) string {
+@@ -222,15 +197,6 @@ func nList(names []string) string {
+ 	return strings.Join(q, ", ")
+ }
+ 
+-func perfmonInList() string     { return nList(perfmonCounters) }
+-func perfmonSkipInList() string { return nList(perfmonSkip) }
+-
+-// perDBObject: the objects whose instances are databases (or a database's replica), read every 5 minutes.
+-func perDBObject(object string) bool {
+-	o := counterObject(object)
+-	return o == "Databases" || o == "Database Replica"
+-}
+-
+ // counterObject drops the instance's prefix from object_name (SQLServer:Buffer Manager, MSSQL$NAMED:Buffer Manager).
+ func counterObject(object string) string {
+ 	if i := strings.Index(object, ":"); i >= 0 {
+@@ -239,38 +205,19 @@ func counterObject(object string) string {
+ 	return object
+ }
+ 
+-// cpuCounterRows splits one read of sys.dm_os_performance_counters into the two kinds the import takes:
+-//   - 'counter': the four throughput counters exactly as cpu.go always sent them (counter, value; 0074's import keys
+-//     them by name and keeps their last values in mssql_perf_counter_last);
+-//   - 'perfmon': a counter of perfmonCounters with its object (prefix dropped), instance (an empty name read as _Total, as
+-//     sp_PressureDetector does), raw value and cntr_type, for 0124's mssql_counter_sample. perDB keeps the per-database
+-//     objects (mssql_activity's 5-minute read); otherwise they are left to it.
+-func cpuCounterRows(rows []collect.Row, perDB bool) []collect.Row {
+-	want := make(map[string]bool, len(perfmonCounters))
+-	for _, c := range perfmonCounters {
+-		want[c] = true
+-	}
+-	skip := make(map[string]bool, len(perfmonSkip))
+-	for _, s := range perfmonSkip {
+-		skip[s] = true
+-	}
++// cpuCounterRows keeps the four throughput counters exactly as cpu.go always sent them (kind 'counter', counter,
++// value; 0074's import keys them by name and keeps their last values in mssql_perf_counter_last).
++func cpuCounterRows(rows []collect.Row) []collect.Row {
+ 	var out []collect.Row
+ 	for _, r := range rows {
+ 		object, _ := r["object"].(string)
+ 		counter, _ := r["counter"].(string)
+ 		inst, _ := r["instance"].(string)
+ 		obj := counterObject(object)
+-		if !perDB && ((obj == "SQL Statistics" && (counter == "Batch Requests/sec" || counter == "SQL Compilations/sec" || counter == "SQL Re-Compilations/sec")) ||
+-			(obj == "Databases" && counter == "Transactions/sec" && inst == "_Total")) {
++		if (obj == "SQL Statistics" && (counter == "Batch Requests/sec" || counter == "SQL Compilations/sec" || counter == "SQL Re-Compilations/sec")) ||
++			(obj == "Databases" && counter == "Transactions/sec" && inst == "_Total") {
+ 			out = append(out, collect.Row{"kind": "counter", "counter": counter, "value": r["value"]})
+ 		}
+-		if !want[counter] || skip[inst] || perDBObject(object) != perDB {
+-			continue
+-		}
+-		if inst == "" {
+-			inst = "_Total"
+-		}
+-		out = append(out, collect.Row{"kind": "perfmon", "object": obj, "counter": counter, "instance": inst, "value": r["value"], "type": r["type"]})
+ 	}
+ 	return out
+ }
+diff --git c/internal/mssql/mssql.go i/internal/mssql/mssql.go
+index 4eed4a4f..c30f75d4 100644
+--- c/internal/mssql/mssql.go
++++ i/internal/mssql/mssql.go
+@@ -9,6 +9,7 @@ import (
+ 	"context"
+ 	"database/sql"
+ 	"encoding/hex"
++	"encoding/json"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -562,6 +563,20 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+ 			raw = nil
+ 		}
+ 		rows, err = sc.RunWithSettings(sctx, conn, info, raw)
++	} else if lc, ok := c.(ListCollector); ok {
++		// a collection whose list is the repository's (task 401): the defaults, pgvigil.yaml's lines and Admin's rows
++		var list []CounterSpec
++		lctx, lcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
++		raw, lerr := r.MSSQLCounterList(lctx, instanceID, counterEditsJSON(in))
++		lcancel()
++		if lerr == nil {
++			list, lerr = ParseCounterList(raw)
++		}
++		if lerr != nil {
++			logRun(instanceID, "error", lerr.Error())
++			return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, lerr), Duration: time.Since(start)}
++		}
++		rows, err = lc.RunList(sctx, conn, info, list)
+ 	} else {
+ 		rows, err = c.Run(sctx, conn, info)
+ 	}
+@@ -604,6 +619,30 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+ 	return collect.Result{Rows: len(rows), Duration: d, Note: partialNote(status, note)}
+ }
+ 
++// counterEditsJSON: pgvigil.yaml's mssql_counters lines of an instance (the root's, then its own) as the repository's
++// list function takes them.
++func counterEditsJSON(in config.Instance) []byte {
++	out := []map[string]string{}
++	for _, l := range []struct {
++		layer string
++		e     config.CounterEdits
++	}{{"root", in.MSSQLCountersRoot}, {"instance", in.MSSQLCounters}} {
++		for _, set := range []struct {
++			action string
++			refs   []config.CounterRef
++		}{{"add", l.e.Add}, {"remove", l.e.Remove}} {
++			for _, r := range set.refs {
++				out = append(out, map[string]string{"layer": l.layer, "action": set.action, "object": r.Object, "counter": r.Counter,
++					"inst": r.Instance, "kind": r.Kind})
++			}
++		}
++	}
++	b, _ := json.Marshal(out)
++	return b
++}
++
++func init() { config.CounterInUse = CounterInUse }
++
+ // timeoutNote says so when an error is the run's own deadline: the driver's text for it names no cause.
+ func timeoutNote(sctx context.Context, limit time.Duration, err error) error {
+ 	if errors.Is(sctx.Err(), context.DeadlineExceeded) {
+diff --git c/internal/repo/repo.go i/internal/repo/repo.go
+index 8224a891..c2a3c26b 100644
+--- c/internal/repo/repo.go
++++ i/internal/repo/repo.go
+@@ -545,6 +545,16 @@ func (r *Repo) MSSQLSeqCursor(ctx context.Context, instanceID int, source string
+ 	return *n, true, nil
+ }
+ 
++// MSSQLCounterList returns an instance's SQL Server counter list (pgvigil.import_mssql_counter_list, task 401): the
++// defaults, pgvigil.yaml's lines (yaml, a JSON array the runner builds) and Admin's rows, the narrowest scope winning.
++func (r *Repo) MSSQLCounterList(ctx context.Context, instanceID int, yaml []byte) ([]byte, error) {
++	var b []byte
++	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.import_mssql_counter_list($1, $2::jsonb)::text`, instanceID, string(yaml)).Scan(&b); err != nil {
++		return nil, fmt.Errorf("import_mssql_counter_list: %w", err)
++	}
++	return b, nil
++}
++
+ // LogCollection records when a collection ran and how it ended.
+ func (r *Repo) LogCollection(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, d time.Duration, status, note string) error {
+ 	_, err := r.pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, $4, $5, $6)`,
+diff --git c/internal/repo/sql/0190_join_release2.sql i/internal/repo/sql/0190_join_release2.sql
+index 5a751ee9..a5889069 100644
+--- c/internal/repo/sql/0190_join_release2.sql
++++ i/internal/repo/sql/0190_join_release2.sql
+@@ -1065,3 +1065,50 @@ SELECT b.instance_id, 'warning', 'no snapshot in 24 h', b.cloud_resource, b.clou
+  WHERE b.cloud_resource IS NOT NULL AND (b.newest_snapshot_at IS NULL OR b.newest_snapshot_age_s > 86400)
+    AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0)
+    AND b.cluster_backups_on IS NULL;
++
++-- ---- task 401 (0152, B3): the SQL Server counters --------------------------------------------------------------------
++-- mssql_cpu_newest is 0124's with its Workload Group Stats taken from the instance counter read nearest the scheduler
++-- read (the counters are mssql_counters' own read since 401: an exact match on mssql_cpu's read time would never find
++-- them). metric_catalog and metric_points with the family 'counters' are 0300's (the release migration: no hunk of an
++-- object 0300 re-creates goes into an earlier file).
++
++CREATE OR REPLACE FUNCTION pgvigil.mssql_cpu_newest(p_instance_id int, p_from timestamptz, p_to timestamptz)
++RETURNS TABLE (snapshot_at timestamptz, schedulers int, cpu_count int, runnable_tasks int, work_queue int, current_workers int,
++               active_workers int, max_workers int, offline_cpus int, nodes_total int, nodes_online int,
++               level text, verdict text, pm_level text, pm_recommendation text,
++               rg_active_requests bigint, rg_queued_requests bigint, rg_blocked_tasks bigint, rg_parallel_threads bigint,
++               requests_at timestamptz, requests bigint, runnable_requests bigint, runnable_pct numeric,
++               threadpool_at timestamptz, threadpool int, threadpool_longest_ms bigint, cpu_info jsonb)
++LANGUAGE sql STABLE AS $$
++  WITH s AS (SELECT * FROM pgvigil.mssql_sched_sample x WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to
++              ORDER BY x.snapshot_at DESC LIMIT 1),
++  -- task 401: the counters are mssql_counters' own read now (not mssql_cpu's): the instance counter read nearest the
++  -- scheduler read within 30 s, as rq and tp take theirs
++  cr AS (SELECT c.snapshot_at FROM s, pgvigil.mssql_counter_read c
++          WHERE c.instance_id = p_instance_id AND c.scope = 'instance'
++            AND c.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
++          ORDER BY abs(extract(epoch FROM c.snapshot_at - s.snapshot_at)) LIMIT 1),
++  wg AS (SELECT sum(c.value) FILTER (WHERE k.counter = 'Active requests') AS act, sum(c.value) FILTER (WHERE k.counter = 'Queued requests') AS q,
++                sum(c.value) FILTER (WHERE k.counter = 'Blocked tasks') AS blk, sum(c.value) FILTER (WHERE k.counter = 'Active parallel threads') AS par
++           FROM cr JOIN pgvigil.mssql_counter_sample c ON c.instance_id = p_instance_id AND c.snapshot_at = cr.snapshot_at
++           JOIN pgvigil.mssql_counter_series k ON k.series_id = c.series_id AND k.object = 'Workload Group Stats'),
++  rq AS (SELECT q.snapshot_at FROM s, pgvigil.mssql_requests_summary q
++          WHERE q.instance_id = p_instance_id AND q.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
++          ORDER BY abs(extract(epoch FROM q.snapshot_at - s.snapshot_at)) LIMIT 1),
++  rc AS (SELECT count(*) AS n, count(*) FILTER (WHERE r.status = 'runnable') AS runnable
++           FROM rq JOIN pgvigil.mssql_requests r ON r.instance_id = p_instance_id AND r.snapshot_at = rq.snapshot_at
++          WHERE r.session_id > 50 AND coalesce(r.status, '') NOT IN ('background', 'sleeping')),
++  tp AS (SELECT w.snapshot_at, w.threadpool, w.threadpool_longest_ms FROM s, pgvigil.mssql_waiting_summary w
++          WHERE w.instance_id = p_instance_id AND w.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
++          ORDER BY abs(extract(epoch FROM w.snapshot_at - s.snapshot_at)) LIMIT 1)
++  SELECT s.snapshot_at, s.schedulers, s.cpu_count, s.runnable_tasks, s.work_queue, s.current_workers, s.active_workers, s.max_workers,
++         s.offline_cpus, s.nodes_total, s.nodes_online, l.level, l.verdict, l.pm_level, l.pm_recommendation,
++         wg.act, wg.q, wg.blk, wg.par,
++         rq.snapshot_at, rc.n, rc.runnable, CASE WHEN rc.n > 0 THEN round(100.0 * rc.runnable / rc.n, 2) END,
++         tp.snapshot_at, tp.threadpool, tp.threadpool_longest_ms,
++         (SELECT i.info FROM pgvigil.mssql_cpu_info i WHERE i.instance_id = p_instance_id)
++    FROM s
++    LEFT JOIN wg ON true LEFT JOIN rq ON true LEFT JOIN rc ON rq.snapshot_at IS NOT NULL LEFT JOIN tp ON true
++    CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
++                                                  s.cpu_count, wg.q::int) l
++$$;
+diff --git c/internal/sched/sched.go i/internal/sched/sched.go
+index 39b62f16..6bcd801e 100644
+--- c/internal/sched/sched.go
++++ i/internal/sched/sched.go
+@@ -43,7 +43,7 @@ func Run(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config
+ 	s := newScheduler(log, oldLoopsWait, func(ictx context.Context, in config.Instance, wg *sync.WaitGroup) int {
+ 		return startInstance(ictx, log, r, cfg, in, wg)
+ 	})
+-	config.WatchInventory(ctx, log, r, lock.hold, cfg.Instances, cfg.QueryText, 15*time.Second, func(all []config.Instance) { s.apply(ctx, all) })
++	config.WatchInventory(ctx, log, r, lock.hold, cfg.Instances, cfg.QueryText, cfg.MSSQLCounters, 15*time.Second, func(all []config.Instance) { s.apply(ctx, all) })
+ 	s.wait()
+ 	log.Info("scheduler stopped")
+ 	return nil
+diff --git c/internal/sched/sched_test.go i/internal/sched/sched_test.go
+index f8eb9cf0..4ea536cf 100644
+--- c/internal/sched/sched_test.go
++++ i/internal/sched/sched_test.go
+@@ -155,7 +155,7 @@ func TestApplyFollowsThePageList(t *testing.T) {
+ 	done := make(chan struct{})
+ 	file := []config.Instance{{Name: "f1", Engine: config.EnginePostgres, DSNRaw: "env:F1"}}
+ 	go func() {
+-		config.WatchInventory(ctx, log, inv, r.hold, file, "full", 20*time.Millisecond, func(all []config.Instance) { s.apply(ctx, all) })
++		config.WatchInventory(ctx, log, inv, r.hold, file, "full", config.CounterEdits{}, 20*time.Millisecond, func(all []config.Instance) { s.apply(ctx, all) })
+ 		s.wait()
+ 		close(done)
+ 	}()
+diff --git c/internal/web/doorset.go i/internal/web/doorset.go
+index 6aae0c34..0aa82daf 100644
+--- c/internal/web/doorset.go
++++ i/internal/web/doorset.go
+@@ -218,7 +218,7 @@ func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Ins
+ 	for _, in := range all {
+ 		merged[in.Name] = in
+ 	}
+-	_, skipped := config.Merge(c.file, page, c.queryText)
++	_, skipped := config.Merge(c.file, page, c.queryText, config.CounterEdits{}) // only skipped is read: the root counter lines never decide it
+ 	left := map[string]string{}
+ 	for _, sk := range skipped {
+ 		if n, why, ok := cutColon(sk); ok {
+@@ -391,7 +391,7 @@ func (s *Server) WatchDoors(ctx context.Context, log *slog.Logger, cfg *config.C
+ 	first := *file // until the first read: pgvigil.yaml's doors, the page's list unread
+ 	first.Unread, first.PageReads = true, c.reads
+ 	s.storeDoors(&first)
+-	config.WatchInventoryRaw(ctx, log, poolInventory{s.pool}, nil, cfg.Instances, cfg.QueryText, every, wake, true,
++	config.WatchInventoryRaw(ctx, log, poolInventory{s.pool}, nil, cfg.Instances, cfg.QueryText, cfg.MSSQLCounters, every, wake, true,
+ 		func(all []config.Instance, page []config.PageInstance, gen int64) {
+ 			prev := s.doorsNow()
+ 			if prev.Gen == gen && !prev.Unread && !prev.emptyPage() {
+diff --git c/internal/web/doorset_test.go i/internal/web/doorset_test.go
+index 3e9f9740..503184ba 100644
+--- c/internal/web/doorset_test.go
++++ i/internal/web/doorset_test.go
+@@ -41,7 +41,7 @@ func fileSet() (*doorSet, pageDoorsConfig) {
+ }
+ 
+ func build(file *doorSet, prev *doorSet, c pageDoorsConfig, page []config.PageInstance, gen int64) *doorSet {
+-	all, _ := config.Merge(c.file, page, c.queryText)
++	all, _ := config.Merge(c.file, page, c.queryText, config.CounterEdits{})
+ 	return pageDoors(file, prev, c, all, page, gen)
+ }
+ 
+diff --git c/internal/web/q_mssql_perf.go i/internal/web/q_mssql_perf.go
+index f4682b49..679f3e13 100644
+--- c/internal/web/q_mssql_perf.go
++++ i/internal/web/q_mssql_perf.go
+@@ -71,14 +71,24 @@ SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / p.step) * p.step)
+           FROM pgvigil.mssql_azuredb_window(ARRAY[$1::int], $2, $3) a WHERE $3::timestamptz - $2::timestamptz > interval '1 day') s, p
+  GROUP BY 1 ORDER BY 1`
+ 
++// sqlMSSQLSchedSeries: the scheduler read's steps, with the schedulers that failed to create a worker (task 401 D6 /
++// OVW#51: sys.dm_os_schedulers.failed_to_create_worker summed over the VISIBLE ONLINE schedulers by mssql_counters,
++// the most in each step; NULL in a step with no counter read).
+ const sqlMSSQLSchedSeries = `
++WITH s AS (
+ SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snapshot_at,
+        round(avg(s.runnable_tasks), 2) AS runnable_tasks, max(s.runnable_tasks) AS runnable_max, round(avg(s.work_queue), 2) AS work_queue,
+        round(avg(s.pending_io), 2) AS pending_io, round(avg(s.current_workers), 0) AS current_workers, round(avg(s.active_workers), 0) AS active_workers,
+        max(s.max_workers) AS max_workers
+   FROM pgvigil.mssql_sched_sample s
+  WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+- GROUP BY 1 ORDER BY 1`
++ GROUP BY 1),
++f AS (
++SELECT to_timestamp(floor(extract(epoch FROM v.snapshot_at) / $4) * $4) AS snapshot_at, max(v.value) AS failed_to_create_worker
++  FROM pgvigil.mssql_counter_values($1, $2, $3, 'instance') v
++ WHERE v.object = 'sys.dm_os_schedulers' AND v.counter = 'failed_to_create_worker'
++ GROUP BY 1)
++SELECT s.*, f.failed_to_create_worker FROM s LEFT JOIN f USING (snapshot_at) ORDER BY 1`
+ 
+ // sqlMSSQLCounterSeries: each read's rate weighed by its interval, so a step's figure is the step's own per second.
+ const sqlMSSQLCounterSeries = `
+@@ -135,15 +145,18 @@ SELECT x.snapshot_at, x.clerk_type, round(avg(x.kb) / 1024.0, 1) AS mb
+          GROUP BY 1, 2, 3) x
+  GROUP BY 1, 2 ORDER BY 1, 2`
+ 
++// sqlMSSQLClerkStats: clerk_name is the type's friendly name (task 401 D6 / T24: pgvigil.mssql_clerk_names, Telegraf's
++// list), NULL for a type the list does not name.
+ const sqlMSSQLClerkStats = `
+-SELECT c.clerk_type, (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1] AS current_kb, max(c.pages_kb) AS max_kb,
++SELECT c.clerk_type, (SELECT n.name FROM pgvigil.mssql_clerk_names n WHERE n.clerk_type = c.clerk_type) AS clerk_name,
++       (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1] AS current_kb, max(c.pages_kb) AS max_kb,
+        round(avg(c.pages_kb), 0) AS avg_kb, min(c.pages_kb) AS min_kb, max(c.snapshot_at) AS snapshot_at,
+        round((100.0 * (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1]
+               / nullif((SELECT clerks_kb FROM pgvigil.mssql_memory_sample m WHERE m.instance_id = $1 AND m.snapshot_at = max(c.snapshot_at)), 0))::numeric, 1) AS current_pct
+   FROM pgvigil.mssql_memory_clerk c
+  WHERE c.instance_id = $1 AND c.snapshot_at > $2 AND c.snapshot_at <= $3
+  GROUP BY c.clerk_type
+- ORDER BY 2 DESC NULLS LAST`
++ ORDER BY 3 DESC NULLS LAST`
+ 
+ // sqlMSSQLFileLatency: read and write latency per step for each database and file type ('tempdb ROWS'); the five
+ // groups with the most stall over the range on their own, the rest as '(other)'.
+diff --git c/internal/web/q_perfsummary.go i/internal/web/q_perfsummary.go
+index 4e92c631..14543d13 100644
+--- c/internal/web/q_perfsummary.go
++++ i/internal/web/q_perfsummary.go
+@@ -31,7 +31,9 @@ import (
+ //   commits_s ...    PostgreSQL: dbstats, the counters' rise per restart epoch (0010) summed over the databases.
+ //                    SQL Server: tps is Databases _Total Transactions/sec and batch_s Batch Requests/sec
+ //                    (mssql_sched_sample, each read's rate weighed by its interval); commits_s, rollbacks_s and
+-//                    temp_bytes_s are NULL.
++//                    temp_bytes_s are NULL. compiles_per_100 (SQL Server only, task 401 D6 / PBI#2): SQL
++//                    Compilations per 100 Batch Requests over the range from the same reads, 0 under 1 batch/s (the
++//                    'counters' metric compiles_per_100_batches' floor).
+ //   read_ms ...      PostgreSQL: iostats (pg_stat_io, PostgreSQL 16+; a time of 0 with operations = track_io_timing
+ //                    off = NULL), else CloudWatch's ReadLatency / WriteLatency / *Throughput (cloud_io_sample),
+ //                    each column on its own; latency_source and io_source name which. SQL Server: mssql_fileio_sample
+@@ -76,7 +78,7 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+        round((1000 * w.other_s / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
+        round((1000 * w.total_s / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
+        NULL::numeric AS signal_pct,
+-       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
++       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS compiles_per_100, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
+        NULL::int AS grants_waiting_max, NULL::numeric AS mem_available_pct,
+        round(d.commits / nullif(d.secs, 0), 2) AS commits_s,
+        round(d.rollbacks / nullif(d.secs, 0), 2) AS rollbacks_s,
+@@ -189,7 +191,10 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+        round((w.other_ms / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
+        round((w.total_ms / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
+        round((100 * w.signal_ms / nullif(w.total_ms, 0))::numeric, 1) AS signal_pct,
+-       h.cpu_sql_avg, h.cpu_source, t.batch_s, m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
++       h.cpu_sql_avg, h.cpu_source, t.batch_s,
++       CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL THEN NULL WHEN t.batch_raw < 1 THEN 0
++            ELSE round(100 * t.compiles_s / t.batch_raw, 1) END AS compiles_per_100,
++       m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
+        NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
+        CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
+        CASE WHEN io.secs > 0 THEN 'virtual_file_stats' END AS io_source,
+@@ -226,7 +231,10 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+     ) u ORDER BY (coalesce(u.cpu_samples, 0) > 0) DESC, u.pri DESC LIMIT 1) h ON true
+   LEFT JOIN LATERAL (
+     SELECT round((sum(x.transactions_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.transactions_s IS NOT NULL), 0))::numeric, 2) AS tps,
+-           round((sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric, 2) AS batch_s
++           round((sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric, 2) AS batch_s,
++           -- the floor and the ratio read the rate before rounding (task 401 D6)
++           (sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric AS batch_raw,
++           (sum(x.compiles_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.compiles_s IS NOT NULL), 0))::numeric AS compiles_s
+       FROM pgvigil.mssql_sched_sample x
+      WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2 AND x.interval_secs > 0) t ON true
+   LEFT JOIN LATERAL (
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 5cdc6521..1262da76 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -354,6 +354,8 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
+ 	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
+ 	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
++	api.HandleFunc("GET /api/mssql/counteradmin", s.MSSQLCounterAdmin)
++	api.HandleFunc("POST /api/mssql/counteradmin", s.MSSQLCounterAdminWrite)
+ 	api.HandleFunc("GET /api/mssql/memory", s.MSSQLMemory)
+ 	api.HandleFunc("GET /api/mssql/fileio", s.MSSQLFileIO)
+ 	api.HandleFunc("GET /api/mssql/tempdb", s.MSSQLTempdb)
+diff --git c/web/src/main.ts i/web/src/main.ts
+index 4be5532c..a3a91b2a 100644
+--- c/web/src/main.ts
++++ i/web/src/main.ts
+@@ -95,6 +95,7 @@ import { collectorView } from './collector';
+ import { aboutLink, aboutView } from './about';
+ import { adminInstancesView } from './admin_instances';
+ import { adminApplicationsView } from './applications';
++import { adminCountersView } from './metrics';
+ import { reportPages } from './reports';
+ import { customReportsView } from './customreports';
+ import { communityView } from './community';
+@@ -169,7 +170,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
+ };
+ const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
+ const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
+-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, mssqlerrors: mssqlErrorFleetView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, ...reportPages, admin: adminView };
++const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, mssqlerrors: mssqlErrorFleetView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, admin_counters: adminCountersView, ...reportPages, admin: adminView };
+ const instancePages: Record<string, Render> = {
+   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
+   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
+diff --git c/web/src/mssql_perf.ts i/web/src/mssql_perf.ts
+index 67f3a5c3..99f7108a 100644
+--- c/web/src/mssql_perf.ts
++++ i/web/src/mssql_perf.ts
+@@ -119,8 +119,14 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
+     }
+   }
+   const box2 = el('div', { class: 'charts' });
+-  box2.append(lineChart('CPU scheduler trend', sched,
+-    [{ key: 'runnable_tasks', label: 'runnable tasks' }, { key: 'runnable_max', label: 'runnable tasks (max)' }, { key: 'work_queue', label: 'work queue' }, { key: 'pending_io', label: 'pending disk IO' }]));
++  // the schedulers that failed to create a worker come from mssql_counters' reads: a range with none of them leaves
++  // the series out and says why
++  const fw = sched.some(r => r.failed_to_create_worker != null);
++  const trend = lineChart('CPU scheduler trend', sched,
++    [{ key: 'runnable_tasks', label: 'runnable tasks' }, { key: 'runnable_max', label: 'runnable tasks (max)' }, { key: 'work_queue', label: 'work queue' }, { key: 'pending_io', label: 'pending disk IO' },
++      ...(fw ? [{ key: 'failed_to_create_worker', label: 'schedulers that failed to create a worker' }] : [])]);
++  if (!fw && sched.length) trend.append(el('p', { class: 'meta' }, 'Schedulers that failed to create a worker: not read in this range (mssql_counters is off for this instance, or has not read yet).'));
++  box2.append(trend);
+   box2.append(lineChart('Workers', sched, [{ key: 'current_workers', label: 'current workers' }, { key: 'active_workers', label: 'active workers' }, { key: 'max_workers', label: 'max worker threads' }]));
+   box2.append(lineChart('Batch requests and compilations per second', counters,
+     [{ key: 'batch_s', label: 'batch requests/s' }, { key: 'transactions_s', label: 'transactions/s' }, { key: 'compiles_s', label: 'compilations/s' }, { key: 'recompiles_s', label: 'recompilations/s' }]));
+@@ -237,6 +243,7 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
+   sec.append(pcBox);
+   sec.append(grid(stats, [
+     { key: 'clerk_type', label: 'clerk type' },
++    { key: 'clerk_name', label: 'what it is', fmt: v => v == null ? el('span', { class: 'meta', title: 'a clerk type the name list (Telegraf\'s) does not hold' }, 'not named') : String(v) },
+     { key: 'current_kb', label: 'pages (current)', num: true, fmt: kb },
+     { key: 'current_pct', label: '% of clerks', num: true, fmt: pct },
+     { key: 'max_kb', label: 'max', num: true, fmt: kb },
+diff --git c/web/src/perfsummary.ts i/web/src/perfsummary.ts
+index 3a093d3e..8d535c72 100644
+--- c/web/src/perfsummary.ts
++++ i/web/src/perfsummary.ts
+@@ -77,6 +77,7 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
+     el('li', {}, `CPU max: warning over ${thresholds.cpu_max[0]} %, critical over ${thresholds.cpu_max[1]} %`),
+     el('li', {}, `Lock wait: warning over ${thresholds.lock_ms_s[0]} ms/sec, critical over ${thresholds.lock_ms_s[1]} ms/sec`),
+     el('li', {}, 'every other cell is plain; a value not held is a muted word, never 0'),
++    el('li', {}, 'compilations per 100 batches: a muted 0 under 1 batch request a second (not a ratio)'),
+     el('li', {}, 'waits: PostgreSQL wait_sample (pg_wait_sampling) by event type; without it Lock alone, from the sessions seen waiting each minute; SQL Server by wait category'),
+     el('li', {}, 'SQL Server: CPU from the scheduler monitor (the machine; the SQL Server share in the cell\'s title), transactions/s from Transactions/sec, IO from sys.dm_io_virtual_file_stats; memory columns are SQL Server only'),
+     el('li', {}, 'Azure SQL Database: CPU is the database\'s share of its limit from sys.dm_db_resource_stats (mssql_azuredb_resources, VIEW DATABASE STATE), the minutes weighed by their 15-second samples')));
+@@ -108,6 +109,10 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
+     { key: 'commits_s', label: 'commits/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
+     { key: 'rollbacks_s', label: 'rollbacks/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
+     { key: 'batch_s', label: 'batch requests/s', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '') : fmtNum(v) },
++    { key: 'compiles_per_100', label: 'compilations per 100 batches', num: true,
++      fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '', 'no two mssql_cpu reads in the range: a rate needs two')
++        : Number(r.batch_s) < 1 ? muted('0', 'under 1 batch request a second: 0, not a ratio')
++        : el('span', { title: 'SQL Compilations per 100 Batch Requests over the range' }, fmtNum(v)) },
+     { key: 'read_ms', label: 'read latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
+       : el('span', { title: String(r.latency_source ?? '') }, ms(v)) },
+     { key: 'write_ms', label: 'write latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
+diff --git c/web/src/router.ts i/web/src/router.ts
+index 720d3af7..4fede04d 100644
+--- c/web/src/router.ts
++++ i/web/src/router.ts
+@@ -58,7 +58,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
+   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
+ }
+ 
+-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', azuresummary: 'Azure Summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', mssqlerrors: 'SQL Server errors', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin: 'Overview' };
++export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', azuresummary: 'Azure Summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', mssqlerrors: 'SQL Server errors', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin_counters: 'Counters (admin)', admin: 'Overview' };
+ export const instanceTabs: Record<string, string> = {
+   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Table Size', vacuum: 'Vacuum',
+   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
+@@ -82,7 +82,7 @@ export const rootGroups: TabGroup[] = [
+   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'tablesize', 'disks', 'storage', 'growth', 'dbchanges', 'indexes'] },
+   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
+   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
+-  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_applications', 'admin'] },
++  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_applications', 'admin_counters', 'admin'] },
+   // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
+   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
+ ];

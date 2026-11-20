@@ -12,7 +12,9 @@ import (
 
 // FileDrop is a channel's file: block, the channel of an air-gapped site: one JSON file per alert in a directory the
 // site's own tooling picks up. Each file is written under a temporary name and renamed, so a reader never sees half a
-// file; the name sorts by time: <UTC time>-<event>-<channel>-<key>.json.
+// file; the name sorts by time: <UTC time>-<event>-<channel>-<key>.json. A file is the envelope (sender "pgvigil",
+// the channel, sent_at) and the alert's own fields, its source among them (task 403b: the envelope's constant was
+// once named "source" too, and Go's JSON kept the shallower field, so no file carried the alert's source).
 type FileDrop struct {
 	Dir string `yaml:"dir"`
 }
@@ -44,7 +46,7 @@ func (s *fileSender) send(_ context.Context, m Message) error {
 	}
 	for _, a := range m.Alerts {
 		b, err := json.MarshalIndent(struct {
-			Source  string `json:"source"`
+			Sender  string `json:"sender"` // never "source": that name is the alert's (an outer field would shadow it)
 			Channel string `json:"channel"`
 			SentAt  string `json:"sent_at"`
 			Alert

@@ -39,7 +39,7 @@ CASES='* * * * *        | 2026-11-09T14:59:59Z | 2026-11-09T15:00:00Z
 #     5 at-boot     pg_cron '@reboot', schedule_note set, no runs -> not missed
 #     6 agent-down  pgagent, next_run now-20 min, no runs -> missed (pgAgent's own next run is past)
 #     7 disabled    pg_cron '*/10 * * * *', active false, 3 failures -> fail_streak 3 but no check
-#     [review fold, expected before the rerun]
+#     [added later, expected before the rerun]
 #     8 running-now pg_cron '*/5 * * * *': ok at M5-60/-55/-50/-45 (2 s), a run started now-10 min still running
 #                   -> over_average (600 s by age against 2.0), not missed (a run going)
 #     9 stuck       pg_cron '*/5 * * * *': ok at now-3d-15/-10/-5 min (2 s), a 'running' row started now-3 days
@@ -64,7 +64,7 @@ CASES='* * * * *        | 2026-11-09T14:59:59Z | 2026-11-09T15:00:00Z
 #     rows; the fleet has 8 problem jobs (the 6 plus agent-nonext and failed-long, whose last run failed) and counts
 #     jobs 11, failing 3, missed 3, over_average 3, instances 1; the overview has 7 'jobs report' rows and no
 #     "check could not run".
-#  F. the collector path (AddCronTimes in jobs.go, the lead's wiring line): pg_cron is not in this sandbox
+#  F. the collector path (AddCronTimes in jobs.go, the wiring line): pg_cron is not in this sandbox
 #     (shared_preload_libraries), so next_run and prior_due come seeded here; where the server named by
 #     PGVIGIL_CRON_DSN has pg_cron, the proof collects jobs from it once and expects every pg_cron job with a parsed
 #     schedule to carry next_run and prior_due; without it the step says "skipped" with the reason.

@@ -53,7 +53,7 @@ func TestImportCSVForms(t *testing.T) {
 	if f := mustParse(t, []byte(semi)); len(f.Rows) != 1 || f.Rows[0].Database != "sales" || f.Rows[0].Application != "Billing" {
 		t.Errorf("a semicolon file: %+v", f.Rows)
 	}
-	// review B m2: a bad quote is refused with its line, never read on to the file's end (LazyQuotes off)
+	// a bad quote is refused with its line, never read on to the file's end (LazyQuotes off)
 	if _, err := parseInventory([]byte("instance,application,description\npg-1,Billing,\"Main\" billing app\npg-2,HR,x\npg-3,Ops,y\n")); err == nil || !strings.Contains(err.Error(), "line 2") {
 		t.Errorf("a quote that ends a field early: %v, want a refusal naming line 2", err)
 	}
@@ -244,7 +244,7 @@ func inl(ref, v string) string {
 	return `<c r="` + ref + `" t="inlineStr"><is><t>` + v + `</t></is></c>`
 }
 
-// review B M1-M4, A M4, m4: a hostile or careless file is refused in words, or read within its caps
+// a hostile or careless file is refused in words, or read within its caps
 func TestImportHostile(t *testing.T) {
 	head := `<row r="1">` + inl("A1", "instance") + inl("B1", "application") + `</row>`
 	one := `<sheet name="Inventory" sheetId="1" r:id="rId1"/>`
@@ -293,14 +293,14 @@ func TestImportHostile(t *testing.T) {
 	}
 }
 
-// review B m7: a time alone (a serial under 1) reads as its time, not as a day of 1899
+// a time alone (a serial under 1) reads as its time, not as a day of 1899
 func TestImportXLSXTimes(t *testing.T) {
 	if got := xlsxSerialText("0.5", false); got != "12:00:00" {
 		t.Errorf("0.5 read %q, want 12:00:00", got)
 	}
 }
 
-// review B m7: a 1904 workbook's day 0; review B m5: a NUL in the request's values refused in words
+// a 1904 workbook's day 0; a NUL in the request's values refused in words
 func TestImportXLSX1904AndNUL(t *testing.T) {
 	if got := xlsxSerialText("0", true); got != "00:00:00" {
 		t.Errorf("serial 0 read %q", got)

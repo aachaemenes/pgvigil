@@ -1,7 +1,7 @@
 // pies-check.mjs: the Storage pies answer the pointer as DBA Dash 4.24.1's do (a user's report of 2026-11-13: its pies
-// are interactive and grow, with a table next to them, and pgvigil's were not), with the rows of the
-// design pass 20261113-053822 (finding 11). Driven by scripts/proof-pies.sh over the Chrome DevTools Protocol with REAL
-// pointer, touch and key events (a hover cannot be faked by a DOM click). Every row is graded by what the page shows,
+// are interactive and grow, with a table next to them, and pgvigil's were not), with the rows of its design. Driven
+// by scripts/proof-pies.sh over the Chrome DevTools Protocol with REAL pointer, touch and key events (a hover cannot be
+// faked by a DOM click). Every row is graded by what the page shows,
 // never by an attribute the product writes for the proof: a slice's wedge is found by where its colour is drawn and the
 // legend's order, its geometry by the legend's shares, the expected page of a click from the API's own rows.
 // usage: node scripts/pies-check.mjs <cdp port> <base url> <shots dir or ''> <rig json>
@@ -48,7 +48,7 @@ const clickAt = async (x, y, button = 'left', modifiers = 0) => {
 };
 // a tap of a finger: one touch down and up at a point (Input.dispatchTouchEvent; the browser makes the pointer events of
 // type touch and the click from it). Input.synthesizeTapGesture reached the page as pointerdown / pointerup of type
-// touch with no click at all in this headless Chromium (pdfp-pies-f2: the page heard no click of either tap). Touch
+// touch with no click at all in this headless Chromium (a lab run: the page heard no click of either tap). Touch
 // emulation is on from the touch row's first tap until the second tap's page is read; the mouse rows keep a pointer
 // that hovers
 const touchOn = () => cmd('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
@@ -202,10 +202,10 @@ for (const pg of rig.pages) {
     const ex = await S(pie.title, `(() => { const s = b.querySelector('svg'); const x = new XMLSerializer().serializeToString(s);
       return { transform: /transform/i.test(x), popped: __pie.state(b).popped.length }; })()`);
     row(ex && !ex.transform && ex.popped === 1, tag, 'export', `serialized while '${st0.legend[1].name}' is popped: ${ex?.transform ? 'a transform in the copy' : 'no transform in the copy'}, popped ${ex?.popped} (want none in the copy, 1 on the page)`);
-    // swatch (finding 5): the box's squares are not the legend's .swatch
+    // swatch: the box's squares are not the legend's .swatch
     const sw = await S(pie.title, `[b.querySelectorAll('.swatch').length, __pie.legend(b).length]`);
     row(sw && sw[0] === sw[1], tag, 'swatch', `${sw?.[0]} .swatch in the chart box with the box shown, ${sw?.[1]} legend rows`);
-    // rest (finding 4): the pointer at 10 % of the radius on the popped slice's middle line stays marked for 1 s
+    // rest: the pointer at 10 % of the radius on the popped slice's middle line stays marked for 1 s
     const sp1 = await S(pie.title, `__pie.spans(b)[1]`);
     const pr = await S(pie.title, `__pie.point(b, ${(sp1[0] + sp1[1]) / 2}, 0.1)`);
     await ev(`(() => { const b = ${pieJS(pie.title)}; window.__toggles = 0; window.__mo?.disconnect();
@@ -222,7 +222,7 @@ for (const pg of rig.pages) {
       p = await wedgePoint(pie.title, kOther);
       await mouse('mouseMoved', p.x, p.y);
       // the box marks the row at once; the slices move in a 0.12 s transition (app.css .pop): read after it settles
-      // (pdfp-pies-f1 read slice 1 still on its way back: 'popped [1]')
+      // (a read before it settled saw the slice at index 1 still on its way back: 'popped [1]')
       const so0 = await until(`(() => { const b = ${pieJS(pie.title)}; const s = b && __pie.state(b); return s && s.tip && s.tip.rows.some(r => r.hot) ? s : null; })()`, 2000);
       if (so0) await sleep(250);
       const so = so0 ? await state(pie.title) : null;
@@ -256,9 +256,9 @@ for (const pg of rig.pages) {
     row(!!items && want.every(x => items.items.includes(x)) && !items.tip, tag, 'menu', `a right click -> ${items ? items.items.join(' | ') : 'no menu'}; the box ${items?.tip ? 'still shown' : 'gone'}`);
     await key('Escape', 'Escape', 27);
     await ev(`document.querySelector('.menu')?.remove(); 1`);
-    // redraw (finding 5): shown, then the chart drawn again under the pointer (its Top N, else the page's Refresh). The
+    // redraw: shown, then the chart drawn again under the pointer (its Top N, else the page's Refresh). The
     // pointer comes from outside the picture: after the menu row it rests on the wedge with the box put away, and a move
-    // inside one wedge sends no pointerover (pdfp-pies-f1: 'the box never shown')
+    // inside one wedge sends no pointerover (a lab run: 'the box never shown')
     await mouse('mouseMoved', 3, 3);
     await until(`__pie.tip() ? null : 1`, 1000);
     p = await wedgePoint(pie.title, 0);
@@ -301,13 +301,13 @@ for (const pg of rig.pages) {
         return null; })()`, true);
       if (!target) fail(`${tag}: click: the API gives no target for '${L[0].name}' (${JSON.stringify(pie.target)})`);
     }
-    // grid-link (finding 13): the grid's link of the largest database = the slice's page
+    // grid-link: the grid's link of the largest database = the slice's page
     if (pie.gridLink && target) {
       const L = (await state(pie.title)).legend;
       const hrefs = await ev(`[...document.querySelectorAll('main table.grid tbody tr')].map(tr => tr.cells[0]).filter(c => c && c.textContent.trim() === ${JSON.stringify(L[0].name)}).map(c => c.querySelector('a')?.getAttribute('href') ?? null)`);
       row(!!hrefs?.length && hrefs.every(h => h && new RegExp(target.re).test(h)), tag, 'grid-link', `the grid's '${L[0].name}' cell links ${JSON.stringify(hrefs)} (want /${target.re}/)`);
     }
-    // ctrl-click (finding 14): Ctrl and a wedge with a page -> a new tab with it, this page stays
+    // ctrl-click: Ctrl and a wedge with a page -> a new tab with it, this page stays
     if (target) {
       await ev(`window.__opened = []; window.open = (u) => { window.__opened.push(String(u)); return null; }; 1`);
       p = await wedgePoint(pie.title, 0);
@@ -318,7 +318,7 @@ for (const pg of rig.pages) {
       row(o.hash === before && o.opened.length === 1 && new RegExp(target.re).test(o.opened[0].replace(/^.*#/, '#')), tag, 'ctrl-click', `Ctrl + click on '${(await state(pie.title))?.legend?.[0]?.name}' -> opened ${JSON.stringify(o.opened)}, this page ${o.hash === before ? 'kept' : 'left for ' + o.hash}`);
       if (o.hash !== before) { await go(pg.hash); await ev(HELP); }
     }
-    // touch (finding 6): the first tap shows the box and stays, a second tap on the slice follows its page
+    // touch: the first tap shows the box and stays, a second tap on the slice follows its page
     if (target && pie.touch) {
       p = await wedgePoint(pie.title, 0);
       const before = await ev('location.hash');
@@ -336,7 +336,7 @@ for (const pg of rig.pages) {
       row(good, tag, 'touch', `the first tap -> ${t1.tip ? 'the box' : 'no box'}, ${t1.hash === before ? 'this page kept' : 'left for ' + t1.hash}; the second -> ${t2 ?? 'nothing'}${tev}`);
       await go(pg.hash); await ev(HELP);
     }
-    // pan (review 20261113-102227 finding 2): a finger that starts on a wedge and pans the page ends with no click; the
+    // pan: a finger that starts on a wedge and pans the page ends with no click; the
     // next MOUSE click on the wedge still opens its page (a held first tap would swallow it)
     if (target && pie.touch) {
       p = await wedgePoint(pie.title, 0);
@@ -369,7 +369,7 @@ for (const pg of rig.pages) {
           : target.db ? await until(`(() => { const s = document.querySelector('#mssql-files-db'); return s && s.value === ${JSON.stringify(target.db)} ? 'the files of ' + s.value : null; })()`, 20000)
           : await until(`(() => { const h = document.querySelector('main h2'); return h ? h.textContent.trim() : null; })()`, 20000);
       }
-      // the page a click lands on, shot as drawn (the lead's 'a click landing')
+      // the page a click lands on, shot as drawn ('a click landing')
       if (SHOTS && pie.shot && drew) writeFileSync(`${SHOTS}/${pg.name}-${pie.shot}-click.png`, Buffer.from((await cmd('Page.captureScreenshot', { format: 'png' })).result.data, 'base64'));
       row(!!drew, tag, 'click', `a click on '${st0.legend[0].name}' -> ${after ?? before + ' (unchanged)'}${drew ? `, drew '${drew}'` : ` (want /${target.re}/ and ${target.h2 ? `'${target.h2}'` : target.db ? `the files of '${target.db}'` : 'a heading'})`}`);
       if (!await go(pg.hash)) { fail(`${pg.name}: the page did not draw again after the click`); break; }
@@ -387,7 +387,7 @@ for (const pg of rig.pages) {
     }
     // edge: the box inside the window for the slice nearest the window's right edge. The pointer comes from outside the
     // picture: the scroll that centres the pie puts the box away, and a move inside one wedge sends no pointerover
-    // (pdfp-pies-f4: after the click row the pointer rested on erp's wedge, whose span holds the pie's right side)
+    // (a lab run: after the click row the pointer rested on erp's wedge, whose span holds the pie's right side)
     if (pie.edge) {
       await mouse('mouseMoved', 3, 3);
       await until(`__pie.tip() ? null : 1`, 1000);
@@ -414,7 +414,7 @@ for (const pg of rig.pages) {
       const te = await until(`__pie.tip()`, 2000);
       const vw = await ev('[innerWidth, innerHeight]');
       // the box beside the pointer (14 px right), flipped to its left where it would pass the window's right edge less 4
-      // px (chart.ts place()); pie.edge 'flip': a pie at the window's right, where the flip must happen (review finding 3)
+      // px (chart.ts place()); pie.edge 'flip': a pie at the window's right, where the flip must happen
       const wantFlip = !!te && pe.x + 14 + (te.rect[2] - te.rect[0]) > vw[0] - 4;
       const side = te ? (te.rect[2] <= pe.x ? 'left of the pointer' : te.rect[0] >= pe.x ? 'right of the pointer' : 'over the pointer') : '';
       row(!!te && te.rect[0] >= 0 && te.rect[1] >= 0 && te.rect[2] <= vw[0] - 4 && te.rect[3] <= vw[1] && side === (wantFlip ? 'left of the pointer' : 'right of the pointer')
@@ -423,7 +423,7 @@ for (const pg of rig.pages) {
       await mouse('mouseMoved', 3, 3);
       if (pie.edge === 'flip') { await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(500); }
     }
-    // other-click (finding 9): every slice for this draw, the select says All, the focus on it, the note says so, nothing kept
+    // other-click: every slice for this draw, the select says All, the focus on it, the note says so, nothing kept
     if (pie.other && kOther >= 0) {
       await ev(`localStorage.clear(); 1`);
       const n = Number(/\((\d+)\)/.exec(st0.legend[kOther].name)[1]);

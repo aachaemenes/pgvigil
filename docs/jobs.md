@@ -31,6 +31,17 @@ One line per job:
 The PostgreSQL page adds the scheduler, database, user and command, a link to the job's own page, and every run of
 the range under the grid.
 
+### The range's runs: tiles and top 5
+
+Above the grid, from the hourly statistics (the job's own outcome rows of EVERY whole hour the page's range touches,
+named in the heading: a range of 23:21 to 00:21 reads the hours 23:00 to now, a range of 10:15 to 10:45 the 10:00
+hour): tiles for the runs that failed or were cancelled (a cancel is a failure, as in DBA Dash), that succeeded, and
+the retries attempted (SQL Server: the step rows msdb recorded as a retry in those hours, the job's Stats grid's
+'retry'; pg_cron and pgAgent do not retry a run); then the five longest jobs (by their longest run), the five most
+frequent and the five most failed (a job dropped since is named by its newest name in its versions). While the
+instance's hours are being built (after an upgrade, an import or a late read) the section says so and no count is
+given.
+
 ## History
 
 For the picked job, the runs that started in the range (the newest 1,000 listed; the counts above them cover every run): start, duration, outcome, the
@@ -109,6 +120,24 @@ when succeeded; failures red above 0 (not acknowledged) and green at 0; a step's
 On SQL Server the grid's last column has Start and Stop (`sp_start_job`, `sp_stop_job`) through the actions door
 ([sqlserver-actions](sqlserver-actions.md)): disabled, with the reason, where the instance has no actions login.
 
+## The fleet's Job status
+
+The fleet's Jobs page lists every job of the instances in view (DBA Dash's root Jobs) with its status, its last failure
+and success, the 24-hour and 7-day counts, and:
+
+| Column | What it shows |
+|---|---|
+| running now | the job runs now, since when (SQL Agent: the newest read of msdb; pg_cron and pgAgent: the job's newest run, when it has no end and the newest read of the job still saw it - neither runs a job beside itself) |
+| last run took | the last finished run's time |
+| failure rate 7 days | the failed runs (a cancel a failure) over the finished runs of the hours that started in the last 7 days; `reading...` until the hourly statistics answer, `being built` while the instance's hours are, `not read: <why>` when the read failed - never 0 for a rate not read |
+
+**Show** picks the rows: critical, warning and acknowledged (the default with more than one instance), all, the last
+run failed or cancelled, the last run succeeded, running now, a failure rate over 50 % (7 days), disabled.
+
+**Jobs by instance**, above the grid, counts per instance the jobs whose last run failed or was cancelled, whose last
+run succeeded, that run now and whose failure rate is over 50 %; each count opens those jobs in the grid (Show and the
+instance set, 'every instance' to go back).
+
 ## Configuration history
 
 - **Change log, both engines:** every value that was replaced, with valid from / to. SQL Server keeps every value of
@@ -127,13 +156,37 @@ On SQL Server the grid's last column has Start and Stop (`sp_start_job`, `sp_sto
 ### Passwords
 
 A step's command, a connection string and a run's output can carry a password. Before a job row leaves the collector
-(both engines; `MaskJobText` in internal/collect/jobs.go) the value of each of these is replaced by `<masked>`:
-`PASSWORD = '...'` and `SECRET = '...'`; any `@...password`, `@passwd`, `@...pwd` or `@...secret` parameter
-(`sp_addlinkedsrvlogin`, `sp_addlogin`); a `key = value` whose key holds password, passwd, pwd or secret (connection
-strings, libpq keywords; quoted or not, spaces or not); the `user:password@` of a URI; `-P` (sqlcmd, bcp), `-Password`,
-`-pw`, `-pwd`; the string given to `ConvertTo-SecureString`; the password of `net use \\host\share <password>`;
-dtexec's `/DE` and `/Decrypt`. The command is stored masked (in the job row and in every version). A password in any
-other form is stored as read: keep secrets out of job steps (a credential, a proxy, a vault lookup).
+(both engines; package internal/jobmask) the value of each of these is replaced by `<masked>`: `PASSWORD = '...'`,
+`MEDIAPASSWORD = '...'` (RESTORE's media set password) and `SECRET = '...'`; any `@...password`, `@passwd`, `@...pwd` or
+`@...secret` parameter (`sp_addlinkedsrvlogin`, `sp_addlogin`, Idera SQL Safe's `@encryptedbackuppassword`); the backup
+products' key parameters by name: `@EncryptionKey` (Ola Hallengren's `DatabaseBackup`, LiteSpeed's `xp_backup_database`,
+`xp_backup_log` and `xp_restore_*`) and LiteSpeed's `@jobp` (its encrypted key). A value is masked as a literal (`'...'`
+or `N'...'`), with its quotes doubled inside another string (Red Gate SQL Backup's `master..sqlbackup '-SQL "... WITH
+PASSWORD = ''...''"'`, a `PASSWORD` inside `EXEC (N'...')`) or in Red Gate's square brackets (`PASSWORD = [...]`, `]]`
+inside); `@EncryptionKey` and `@jobp` also as a bare word (`@EncryptionKey = mykey`; `NULL`, `DEFAULT` and a `@variable`
+stay readable); and Red Gate's clean-up `sqbutility 1032`'s sixth argument (the key). Which quoting a value has is read
+from where it stands - inside another string or not, comments and bracketed names skipped - so an empty password (`''`)
+never hides the text after it, and a value the text never closes (a step's command cut by the read, a run's output cut
+by msdb) is masked to the end of the text. Only these names: a parameter that names a key or a certificate
+(`@ServerCertificate`, `@KeyColumns`, `KEYSIZE`) stays readable. Also a `key = value` whose key holds password, passwd,
+pwd or secret (connection strings, libpq keywords; quoted or not, spaces or not); the `user:password@` of a URI;
+`-Password`, `-pw`, `-pwd`, and `-P` on a line naming bcp, sqlcmd, osql or isql (a PowerShell `-Path` stays readable; the
+line is the logical one - a line ending in cmd's `^`, PowerShell's backtick or a shell's `\` goes on - and the tool may
+be named through a variable: `$sqlcmd`, `${sqlcmd}`, `%SQLCMD%`);
+LiteSpeed's command-line tools' `--Key`, `--TgtKey`, `--JobP` / `-jobp` and `-BackupKey`, and `-K` on a line naming one
+of them (`sqllitespeed`, `slssqlmaint`, `slsfastcompression`, `extractor`: sqlcmd's own `-K ReadOnly` stays readable);
+the string given to `ConvertTo-SecureString` (each of these values bare, quoted, or with its quotes doubled inside
+another string such as `xp_cmdshell`'s); the password of `net use \\host\share <password>`; dtexec's `/DE` and
+`/Decrypt`; PostgreSQL's role password, `[ ENCRYPTED ] PASSWORD` and a string constant (`CREATE` / `ALTER ROLE`
+and `USER`: `'...'`, `E'...'`, `U&'...'`, `$$...$$` or `$tag$...$tag$`, each stored as `'<masked>'`; `PASSWORD NULL`, a
+`format()` placeholder and a `$1` parameter stay readable; a comment may stand before the value; inside another string
+the value's quotes doubled, or `\'...\'` inside an escape string, while a quote right after the word that closes the
+string around it is never read as a value: `EXECUTE 'ALTER ROLE r PASSWORD ' || quote_literal(v)` stays as written)
+and a user mapping's `password` and `sslpassword` options (`OPTIONS (password '...')`, `OPTIONS (SET password '...')`,
+the option's name quoted or not). A SQL Server job's description is masked the same way (a pgAgent job's already was,
+with its whole definition; pgvigil's own query of pgAgent masks a step's `PASSWORD '...'` before it leaves the
+server). The command is stored masked (in the job row and in every version). A password in any other form is stored
+as read: keep secrets out of job steps (a credential, a proxy, a vault lookup).
 
 ### Known limits
 
@@ -141,6 +194,20 @@ other form is stored as read: keep secrets out of job steps (a credential, a pro
 - When pg_cron or pgAgent is removed from a server, the jobs collection stops applying there and no read lists the
   jobs as gone: their last version stays "present". A server that keeps the scheduler but has no job left marks every
   job dropped.
+- A key inside dynamic SQL that is itself inside dynamic SQL (its quotes doubled twice) is not read as one value: its
+  text after the first pair of quotes is stored as read. `xp_encrypt_backup_key`'s `@key` (a name too generic to mask
+  by) is stored as read. PostgreSQL's `PASSWORD'...'` with no space between the word and the quote is stored as read
+  (a space or a comment there is read).
+- Migration 0272 masks again, by the same rules, the job texts an older build stored - on both engines: pg_cron's
+  and pgAgent's jobs and runs (`jobs`, `job_runs`), SQL Server's jobs and runs (`mssql_jobs`, `mssql_job_runs`) and
+  every job version (definition, script, changes) - so no key an older build missed stays in the store: a text that
+  still holds a key after the rules (a form no rule reads, such as a key two levels of dynamic SQL deep) is replaced
+  whole by `<masked: an older build stored this text unmasked>` (a script's command by `@command = N'<masked: an older
+  build stored this command unmasked>'`). Such a form is stored again as read at the job's next read (the limit above).
+  A job whose text an older build masked in another shape gets one new version at its first read after the upgrade.
+  The migration reads only the rows naming a key or a mark; a collector's import waits for it. A collector of the
+  older build still running after the upgrade stores what it reads by its own rules: restart every collector with
+  the new build.
 
 ## Rights
 
@@ -177,7 +244,9 @@ own transaction).
 ## API
 
 `GET /api/jobs/history?engine=pg|mssql&instance=<id>&from=&to=` is the grid; with `&scheduler=<pg_cron|pgagent|sqlagent>&job=<id>`
-also the job's `runs`, `counts` and `changes` (each version with its `script`).
+also the job's `runs`, `counts` and `changes` (each version with its `script`); without a job, `&part=cards` and
+`&part=top` are the range's tiles and top 5 lists over every whole hour the range touches (read only by name; `cards` names those hours in `hours_from` / `hours_to` and gives every count NULL while `building`). `GET /api/jobsreport?part=status&ids=` and
+`?part=stats&ids=` are the fleet's Job status grid (`running_since`, `last_secs`; `failed_7d` beside the stats).
 `GET /api/jobs/thresholds?instance=` the levels and each job's status; `POST /api/jobs/thresholds` sets a level or
 makes it inherit. `GET /api/config/changes[?instance=]`, `GET /api/mssql/config/fleet`, `GET /api/mssql/traceflags[?instance=]`.
 

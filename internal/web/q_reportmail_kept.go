@@ -186,7 +186,7 @@ func (s *Server) applyDailyChecksOnce(ctx context.Context, block *reportmail.Dai
 	if s.auth == nil {
 		return "report mail is behind the UI login", true
 	}
-	hash, err := s.auth.lookup(ctx, req.As)
+	hash, _, err := s.auth.lookup(ctx, req.As)
 	if err != nil {
 		return fmt.Sprintf("the user %s could not be read: %v", req.As, err), false
 	}
@@ -240,7 +240,7 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 		}
 		// the user the page is drawn as: one who can no longer sign in fails every turn (alerted), and the page says so
 		if s.auth != nil {
-			if hash, err := s.auth.lookup(ctx, live.owner); err == nil && hash == "" {
+			if hash, _, err := s.auth.lookup(ctx, live.owner); err == nil && hash == "" {
 				out["as_off"] = fmt.Sprintf("the user %s can no longer sign in (disabled or removed): each day's mail fails, and is alerted, until that user is enabled or the mail is kept as another", live.owner)
 			}
 		}
@@ -272,6 +272,18 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 		}
 	case channels == 0 && live.id == 0:
 		reason = "Mailing the Daily checks needs an smtp channel: the sender has recorded none (the alerts: block of pgvigil.yaml, and pgvigil run)."
+	case !s.roleCan(r)["admin"]:
+		// the role (B24f): keeping or turning off the mail is an admin's (its ops ride POST
+		// /api/reportmail, admin through s.post); a lower role reads the control off with these words
+		wh, ok := whoOf(r)
+		if !ok {
+			wh = s.sessionWho(r)
+		}
+		if wh.err != nil { // roleCan reads a role read error as no role: its own words, as roleOK's 503
+			reason = fmt.Sprintf("the role could not be read: %v", wh.err)
+		} else {
+			reason = roleWords("keeping or turning off the Daily checks mail", needAdmin, wh)
+		}
 	}
 	out["writable"], out["reason"] = reason == "", reason
 	if reportmail.FindBrowser() == "" {

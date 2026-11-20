@@ -47,6 +47,7 @@ var toolCalls = []struct{ name, args string }{
 	{"statement_everywhere", `{"query_hash":"0x1A2B","hours":6}`},
 	{"find_statements", `{"text":"orders"}`},
 	{"find_statements", `{"text":"orders","instance":"Alpha"}`},
+	{"alert_history", `{"instance":"beta","hours":48}`}, // task 403b
 }
 
 func allTools(t *testing.T, h http.Handler) string {
@@ -60,7 +61,7 @@ func allTools(t *testing.T, h http.Handler) string {
 	return raw
 }
 
-// Review B, m6: A11 calls every tool the server lists - a tool added later and not called here fails this test.
+// A11 calls every tool the server lists - a tool added later and not called here fails this test.
 func TestEveryToolCalled(t *testing.T) {
 	var seen []string
 	got, _, _ := exchange(t, New(fakeAPI(t, &seen), "test"), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)

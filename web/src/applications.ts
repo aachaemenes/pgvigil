@@ -73,10 +73,10 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
   let openId = 0;           // the application opened below the list
   let contactsOf = 0;       // the application whose contacts were asked for (read on a click only: personal data)
   let seq = 0;              // the latest draw: an older one that ends later is dropped
-  let busy = false;         // a write in flight: no second write, no Open, until its redraw (review C, MINOR 2)
+  let busy = false;         // a write in flight: no second write, no Open, until its redraw
   const picked = new Set<string>();   // the Unassigned rows ticked (instance_id TAB database)
   // task 312: the Inventory and Import, one section kept across redraws (a preview survives them)
-  // the inventory is read again only after a change (a write here or an import), not at each Open or Show (review C, 9);
+  // the inventory is read again only after a change (a write here or an import), not at each Open or Show;
   // an import's redraw leaves the focus to the import's result
   let invDirty = true;
   const file = appFileSection({ whyNot: () => whyNot, changed: () => draw().catch((e: unknown) => say(`The page could not be read again: ${(e as Error).message}`, true)) });
@@ -84,24 +84,26 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
   // a grid draws its rows again at each sort, filter and 'Show more' through the columns' formats: each actions cell
   // locks its own controls, so a redraw never brings a write control back on a read-only server
   function lock(cell: HTMLElement): HTMLElement {
+    for (const c of cell.querySelectorAll<HTMLElement>('button, input')) c.dataset.need = 'admin';   // the role proof reads it (B24f)
     if (whyNot) for (const c of cell.querySelectorAll('button, input')) offRead(c, whyNot);
     return cell;
   }
   function readOnly(): void {
+    for (const c of root.querySelectorAll<HTMLElement>('form button, .actions button, .actions input')) c.dataset.need = 'admin';
     if (!whyNot) return;
     for (const c of root.querySelectorAll('form button, form input, form select, form textarea, .actions button, .actions input')) offRead(c, whyNot);
   }
 
   async function draw(): Promise<void> {
     const mine = ++seq;
-    // the fleet read is optional (the j14 join review, S2): when it fails the page draws as it did before the tree's
-    // scope, every database listed and every engine's system databases named, never a failed page
+    // the fleet read is optional: when it fails the page draws as it did before the tree's scope, every database
+    // listed and every engine's system databases named, never a failed page
     const [d, u, f] = await Promise.all([get<ListData>('applications'), get<UnData>('applications/unassigned'), fleet().catch(() => null)]);
     if (mine !== seq) return;
     whyNot = d.can_edit ? '' : str(d.why_not);
     // the databases follow the tree's scope as every page does (a tag folder shows its own servers' databases only, and the
     // sentence names only the system databases of the engines in view); applications themselves are fleet-wide. The scope
-    // is the tree's own rule (inTagScope: 'untagged', the '(no <key>)' folder '<key>:', a written tag - the review's S1)
+    // is the tree's own rule (inTagScope: 'untagged', the '(no <key>)' folder '<key>:', a written tag)
     const tag = f ? ctx.tag : undefined;
     const inView = f ? f.instances.filter(r => !tag || inTagScope(tag, r)) : [];
     const viewIds = new Set(inView.map(r => String(r.instance_id)));
@@ -120,7 +122,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
       el('h2', {}, 'Applications' + (tag ? ` - ${tagWords(tag)}` : '')),
       el('p', { class: 'meta' }, `${apps.length} application(s); ${un.length} database(s) with none. `,
         'An application is set on a whole server (its databases inherit it) or on one database (its own beats the server\'s); every server it is on carries the tag application:<name>, ',
-        'which thresholds, acknowledgements and alert rules may be scoped by. Until the viewer / operator / admin roles exist, any signed-in user may change applications.'),
+        'which thresholds, acknowledgements and alert rules may be scoped by. Changing an application needs the admin role.'),
       // under a tag folder (TAGALL) the databases are the folder's; the applications and their log are every folder's
       // a tag folder lists the applications its servers carry (each server an application is on carries application:<name>);
       // the change log stays one list, and so do the inventory and its import (one file of every server and database)
@@ -173,7 +175,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
       busy = false; for (const b of off) b.disabled = false; say(`Not done: ${(e as Error).message}`, true); return false;
     }
     if (!r.ok) { busy = false; for (const b of off) b.disabled = false; say(`Not done: ${why(r.body)}`, true); return false; }
-    // done: its words and the state it sets come before the redraw, so the redraw shows what they set (review C, MINOR 1)
+    // done: its words and the state it sets come before the redraw, so the redraw shows what they set
     const msg = done(r.body);
     invDirty = true;
     try { await draw(); } catch (e) {
@@ -203,7 +205,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
   const open = (id: number) => {
     if (busy) return;
     if (id !== openId) contactsOf = 0;
-    openId = id; say('');   // the status words of another application never stay under this one (review C, M3)
+    openId = id; say('');   // the status words of another application never stay under this one
     void redraw();
   };
 
@@ -287,7 +289,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
       const data: Record<string, unknown> = { op: 'edit', app_id: id, version };
       if (tier.value !== str(a.tier)) data.tier = tierOf(tier.value);
       if (env.value !== str(a.environment)) data.environment = env.value;
-      const norm = (t: string) => t.replace(/\r\n?/g, '\n').trim();   // a textarea reads CR LF as LF (review C, MINOR 11)
+      const norm = (t: string) => t.replace(/\r\n?/g, '\n').trim();   // a textarea reads CR LF as LF
       if (norm(desc.value) !== norm(str(a.description))) data.description = desc.value.trim();
       if (cmdb.value.trim() !== str(a.cmdb_url)) data.cmdb_url = cmdb.value.trim();
       if (Object.keys(data).length === 3) { say('Nothing changed.'); return; }
@@ -365,7 +367,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
   function routesPart(name: string, contacts: Row[], routes: Row[], channels: Row[]): HTMLElement {
     const part = el('div', { class: 'app-routes' });
     const label = (r: Row) => `${str(r.contact)} via ${str(r.channel_name)}`;
-    // the status words name a contact by its id only: they stay on the page (and in its export) after Hide (review C, M3)
+    // the status words name a contact by its id only: they stay on the page (and in its export) after Hide
     const said = (r: Row) => `contact ${str(r.contact_id)} via ${str(r.channel_name)}`;
     part.append(el('h5', {}, 'Alerts to contacts'),
       el('p', { class: 'meta' }, 'A route mails a contact the alerts of this application\'s servers through a channel of the configuration (its relay); the channel\'s repeat, quiet hours and hourly cap hold the route as its own. The channel\'s own recipients and scope are unchanged; repository-wide alerts (the collector, purge) never go to a route. A person on two contact rows gets two copies.'),
@@ -388,7 +390,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
       ev.preventDefault();
       if (!who.value) { say('A route mails a contact: add a contact with an e-mail address first.', true); return; }
       if (!via.value) { say('No smtp channel is configured (the alerts: list of the configuration): a route needs one to mail through.', true); return; }
-      // the severity always sent (empty: the channel's own) and the route on: an existing route takes both (review C, M1)
+      // the severity always sent (empty: the channel's own) and the route on: an existing route takes both
       const data: Record<string, unknown> = { op: 'set', contact_id: Number(who.value), channel: via.value, min_severity: from.value, enabled: true };
       await act('admin/applications/routes', data, () => `The route of contact ${who.value} via ${via.value} is on, from ${from.value || 'the channel\'s severity'}: the next alert pass mails it.`);
     });
@@ -420,7 +422,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
       const now: Record<string, string> = { role: role.value, kind: kind.value, name: cname.value.trim(), email: email.value.trim(),
         phone: phone.value.trim(), cmdb_url: cmdb.value.trim() };
       const data: Record<string, unknown> = { op: editing ? 'edit' : 'add', app_id: id };
-      // an edit sends only the fields changed: its audit row and each field's source name those alone (review C, M2)
+      // an edit sends only the fields changed: its audit row and each field's source name those alone
       for (const [k, v] of Object.entries(now)) if (!editing || v !== str(was[k])) data[k] = v;
       if (editing) {
         if (Object.keys(data).length === 2) { say('Nothing changed.'); return; }
@@ -449,7 +451,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
             say(`${str(v)} is assigned to ${name}, and ${str(r.database_name)} is still assigned too: ${(status.textContent ?? '').replace(/^Not done: /, '')}`, true);
           }
         });
-        // SQL Server gives a dropped database's id to the next one made: there the offer is only a likelihood (review A, m8)
+        // SQL Server gives a dropped database's id to the next one made: there the offer is only a likelihood
         return el('span', {}, str(v), r.engine === 'sqlserver' ? ' (possibly: SQL Server reuses a dropped database\'s id)' : '', ' ', lock(el('span', { class: 'actions' }, b)));
       } },
       { key: 'set_by', label: 'set by', fmt: (v, r) => r.own ? `${str(r.source)} by ${str(v) || 'unknown'}, ${fmtTime(r.set_at)}` : '' },
@@ -502,7 +504,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
     const app = select('app_id', apps.map(a => [str(a.app_id), str(a.name)] as [string, string])), env = select('environment', [['', '(the application\'s)'], ...ENVS]);
     const all = el('button', { type: 'button', 'aria-label': 'Tick every row shown' }, 'Tick every row shown');
     all.addEventListener('click', () => {
-      // every row the grid holds under its filter, drawn or past its first page (review C, MINOR 6)
+      // every row the grid holds under its filter, drawn or past its first page
       const t = root.querySelector<HTMLTableElement>('table.grid[data-part=unassigned]'), m = t ? gridModel(t) : undefined;
       for (const r of m ? m.rows() : []) picked.add(pickKey(r));
       for (const c of root.querySelectorAll<HTMLInputElement>('input[data-pick]')) c.checked = true;
@@ -512,7 +514,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
     const need = () => {
       if (!picked.size) { say('Tick at least one database first.', true); return false; }
       if (picked.size > 500) { say(`${picked.size} ticked: at most 500 in one request.`, true); return false; }
-      // the server takes a body of 64 KB: long database names may pass it under 500 (review C, MINOR 7)
+      // the server takes a body of 64 KB: long database names may pass it under 500
       if (JSON.stringify({ op: 'assign', app_id: 0, environment: 'development', targets: targets() }).length > 60000) { say(`${picked.size} ticked with long names: too many for one request (64 KB); assign them in two.`, true); return false; }
       return true;
     };

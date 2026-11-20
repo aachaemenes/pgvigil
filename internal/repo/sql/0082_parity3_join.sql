@@ -1,4 +1,4 @@
--- 0082: the join of parity3 (tasks 125-128), built from 0077's purge() (never edited by hand): purge() re-created with
+-- 0082: purge() for tasks 125-128, built from 0077's purge() (never edited by hand): purge() re-created with
 -- three more monthly partition parents - table_activity and conn_sources (0080, task 127) and pooler_conn_sample
 -- (0081, task 128). 0078 and 0079 add no table that grows: 0079 widens log_events, already in the list.
 

@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 //go:embed sql/*.sql
@@ -73,10 +74,28 @@ func (r *Repo) Close() { r.pool.Close() }
 // (a collector restarted by systemd while an operator runs `pgvigil migrate`).
 const migrateLockKey int64 = 7265471133001
 
+// schemaVersionDDL is the bootstrap every migrate runs before the files (and 'migrate -print' prints).
+const schemaVersionDDL = `CREATE SCHEMA IF NOT EXISTS pgvigil;
+CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
+  version    text PRIMARY KEY,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);`
+
 // Migrate applies pending migration files in name order; returns how many ran.
 // The whole run holds a session advisory lock on one dedicated connection, so a
-// second migrate waits and then finds nothing to do.
+// second migrate waits and then finds nothing to do. Then the partitions ahead (0271, N4),
+// once that connection is back in the pool (a one-connection pool needs it).
 func (r *Repo) Migrate(ctx context.Context) (int, error) {
+	applied, err := r.migrateFiles(ctx)
+	if err != nil {
+		return applied, err
+	}
+	r.aheadAfterMigrate(ctx)
+	return applied, nil
+}
+
+// migrateFiles is Migrate's files under its lock, on one connection it releases on return.
+func (r *Repo) migrateFiles(ctx context.Context) (int, error) {
 	c, err := r.pool.Acquire(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("migrate: %w", err)
@@ -87,11 +106,7 @@ func (r *Repo) Migrate(ctx context.Context) (int, error) {
 	}
 	defer func() { _, _ = c.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrateLockKey) }()
 
-	if _, err := c.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS pgvigil;
-CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
-  version    text PRIMARY KEY,
-  applied_at timestamptz NOT NULL DEFAULT now()
-);`); err != nil {
+	if _, err := c.Exec(ctx, schemaVersionDDL); err != nil {
 		return 0, fmt.Errorf("schema_version: %w", err)
 	}
 	info, warn, err := repositoryJITOff(ctx, c.Conn())
@@ -128,6 +143,13 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 		if _, err := tx.Exec(ctx, string(body)); err != nil {
 			_ = tx.Rollback(ctx)
 			return applied, fmt.Errorf("migration %s: %w", n, err)
+		}
+		// the file's Go step (remask.go's goSteps), in the same transaction, before the file is recorded
+		if step := goSteps[n]; step != nil {
+			if err := step(ctx, tx); err != nil {
+				_ = tx.Rollback(ctx)
+				return applied, fmt.Errorf("migration %s, its Go step: %w", n, err)
+			}
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.schema_version (version) VALUES ($1)`, n); err != nil {
 			_ = tx.Rollback(ctx)
@@ -332,6 +354,42 @@ func schemaMissingFile(names []string) string {
 // was. A store that records that file but has no such function (one migrated by an earlier build of it) is an error
 // that names the repair.
 func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
+	return SchemaCurrentWith(ctx, r.pool)
+}
+
+// sqlSchemaMissingRead: schema_missing's own body over schema_version, for a login that reads the tables (serve's
+// pgvigil_reader has SELECT on schema_version but no EXECUTE on schema_missing: apply_roles gives that to the collector)
+const sqlSchemaMissingRead = `SELECT coalesce(array_agg(u.n ORDER BY u.n), '{}'::text[])
+  FROM unnest($1::text[]) AS u(n)
+ WHERE NOT EXISTS (SELECT 1 FROM pgvigil.schema_version v WHERE v.version = u.n)`
+
+// SchemaCurrentRead is SchemaCurrentWith for a login that reads the tables and may not call the collector's
+// functions: serve's UI login (B6.2 part c #1: /readyz on the UI pool). The same answer: current, or the first
+// embedded name the store lacks.
+func SchemaCurrentRead(ctx context.Context, q RowQuerier) (bool, string, error) {
+	names, err := migrationNames()
+	if err != nil {
+		return false, "", err
+	}
+	var missing []string
+	if err := q.QueryRow(ctx, sqlSchemaMissingRead, names).Scan(&missing); err != nil {
+		latest := ""
+		if len(names) > 0 {
+			latest = names[len(names)-1]
+		}
+		return false, latest, fmt.Errorf("schema check (pgvigil.schema_version): %w", err)
+	}
+	ok, name := schemaState(names, missing)
+	return ok, name, nil
+}
+
+// RowQuerier is what SchemaCurrentWith reads through: a pool, a connection or a transaction
+type RowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// SchemaCurrentWith is SchemaCurrent over any pool or connection (B6.4: serve's /readyz reads it on the UI pool)
+func SchemaCurrentWith(ctx context.Context, q RowQuerier) (bool, string, error) {
 	names, err := migrationNames()
 	if err != nil {
 		return false, "", err
@@ -341,7 +399,7 @@ func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
 		latest = names[len(names)-1]
 	}
 	var missing []string
-	err = r.pool.QueryRow(ctx, `SELECT pgvigil.schema_missing($1::text[])`, names).Scan(&missing)
+	err = q.QueryRow(ctx, `SELECT pgvigil.schema_missing($1::text[])`, names).Scan(&missing)
 	if err == nil {
 		ok, name := schemaState(names, missing)
 		return ok, name, nil
@@ -351,7 +409,7 @@ func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
 		return false, latest, fmt.Errorf("schema check (run 'pgvigil migrate' as the repository owner first): %w", err)
 	}
 	var have *string
-	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.schema_latest()`).Scan(&have); err != nil {
+	if err := q.QueryRow(ctx, `SELECT pgvigil.schema_latest()`).Scan(&have); err != nil {
 		return false, latest, fmt.Errorf("schema check (run 'pgvigil migrate' as the repository owner first): %w", err)
 	}
 	defines := schemaMissingFile(names)
@@ -369,51 +427,17 @@ func (r *Repo) InventoryGeneration(ctx context.Context) (int64, error) {
 	return g, err
 }
 
-// Inventory is the page's instance list and its generation, read in one statement (0157's admin_inventory(),
-// SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty).
+// Inventory is the page's instance list and its generation, read in one statement (0193's admin_inventory(),
+// SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty) and
+// one scan shared with serve's reader (config.InventorySQL / ScanInventory), with each instance's own
+// settings (0263's admin_instance_settings(), ST5a) in the same snapshot.
 func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
-	rows, err := r.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation, running_plans FROM pgvigil.admin_inventory()`)
+	rows, err := r.pool.Query(ctx, config.InventorySQL)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []config.PageInstance
-	var gen int64
-	for rows.Next() {
-		var name, engine, platform, ref, auth, options *string
-		var tags []string
-		var disabled, runningPlans *bool
-		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans); err != nil {
-			return nil, 0, err
-		}
-		if name == nil {
-			continue
-		}
-		p := config.PageInstance{Name: *name, Tags: tags}
-		if engine != nil {
-			p.Engine = *engine
-		}
-		if platform != nil {
-			p.Platform = *platform
-		}
-		if ref != nil {
-			p.DSNRef = *ref
-		}
-		if disabled != nil {
-			p.Disabled = *disabled
-		}
-		if auth != nil {
-			p.Auth = *auth
-		}
-		if options != nil {
-			p.Options = *options
-		}
-		if runningPlans != nil {
-			p.RunningPlans = *runningPlans
-		}
-		out = append(out, p)
-	}
-	return out, gen, rows.Err()
+	return config.ScanInventory(rows)
 }
 
 // EnsureInstance upserts the instance row and returns its id.
@@ -450,6 +474,9 @@ func (r *Repo) Import(ctx context.Context, instanceID int, collection string, sn
 	}
 	q := fmt.Sprintf(`SELECT pgvigil.import_%s($1, $2, $3::jsonb)`, collection)
 	for attempt := 1; ; attempt++ {
+		if attempt > 1 {
+			countRetry(ctx) // the run's counter (retries.go): collector_runs.retries (N4); not counted when a cancel cut the pause
+		}
 		_, err = r.pool.Exec(ctx, q, instanceID, snapshotAt, string(payload))
 		if err == nil || attempt == ImportDeadlockTries || !IsDeadlock(err) || ctx.Err() != nil {
 			return err
@@ -474,6 +501,19 @@ const ImportDeadlockTries = 3
 func IsDeadlock(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
+}
+
+// MSSQLSettings returns the settings a SQL Server collection reads by (task 408): pgvigil.<fn>(instance_id), fn an
+// import_ function of the collection (0159's import_mssql_security_parts), as JSON.
+func (r *Repo) MSSQLSettings(ctx context.Context, instanceID int, fn string) ([]byte, error) {
+	if !validIdent(fn) {
+		return nil, fmt.Errorf("settings function %q is not a valid identifier", fn)
+	}
+	var b []byte
+	if err := r.pool.QueryRow(ctx, fmt.Sprintf(`SELECT pgvigil.%s($1)::text`, fn), instanceID).Scan(&b); err != nil {
+		return nil, fmt.Errorf("%s: %w", fn, err)
+	}
+	return b, nil
 }
 
 // LogCursor returns how far a log source was read for an instance (false: never).
@@ -532,6 +572,16 @@ func (r *Repo) MSSQLSeqCursor(ctx context.Context, instanceID int, source string
 	return *n, true, nil
 }
 
+// MSSQLCounterList returns an instance's SQL Server counter list (pgvigil.import_mssql_counter_list, task 401): the
+// defaults, pgvigil.yaml's lines (yaml, a JSON array the runner builds) and Admin's rows, the narrowest scope winning.
+func (r *Repo) MSSQLCounterList(ctx context.Context, instanceID int, yaml []byte) ([]byte, error) {
+	var b []byte
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.import_mssql_counter_list($1, $2::jsonb)::text`, instanceID, string(yaml)).Scan(&b); err != nil {
+		return nil, fmt.Errorf("import_mssql_counter_list: %w", err)
+	}
+	return b, nil
+}
+
 // LogCollection records when a collection ran and how it ended.
 func (r *Repo) LogCollection(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, d time.Duration, status, note string) error {
 	_, err := r.pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, $4, $5, $6)`,
@@ -539,17 +589,61 @@ func (r *Repo) LogCollection(ctx context.Context, instanceID int, collection str
 	return err
 }
 
+// LogCollectionStage is LogCollection with where the run failed (0198): 'import' when the write into the repository
+// failed, a batch collection's refused part included; "" names none (the stage is then read from the note).
+func (r *Repo) LogCollectionStage(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, d time.Duration, status, note, stage string) error {
+	_, err := r.pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, $4, $5, $6, $7::text)`,
+		instanceID, collection, snapshotAt, int(d.Milliseconds()), status, nullIfEmpty(note), nullIfEmpty(stage))
+	return err
+}
+
 // LogConnectFailure records a collection that could not connect to its instance (task 177 D30, the 'server unreachable'
 // finding of 0118): the instance found by its name, the collection's row an error noted 'connect: <err>'. An instance
 // with no row (one of pgvigil.yaml never reached) gets it with the configuration's engine, platform and tags, so it is
 // recorded from its first read as a page instance is (0122 makes that row at the add); an inactive one is left alone
-// (pgvigil.import_connect_failure; the join's w9e, finding 7).
+// (pgvigil.import_connect_failure).
 func (r *Repo) LogConnectFailure(ctx context.Context, name, engine, platform string, tags []string, collection string, at time.Time, d time.Duration, cause error) error {
 	if tags == nil {
 		tags = []string{}
 	}
 	_, err := r.pool.Exec(ctx, `SELECT pgvigil.import_connect_failure($1, $2, $3, $4, $5, $6, $7, $8)`, name, collection, at, int(d.Milliseconds()), cause.Error(),
 		engine, platform, tags)
+	return err
+}
+
+// LogSecretFailure records a run whose login's password could not be read from AWS Secrets Manager, or whose secret
+// the connect's rule refused (task B24e): the collection's error on the instance (made first when it has no row
+// yet), never a connect failure - the server was not asked, so 'server unreachable' must not count it. The note is
+// 'secret: ' and the *secrets.ReadError's own words (never the connect's 'connect <name>:' wrapping, which
+// 0192's view would cut wrongly).
+func (r *Repo) LogSecretFailure(ctx context.Context, name, engine, platform string, tags []string, collection string, at time.Time, d time.Duration, cause error) error {
+	if tags == nil {
+		tags = []string{}
+	}
+	if platform == "" {
+		platform = "auto"
+	}
+	note := cause.Error()
+	var se *secrets.ReadError
+	if errors.As(cause, &se) {
+		note = se.Error()
+	}
+	var id int
+	err := r.pool.QueryRow(ctx, `SELECT instance_id FROM pgvigil.instances WHERE name = $1`, name).Scan(&id)
+	if err != nil {
+		if err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, NULL::text, NULL::int, false, $3::text[], $4)`, name, platform, tags, engine).Scan(&id); err != nil {
+			return err
+		}
+	}
+	return r.LogCollection(ctx, id, collection, at, d, "error", "secret: "+note)
+}
+
+// LogRunFailure records a run that connected but failed before the instance's row was read (the server's version read,
+// Detect) as that collection's error noted 'detect: <err>' (the run status and Collection Health see it as
+// they see any failed run; 0118's 'server unreachable' reads only 'connect: ' notes). An instance with no row of this
+// engine, or an inactive one, is left alone (pgvigil.import_run_failure, 0166).
+func (r *Repo) LogRunFailure(ctx context.Context, name, engine, collection string, at time.Time, d time.Duration, cause error) error {
+	_, err := r.pool.Exec(ctx, `SELECT pgvigil.import_run_failure($1, $2, $3, $4, $5, $6)`, name, engine, collection, at, int(d.Milliseconds()), cause.Error())
 	return err
 }
 
@@ -629,16 +723,27 @@ func (r *Repo) HoursRetention(ctx context.Context) (map[string]int, error) {
 // by the function's own rule: the month after the partition's (UTC) lies before now minus days - an hours table's
 // (pgvigil.hours_retention, 0139) by its own days, or by hours[table] when given (purge -hours, before it is set).
 // It takes every partitioned series in the schema, so a series the function does not yet name
-// would be listed though kept.
+// would be listed though kept. The month is parsed only from a name that ends in one, inside a CASE: the server may test
+// a WHERE's conditions on every pg_class row before the join, in any order, and a TOAST table pg_toast_<six digits>
+// ending in no month (the database past OID 100,000) failed the whole list with 22008 (proof-purge's OID row).
+// purge()'s floor is the function's rule too: the alert log is kept 90 days at least and the findings history
+// findings_history_days() at least, whatever days says (task 403a, S2) - a store with findings_history_days() (0154)
+// has that purge() (the release migration 0300_join_release3.sql; both arrive with v0.4.0), an older store neither.
 func (r *Repo) PurgeCandidates(ctx context.Context, days int, hours map[string]int) ([]string, error) {
-	var have bool
-	if err := r.pool.QueryRow(ctx, `SELECT to_regclass('pgvigil.hours_retention') IS NOT NULL`).Scan(&have); err != nil {
+	var have, floor bool
+	if err := r.pool.QueryRow(ctx, `SELECT to_regclass('pgvigil.hours_retention') IS NOT NULL,
+	                                       to_regprocedure('pgvigil.findings_history_days()') IS NOT NULL`).Scan(&have, &floor); err != nil {
 		return nil, fmt.Errorf("purge candidates: %w", err)
 	}
-	age := `$1::int`
+	base := `$1::int`
+	if floor {
+		base = `CASE p.relname WHEN 'alert_log' THEN greatest($1::int, 90)
+                            WHEN 'findings_history' THEN greatest($1::int, pgvigil.findings_history_days()) ELSE $1::int END`
+	}
+	age := base
 	if have { // a store from before 0139 has no hours tables
 		age = `coalesce((SELECT o.d FROM unnest($2::text[], $3::int[]) o(t, d) WHERE o.t = p.relname),
-                    (SELECT h.days FROM pgvigil.hours_retention h WHERE h.table_name = p.relname), $1::int)`
+                    (SELECT h.days FROM pgvigil.hours_retention h WHERE h.table_name = p.relname), ` + base + `)`
 	}
 	names, ages := []string{}, []int{}
 	for t, d := range hours {
@@ -651,8 +756,9 @@ SELECT c.relname
   JOIN pg_class p ON p.oid = i.inhparent
   JOIN pg_namespace ns ON ns.oid = p.relnamespace
  WHERE ns.nspname = 'pgvigil'
-   AND c.relname ~ '_[0-9]{6}$'
-   AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC'
+   AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
+   AND (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
+        + interval '1 month') AT TIME ZONE 'UTC'
        < now() - make_interval(days => `+age+`)
    AND cardinality($2::text[]) = cardinality($3::int[])
  ORDER BY c.relname`, days, names, ages)
@@ -714,6 +820,136 @@ func (r *Repo) JobStatsHeal(ctx context.Context) (instances int, hourRows int64,
 			                                 SELECT x, '-infinity'::timestamptz, 'infinity'::timestamptz FROM unnest(ARRAY['mssql_job_runs', 'job_runs']) x
 			                                  WHERE NOT EXISTS (SELECT 1 FROM pgvigil.job_stats_dirty d WHERE d.instance_id = $1)) s`,
 				id, err.Error())
+			continue
+		}
+		instances++
+		hourRows += n
+	}
+	return instances, hourRows, failed, nil
+}
+
+// ReplicationHourlyHeal builds the replication hours (0150) of every instance still waiting - a dirty range, or
+// samples and no first build queued (pgvigil.replication_hourly_pending) - each instance in its own statements and
+// transactions, never all in one: first its month partitions (replication_hourly_months, committed by itself: making
+// a partition locks the whole hours table, and inside a build's long transaction that lock would hold every other
+// instance's rollup), then replication_hourly_heal_one (no budget: the instance's imports meanwhile mark their hours
+// and go on). It returns the instances built, their hour rows and the instances that failed (they stay for the next
+// run; the failure goes to the collection log as a trigger's does). A store without 0150 heals nothing.
+func (r *Repo) ReplicationHourlyHeal(ctx context.Context) (instances int, hourRows int64, failed int, err error) {
+	var have bool
+	if err := r.pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.replication_hourly_pending()') IS NOT NULL`).Scan(&have); err != nil || !have {
+		return 0, 0, 0, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT i FROM pgvigil.replication_hourly_pending() i`)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("replication hours pending: %w", err)
+	}
+	var ids []int32
+	for rows.Next() {
+		var id int32
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, 0, 0, fmt.Errorf("replication hours pending: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, fmt.Errorf("replication hours pending: %w", err)
+	}
+	for _, id := range ids {
+		var n int64
+		_, herr := r.pool.Exec(ctx, `SELECT pgvigil.replication_hourly_months($1)`, id)
+		if herr == nil {
+			herr = r.pool.QueryRow(ctx, `SELECT pgvigil.replication_hourly_heal_one($1)`, id).Scan(&n)
+		}
+		if herr != nil {
+			if ctx.Err() != nil {
+				return instances, hourRows, failed, ctx.Err()
+			}
+			failed++
+			// recorded as a trigger's failure is (0150's replication_hourly_failed: merged into the instance's 'mark'
+			// range, a 'rollup failed' row at most once an hour); an instance whose first build failed has no range
+			// yet: the range of its stored samples is marked (the next run then builds that range as the first build
+			// and once more as this mark - accepted: a second pass costs time only, and a failed first build is rare)
+			_, _ = r.pool.Exec(ctx, `SELECT pgvigil.replication_hourly_failed($1, s.from_at, s.to_at, 'in pgvigil purge: ' || $2)
+			                           FROM (SELECT d.from_at, d.to_at FROM pgvigil.replication_hourly_dirty d WHERE d.instance_id = $1
+			                                 UNION ALL
+			                                 SELECT min(x.snapshot_at), max(x.snapshot_at) FROM pgvigil.replication_sample x
+			                                  WHERE x.instance_id = $1
+			                                    AND NOT EXISTS (SELECT 1 FROM pgvigil.replication_hourly_dirty d WHERE d.instance_id = $1)
+			                                 HAVING min(x.snapshot_at) IS NOT NULL) s`,
+				id, herr.Error())
+			continue
+		}
+		instances++
+		hourRows += n
+	}
+	return instances, hourRows, failed, nil
+}
+
+// AzureDBHourMonths makes this month's and the next month's partition of the Azure SQL Database hours (0167) for
+// 'pgvigil purge', whether or not an instance waits for a heal, in one transaction under lock_timeout 5 s: a CREATE
+// ... PARTITION OF takes ACCESS EXCLUSIVE on the hours' parent, so it is made here, never by an import's trigger
+// waiting behind a long reader. A month not made now (the error, for the caller's warning)
+// is made by a later run - a month ahead leaves about 30 - or, failing every run, by the trigger itself. A store
+// without 0167 makes nothing.
+func (r *Repo) AzureDBHourMonths(ctx context.Context) error {
+	var have bool
+	if err := r.pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.mssql_azuredb_hour_partition(timestamp with time zone)') IS NOT NULL`).Scan(&have); err != nil || !have {
+		return err
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '5s'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pgvigil.mssql_azuredb_hour_partition(now()), pgvigil.mssql_azuredb_hour_partition(now() + interval '1 month')`); err != nil {
+		return fmt.Errorf("azure hours' months: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// AzureDBHoursHeal builds the hours of Azure SQL Database's resource minutes (0167, task B2a-N2) of every instance
+// still waiting - the first build after the upgrade (minutes stored before 0167), a failed rollup
+// (pgvigil.mssql_azuredb_hour_pending) - each instance in its own statement and transaction
+// (mssql_azuredb_hour_heal_one), never all in one, so no import waits on one long transaction. It returns the
+// instances built, their hour rows and the instances that failed (they stay for the next run, recorded as a trigger's
+// failure is). A store without 0167 heals nothing.
+func (r *Repo) AzureDBHoursHeal(ctx context.Context) (instances int, hourRows int64, failed int, err error) {
+	var have bool
+	if err := r.pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.mssql_azuredb_hour_pending()') IS NOT NULL`).Scan(&have); err != nil || !have {
+		return 0, 0, 0, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT i FROM pgvigil.mssql_azuredb_hour_pending() i`)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("azure hours pending: %w", err)
+	}
+	var ids []int32
+	for rows.Next() {
+		var id int32
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, 0, 0, fmt.Errorf("azure hours pending: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, fmt.Errorf("azure hours pending: %w", err)
+	}
+	for _, id := range ids {
+		var n int64
+		if err := r.pool.QueryRow(ctx, `SELECT pgvigil.mssql_azuredb_hour_heal_one($1)`, id).Scan(&n); err != nil {
+			if ctx.Err() != nil {
+				return instances, hourRows, failed, ctx.Err()
+			}
+			failed++
+			_, _ = r.pool.Exec(ctx, `SELECT pgvigil.mssql_azuredb_hour_failed($1, coalesce(d.from_at, '-infinity'), coalesce(d.to_at, 'infinity'), 'in pgvigil purge: ' || $2)
+			                           FROM (SELECT 1) one LEFT JOIN pgvigil.mssql_azuredb_hour_dirty d ON d.instance_id = $1`, id, err.Error())
 			continue
 		}
 		instances++

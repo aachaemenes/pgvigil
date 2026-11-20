@@ -143,7 +143,7 @@ $$;
 -- session_set_is_server_value: true when a session's value is the server's own (a boolean by its meaning: on, true,
 -- yes and 1 are one value, off, false, no and 0 the other; anything else as text, case and surrounding space aside,
 -- so '64MB' and '65536' are not the same to this read); false when they differ or either is unknown (a hidden value,
--- PostgreSQL 17+). A SET back to the server's value changes no plan: it fires nothing (the join review's point).
+-- PostgreSQL 17+). A SET back to the server's value changes no plan: it fires nothing.
 CREATE OR REPLACE FUNCTION pgvigil.session_set_is_server_value(p_instance_id int, p_name text, p_value text)
 RETURNS boolean LANGUAGE sql STABLE AS $$
   WITH v AS (SELECT lower(trim(p_value)) AS a, lower(trim(pgvigil.server_setting_value(p_instance_id, p_name))) AS b)
