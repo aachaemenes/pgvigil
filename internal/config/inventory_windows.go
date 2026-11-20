@@ -55,7 +55,7 @@ func SealDPAPIAt(path, value string) error {
 		windows.CRYPTPROTECT_LOCAL_MACHINE|windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
 		return err
 	}
-	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }()
+	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }() // the system's copy: nothing to do if it fails
 	blob := unsafe.Slice(out.Data, out.Size)
 	tmp := path + ".new"
 	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
@@ -81,7 +81,7 @@ func ResolveDPAPI(path string) (string, error) {
 	if err := windows.CryptUnprotectData(&windows.DataBlob{Size: uint32(len(b)), Data: &b[0]}, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
 		return "", err
 	}
-	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }()
+	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }() // the system's copy: nothing to do if it fails
 	return strings.TrimRight(string(unsafe.Slice(out.Data, out.Size)), "\r\n"), nil
 }
 
