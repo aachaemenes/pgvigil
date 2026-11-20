@@ -223,17 +223,17 @@ func TestAutoLoginHeldL237(t *testing.T) {
 // l237Rig is a cloud source on the test store whose servers are the store itself, a serve with its audit login as the
 // collector, and the helpers the store rows read with.
 type l237Rig struct {
-	ctx      context.Context
-	pool     *pgxpool.Pool
-	s        *Server
-	src      string
-	host     string
-	alt      string // another name of the store's host ('' when it has none here)
-	port     int
-	db       string
-	closed   int
-	sfx      int64
-	sr       *sourceRow
+	ctx    context.Context
+	pool   *pgxpool.Pool
+	s      *Server
+	src    string
+	host   string
+	alt    string // another name of the store's host ('' when it has none here)
+	port   int
+	db     string
+	closed int
+	sfx    int64
+	sr     *sourceRow
 }
 
 func newL237Rig(t *testing.T, withLogin bool) *l237Rig {
