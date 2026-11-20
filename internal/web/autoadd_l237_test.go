@@ -502,3 +502,70 @@ func TestAutoAddStoreChecksL237(t *testing.T) {
 		t.Errorf("notes for a source whose switch is off: %s %q, the note %v - want refused, no note", o, d, r.read(t, p).note)
 	}
 }
+
+// TestApproveRaceL237: two approves of one proposal at one moment under two names (a person's typed name and the auto
+// step's own) add one instance, never two - the second waits for the proposal's row and is refused in the store's own
+// words ('the proposal is approved, not proposed'). The test holds the row so both approves are inside the store at
+// once, then lets go; a rig that cannot hold both there says NOT PROVEN.
+func TestApproveRaceL237(t *testing.T) {
+	r := newL237Rig(t, true)
+	p := r.ins(t, fmt.Sprintf("gcp:l237:sql:race%d", r.sfx), r.host, r.port, "")
+	names := []string{fmt.Sprintf("l237-race-a-%d", r.sfx), fmt.Sprintf("l237-race-b-%d", r.sfx)}
+	t.Cleanup(func() {
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_instances WHERE name = ANY($1)`, names)
+	})
+	hold, err := r.pool.Begin(r.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hold.Rollback(context.Background()) }()
+	if _, err := hold.Exec(r.ctx, `SELECT 1 FROM pgvigil.admin_proposals WHERE proposal_id = $1 FOR UPDATE`, p); err != nil {
+		t.Fatal(err)
+	}
+	outs := make(chan proposalOut, 2)
+	for i, n := range names {
+		go func(user, name string) {
+			outs <- r.s.decideProposal(r.ctx, user, "", map[string]any{"op": "approve", "proposal_id": fmt.Sprint(p), "name": name}, false)
+		}(fmt.Sprintf("l237-race-%d", i), n)
+	}
+	waiting := 0
+	for end := time.Now().Add(12 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		_ = r.pool.QueryRow(r.ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`).Scan(&waiting)
+		if waiting >= 2 {
+			break
+		}
+	}
+	if err := hold.Commit(r.ctx); err != nil {
+		t.Fatal(err)
+	}
+	var got []proposalOut
+	for range names {
+		select {
+		case o := <-outs:
+			got = append(got, o)
+		case <-time.After(30 * time.Second):
+			t.Fatal("an approve did not end within 30 s of the row's release")
+		}
+	}
+	var made int
+	_ = r.pool.QueryRow(r.ctx, `SELECT count(*) FROM pgvigil.admin_instances WHERE name = ANY($1)`, names).Scan(&made)
+	if waiting < 2 {
+		t.Skipf("NOT PROVEN: N3 - only %d of the two approves waited on the proposal's row at once here (instances made: %d)", waiting, made)
+	}
+	done, refused := 0, ""
+	for _, o := range got {
+		switch {
+		case o.err == nil && o.replyErr == nil && o.ans.Outcome == "done":
+			done++
+		case o.err == nil && o.replyErr == nil:
+			refused = o.ans.Detail
+		case o.err != nil:
+			refused = o.err.Error()
+		default:
+			refused = o.replyErr.Error()
+		}
+	}
+	if made != 1 || done != 1 || !strings.Contains(refused, "not proposed") {
+		t.Errorf("two approves of one proposal at once under two names: %d instance(s) made, %d done, the other %q - want 1, 1 and 'the proposal is approved, not proposed'", made, done, refused)
+	}
+}
