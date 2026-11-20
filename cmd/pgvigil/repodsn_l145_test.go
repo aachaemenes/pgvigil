@@ -21,7 +21,7 @@ func TestRunRepositoryDSNSaysWhyL145(t *testing.T) {
 	}
 	err := runScheduler(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), []string{"-config", p})
 	var ec interface{ ExitCode() int }
-	if !errors.As(err, &ec) || ec.ExitCode() != 3 || !strings.Contains(err.Error(), "resolves to nothing") || !strings.Contains(err.Error(), "no such file") {
+	if !errors.As(err, &ec) || ec.ExitCode() != 3 || !strings.Contains(err.Error(), "resolves to nothing") || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "cannot be read") {
 		t.Fatalf("run over a missing repository dsn file: %v (want exit 3 naming the missing file)", err)
 	}
 }
