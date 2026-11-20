@@ -3,16 +3,14 @@
 -- the page stores the role and the host, never a secret (the collector's host holds the keytab or the credential cache
 -- and krb5.conf: pgvigil.yaml's kerberos: block, docs/postgres-signin.md).
 --
--- Re-made here, by that ruling, from objects below 0300 (named for the join): 0127's two auth checks, each adding
--- 'kerberos' for the postgres engine alone, and 0127's import_admin_instance (0136 renamed it import_admin_instance_base;
+-- Re-made here, by that ruling, from objects below 0300 (named for the join): 0127's admin_instances auth check, adding
+-- 'kerberos' for the postgres engine alone (a discovery source has no engine - its check stays 0127's, so a source
+-- never takes the kind), and 0127's import_admin_instance (0136 renamed it import_admin_instance_base;
 -- 0136's import_admin_instance wraps it), its text whole with 'kerberos' in the auth list - its engine pairing (the
 -- SQL Server kinds alone on a sqlserver row) refuses a SQL Server row of that kind in words.
 
 ALTER TABLE pgvigil.admin_instances DROP CONSTRAINT IF EXISTS admin_instances_auth_check;
 ALTER TABLE pgvigil.admin_instances ADD CONSTRAINT admin_instances_auth_check
-  CHECK (auth IN ('sql', 'windows', 'entra', 'entra-identity', 'password', 'pgpass', 'kerberos') AND (auth <> 'kerberos' OR engine = 'postgres'));
-ALTER TABLE pgvigil.admin_sources DROP CONSTRAINT IF EXISTS admin_sources_auth_check;
-ALTER TABLE pgvigil.admin_sources ADD CONSTRAINT admin_sources_auth_check
   CHECK (auth IN ('sql', 'windows', 'entra', 'entra-identity', 'password', 'pgpass', 'kerberos') AND (auth <> 'kerberos' OR engine = 'postgres'));
 
 CREATE OR REPLACE FUNCTION pgvigil.import_admin_instance_base(p_at timestamptz, p_payload jsonb)
