@@ -126,11 +126,6 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 		add("FAIL", "configuration", err.Error())
 		return rows, 1
 	}
-	// rn-l181 S1 (a): the alerts: block as 'run' loads it (its channels, the slack door, alerts_dsn, base_url)
-	if _, err := alerts.LoadFile(path); err != nil {
-		add("FAIL", "configuration", err.Error())
-		return rows, 1
-	}
 	add("OK", "configuration", fmt.Sprintf("%s loads: %d instance(s) in the file", path, len(cfg.Instances)))
 	// C2: the configuration's warnings
 	for _, name := range cfg.InlinePasswordInstances() {
@@ -142,6 +137,14 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 	}
 	// L241: every env: / file: / dpapi: reference of the file
 	referenceRows(path, add)
+	// rn-l181 S1 (a), after the references (rnfold-1's difference: before them it ended the check ahead of L241's
+	// rows): the alerts: block as 'run' loads it (its channels, the slack door, alerts_dsn, base_url). Its failure is
+	// the configuration's exit 1, the checks after it still run, and a reference it refuses that a reference row has
+	// FAILed already is not named a second time
+	_, alertsErr := alerts.LoadFile(path)
+	if alertsErr != nil && !failedAsReference(rows, alertsErr) {
+		add("FAIL", "configuration", alertsErr.Error())
+	}
 	for _, in := range cfg.Instances {
 		eng := engineName(in)
 		runnable := 0
@@ -293,6 +296,8 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 	}
 	// C5: the exit
 	switch {
+	case alertsErr != nil:
+		return rows, 1
 	case repoBad:
 		return rows, 2
 	default:
@@ -303,6 +308,20 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 		}
 	}
 	return rows, 0
+}
+
+// failedAsReference says whether err names a reference a 'reference ...' row FAILed already (its raw text, the words
+// before ' resolves to nothing')
+func failedAsReference(rows []checkRow, err error) bool {
+	for _, r := range rows {
+		if r.Level != "FAIL" || !strings.HasPrefix(r.What, "reference ") {
+			continue
+		}
+		if raw, _, ok := strings.Cut(r.Words, " resolves to nothing"); ok && raw != "" && strings.Contains(err.Error(), raw) {
+			return true
+		}
+	}
+	return false
 }
 
 // instanceCheckRows: one instance's rows - a FAIL (why: a dsn that resolved to nothing; or the connection test's own
