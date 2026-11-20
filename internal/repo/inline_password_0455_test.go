@@ -92,10 +92,10 @@ func TestInlinePasswordFinding0455OnAStore(t *testing.T) {
 		t.Fatalf("findings %+v, want one for a and one for b (the inactive one and the unknown name none)", got)
 	}
 	for _, r := range got {
-		if r.severity != "warning" || r.setting != "inline password" || r.source != "pgvigil collector" ||
+		if r.severity != "info" || r.setting != "inline password" || r.source != "pgvigil collector" ||
 			!strings.Contains(r.detail, col) || !strings.Contains(r.detail, "pgvigil secret seal -name \""+r.value+"\"") ||
 			!strings.Contains(r.detail, "the whole connection string") || !strings.Contains(r.detail, "the password alone") {
-			t.Errorf("a finding's shape: %+v (want warning / 'inline password' / 'pgvigil collector', the host, the quoted seal command and rn-l9 B2's words - the whole connection string to env:/file:, the password alone to a passfile or password_secret - in the detail)", r)
+			t.Errorf("a finding's shape: %+v (want info (rn-l9 S3) / 'inline password' / 'pgvigil collector', the host, the quoted seal command and rn-l9 B2's words - the whole connection string to env:/file:, the password alone to a passfile or password_secret - in the detail)", r)
 		}
 		if strings.Contains(r.detail, "password=") {
 			t.Errorf("the detail quotes a connection string: %q", r.detail)

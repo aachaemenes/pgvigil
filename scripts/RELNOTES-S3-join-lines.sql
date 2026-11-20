@@ -4,7 +4,7 @@
 -- whole. Not a migration: nothing runs this file; the join copies each arm in place.
 
 -- 1. pgvigil.findings (0300's union, re-created whole by the next join): one arm after collector_findings' -
---    L9: an inline PostgreSQL password in pgvigil.yaml, a warning on the instance (0455)
+--    L9: an inline PostgreSQL password in pgvigil.yaml, an info finding on the instance (0455; rn-l9 S3)
     UNION ALL
     -- RELNOTES-S3 L9 (0455): an inline PostgreSQL password in pgvigil.yaml, as the collector's start lists it
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.inline_password_findings

@@ -50,7 +50,10 @@ BEGIN
   ON CONFLICT (collector_id, instance) DO UPDATE SET seen_at = EXCLUDED.seen_at;
 END $$;
 
--- the finding, in the findings shape: one warning per active instance a LIVE run lists - not stopped, not retired,
+-- the finding, in the findings shape: one 'info' per active instance a LIVE run lists (rn-l9 S3 as the lead ruled
+-- 21:55: the instance and Findings pages and 'pgvigil check' show it; an alert channel sends it only with
+-- min_severity: info - a daily warning to every channel, a PagerDuty incident per instance, for a form the admin chose
+-- and that keeps loading, is noise) - not stopped, not retired,
 -- and its own newest beat within a day (rn-l9 S1: never the host's newest start; a run gone silent has its own finding
 -- and its list is not current). The words (rn-l9 B2): env: and file: hold the WHOLE connection string, never the
 -- password alone - a bare password there would be read as a connection string and reach the logs in pgx's parse error.
@@ -63,7 +66,7 @@ WITH live AS (
    GROUP BY c.host, c.instance
 )
 SELECT i.instance_id,
-       'warning'::text AS severity,
+       'info'::text AS severity,
        'inline password'::text AS setting,
        i.name AS value,
        true AS is_set,
@@ -76,4 +79,4 @@ SELECT i.instance_id,
   FROM live c
   JOIN pgvigil.instances i ON i.name = c.instance AND i.is_active AND i.engine = 'postgres';
 
-COMMENT ON VIEW pgvigil.inline_password_findings IS 'L9: an inline PostgreSQL password in pgvigil.yaml as a warning on the instance, in the findings shape; joined into pgvigil.findings by RELNOTES-S3 join line 1.';
+COMMENT ON VIEW pgvigil.inline_password_findings IS 'L9: an inline PostgreSQL password in pgvigil.yaml as an info finding on the instance (rn-l9 S3), in the findings shape; joined into pgvigil.findings by RELNOTES-S3 join line 1.';

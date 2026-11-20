@@ -3,7 +3,9 @@
 `pgvigil check [-config pgvigil.yaml] [-json] [-instance name]...` is a read-only health check of an install: nothing
 is written to the repository or to a monitored server. It prints one line per check, `OK | WARN | FAIL <what>: <words>`
 (`-json` gives the same rows as JSON), and exits **0** when everything is OK, **1** when the configuration does not
-load (or on a usage error), **2** when the repository is unreachable or was written by a newer pgvigil, and **3** on
+load (or on a usage error), **2** when the repository is unreachable, its dsn resolves to nothing (an unset variable,
+an unreadable file: a configuration error of the repository's own, as `pgvigil run` refuses it) or it was written by a
+newer pgvigil, and **3** on
 any WARN or a failed instance - so an install script can gate on the code.
 
 A word after the flags (`pgvigil check /etc/pgvigil/pgvigil.yaml`) is a usage error: the file is `-config <path>`.
@@ -57,9 +59,10 @@ This section is about an instance's `dsn`. The repository's `dsn`, `reports_dsn`
 there is not warned on.
 
 A PostgreSQL instance's `dsn` may hold its password inline, and such a configuration keeps loading - but the
-collector warns at every start, `pgvigil check` lists the instance, and `pgvigil run`'s start makes it a finding on
-the instance (*inline password*, on the instance's page and the Findings page, with the host and the fix; it clears
-at the next start after the fix; a scheduled `pgvigil collect` warns but makes no finding). The form is discouraged:
+collector warns at every start, `pgvigil check` lists the instance, and `pgvigil run`'s start makes it an info
+finding on the instance (*inline password*, on the instance's page and the Findings page, with the host and the fix;
+an alert channel sends it only when its `min_severity` is `info`; it clears at the next start after the fix; a
+scheduled `pgvigil collect` warns but makes no finding). The form is discouraged:
 pgvigil.yaml is pasted, diffed and kept in configuration repositories, and the password goes with it. The other
 forms:
 
