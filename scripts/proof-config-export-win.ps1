@@ -14,12 +14,22 @@
 #      string (Unprotect does not check the scope it is given, so the flag is the scope's proof); neither the export's
 #      nor the import's output holds the export's password
 #   X1 'config export -no-secrets' marks the dpapi: reference not portable
+#   I2 (with -WithService, elevated, on a VM without pgvigil) a page credential sealed in instances\ moves too: with the
+#      service pgvigil installed, an import into a fresh folder gives instances\ a protected list holding SYSTEM, the
+#      Administrators and NT SERVICE\pgvigil with full control (the service's account writes there after a move), and
+#      the blob opens; then 'pgvigil uninstall -purge', no service left - read back
 #   Z  the proof's folder removed, read back
 # Not proven here: a move between two machines (one VM: the import seals for the same machine key).
 # Exit 0 = every row as stated; 1 = a row differs; 2 = refused to start.
-param([Parameter(Mandatory = $true)][string]$Exe)
+param([Parameter(Mandatory = $true)][string]$Exe, [switch]$WithService)
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $Exe)) { Write-Host "REFUSED: no $Exe"; exit 2 }
+if ($WithService) {
+    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Write-Host 'REFUSED: -WithService runs elevated'; exit 2 }
+    if (Get-Service -Name pgvigil -ErrorAction SilentlyContinue) { Write-Host 'REFUSED: -WithService: the service pgvigil exists here'; exit 2 }
+    if (Test-Path -LiteralPath (Join-Path $env:ProgramData 'pgvigil')) { Write-Host "REFUSED: -WithService: $env:ProgramData\pgvigil exists (this proof removes what it makes, never what it found)"; exit 2 }
+}
 Add-Type -AssemblyName System.Security
 
 function Invoke-Native([scriptblock]$cmd) {
@@ -88,7 +98,34 @@ try {
     $res = Invoke-Native { & $Exe config export -config $cfg -no-secrets -out $masked }
     $mtext = if (Test-Path -LiteralPath $masked) { Get-Content -LiteralPath $masked -Raw } else { '' }
     Row 'X1' ($res.Code -eq 0 -and $mtext -match 'not portable') "export -no-secrets (exit $($res.Code)) marks the dpapi: reference not portable"
+
+    # I2
+    if ($WithService) {
+        $pagePlain = "host=pg7.example user=mon password=$pwSecret dbname=postgres"
+        New-Item -ItemType Directory -Path (Join-Path $dir 'instances') -Force | Out-Null
+        $pageBlob = Join-Path $dir 'instances\pg7-ab12.dpapi'
+        [IO.File]::WriteAllBytes($pageBlob, [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($pagePlain), $null, [Security.Cryptography.DataProtectionScope]::LocalMachine))
+        $move2 = Join-Path $root 'move2.pgvigil'
+        $res = Invoke-Native { $exportPw | & $Exe config export -config $cfg -password-stdin -out $move2 }
+        $inst = Invoke-Native { & $Exe install -no-start }
+        $dir2 = Join-Path (Join-Path $root 'new') 'pgvigil'
+        New-Item -ItemType Directory -Path $dir2 -Force | Out-Null
+        $imp = Invoke-Native { $exportPw | & $Exe config import -config (Join-Path $dir2 'pgvigil.yaml') -password-stdin $move2 }
+        $folder = Join-Path $dir2 'instances'
+        $acl = if (Test-Path -LiteralPath $folder) { Get-Acl -LiteralPath $folder } else { $null }
+        $svcFull = $acl -and @($acl.Access | Where-Object { "$($_.IdentityReference)" -eq 'NT SERVICE\pgvigil' -and "$($_.FileSystemRights)" -match 'FullControl' -and "$($_.AccessControlType)" -eq 'Allow' }).Count -gt 0
+        $others = if ($acl) { @($acl.Access | Where-Object { "$($_.IdentityReference)" -notmatch '^(NT AUTHORITY\\SYSTEM|BUILTIN\\Administrators|NT SERVICE\\pgvigil)$' }) } else { @() }
+        $opens = (Test-Path -LiteralPath (Join-Path $folder 'pg7-ab12.dpapi')) -and ((Open-Blob (Join-Path $folder 'pg7-ab12.dpapi')) -eq $pagePlain)
+        Row 'I2' ($res.Code -eq 0 -and $inst.Code -eq 0 -and $imp.Code -eq 0 -and $acl -and $acl.AreAccessRulesProtected -and $svcFull -and $others.Count -eq 0 -and $opens) "export $($res.Code), install $($inst.Code), import $($imp.Code): instances\ protected $(if ($acl) { $acl.AreAccessRulesProtected }), NT SERVICE\pgvigil full control $svcFull, other readers $($others.Count)$(if ($others.Count) { ' (' + (($others | ForEach-Object { "$($_.IdentityReference)" }) -join ', ') + ')' }), the blob opens $opens"
+        $pagePlain = $null
+    }
 } finally {
+    if ($WithService) {
+        try {
+            if (Get-Service -Name pgvigil -ErrorAction SilentlyContinue) { $null = Invoke-Native { & $Exe uninstall -purge } }
+            Row 'Z' (-not (Get-Service -Name pgvigil -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath (Join-Path $env:ProgramData 'pgvigil'))) "uninstall -purge: no service pgvigil, no $env:ProgramData\pgvigil"
+        } catch { Row 'Z' $false "the uninstall: $($_.Exception.Message)" }
+    }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     Row 'Z' (-not (Test-Path -LiteralPath $root)) "the proof's folder $root removed"
     $dsn = $null; $pwSecret = $null; $exportPw = $null
