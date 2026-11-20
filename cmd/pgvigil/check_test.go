@@ -112,6 +112,7 @@ func testLog() *slog.Logger {
 func TestCheckAllOK(t *testing.T) {
 	dsn := checkStore(t)
 	t.Setenv("RNCHECK_DSN", dsn)
+	plentyFree(t)
 	p := checkYaml(t, t.TempDir(), "repository:\n  dsn: env:RNCHECK_DSN\ninstances: []\n")
 	rows, exit := checkRun(context.Background(), testLog(), p, nil)
 	if exit != 0 {
@@ -221,5 +222,102 @@ func TestCheckNoCollectionLeft(t *testing.T) {
 	rows, exit := checkRun(context.Background(), testLog(), p, []string{"no-such-instance-filter-keeps-connects-out"})
 	if exit != 3 || !rowWith(rows, "WARN", "pg-idle", "no collection") {
 		t.Errorf("exit %d want 3 with a WARN pg-idle 'no collection left' row:\n%s", exit, rowsText(rows))
+	}
+}
+
+// plentyFree (rn-l181 N6): the free-space read answers 1 TiB for the test, so the test box's own disk never turns a
+// store on this host into a WARN (exit 3).
+func plentyFree(t *testing.T) {
+	t.Helper()
+	old := upgradeHooksOf
+	t.Cleanup(func() { upgradeHooksOf = old })
+	h := upgradeHooks{}
+	if old != nil {
+		h = *old
+	}
+	h.freeBytes = func(string) (uint64, error) { return 1 << 40, nil }
+	upgradeHooksOf = &h
+}
+
+// TestCheckAsTheCollectorLogin (rn-l181 B1): the configured repository login is the collector's (docs/acknowledge.md,
+// README: it may execute the functions and read nothing) - check reads the level as 'run' does, through the
+// functions, and a current store is an OK repository row and exit 0 for a LOGIN IN ROLE pgvigil_collector. Before the
+// fold the level read SELECTed pgvigil.schema_version: permission denied, FAIL, exit 2 on a good install.
+func TestCheckAsTheCollectorLogin(t *testing.T) {
+	dsn := checkStore(t)
+	plentyFree(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	admin, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role := fmt.Sprintf("rncheck_col_%d", rand.IntN(1_000_000_000))
+	if _, err := admin.Exec(ctx, "CREATE ROLE "+role+" LOGIN PASSWORD 'rncheck' IN ROLE pgvigil_collector"); err != nil {
+		_ = admin.Close(ctx)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), time.Minute)
+		defer ccancel()
+		_, _ = admin.Exec(cctx, "DROP ROLE IF EXISTS "+role)
+		_ = admin.Close(cctx)
+	})
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RNCHECK_DSN", strings.Replace(dsn, "user="+cfg.User, "user="+role+" password=rncheck", 1))
+	p := checkYaml(t, t.TempDir(), "repository:\n  dsn: env:RNCHECK_DSN\ninstances: []\n")
+	rows, exit := checkRun(ctx, testLog(), p, nil)
+	if exit != 0 || !rowWith(rows, "OK", "repository", "this build's level") {
+		t.Errorf("as the collector's login: exit %d want 0, and an OK repository row at this build's level:\n%s", exit, rowsText(rows))
+	}
+}
+
+// TestCheckPoolKeysInTheDSN (rn-l181 B2): README tells a site to cap the pool with pool_max_conns in the repository
+// dsn; check parses it as the pool does, so the key never reaches the server as a startup parameter (FATAL
+// 'unrecognized configuration parameter' before the fold: FAIL unreachable, exit 2).
+func TestCheckPoolKeysInTheDSN(t *testing.T) {
+	dsn := checkStore(t)
+	plentyFree(t)
+	t.Setenv("RNCHECK_DSN", dsn+" pool_max_conns=2")
+	p := checkYaml(t, t.TempDir(), "repository:\n  dsn: env:RNCHECK_DSN\ninstances: []\n")
+	rows, exit := checkRun(context.Background(), testLog(), p, nil)
+	if exit != 0 || !rowWith(rows, "OK", "repository", "") {
+		t.Errorf("a dsn with pool_max_conns: exit %d want 0 with an OK repository row:\n%s", exit, rowsText(rows))
+	}
+}
+
+// TestCheckUnknownInstanceFails (rn-l181 S4): -instance naming no instance of the file or the page tests nothing -
+// a FAIL row naming it and exit 3, never a silent exit 0 an install script would pass on.
+func TestCheckUnknownInstanceFails(t *testing.T) {
+	dsn := checkStore(t)
+	plentyFree(t)
+	t.Setenv("RNCHECK_DSN", dsn)
+	p := checkYaml(t, t.TempDir(), "repository:\n  dsn: env:RNCHECK_DSN\ninstances: []\n")
+	rows, exit := checkRun(context.Background(), testLog(), p, []string{"prod-db1"})
+	if exit != 3 || !rowWith(rows, "FAIL", "instance prod-db1", "no instance of that name") {
+		t.Errorf("-instance prod-db1 on a site without it: exit %d want 3 with a FAIL row naming it:\n%s", exit, rowsText(rows))
+	}
+}
+
+// TestCheckAlertsBlockLoads (rn-l181 S1 a): the alerts: block loads as 'run' loads it - two channels of one name make
+// 'run' exit 3, so check FAILs the configuration (exit 1) before anything else.
+func TestCheckAlertsBlockLoads(t *testing.T) {
+	p := checkYaml(t, t.TempDir(), "repository:\n  dsn: \"host=127.0.0.1 port=9 user=u dbname=d\"\ninstances: []\n"+
+		"alerts:\n  - {name: a, kind: file, file: {dir: /tmp}}\n  - {name: a, kind: file, file: {dir: /tmp}}\n")
+	rows, exit := checkRun(context.Background(), testLog(), p, nil)
+	if exit != 1 || !rowWith(rows, "FAIL", "configuration", "listed twice") {
+		t.Errorf("two alerts channels named a: exit %d want 1 with a FAIL configuration row:\n%s", exit, rowsText(rows))
+	}
+}
+
+// TestCheckPositionalArgument (rn-l181 N8): 'pgvigil check /etc/pgvigil/pgvigil.yaml' is a usage error naming
+// -config, never a check of ./pgvigil.yaml.
+func TestCheckPositionalArgument(t *testing.T) {
+	err := runCheck(context.Background(), testLog(), []string{"/etc/pgvigil/pgvigil.yaml"})
+	if err == nil || !strings.Contains(err.Error(), "unexpected argument") || !strings.Contains(err.Error(), "-config") {
+		t.Errorf("a positional argument: %v, want a usage error naming -config", err)
 	}
 }

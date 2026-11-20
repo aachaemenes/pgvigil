@@ -155,6 +155,8 @@ curl -fsSL https://pgvigil.com/install.sh | sh          # Linux (POSIX sh; sudo 
 irm https://pgvigil.com/install.ps1 | iex               # Windows, elevated PowerShell
 ```
 
+`pgvigil check -config <the configuration>` then says whether the install is whole - the configuration, the repository's reach and level, one connection test per instance - read only, with an exit code a script can gate on ([docs/check.md](docs/check.md)).
+
 A release that carries new migration files wants the schema first: [docs/upgrade.md](docs/upgrade.md) gives the order (fetch with `PGVIGIL_NO_SERVICE=1`, stop, dump, `migrate` as the owner, `./pgvigil install`); re-running the installer first also arrives, but it reports `the service did not come up` until the owner has migrated.
 
 `PGVIGIL_VERSION=v0.2.0` pins a tag, `PGVIGIL_BASE_URL` points at a mirror of the release folder (air-gapped sites), `PGVIGIL_NO_SERVICE=1` only downloads and verifies the binary into the current folder. `PGVIGIL_USER` (`install.sh --user`) names the Linux service's account and `PGVIGIL_SERVICE_ACCOUNT` (`install.ps1 -ServiceAccount`) the Windows one, both for a fresh install; `install.sh --help` and `install.ps1 -Help` list every option. The scripts are `deploy/install.sh` and `deploy/install.ps1` (served from pgvigil.com as the same files); read them first if you like.

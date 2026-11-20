@@ -335,15 +335,13 @@ func (d DBADashRepo) Every() time.Duration {
 }
 
 // HasInlinePGPassword says whether a PostgreSQL connection string carries a password inline: a URL's userinfo or
-// password= query (inlinePassword's URL reading), or a libpq keyword/value string's password keyword with a value
-// ('pgvigil check' warns on it, L181/L9; inlinePassword alone reads the sqlserver forms - URL and ';'-separated -
-// and saw no keyword/value password: rn-2's difference). env: and file: references are the caller's to rule out.
+// password= query, or a libpq keyword/value string's password keyword with a value ('pgvigil check' warns on it,
+// L181/L9). The string is read by secrets.PGSettings, libpq's own rules and the one reader the code base keeps
+// (rn-l181 S3: a URL only by its postgres:// or postgresql:// prefix - a '://' inside a value, or inside the
+// password, is a keyword string). env: and file: references are the caller's to rule out.
 func HasInlinePGPassword(v string) bool {
-	l := strings.TrimSpace(v)
-	if strings.Contains(l, "://") {
-		return inlinePassword(l)
-	}
-	return kvPassword(l)
+	m, err := secrets.PGSettings(v)
+	return err == nil && m["password"] != ""
 }
 
 // InlinePasswordInstances names the file's PostgreSQL instances whose dsn carries an inline password, in the file's
@@ -365,57 +363,6 @@ func (c *Config) InlinePasswordInstances() []string {
 		}
 	}
 	return out
-}
-
-// kvPassword reads a libpq keyword/value string (key = value pairs separated by white space; a value may be
-// single-quoted, with \' and \\ inside) and says whether its password keyword holds a value.
-func kvPassword(s string) bool {
-	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
-	i := 0
-	for i < len(s) {
-		for i < len(s) && space(s[i]) {
-			i++
-		}
-		ks := i
-		for i < len(s) && s[i] != '=' && !space(s[i]) {
-			i++
-		}
-		key := strings.ToLower(s[ks:i])
-		for i < len(s) && space(s[i]) {
-			i++
-		}
-		if i >= len(s) || s[i] != '=' {
-			continue // a word without '=': not a pair
-		}
-		i++
-		for i < len(s) && space(s[i]) {
-			i++
-		}
-		n := 0
-		if i < len(s) && s[i] == '\'' {
-			i++
-			for i < len(s) && s[i] != '\'' {
-				if s[i] == '\\' && i+1 < len(s) {
-					i++
-				}
-				n++
-				i++
-			}
-			i++
-		} else {
-			for i < len(s) && !space(s[i]) {
-				if s[i] == '\\' && i+1 < len(s) {
-					i++
-				}
-				n++
-				i++
-			}
-		}
-		if key == "password" && n > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // inlinePassword says whether an inline connection string carries a password: a URL's user:password@ or a password /

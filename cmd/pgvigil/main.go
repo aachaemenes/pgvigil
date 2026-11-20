@@ -6,6 +6,7 @@
 //	pgvigil migrate  -config pgvigil.yaml            apply the repository schema
 //	pgvigil migrate  -config pgvigil.yaml -print     print the statements migrate would run (read only: nothing applied)
 //	pgvigil alerts   -config pgvigil.yaml            one pass of the alert channels (the alerts: list)
+//	pgvigil check    -config pgvigil.yaml [-json] [-instance name]...   the install's read-only health check (its own exit codes: docs/check.md)
 //	pgvigil serve    -config pgvigil.yaml [-listen 127.0.0.1:8080] [-tls-cert f -tls-key f]   web UI and JSON API (read only)
 //	pgvigil user     <add|passwd|enable|disable|remove|list> -config pgvigil.yaml [name]        the UI's logins
 //	pgvigil cert     [-hosts a,b] [-out dir]                                                 a self-signed TLS pair
@@ -54,7 +55,9 @@ var version = "dev"
 
 func main() { os.Exit(run(os.Args[1:])) }
 
-// run returns the process exit code: 0 ok, 1 a failure, 2 a usage error, 3 a configuration error.
+// run returns the process exit code: 0 ok, 1 a failure, 2 a usage error, 3 a configuration error - except 'pgvigil
+// check', whose error carries its own (1 the configuration, 2 the repository, 3 a WARN or a failed instance:
+// docs/check.md).
 // Deferred cleanup (the signal context) runs before os.Exit this way.
 func run(args []string) int {
 	if len(args) < 1 {

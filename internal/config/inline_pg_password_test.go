@@ -24,6 +24,10 @@ func TestHasInlinePGPassword(t *testing.T) {
 		{"postgresql://h/db?password=x", true},
 		{"postgresql://h/db?sslmode=require", false},
 		{"", false},
+		// rn-l181 S3: a '://' inside a value or inside the password is no URL (libpq decides by the prefix)
+		{"host=db user=u password=pw application_name=svc://collector", true},
+		{"password=a://b host=db", true},
+		{"host=db application_name=svc://collector user=u", false},
 	} {
 		if got := HasInlinePGPassword(c.dsn); got != c.want {
 			t.Errorf("HasInlinePGPassword(%q) = %v, want %v", c.dsn, got, c.want)

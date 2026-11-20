@@ -6,7 +6,10 @@ is written to the repository or to a monitored server. It prints one line per ch
 load (or on a usage error), **2** when the repository is unreachable or was written by a newer pgvigil, and **3** on
 any WARN or a failed instance - so an install script can gate on the code.
 
-- **The configuration** loads exactly as `pgvigil run` loads it, or the check fails with the loader's own error. It
+A word after the flags (`pgvigil check /etc/pgvigil/pgvigil.yaml`) is a usage error: the file is `-config <path>`.
+
+- **The configuration** loads exactly as `pgvigil run` loads it - the instances and the `alerts:` block (its channels,
+  the Slack door, `alerts_dsn`, `base_url`) - or the check fails with the loader's own error. It
   warns on a PostgreSQL instance whose dsn carries an inline password (move it to a passfile, `env:NAME`, `file:/path`
   or `password_secret`; the inline form is discouraged) and on an instance with no collection left to run.
 - **The secret files**: who may read each file of the configuration's folder that can hold a secret - the file,
@@ -22,10 +25,20 @@ any WARN or a failed instance - so an install script can gate on the code.
   the `dpapi:` blob that did not open on this host - never what was read; when all resolve, one OK line counts them.
   The repository's dsn and each instance's dsn are judged in their own lines below with the same words.
 - **The repository**: a dsn that resolves to nothing is a FAIL with why and nothing is connected (an empty dsn
-  would be libpq's defaults: localhost, as the account running the check); otherwise the connect, its schema level against this build (behind: *run pgvigil migrate*; ahead: a FAIL -
-  this build must not run on it), and its size. Free space beside the store is read only when the store is on this
-  host and its `data_directory` is readable to the login and the process: a WARN under 10 GiB free or under 30 days of
-  the store's growth; otherwise the line says *not read: the store is on \<host\>*.
+  would be libpq's defaults: localhost, as the account running the check); otherwise the connect (the dsn read as the
+  service's pool reads it: `pool_max_conns` and the other `pool_*` keys stay on this side), its schema level against
+  this build, read as `pgvigil run` reads it - through the functions the collector's login may call, so the
+  configured login is enough - (behind: an embedded migration the store lacks, *run pgvigil migrate*; ahead: a FAIL,
+  this build must not run on it), and its size. Free space beside the store is read only when the connection reached
+  this host (a loopback address or a socket) and its `data_directory` is readable to the login and the process: a
+  WARN under 10 GiB free or under 30 days of the store's growth (the size a day or two ago, scaled to a day). The
+  line says why when it is not read: *the store is on \<address\>*, *data_directory is not readable to this login*,
+  *the store's directory is not readable to this process*, *no free-space read on this platform*, or the read's own
+  error; and *growth not read* when no reading of a day or two ago is there or the login may not read the beats (the
+  collector's login reads no table).
+- **The inventory**: a row of Admin > Instances the scheduler would leave out (it breaks a rule the page refuses on
+  write), a page instance whose cloud block is not used, or Admin > Instances not read at all (the repository not
+  reached, the read refused) is a WARN `inventory` line (exit 3): the file's instances are still tested.
 - **Each instance** - the file's and Admin > Instances' enabled inventory, both engines - gets the one connection test
   the Admin page itself uses (10 seconds, at most 8 at a time): who answered, and the collections that will not run
   there and why. A server this build does not know is a WARN beside its OK line: a PostgreSQL major outside 13 to 18,
@@ -33,7 +46,9 @@ any WARN or a failed instance - so an install script can gate on the code.
   run and are not judged by it), or an engine edition pgvigil does not run on (Microsoft Fabric's SQL database, 12,
   among them). Nothing is refused for it: each collection keeps its own version rule and one whose read breaks fails
   alone (a named difference from DBA Dash, which refuses an unknown version or edition unless its check is skipped).
-  `-instance <name>` narrows the connection tests; the configuration and repository checks still run.
+  `-instance <name>` narrows the connection tests; the configuration and repository checks still run. A name that
+  matches no instance of the file or the page is a FAIL (exit 3): nothing was tested. The instance lines print in
+  name order.
 
 ## Keeping a password out of pgvigil.yaml
 

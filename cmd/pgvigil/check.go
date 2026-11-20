@@ -3,16 +3,21 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/aachaemenes/pgvigil/internal/alerts"
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/engines"
@@ -68,6 +73,9 @@ func runCheck(ctx context.Context, log *slog.Logger, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if fs.NArg() > 0 { // rn-l181 N8: 'pgvigil check /etc/pgvigil/pgvigil.yaml' must not check ./pgvigil.yaml
+		return fmt.Errorf("pgvigil check: unexpected argument %q - the file is -config <path>", fs.Arg(0))
+	}
 	rows, exit := checkRun(ctx, log, *path, only)
 	if *asJSON {
 		b, err := json.MarshalIndent(rows, "", "  ")
@@ -116,6 +124,11 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 		add("FAIL", "configuration", err.Error())
 		return rows, 1
 	}
+	// rn-l181 S1 (a): the alerts: block as 'run' loads it (its channels, the slack door, alerts_dsn, base_url)
+	if _, err := alerts.LoadFile(path); err != nil {
+		add("FAIL", "configuration", err.Error())
+		return rows, 1
+	}
 	add("OK", "configuration", fmt.Sprintf("%s loads: %d instance(s) in the file", path, len(cfg.Instances)))
 	// C2: the configuration's warnings
 	for _, name := range cfg.InlinePasswordInstances() {
@@ -153,7 +166,12 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 		// never connected: an empty dsn is libpq's defaults (PGHOST / PGPORT, else localhost, as this OS account)
 		err = fmt.Errorf("dsn %q resolved to an empty string (%s): nothing was connected", cfg.Repository.DSNRaw, collect.EmptyDSNWhy(cfg.Repository.DSNRaw))
 	} else {
-		rc, err = pgx.Connect(rctx, repoDSN)
+		// rn-l181 B2: parsed as the pool parses it, so a pool_* key of the dsn (README: pool_max_conns) never reaches
+		// the server as a startup parameter (sched.go's rule)
+		var pc *pgxpool.Config
+		if pc, err = pgxpool.ParseConfig(repoDSN); err == nil {
+			rc, err = pgx.ConnectConfig(rctx, pc.ConnConfig)
+		}
 		if err != nil {
 			err = fmt.Errorf("unreachable: %w", err)
 		}
@@ -162,47 +180,64 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 		rcancel()
 		add("FAIL", "repository", err.Error())
 		repoBad = true
+		add("WARN", "inventory", "Admin > Instances was not read: the repository was not reached; the file's instances alone are tested")
 	} else {
-		var newest string
-		var size int64
+		// rn-l181 B1 / S2: the level read as 'run' reads it - through the SECURITY DEFINER functions the collector
+		// login may call (it reads no table): behind = an embedded migration the store lacks, whatever its number;
+		// newer = the store's newest applied version past this build's newest
 		latest, lerr := repo.LatestMigration()
-		qerr := rc.QueryRow(rctx, `SELECT coalesce(max(version), ''), pg_database_size(current_database()) FROM pgvigil.schema_version`).Scan(&newest, &size)
+		var have *string
+		herr := rc.QueryRow(rctx, `SELECT pgvigil.schema_latest()`).Scan(&have)
+		current, need, serr := repo.SchemaCurrentWith(rctx, rc)
+		var size int64
+		zerr := rc.QueryRow(rctx, `SELECT pg_database_size(current_database())`).Scan(&size)
+		sizeWords := fmtGiB(size)
+		if zerr != nil {
+			sizeWords = "its size not read: " + zerr.Error()
+		}
 		switch {
 		case lerr != nil:
 			add("FAIL", "repository", lerr.Error())
 			repoBad = true
-		case qerr != nil:
-			add("FAIL", "repository", "pgvigil.schema_version was not read: "+qerr.Error())
+		case herr == nil && have != nil && *have > latest:
+			add("FAIL", "repository", fmt.Sprintf("written by a newer pgvigil (%s; this build carries %s): this build must not run on it", *have, latest))
 			repoBad = true
-		case newest == latest:
-			add("OK", "repository", fmt.Sprintf("at %s (this build's level), %s", newest, fmtGiB(size)))
-		case newest < latest:
-			add("WARN", "repository", fmt.Sprintf("at %s behind this build (%s): run pgvigil migrate", newest, latest))
+		case serr != nil:
+			add("FAIL", "repository", "the level was not read: "+serr.Error())
+			repoBad = true
+		case !current:
+			add("WARN", "repository", fmt.Sprintf("behind this build (it lacks %s): run pgvigil migrate", need))
 		default:
-			add("FAIL", "repository", fmt.Sprintf("written by a newer pgvigil (%s; this build carries %s): this build must not run on it", newest, latest))
-			repoBad = true
+			add("OK", "repository", fmt.Sprintf("at %s (this build's level), %s", latest, sizeWords))
 		}
-		if qerr == nil {
-			checkSpace(rctx, rc, repoDSN, size, add)
+		if zerr == nil {
+			checkSpace(rctx, rc, size, add)
 		}
 		_ = rc.Close(context.WithoutCancel(ctx))
 		rcancel()
-		// Q3 (a): the scheduler's whole set - the file's instances and Admin > Instances' enabled inventory
-		if r, rerr := repo.Open(ctx, repoDSN); rerr == nil {
-			ictx, icancel := context.WithTimeout(ctx, 10*time.Second)
+		// Q3 (a): the scheduler's whole set - the file's instances and Admin > Instances' enabled inventory; every
+		// path that reads no inventory says so (rn-l181 N3), the open bounded with the read
+		ictx, icancel := context.WithTimeout(ctx, 10*time.Second)
+		if r, rerr := repo.Open(ictx, repoDSN); rerr != nil {
+			add("WARN", "inventory", "Admin > Instances was not read: "+rerr.Error())
+		} else {
 			if page, _, perr := r.Inventory(ictx); perr == nil {
-				merged, skipped := config.Merge(cfg.Instances, page, cfg.QueryText, cfg.MSSQLCounters)
+				merged, skipped, dropped := config.MergeNotes(cfg.Instances, page, cfg.QueryText, cfg.MSSQLCounters)
 				all = merged
 				for _, s := range skipped {
 					add("WARN", "inventory", s)
 				}
+				for _, d := range dropped { // rn-l181 N4: the scheduler logs these as warnings too
+					add("WARN", "inventory", d)
+				}
 			} else {
 				add("WARN", "inventory", "Admin > Instances was not read: "+perr.Error())
 			}
-			icancel()
 			r.Close()
 		}
+		icancel()
 	}
+
 	// C4: one connection test per instance, at most 8 at a time, 10 s each (web.CheckConnection's own bound)
 	want := map[string]bool{}
 	for _, n := range only {
@@ -238,6 +273,17 @@ func checkRun(ctx context.Context, log *slog.Logger, path string, only []string)
 		}(in)
 	}
 	wg.Wait()
+	// rn-l181 N5: in name order, so two runs on one site print alike; S4: a -instance that names nothing is a FAIL
+	sort.Slice(out, func(i, j int) bool { return out[i].in.Name < out[j].in.Name })
+	known := map[string]bool{}
+	for _, in := range all {
+		known[in.Name] = true
+	}
+	for _, n := range only {
+		if !known[n] {
+			add("FAIL", "instance "+n, "no instance of that name in the file or on Admin > Instances: nothing was tested")
+		}
+	}
 	for _, r := range out {
 		for _, row := range instanceCheckRows(r.in.Name, r.t, r.why) {
 			add(row.Level, row.What, row.Words)
@@ -310,17 +356,21 @@ func referenceRows(path string, add func(level, what, words string)) {
 	}
 }
 
-// checkSpace (Q2 a): the free space beside the store, read only when the store is on this host and its data_directory
-// is readable to this login and this process; a WARN under 10 GiB free or under 30 days of the store's growth (the
-// beats' repo_bytes reading of about a day ago).
-func checkSpace(ctx context.Context, rc *pgx.Conn, dsn string, size int64, add func(level, what, words string)) {
-	host := ""
-	if pc, err := pgx.ParseConfig(dsn); err == nil {
-		host = pc.Host
+// checkSpace (Q2 a): the free space beside the store, read only when the store is on this host (judged by the
+// address the connection reached, rn-l181 N2: a dsn's first host may not be the one that answered) and its
+// data_directory is readable to this login and this process; a WARN under 10 GiB free or under 30 days of the store's
+// growth - the beats' repo_bytes reading of one to two days ago, scaled by its age (N1). The collector's login reads
+// no table: a growth not read is said, never skipped silently (B1).
+func checkSpace(ctx context.Context, rc *pgx.Conn, size int64, add func(level, what, words string)) {
+	where, local := "an unknown address", false
+	switch a := rc.PgConn().Conn().RemoteAddr().(type) {
+	case *net.UnixAddr:
+		local = true
+	case *net.TCPAddr:
+		where, local = a.IP.String(), a.IP.IsLoopback()
 	}
-	local := host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasPrefix(host, "/")
 	if !local {
-		add("OK", "repository space", "not read: the store is on "+host)
+		add("OK", "repository space", "not read: the store is on "+where)
 		return
 	}
 	var dir string
@@ -343,16 +393,28 @@ func checkSpace(ctx context.Context, rc *pgx.Conn, dsn string, size int64, add f
 		return
 	}
 	var past int64
-	_ = rc.QueryRow(ctx, `SELECT repo_bytes FROM pgvigil.collector_beats
-	  WHERE at <= now() - interval '23 hours' AND repo_bytes IS NOT NULL ORDER BY at DESC LIMIT 1`).Scan(&past)
-	perDay := size - past
+	var ageS float64
+	growth := ""
+	gerr := rc.QueryRow(ctx, `SELECT repo_bytes, extract(epoch FROM now() - at)::float8 FROM pgvigil.collector_beats
+	  WHERE at <= now() - interval '23 hours' AND at > now() - interval '48 hours' AND repo_bytes IS NOT NULL
+	  ORDER BY at DESC LIMIT 1`).Scan(&past, &ageS)
+	switch {
+	case errors.Is(gerr, pgx.ErrNoRows):
+		growth = "; growth not read: no beat of one to two days ago"
+	case gerr != nil:
+		growth = "; growth not read: " + gerr.Error()
+	}
+	var perDay int64
+	if gerr == nil && ageS > 0 {
+		perDay = int64(float64(size-past) * 86400 / ageS)
+	}
 	switch {
 	case free < 10<<30:
-		add("WARN", "repository space", fmt.Sprintf("%s free beside the store (under 10 GiB)", fmtGiB(int64(free))))
-	case past > 0 && perDay > 0 && free < 30*uint64(perDay):
+		add("WARN", "repository space", fmt.Sprintf("%s free beside the store (under 10 GiB)%s", fmtGiB(int64(free)), growth))
+	case perDay > 0 && free < 30*uint64(perDay):
 		add("WARN", "repository space", fmt.Sprintf("%s free beside the store: under 30 days at the store's growth (%s a day)", fmtGiB(int64(free)), fmtGiB(perDay)))
 	default:
-		add("OK", "repository space", fmtGiB(int64(free))+" free beside the store")
+		add("OK", "repository space", fmtGiB(int64(free))+" free beside the store"+growth)
 	}
 }
 
