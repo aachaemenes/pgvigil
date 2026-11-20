@@ -5,8 +5,8 @@ is written to the repository or to a monitored server. It prints one line per ch
 (`-json` gives the same rows as JSON), and exits **0** when everything is OK, **1** when the configuration does not
 load (or on a usage error), **2** when the repository is unreachable, its dsn resolves to nothing (an unset variable,
 an unreadable file: a configuration error of the repository's own, as `pgvigil run` refuses it) or it was written by a
-newer pgvigil, and **3** on
-any WARN or a failed instance - so an install script can gate on the code.
+newer pgvigil, and **3** on any WARN or FAIL (a secret file, a reference, an instance) while the repository answers
+(2 comes first when it does not) - so an install script can gate on the code.
 
 A word after the flags (`pgvigil check /etc/pgvigil/pgvigil.yaml`) is a usage error: the file is `-config <path>`.
 
@@ -14,12 +14,23 @@ A word after the flags (`pgvigil check /etc/pgvigil/pgvigil.yaml`) is a usage er
   the Slack door, `alerts_dsn`, `base_url`) - or the check fails with the loader's own error. It
   warns on a PostgreSQL instance whose dsn carries an inline password (move it to a passfile, `env:NAME`, `file:/path`
   or `password_secret`; the inline form is discouraged) and on an instance with no collection left to run.
-- **The secret files**: who may read each file of the configuration's folder that can hold a secret - the file,
-  the installer's dsn files (`repo.dsn`, `reports.dsn`, `pgvigil.env`), everything under `secrets/`, `instances/`,
-  `sources/` and `keys/` - and the folders. On Linux any bit for others is a FAIL and a group bit beyond read a WARN
-  (a folder's group may pass through it); on Windows read for anyone but SYSTEM, the Administrators and the service's
-  account is a FAIL. Each prints its fix (`chmod o-rwx <file>`, `icacls "<file>" /remove:g *<SID>`); check changes
-  nothing (on Windows `pgvigil install` run again sets the installer's access list on the folder once more).
+- **The secret files**: who may read each file that can hold a secret - the configuration, the installer's dsn files
+  (`repo.dsn`, `reports.dsn`, `pgvigil.env`), the purge's and the export's environment files (`pgvigil-purge.env`,
+  `pgvigil-export.env`: the repository owner's credential, root's alone - a group bit is a FAIL there), the Windows
+  purge task's `pgvigil-purge.yaml`, a TLS key `pgvigil cert -out` wrote there (`pgvigil.key`), an import's
+  `*.previous`, everything under `secrets/`, `instances/` and `sources/` (a link judged by its target, both named),
+  every file a `file:` reference names wherever it lies and the `passfile` / `sslkey` of each connection string
+  written in the file - and the configuration's folder when it is pgvigil's own (a folder it shares with other files
+  is said, and neither judged nor given a fix). On Linux any bit for others is a FAIL, a group bit beyond read a WARN
+  (a folder's group may pass through it), a group read for a group that is not the service's a FAIL (its `chgrp`
+  line), and a POSIX access list a WARN (its `getfacl` line: the mode then shows the list's mask, not who reads). On
+  Windows a group or a SID that names many accounts (Users, Everyone, Authenticated Users) is a FAIL - an inherited one
+  is fixed by `pgvigil install` run again, never file by file; an account that may change a file (its data, its list,
+  its owner) outside `instances/` and `sources/` is a FAIL; any other single account is a WARN with no remove line
+  (where the page saved a credential that is the account serve runs as, which the page grants on purpose), and so is
+  a SID that does not resolve here. Each FAIL prints its fix, one command a line (`chmod o-rwx <file>`,
+  `icacls "<file>" /remove:g *<SID>`); check changes nothing. Not proven on Windows yet: the walk over a real access
+  list (its unit row runs in the Windows turn).
 - **The references**: every `env:`, `file:` and `dpapi:` value of the file, whichever block holds it (`reports_dsn`,
   `alerts_dsn`, an instance's `actions_dsn`, `explain_dsn`, `stats_dsn` or `pgbouncer`, `export:`, the alert
   channels), is resolved as its reader resolves it: each that resolves to nothing is a FAIL naming where it sits

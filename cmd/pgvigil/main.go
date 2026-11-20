@@ -56,8 +56,8 @@ var version = "dev"
 func main() { os.Exit(run(os.Args[1:])) }
 
 // run returns the process exit code: 0 ok, 1 a failure, 2 a usage error, 3 a configuration error - except 'pgvigil
-// check', whose error carries its own (1 the configuration, 2 the repository, 3 a WARN or a failed instance:
-// docs/check.md).
+// check', whose error carries its own (1 the configuration, 2 the repository, 3 any WARN or FAIL while the repository
+// answers: docs/check.md).
 // Deferred cleanup (the signal context) runs before os.Exit this way.
 func run(args []string) int {
 	if len(args) < 1 {

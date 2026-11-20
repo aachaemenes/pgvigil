@@ -37,20 +37,20 @@ func TestSecretFileModesL169(t *testing.T) {
 // account is a FAIL naming that reader and its icacls line.
 func TestSecretFileACLL169(t *testing.T) {
 	allowed := map[string]bool{"S-1-5-18": true, "S-1-5-32-544": true, "S-1-5-80-1111": true}
-	ok := []aclReader{{"S-1-5-18", `NT AUTHORITY\SYSTEM`}, {"S-1-5-32-544", `BUILTIN\Administrators`}, {"S-1-5-80-1111", `NT SERVICE\pgvigil`}}
-	if level, words := judgeACL(`C:\ProgramData\pgvigil\repo.dsn`, ok, allowed); level != "OK" {
+	ok := []aclReader{{SID: "S-1-5-18", Name: `NT AUTHORITY\SYSTEM`, Resolved: true}, {SID: "S-1-5-32-544", Name: `BUILTIN\Administrators`, Resolved: true}, {SID: "S-1-5-80-1111", Name: `NT SERVICE\pgvigil`, Resolved: true}}
+	if level, words := judgeACL(`C:\ProgramData\pgvigil\repo.dsn`, ok, allowed, false); level != "OK" {
 		t.Errorf("the installer's three readers: %s %q", level, words)
 	}
-	more := append(append([]aclReader(nil), ok...), aclReader{"S-1-5-32-545", `BUILTIN\Users`})
-	level, words := judgeACL(`C:\ProgramData\pgvigil\repo.dsn`, more, allowed)
+	more := append(append([]aclReader(nil), ok...), aclReader{SID: "S-1-5-32-545", Name: `BUILTIN\Users`, Resolved: true})
+	level, words := judgeACL(`C:\ProgramData\pgvigil\repo.dsn`, more, allowed, false)
 	if level != "FAIL" || !strings.Contains(words, `BUILTIN\Users`) || !strings.Contains(words, `icacls "C:\ProgramData\pgvigil\repo.dsn" /remove:g *S-1-5-32-545`) {
 		t.Errorf("Users reading: %s %q", level, words)
 	}
 }
 
 // TestSecretFilesRowsL169: the part judges every file that can hold a secret in the configuration's folder - the
-// file, the installer's dsn files, secrets/, instances/, sources/, keys/ - and the folders, one OK row when none is
-// exposed; a stray note is not judged. 'pgvigil check' carries the rows, so it ends non-zero.
+// file, the installer's dsn files, secrets/, instances/, sources/ - and the folders, one OK row when none is exposed;
+// a stray note and serve's keys/ (no secret of the configuration's) are not judged. 'pgvigil check' carries the rows, so it ends non-zero.
 func TestSecretFilesRowsL169(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the Linux modes; Windows reads access lists")
@@ -66,7 +66,7 @@ func TestSecretFilesRowsL169(t *testing.T) {
 	if err := os.Chmod(filepath.Join(dir, "secrets", "pg1-ab12.dsn"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(filepath.Join(dir, "keys", "token.key"), 0o660); err != nil {
+	if err := os.Chmod(filepath.Join(dir, "instances", "7.dsn"), 0o660); err != nil {
 		t.Fatal(err)
 	}
 	rows = secretFileRows(cfg)
@@ -76,7 +76,7 @@ func TestSecretFilesRowsL169(t *testing.T) {
 	}
 	got := strings.Join(all, "\n")
 	if !strings.Contains(got, "FAIL") || !strings.Contains(got, "secrets/pg1-ab12.dsn") || !strings.Contains(got, "chmod o-rwx") ||
-		!strings.Contains(got, "WARN") || !strings.Contains(got, "keys/token.key") || strings.Contains(got, "notes.txt") {
+		!strings.Contains(got, "WARN") || !strings.Contains(got, "instances/7.dsn") || strings.Contains(got, "notes.txt") {
 		t.Errorf("the rows over an exposed file and a group-writable key:\n%s", got)
 	}
 	checked, _ := checkRun(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), cfg, nil)
