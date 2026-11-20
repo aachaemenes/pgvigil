@@ -301,8 +301,8 @@ type DBADashRepo struct {
 }
 
 // gmsaName is DOMAIN\name$: a NetBIOS domain of 1 to 15 characters and an account of 1 to 15 before its one '$' (the
-// sAMAccountName rule), neither holding a character Windows refuses in a name.
-var gmsaName = regexp.MustCompile(`^[^\\/:*?"<>|\s.@\[\]]{1,15}\\[^\\/:*?"<>|\s@\[\]$]{1,15}\$$`)
+// sAMAccountName rule), neither holding a character Windows refuses in a name (; , = and + among them).
+var gmsaName = regexp.MustCompile(`^[^\\/:*?"<>|\s.@\[\];,=+]{1,15}\\[^\\/:*?"<>|\s@\[\]$;,=+]{1,15}\$$`)
 
 // IsGMSAName says whether s has the gmsa: key's form, DOMAIN\name$ (pgvigil install's -user check reads it too).
 func IsGMSAName(s string) bool { return gmsaName.MatchString(strings.TrimSpace(s)) }

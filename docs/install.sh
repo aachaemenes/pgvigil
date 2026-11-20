@@ -199,6 +199,12 @@ if [ "${PGVIGIL_NO_SERVICE:-}" = "1" ]; then
   exit 0
 fi
 
+# a re-run over an installed collector keeps its account ('pgvigil install' reads the unit's User=): --user goes with a
+# fresh install only, here as with --from
+if [ -n "$SVCUSER" ] && [ -f /etc/systemd/system/pgvigil.service ]; then
+  die "--user goes with a fresh install: the installed collector keeps its account (pgvigil.service's User=)"
+fi
+
 # the install needs root: already root, else sudo, else say what to run
 if [ "$(id -u)" = 0 ]; then
   if [ -n "$SVCUSER" ]; then "$WORK/$ASSET" install -user "$SVCUSER"; else "$WORK/$ASSET" install; fi

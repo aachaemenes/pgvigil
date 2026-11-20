@@ -59,6 +59,9 @@ func checkWindowsAccount(user, host string, passwordStdin bool) (windowsAccount,
 	}
 	switch {
 	case strings.EqualFold(dom, "NT SERVICE"):
+		if !strings.EqualFold(name, "pgvigil") {
+			return 0, fmt.Errorf(`-user %s is another service's virtual account: pgvigil's own is NT SERVICE\pgvigil (or leave -user out)`, u)
+		}
 		if passwordStdin {
 			return 0, noPassword("a virtual account")
 		}
@@ -91,9 +94,14 @@ func checkWindowsAccount(user, host string, passwordStdin bool) (windowsAccount,
 var errNeedsPassword = errors.New("needs its password")
 
 // keepInstalledAccount: install run again over an installed service, without -user, keeps the account that service
-// runs as (the default would move a gMSA service back to the virtual account); -upgrade keeps it by its own rule.
+// runs as (the default would move a gMSA service back to the virtual account); -upgrade keeps it by its own rule. The
+// installed account is noted either way: -user naming it again keeps its stored password too.
 func keepInstalledAccount(o *installOptions, installed string, found bool) {
-	if !found || installed == "" || o.Upgrade || o.set["user"] {
+	if !found || installed == "" {
+		return
+	}
+	o.installedUser = strings.TrimSpace(installed)
+	if o.Upgrade || o.set["user"] {
 		return
 	}
 	o.User, o.keptAccount = installed, true
@@ -105,7 +113,8 @@ func readServicePassword(r io.Reader) (string, error) {
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", fmt.Errorf("-password-stdin: reading stdin: %w", err)
 	}
-	pw := strings.TrimRight(line, "\r\n")
+	// a BOM a UTF-8 pipe put first is no part of the password
+	pw := strings.TrimPrefix(strings.TrimRight(line, "\r\n"), "\ufeff")
 	if pw == "" {
 		return "", errors.New("-password-stdin: no password on stdin (one line)")
 	}
@@ -127,8 +136,20 @@ func prepareAccount(o *installOptions, goos, host string, stdin io.Reader) (wind
 		}
 		return 0, nil
 	}
+	// the trimmed name is the one every later step uses (the service manager, the lookup, the access lists)
+	o.User = strings.TrimSpace(o.User)
+	// the installed service's account, kept by a re-run without -user: the service already runs as it - an account
+	// set by hand (LocalSystem, NT AUTHORITY\LocalService) included - so it takes no form check, as -upgrade keeps it,
+	// and the service manager keeps its stored password (NULL)
+	if o.keptAccount && !o.PasswordStdin {
+		kind, _ := checkWindowsAccount(o.User, host, false)
+		if kind == 0 {
+			kind = accountNamed
+		}
+		return kind, nil
+	}
 	kind, err := checkWindowsAccount(o.User, host, o.PasswordStdin)
-	if o.keptAccount && errors.Is(err, errNeedsPassword) {
+	if errors.Is(err, errNeedsPassword) && (o.keptAccount || (o.installedUser != "" && strings.EqualFold(o.installedUser, o.User))) {
 		return accountNamed, nil // the installed service's account: the service manager keeps its password (NULL)
 	}
 	if err != nil || !o.PasswordStdin {
@@ -160,10 +181,37 @@ func netbiosHost(host string) string {
 }
 
 // needsLogonRight says whether the install gives user 'Log on as a service' (RELNOTES L150): every account but the
-// service's virtual one, which Windows lets run as its service by itself.
+// service's virtual one, which Windows lets run as its service by itself, and the built-in service accounts
+// (LocalSystem, NT AUTHORITY\...) an installed service may have been set to by hand, which hold it by design.
 func needsLogonRight(user string) bool {
-	dom, _, _ := strings.Cut(strings.TrimSpace(user), `\`)
-	return !strings.EqualFold(dom, "NT SERVICE")
+	u := strings.TrimSpace(user)
+	dom, _, _ := strings.Cut(u, `\`)
+	return !strings.EqualFold(dom, "NT SERVICE") && !strings.EqualFold(dom, "NT AUTHORITY") && !strings.EqualFold(u, "LocalSystem")
+}
+
+// serviceAccountRefusal is why the SID -user resolved to may not run pgvigil ("" = it may): one user account - a gMSA
+// may resolve as a computer - never a group, and never a SID that names many accounts ('Log on as a service' would go
+// to every member, and no uninstall lists it).
+func serviceAccountRefusal(sid string, use uint32, gmsa bool) string {
+	if isBroadPrincipal(sid) {
+		return "names many accounts"
+	}
+	switch {
+	case use == sidUser, use == sidComputer && gmsa:
+		return ""
+	case use == sidGroup, use == sidAlias, use == sidWellKnownGroup:
+		return "is a group"
+	case use == sidComputer:
+		return "is a computer"
+	}
+	return fmt.Sprintf("is not a user account (kind %d)", use)
+}
+
+// grantFailureStops says whether a refused 'Log on as a service' ends the install before anything changes: always,
+// but where the service exists and already runs as this very account (it keeps the rights it holds) - a new account
+// without the right would replace a working one and fail every start.
+func grantFailureStops(serviceExists bool, runsAs, user string) bool {
+	return !serviceExists || !strings.EqualFold(strings.TrimSpace(runsAs), strings.TrimSpace(user))
 }
 
 // logonRightGranted is the install's line once the right is read back held.

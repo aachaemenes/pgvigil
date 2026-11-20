@@ -103,8 +103,9 @@ function Invoke-Native([scriptblock]$cmd, [switch]$Stream) {
     } finally { $ErrorActionPreference = $eap }
 }
 # 'pgvigil install' as the service's account (RELNOTES L131): none named = the virtual account; a gMSA (DOMAIN\name$)
-# or NT SERVICE\<name> without a password; any other account's password read here, not shown, and piped to
-# -password-stdin - never a parameter, never written; the plain copy cleared after the call
+# or NT SERVICE\<name> without a password (pgvigil takes NT SERVICE\pgvigil alone); any other account's password read
+# here, not shown, and piped to -password-stdin - never a parameter, never written; the plain copy's reference is
+# dropped after the call (the string stays in memory until it is collected)
 function Invoke-PgvigilInstall([string]$exePath, [string]$account) {
     if (-not $account) { return Invoke-Native { & $exePath install } -Stream }
     if ($account -match '\$$' -or $account -like 'NT SERVICE\*') { return Invoke-Native { & $exePath install -user $account } -Stream }
@@ -112,6 +113,10 @@ function Invoke-PgvigilInstall([string]$exePath, [string]$account) {
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
     try {
         $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        # a pipe to a native command is encoded with $OutputEncoding - US-ASCII in Windows PowerShell 5.1, which turns
+        # every non-ASCII character of the password into '?': UTF-8 for this call, without a BOM (a BOM would be read
+        # as the password's first bytes); set here, in the caller's scope the pipe reads, not inside the scriptblock
+        $OutputEncoding = New-Object System.Text.UTF8Encoding $false
         return Invoke-Native { $plain | & $exePath install -user $account -password-stdin } -Stream
     } finally {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
@@ -235,6 +240,11 @@ $noService = ($env:PGVIGIL_NO_SERVICE -eq '1')
 switch ($env:PROCESSOR_ARCHITECTURE) {
     'AMD64' { $arch = 'amd64' }
     default { throw "pgvigil install: no Windows release for CPU '$($env:PROCESSOR_ARCHITECTURE)' (amd64 only)" }
+}
+# the account goes with a fresh install: a re-run over the installed service keeps its account (and a
+# PGVIGIL_SERVICE_ACCOUNT left set would ask for a password at every re-run)
+if ($account -and -not $noService -and (Get-CimInstance -ClassName Win32_Service -Filter "Name='pgvigil'" -ErrorAction SilentlyContinue)) {
+    throw 'pgvigil install: -ServiceAccount (or PGVIGIL_SERVICE_ACCOUNT) goes with a fresh install: the service pgvigil is installed and keeps its account (clear PGVIGIL_SERVICE_ACCOUNT; another account: pgvigil install -user)'
 }
 if (-not $noService) {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())

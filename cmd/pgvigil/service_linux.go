@@ -827,8 +827,13 @@ func processesOf(uid string, skipService bool) []string {
 	return out
 }
 
-// installedAccount: a Linux re-run names its account by -user as before (the unit's User=).
-func installedAccount() (string, bool) { return "", false }
+// installedAccount is the installed unit's User= (found false: no unit): a re-run without -user keeps it, as on
+// Windows - the default would move the service to the pgvigil user, away from the page's credential folders its
+// account owns.
+func installedAccount() (string, bool) {
+	u := unitAccount()
+	return u, u != ""
+}
 
 // unitAccount is the installed unit's User= ("" = no unit): the account the page's credentials belong to.
 func unitAccount() string {

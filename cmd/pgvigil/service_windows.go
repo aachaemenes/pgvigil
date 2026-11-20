@@ -111,7 +111,32 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 	}
 	defer func() { _ = m.Disconnect() }()
 	existing, err := m.OpenService(serviceName)
+	runsAs := ""
 	if err == nil {
+		if c, cerr := existing.Config(); cerr == nil {
+			runsAs = c.ServiceStartName
+		}
+	} else {
+		existing = nil
+	}
+	// 'Log on as a service' for every account but the virtual one (RELNOTES L150), first - before the binary, the
+	// configuration or the service changes: CreateService grants no right. A refused grant ends the install here, but
+	// where the service already runs as this very account (it keeps the rights it holds): a new account without the
+	// right would replace a working one and fail every start (grantFailureStops)
+	if needsLogonRight(o.User) {
+		switch err := grantServiceLogon(o.User); {
+		case err == nil:
+			fmt.Println(logonRightGranted(o.User))
+		case !grantFailureStops(existing != nil, runsAs, o.User):
+			log.Warn("the right 'Log on as a service' was not granted; the service keeps the rights its account holds", "account", o.User, "err", err)
+		default:
+			if existing != nil {
+				_ = existing.Close()
+			}
+			return false, "", fmt.Errorf("the right 'Log on as a service' for %s: %w (nothing was changed: grant it in secpol.msc, or install as the virtual account)", o.User, err)
+		}
+	}
+	if existing != nil {
 		// an upgrade: the running binary cannot be replaced while the service holds it
 		if err := stopIfRunning(log, existing); err != nil {
 			_ = existing.Close()
@@ -138,19 +163,6 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 			log.Info("written", "path", f.path)
 		} else {
 			log.Info("kept", "path", f.path)
-		}
-	}
-	// 'Log on as a service' for every account but the virtual one (RELNOTES L150): CreateService grants no right. A
-	// fresh install stops on a refused grant before the service is made; an existing service (an upgrade, the account
-	// that already ran it) is told and goes on with the rights it holds
-	if needsLogonRight(o.User) {
-		switch err := grantServiceLogon(o.User); {
-		case err == nil:
-			fmt.Println(logonRightGranted(o.User))
-		case existing != nil:
-			log.Warn("the right 'Log on as a service' was not granted; the service keeps the rights its account holds", "account", o.User, "err", err)
-		default:
-			return false, "", fmt.Errorf("the right 'Log on as a service' for %s: %w (grant it in secpol.msc, or install as the virtual account)", o.User, err)
 		}
 	}
 	// a kept configuration is never edited: a gMSA with no gmsa: line there is told the line to add (RELNOTES L131)
@@ -211,11 +223,19 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 			log.Warn("icacls failed; set the permission by hand", "args", strings.Join(args, " "), "err", err, "out", strings.TrimSpace(string(out)))
 		}
 	}
-	icacls(dataDir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", o.User+":(OI)(CI)R")
-	icacls(filepath.Dir(o.Bin), "/grant", o.User+":(OI)(CI)RX")
+	// the account by its SID (*S-1-...), read now the service exists (a virtual account resolves only then): icacls
+	// reads neither '.\user' nor a localised name the way the service manager does
+	who := o.User
+	if sid, _, err := config.LookupAccount(o.User); err == nil {
+		who = "*" + sid.String()
+	} else {
+		log.Warn("the service account's SID was not read; icacls is given its name", "account", o.User, "err", err)
+	}
+	icacls(dataDir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", who+":(OI)(CI)R")
+	icacls(filepath.Dir(o.Bin), "/grant", who+":(OI)(CI)RX")
 	// the service reads its folder and writes only under logs\ (so a deleted log is made again, and the
 	// config and repo.dsn stay out of its reach)
-	icacls(logDir, "/grant", o.User+":(OI)(CI)M")
+	icacls(logDir, "/grant", who+":(OI)(CI)M")
 	log.Info("permissions set", "data", dataDir, "readers", "SYSTEM, Administrators, "+o.User, "writable by the service", logDir)
 	ready, why := configReady(o.Config, "")
 	if o.NoStart && ready {

@@ -94,7 +94,7 @@ func ownedLikeParent(string) error { return nil }
 func OwnLikeFolder(path string) error { return ownedLikeParent(path) }
 
 func knownAccount(account string) error {
-	if _, _, _, err := windows.LookupSID("", account); err != nil {
+	if _, _, err := LookupAccount(account); err != nil {
 		return fmt.Errorf("the account %s: %w", account, err)
 	}
 	return nil
@@ -102,7 +102,7 @@ func knownAccount(account string) error {
 
 // prepareDirAs (Windows): prepareDir's protected list with the named account's SID in place of this process's.
 func prepareDirAs(dir, account string) error {
-	sid, _, _, err := windows.LookupSID("", account)
+	sid, _, err := LookupAccount(account)
 	if err != nil {
 		return fmt.Errorf("the account %s: %w", account, err)
 	}
@@ -134,7 +134,7 @@ func sealAccess(path, _ string, account string) error {
 	}
 	sddl := "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 	if account != "" {
-		sid, _, _, err := windows.LookupSID("", account)
+		sid, _, err := LookupAccount(account)
 		if err != nil {
 			return fmt.Errorf("the service's account %s: %w", account, err)
 		}

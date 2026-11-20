@@ -9,6 +9,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
 // The LSA policy calls of advapi32 (golang.org/x/sys/windows has none): 'Log on as a service' for the service's
@@ -56,21 +58,26 @@ func lsaString(s string) (lsaUnicodeString, error) {
 	return lsaUnicodeString{Length: n, MaximumLength: n + 2, Buffer: &u[0]}, nil
 }
 
-// lsaErr turns an NTSTATUS into the Windows error it stands for.
+// lsaErr turns an NTSTATUS into the Windows error it stands for. An NTSTATUS is 32 bits: the call's upper half is not
+// defined on amd64, so only the low 32 are read.
 func lsaErr(call string, status uintptr) error {
-	if status == 0 {
+	if uint32(status) == 0 {
 		return nil
 	}
-	code, _, _ := procLsaNtStatusToWinError.Call(status)
+	code, _, _ := procLsaNtStatusToWinError.Call(uintptr(uint32(status)))
 	return fmt.Errorf("%s: %w", call, syscall.Errno(code))
 }
 
 // grantServiceLogon adds SeServiceLogonRight to account's rights on this host (a right already held is no error) and
-// reads it back.
+// reads it back. The account is resolved as the service manager names it ('.\user' as this computer's user) and must
+// be one account: a group or a SID that names many would give the right to every member (serviceAccountRefusal).
 func grantServiceLogon(account string) error {
-	sid, _, _, err := windows.LookupSID("", account)
+	sid, use, err := config.LookupAccount(account)
 	if err != nil {
 		return fmt.Errorf("the account %s: %w", account, err)
+	}
+	if why := serviceAccountRefusal(sid.String(), use, config.IsGMSAName(account)); why != "" {
+		return fmt.Errorf("the account %s (%s) %s: pgvigil runs as one account, and the right would go to every member", account, sid.String(), why)
 	}
 	var oa lsaObjectAttributes
 	oa.Length = uint32(unsafe.Sizeof(oa))
@@ -103,7 +110,7 @@ func holdsRight(policy windows.Handle, sid *windows.SID, name string) (bool, err
 	var rights *lsaUnicodeString
 	var n uint32
 	st, _, _ := procLsaEnumerateAccountRights.Call(uintptr(policy), uintptr(unsafe.Pointer(sid)), uintptr(unsafe.Pointer(&rights)), uintptr(unsafe.Pointer(&n)))
-	if st == statusObjectNameNotFound {
+	if uint32(st) == statusObjectNameNotFound {
 		return false, nil
 	}
 	if err := lsaErr("LsaEnumerateAccountRights", st); err != nil {

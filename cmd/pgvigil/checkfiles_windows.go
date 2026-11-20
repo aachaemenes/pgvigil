@@ -6,6 +6,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
 // the access mask bits that let an account read a file's content
@@ -49,7 +51,7 @@ func judgeHost(path string, _ bool) (string, string, error) {
 func allowedReaders() map[string]bool {
 	allowed := map[string]bool{"S-1-5-18": true, "S-1-5-32-544": true}
 	if acct, found := installedAccount(); found {
-		if sid, _, _, err := windows.LookupSID("", acct); err == nil {
+		if sid, _, err := config.LookupAccount(acct); err == nil {
 			allowed[sid.String()] = true
 		}
 	}

@@ -82,6 +82,8 @@ type installOptions struct {
 	PrintGMSA   bool
 	GMSAHosts   string
 	keptAccount bool // the account came from the installed service (keepInstalledAccount), not from -user
+	// installedUser is the account the installed service runs as ("" = none): -user naming it keeps its password
+	installedUser string
 
 	Purge bool // uninstall: remove the config folder and the binary too
 
