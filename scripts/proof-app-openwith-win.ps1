@@ -100,7 +100,12 @@ try {
 
     # R2
     $after = @{ sqlplan = (Read-Default "$classes\.sqlplan"); xdl = (Read-Default "$classes\.xdl") }
-    Row 'R2' ($after.sqlplan -eq $before.sqlplan -and $after.xdl -eq $before.xdl -and (Value-Kind $owp 'Other.Prog.1') -eq 'None') "defaults after: .sqlplan '$($after.sqlplan)', .xdl '$($after.xdl)'; Other.Prog.1 $(Value-Kind $owp 'Other.Prog.1')"
+    # no default value before and after is the same, key or no key: the extension key must exist to hold OpenWithProgids
+    # (R0's seed and the install make it), so '<no key>' before and '<no value>' after both mean 'no default program'
+    $noDefault = @('<no key>', '<no value>')
+    $sameSql = ($after.sqlplan -eq $before.sqlplan) -or (($noDefault -contains $after.sqlplan) -and ($noDefault -contains $before.sqlplan))
+    $sameXdl = ($after.xdl -eq $before.xdl) -or (($noDefault -contains $after.xdl) -and ($noDefault -contains $before.xdl))
+    Row 'R2' ($sameSql -and $sameXdl -and (Value-Kind $owp 'Other.Prog.1') -eq 'None') "defaults after: .sqlplan '$($after.sqlplan)', .xdl '$($after.xdl)'; Other.Prog.1 $(Value-Kind $owp 'Other.Prog.1')"
 
     # H1-H4
     $session = (Get-Process -Id $PID).SessionId
