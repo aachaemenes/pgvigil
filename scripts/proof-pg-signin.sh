@@ -212,7 +212,7 @@ echo "== X: client certificates (M2)"
 cd0="host=localhost port=$PORT dbname=postgres user=pgvcert sslmode=verify-full sslrootcert=$CA connect_timeout=10"
 row X1 x1 "$cd0 sslcert=$WORK/certs/pgvcert.pem sslkey=$WORK/certs/pgvcert.key" "cert:CN=pgvcert|true" OK ""
 row X2 x2 "$cd0 sslcert=$WORK/certs/pgvother.pem sslkey=$WORK/certs/pgvother.key" - FAIL 'certificate authentication failed for user "pgvcert"'
-row X3 x3 "$cd0 sslcert=$WORK/certs/pgvcert.pem sslkey=$WORK/certs/no-such.key" - FAIL "unable to read sslkey"
+row X3 x3 "$cd0 sslcert=$WORK/certs/pgvcert.pem sslkey=$WORK/certs/no-such.key" - FAIL "could not be read: open $WORK/certs/no-such.key: no such file or directory"
 
 echo "== C: every PostgreSQL collection once, per method at verify-full"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -F '|' -c "$1"; }
