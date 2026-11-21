@@ -34,7 +34,7 @@ func TestMSIInvokeMemberResultsNeverLeak(t *testing.T) {
 				inside = false
 				continue
 			}
-			if !(inside || oneLine) || !strings.Contains(line, ".InvokeMember(") {
+			if (!inside && !oneLine) || !strings.Contains(line, ".InvokeMember(") {
 				continue
 			}
 			// each statement of the line that calls InvokeMember, split at ';'
@@ -123,7 +123,7 @@ func TestMSIBinaryStepRunsAsWritten(t *testing.T) {
 	}
 	text := readRepoFile(t, ".github/workflows/msi.yml")
 	for _, m := range []struct{ name, from, to string }{
-		{"a misspelled column", "SELECT ``Name`` FROM ``_Tables`` WHERE ``Name`` = 'Binary'", "SELECT ``Nmae`` FROM ``_Tables`` WHERE ``Name`` = 'Binary'"},
+		{"a misspelled column", "SELECT ``Name`` FROM ``_Tables`` WHERE ``Name`` = 'Binary'", "SELECT ``Nmae`` FROM ``_Tables`` WHERE ``Name`` = 'Binary'"}, //nolint:misspell // the misspelled column is the mutant: the stand-in must refuse a query naming a column _Tables does not have
 		{"another field", "InvokeMember('StringData', 'GetProperty', $null, $rec, 1)", "InvokeMember('StringData', 'GetProperty', $null, $rec, 2)"},
 	} {
 		t.Run("mutant: "+m.name, func(t *testing.T) {
