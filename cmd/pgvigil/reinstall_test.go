@@ -49,8 +49,9 @@ func TestReinstallKeepsAccountL131(t *testing.T) {
 }
 
 // TestInstallScriptsAccountL131: install.ps1 takes -ServiceAccount (or PGVIGIL_SERVICE_ACCOUNT for 'irm | iex') and
-// -Help, asks a named account's password with Read-Host -AsSecureString and pipes it to -password-stdin, never a
-// parameter; install.sh takes --user (or PGVIGIL_USER) and --help / -h; neither passes an account to an upgrade.
+// -Help, asks a named account's password with Read-Host -AsSecureString and writes it to -password-stdin's standard
+// input as UTF-8 bytes (Invoke-NativeStdin, never a pipe), never a parameter; install.sh takes --user (or
+// PGVIGIL_USER) and --help / -h; neither passes an account to an upgrade.
 func TestInstallScriptsAccountL131(t *testing.T) {
 	read := func(f string) string {
 		b, err := os.ReadFile(f)
@@ -62,7 +63,7 @@ func TestInstallScriptsAccountL131(t *testing.T) {
 	ps := read("../../docs/install.ps1")
 	for _, re := range []string{
 		`\[string\]\$ServiceAccount`, `\[switch\]\$Help`, `PGVIGIL_SERVICE_ACCOUNT`, `Read-Host -AsSecureString`,
-		`\| & \$exePath install -user \$account -password-stdin`, `ZeroFreeBSTR`, `-ServiceAccount goes with a fresh install`,
+		`Invoke-NativeStdin \$exePath @\('install', '-user', \$account, '-password-stdin'\) \$bytes`, `ZeroFreeBSTR`, `-ServiceAccount goes with a fresh install`,
 	} {
 		if !regexp.MustCompile(re).MatchString(ps) {
 			t.Errorf("install.ps1 has no %s", re)
