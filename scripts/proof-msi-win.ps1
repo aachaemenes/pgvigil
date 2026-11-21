@@ -21,7 +21,7 @@
 #     build prints every line of its output that names an error and its last target lines
 #  C0 (the reads the rows below lean on, shown in this run's own log first): a function that returns @(one object)
 #     hands its caller the bare object, and a [pscustomobject]'s Count under this PowerShell ('COUNT OF ONE RETURNED
-#     [<n>]'; empty under Windows PowerShell 5.1), against @(<call>)'s Count ('[1]'); Q0 each Windows Installer query
+#     [<n>]'; empty under Windows PowerShell 5.1), against @(<call>)'s Count ('[1]'); T0 each Windows Installer query
 #     the M1 read uses, run alone on the 0.0.2 package ('QUERY <sql> ok <rows>' or 'QUERY <sql> refused: <words> |
 #     <Windows Installer's own error record>', the child's exit code beside it), and a read with no SQL: Expected (this
 #     package has no Binary table - its custom actions name a file and a folder, no binary): the _Tables read with its
@@ -175,7 +175,7 @@ try {
     function Get-OneWrapped { return @([pscustomobject]@{ DisplayVersion = '0.0.2' }) }
     $one = Get-OneWrapped
     Write-Host "C0 COUNT OF ONE RETURNED [$($one.Count)] AS @(...) [$(@(Get-OneWrapped).Count)] under $($PSVersionTable.PSVersion)"
-    # Q0: each query of the M1 read run alone on the 0.0.2 package, in its own child (its COM objects end with it)
+    # T0: each query of the M1 read run alone on the 0.0.2 package, in its own child (its COM objects end with it)
     foreach ($q in @("SELECT ``Name`` FROM ``_Tables`` WHERE ``Name`` = 'Binary'", 'SELECT `Name` FROM `_Tables`', 'SELECT `Name` FROM `Binary`')) {
         $qScript = @'
 $installer = New-Object -ComObject WindowsInstaller.Installer
@@ -194,7 +194,7 @@ try {
         $qScript = $qScript.Replace('PGV_MSI_PATH', $msi['0.0.2'].Replace("'", "''")).Replace('PGV_SQL', $q.Replace("'", "''"))
         $qr = Invoke-Native { & powershell.exe -NoProfile -NonInteractive -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($qScript))) }
         $qLine = (("$($qr.Out)" -split "`n") | Where-Object { $_ -match '^(ok|refused)' } | Select-Object -First 1)
-        Write-Host "Q0 QUERY $q $(if ($qLine) { $qLine } else { 'no answer: ' + $qr.Out }) (child exit $($qr.Code))"
+        Write-Host "T0 QUERY $q $(if ($qLine) { $qLine } else { 'no answer: ' + $qr.Out }) (child exit $($qr.Code))"
     }
     # and with no SQL at all: Database.TablePersistent('Binary') - 0 temporary, 1 persistent, 2 no such table, 3 error
     $tpScript = @'
@@ -205,7 +205,7 @@ try { 'TABLEPERSISTENT Binary ' + $db.GetType().InvokeMember('TablePersistent', 
     $tpScript = $tpScript.Replace('PGV_MSI_PATH', $msi['0.0.2'].Replace("'", "''"))
     $tp = Invoke-Native { & powershell.exe -NoProfile -NonInteractive -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($tpScript))) }
     $tpLine = (("$($tp.Out)" -split "`n") | Where-Object { $_ -match '^TABLEPERSISTENT ' } | Select-Object -First 1)
-    Write-Host "Q0 $(if ($tpLine) { $tpLine } else { 'TABLEPERSISTENT no answer: ' + $tp.Out }) (child exit $($tp.Code))"
+    Write-Host "T0 $(if ($tpLine) { $tpLine } else { 'TABLEPERSISTENT no answer: ' + $tp.Out }) (child exit $($tp.Code))"
 
     # M1: in a child powershell.exe - its COM objects (the installer, the database, the views, the records) end with it,
     # so none holds the package open for the undo; it prints one line: 'BINARY absent', 'BINARY empty' or 'BINARY holds <names>'
