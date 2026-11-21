@@ -49,9 +49,11 @@ jobs:
       - name: two packages - the previous version (0.0.1) and this one (0.0.2)
         shell: pwsh
         run: |
+          # each version its own intermediate folder and no incremental build: in one obj\Release the second build finds
+          # the first's outputs up to date, links no package and fails its copy (MSB3030)
           foreach ($ver in '0.0.1', '0.0.2') {
             $bin = (Resolve-Path "out/bin-$ver/pgvigil.exe").Path
-            dotnet build packaging/msi/pgvigil.wixproj -c Release "-p:PgvVersion=$ver" "-p:PgvBinary=$bin" -o "out/msi-$ver"
+            dotnet build packaging/msi/pgvigil.wixproj -c Release --no-incremental "-p:IntermediateOutputPath=obj/$ver/" "-p:PgvVersion=$ver" "-p:PgvBinary=$bin" -o "out/msi-$ver"
             if ($LASTEXITCODE -ne 0) { throw "the MSI build of $ver exited with $LASTEXITCODE" }
           }
           Get-ChildItem out/msi-*/*.msi | Format-Table Name, Length
