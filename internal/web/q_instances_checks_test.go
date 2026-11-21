@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +71,9 @@ func TestInstanceChecksOnAStore(t *testing.T) {
 		}
 	}()
 	fa, fb, fself, pg := name("fa"), name("fb"), name("self"), name("page")
+	// fk: a file instance whose dsn holds a password and names a key file that is not there
+	fk := name("fk")
+	kdsn := "host=127.0.0.1 port=1 user=u password=s3cret-fk sslmode=require sslcert=" + filepath.Join(t.TempDir(), "c.pem") + " sslkey=" + filepath.Join(t.TempDir(), "no-such.key")
 	// fa: collected (ok 26 s ago and an older ok), two collections failing now; fb: never seen; the page's instance: one ok
 	var ida, idp int
 	for n, id := range map[string]*int{fa: &ida, pg: &idp} {
@@ -89,7 +93,7 @@ func TestInstanceChecksOnAStore(t *testing.T) {
 
 	s := &Server{pool: pool, log: discardLog(), actions: &Actions{audit: pool}}
 	// fself's dsn is this store's own: a server that answers; fb's resolves to nothing
-	s.SetInstancesAdmin(InstancesAdmin{File: []config.Instance{{Name: fa, DSNRaw: dsn}, {Name: fb}, {Name: fself, DSNRaw: dsn}}})
+	s.SetInstancesAdmin(InstancesAdmin{File: []config.Instance{{Name: fa, DSNRaw: dsn}, {Name: fb}, {Name: fself, DSNRaw: dsn}, {Name: fk, DSNRaw: kdsn}}})
 	a := s.instAdmin()
 	read := func() map[string]map[string]any {
 		t.Helper()
@@ -158,6 +162,11 @@ func TestInstanceChecksOnAStore(t *testing.T) {
 	}
 	if h, b := post(map[string]any{"op": "test", "name": fb}); !h || b["ok"] != false || b["detail"] != emptyFileDSN || b["kept"] != true {
 		t.Errorf("a file instance whose dsn is empty: handled %v, %v", h, b)
+	}
+	// its Test answers as 'pgvigil check' does: the fixed words and the key file's own error, never the dsn's text
+	if h, b := post(map[string]any{"op": "test", "name": fk}); !h || b["ok"] != false ||
+		!strings.Contains(fmt.Sprint(b["detail"]), "no-such.key: no such file or directory") || strings.Contains(fmt.Sprint(b["detail"]), "s3cret-fk") {
+		t.Errorf("a file instance whose key file is missing: handled %v, %v", h, b)
 	}
 	rows = read()
 	if g := got(fself, "tested_ok"); g != "true" {
