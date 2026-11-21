@@ -22,7 +22,12 @@
 #  C0 (the reads the rows below lean on, shown in this run's own log first): a function that returns @(one object)
 #     hands its caller the bare object, and a [pscustomobject]'s Count under this PowerShell ('COUNT OF ONE RETURNED
 #     [<n>]'; empty under Windows PowerShell 5.1), against @(<call>)'s Count ('[1]'); Q0 each Windows Installer query
-#     the M1 read uses, run alone on the 0.0.2 package ('QUERY <sql> ok <rows>' or 'QUERY <sql> refused: <words>')
+#     the M1 read uses, run alone on the 0.0.2 package ('QUERY <sql> ok <rows>' or 'QUERY <sql> refused: <words> |
+#     <Windows Installer's own error record>', the child's exit code beside it), and a read with no SQL: Expected (this
+#     package has no Binary table - its custom actions name a file and a folder, no binary): the _Tables read with its
+#     WHERE either answers 'ok 0 row(s)' or is refused (the question this row settles); the _Tables read whole 'ok <n>
+#     row(s)', n over 10; the Binary read 'refused' (no such table: M1's own 'absent' case, not a fault); and
+#     'TABLEPERSISTENT Binary 2' (MSICONDITION_NONE: no such table)
 #  M1 the 0.0.2 package's Binary table is absent or empty (no custom-action DLL ships) - read in a child powershell.exe,
 #     so no COM object of the read holds the package open when the undo removes it
 #  I1 'msiexec /i' of 0.0.1 exit 0: %ProgramFiles%\pgvigil\pgvigil.exe there, the service pgvigil made, the exe
@@ -129,7 +134,7 @@ if ($Undo) {
 
 if (Get-Service -Name pgvigil -ErrorAction SilentlyContinue) { Write-Host 'REFUSED: the service pgvigil exists here - this proof runs on a machine without pgvigil'; exit 2 }
 foreach ($left in $ProgDir, $DataDir) { if (Test-Path -LiteralPath $left) { Write-Host "REFUSED: $left exists (this proof removes what it makes, never what it found)"; exit 2 } }
-if ((Get-Installed).Count) { Write-Host 'REFUSED: a product named pgvigil is installed here'; exit 2 }
+if (@(Get-Installed).Count) { Write-Host 'REFUSED: a product named pgvigil is installed here'; exit 2 }
 if (Test-Path -LiteralPath $Work) { Write-Host "REFUSED: $Work exists (a cut run's: this command with -Undo first)"; exit 2 }
 foreach ($need in $Bin1, $Bin2, (Join-Path $MsiDir 'pgvigil.wixproj'), $Dotnet, $InstallScript) { if (-not (Test-Path -LiteralPath $need)) { Write-Host "REFUSED: no $need"; exit 2 } }
 if ($ConfigTest -and -not (Test-Path -LiteralPath $ConfigTest)) { Write-Host "REFUSED: no $ConfigTest"; exit 2 }
@@ -180,12 +185,27 @@ try {
     $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
     $n = 0; while ($view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)) { $n++ }
     'ok ' + $n + ' row(s)'
-} catch { 'refused: ' + $_.Exception.InnerException.Message }
+} catch {
+    $words = $_.Exception.InnerException.Message
+    try { $er = $installer.GetType().InvokeMember('LastErrorRecord', 'InvokeMethod', $null, $installer, $null); if ($er) { $words += ' | ' + $er.GetType().InvokeMember('FormatText', 'InvokeMethod', $null, $er, $null) } } catch { }
+    'refused: ' + $words
+}
 '@
         $qScript = $qScript.Replace('PGV_MSI_PATH', $msi['0.0.2'].Replace("'", "''")).Replace('PGV_SQL', $q.Replace("'", "''"))
         $qr = Invoke-Native { & powershell.exe -NoProfile -NonInteractive -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($qScript))) }
-        Write-Host "Q0 QUERY $q $((("$($qr.Out)" -split "`n") | Where-Object { $_ -match '^(ok|refused)' } | Select-Object -First 1))"
+        $qLine = (("$($qr.Out)" -split "`n") | Where-Object { $_ -match '^(ok|refused)' } | Select-Object -First 1)
+        Write-Host "Q0 QUERY $q $(if ($qLine) { $qLine } else { 'no answer: ' + $qr.Out }) (child exit $($qr.Code))"
     }
+    # and with no SQL at all: Database.TablePersistent('Binary') - 0 temporary, 1 persistent, 2 no such table, 3 error
+    $tpScript = @'
+$installer = New-Object -ComObject WindowsInstaller.Installer
+$db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @('PGV_MSI_PATH', 0))
+try { 'TABLEPERSISTENT Binary ' + $db.GetType().InvokeMember('TablePersistent', 'GetProperty', $null, $db, @('Binary')) } catch { 'TABLEPERSISTENT unread: ' + $_.Exception.InnerException.Message }
+'@
+    $tpScript = $tpScript.Replace('PGV_MSI_PATH', $msi['0.0.2'].Replace("'", "''"))
+    $tp = Invoke-Native { & powershell.exe -NoProfile -NonInteractive -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($tpScript))) }
+    $tpLine = (("$($tp.Out)" -split "`n") | Where-Object { $_ -match '^TABLEPERSISTENT ' } | Select-Object -First 1)
+    Write-Host "Q0 $(if ($tpLine) { $tpLine } else { 'TABLEPERSISTENT no answer: ' + $tp.Out }) (child exit $($tp.Code))"
 
     # M1: in a child powershell.exe - its COM objects (the installer, the database, the views, the records) end with it,
     # so none holds the package open for the undo; it prints one line: 'BINARY absent', 'BINARY empty' or 'BINARY holds <names>'
@@ -195,7 +215,12 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @('PGV_MSI_PATH', 0))
 function Read-Column([string]$sql) {
     try { $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql)) }
-    catch { 'BINARY unread: Windows Installer refused the query ' + $sql + ' - ' + $_.Exception.InnerException.Message; exit 1 }
+    catch {
+        # Write-Host: the function's output is captured by its caller, and exit ends the child before that is printed
+        $words = $_.Exception.InnerException.Message
+        try { $er = $installer.GetType().InvokeMember('LastErrorRecord', 'InvokeMethod', $null, $installer, $null); if ($er) { $words += ' | ' + $er.GetType().InvokeMember('FormatText', 'InvokeMethod', $null, $er, $null) } } catch { }
+        Write-Host ('BINARY unread: Windows Installer refused the query ' + $sql + ' - ' + $words); exit 1
+    }
     $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
     $vals = @()
     while ($true) {
