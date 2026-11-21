@@ -115,6 +115,9 @@ func TestHelperServe(_ *testing.T) {
 		fmt.Fprintln(os.Stderr, `time=x level=WARN msg="something first"`)
 		fmt.Fprintln(os.Stderr, `time=x level=INFO msg="pgvigil serve started" url=http://127.0.0.1:43210/ login=true`)
 		time.Sleep(time.Minute)
+	case "base":
+		fmt.Fprintln(os.Stderr, `time=x level=INFO msg="pgvigil serve started" url=http://127.0.0.1:43210/tools/pgvigil/ login=true`)
+		time.Sleep(time.Minute)
 	case "fail":
 		fmt.Fprintln(os.Stderr, `time=x level=ERROR msg="pgvigil failed" err="repository ping: connection refused"`)
 		os.Exit(1)
@@ -278,5 +281,19 @@ func TestTemplate(t *testing.T) {
 	c := ConfigTemplate()
 	if !strings.Contains(c, "repository:") || !strings.Contains(c, "instances: []") || strings.Contains(strings.ToLower(c), "password=") {
 		t.Errorf("template: %s", c)
+	}
+}
+
+// TestStartServeUnderBaseL55: a serve under web.base_path names its URL with the base; the app opens that, not the
+// root (which answers 404 under a base).
+func TestStartServeUnderBaseL55(t *testing.T) {
+	exe, _ := os.Executable()
+	s, err := StartServe(context.Background(), exe, []string{"-test.run=^TestHelperServe$"}, nil, helper(t, "base"), nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = s.Stop() }()
+	if s.URL != "http://127.0.0.1:43210/tools/pgvigil/" {
+		t.Errorf("the URL taken from serve's start line: %q, want it with its base", s.URL)
 	}
 }

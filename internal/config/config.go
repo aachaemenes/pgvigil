@@ -8,8 +8,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"net/url"
 	"os"
+	"os/user"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -59,6 +63,9 @@ type Config struct {
 	// of docs/sqlserver-cloud.md). Never the machine account (DOMAIN\\HOST$): no other service of the host shares a gMSA.
 	// Empty (the default) = no Windows sign-in on that page.
 	GMSA string `yaml:"gmsa"`
+	// LogLevel is the collector's and serve's log verbosity: debug, info (the default), warn or error (RELNOTES L172);
+	// the environment's PGVIGIL_LOG_LEVEL wins over it for a one-off.
+	LogLevel string `yaml:"log_level"`
 	// Doors holds the switches of serve's doors that only this file turns on, never the page (pagedoor.go):
 	// doors: page_instance_reads: on lets Community tools and custom reports run on instances added in Admin > Instances.
 	// A later release (task 330) lists these switches on a Site settings page, one switch per door in one named place,
@@ -94,11 +101,11 @@ type Repository struct {
 	DSNRaw string `yaml:"dsn"`
 }
 
-// DSN resolves the repository connection string.
-func (r Repository) DSN() string { return Resolve(r.DSNRaw) }
+// DSN resolves the repository connection string (the value trimmed, as 'pgvigil check' reads its references).
+func (r Repository) DSN() string { return Resolve(strings.TrimSpace(r.DSNRaw)) }
 
 // ReportsDSN resolves reports_dsn ("" when the key is not set or resolves to nothing).
-func (c Config) ReportsDSN() string { return Resolve(c.ReportsDSNRaw) }
+func (c Config) ReportsDSN() string { return Resolve(strings.TrimSpace(c.ReportsDSNRaw)) }
 
 // The engines an instance can be.
 const (
@@ -296,9 +303,31 @@ type DBADashRepo struct {
 	Import bool `yaml:"import"`
 }
 
+// PlatformRefusal is why a platform word is not one of the engine's ("" = it is): the words Validate takes for an
+// instance of pgvigil.yaml, for the page's and the command line's adds too.
+func PlatformRefusal(engine, platform string) string {
+	switch engine {
+	case EngineSQLServer:
+		switch platform {
+		case "auto", "onprem", "rds", "azuresqldb", "azuresqlmi", "cloudsql":
+			return ""
+		}
+		return fmt.Sprintf("unknown platform %q for engine sqlserver (auto, onprem, rds, azuresqldb, azuresqlmi, cloudsql)", platform)
+	default:
+		switch platform {
+		case "auto", "onprem", "rds", "aurora", "azure", "cloudsql", "alloydb":
+			return ""
+		}
+		return fmt.Sprintf("unknown platform %q for engine postgres (auto, onprem, rds, aurora, azure, cloudsql, alloydb)", platform)
+	}
+}
+
 // gmsaName is DOMAIN\name$: a NetBIOS domain of 1 to 15 characters and an account of 1 to 15 before its one '$' (the
-// sAMAccountName rule), neither holding a character Windows refuses in a name.
-var gmsaName = regexp.MustCompile(`^[^\\/:*?"<>|\s.@\[\]]{1,15}\\[^\\/:*?"<>|\s@\[\]$]{1,15}\$$`)
+// sAMAccountName rule), neither holding a character Windows refuses in a name (; , = and + among them).
+var gmsaName = regexp.MustCompile(`^[^\\/:*?"<>|\s.@\[\];,=+]{1,15}\\[^\\/:*?"<>|\s@\[\]$;,=+]{1,15}\$$`)
+
+// IsGMSAName says whether s has the gmsa: key's form, DOMAIN\name$ (pgvigil install's -user check reads it too).
+func IsGMSAName(s string) bool { return gmsaName.MatchString(strings.TrimSpace(s)) }
 
 // validateGMSA trims the gmsa: key and refuses a form that is not DOMAIN\name$.
 func (c *Config) validateGMSA() error {
@@ -325,6 +354,37 @@ func (d DBADashRepo) Every() time.Duration {
 		return DefaultDBADashInterval
 	}
 	return d.Interval.Duration
+}
+
+// HasInlinePGPassword says whether a PostgreSQL connection string carries a password inline: a URL's userinfo or
+// password= query, or a libpq keyword/value string's password keyword with a value ('pgvigil check' warns on it,
+// L181/L9). The string is read by secrets.PGSettings, libpq's own rules and the one reader the code base keeps
+// (rn-l181 S3: a URL only by its postgres:// or postgresql:// prefix - a '://' inside a value, or inside the
+// password, is a keyword string). env: and file: references are the caller's to rule out.
+func HasInlinePGPassword(v string) bool {
+	m, err := secrets.PGSettings(v)
+	return err == nil && m["password"] != ""
+}
+
+// InlinePasswordInstances names the file's PostgreSQL instances whose dsn carries an inline password, in the file's
+// order (L9): never one whose dsn comes through env: or file:, and never a sqlserver instance (an inline password
+// there is refused at load). The collector warns at its load for each, 'pgvigil check' lists them, and the beat
+// carries them to the instance's findings.
+func (c *Config) InlinePasswordInstances() []string {
+	var out []string
+	for _, in := range c.Instances {
+		if in.Engine != "" && in.Engine != EnginePostgres {
+			continue
+		}
+		raw := strings.TrimSpace(in.DSNRaw)
+		if strings.HasPrefix(raw, "env:") || strings.HasPrefix(raw, "file:") || strings.HasPrefix(raw, "dpapi:") {
+			continue
+		}
+		if HasInlinePGPassword(raw) {
+			out = append(out, in.Name)
+		}
+	}
+	return out
 }
 
 // inlinePassword says whether an inline connection string carries a password: a URL's user:password@ or a password /
@@ -407,6 +467,9 @@ func (c *Config) validateDBADash() error {
 // default. /livez is always open; /readyz is always open with the login off.
 type Web struct {
 	ReadyzWithoutLogin bool `yaml:"readyz_without_login"`
+	// BasePath serves the UI under a sub-path behind a reverse proxy that passes the path whole (/pgvigil); empty =
+	// the root. 'pgvigil serve -base-path' wins.
+	BasePath string `yaml:"base_path"`
 }
 
 // Views is the views store's setting until the per-user roles (B24f) carry a 'change shared views' right.
@@ -651,7 +714,7 @@ func (a AWS) PostgresLogGroup() string {
 }
 
 // DSN resolves the instance connection string.
-func (i Instance) DSN() string { return Resolve(i.DSNRaw) }
+func (i Instance) DSN() string { return Resolve(strings.TrimSpace(i.DSNRaw)) }
 
 // Flags are command-line values.
 type Flags struct {
@@ -700,6 +763,9 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Repository.DSNRaw) == "" {
 		return fmt.Errorf("repository.dsn is required")
 	}
+	if _, err := ParseLogLevel(c.LogLevel); err != nil {
+		return fmt.Errorf("log_level: %w", err)
+	}
 	if c.QueryText == "" {
 		c.QueryText = DefaultQueryText
 	}
@@ -713,6 +779,9 @@ func (c *Config) Validate() error {
 	case "", "icmp", "tcp", "off":
 	default:
 		return fmt.Errorf("probe must be icmp, tcp or off (got %q)", c.Probe)
+	}
+	if err := ValidBasePath(c.Web.BasePath); err != nil {
+		return err
 	}
 	if len(c.UI.GroupBy) > MaxGroupLevels {
 		return fmt.Errorf("ui.group_by: at most %d levels (got %d)", MaxGroupLevels, len(c.UI.GroupBy))
@@ -921,27 +990,96 @@ func validateCloud(in Instance) error {
 
 func validQueryText(v string) bool { return v == "full" || v == "normalized" || v == "none" }
 
-// Resolve applies the env:/file: indirection.
+// Resolve applies the env:/file:/dpapi: indirection; "" = it resolved to nothing (ResolveWhy keeps why).
 func Resolve(v string) string {
+	s, _ := ResolveWhy(v)
+	return s
+}
+
+// ResolveWhy is Resolve with the reason a reference resolved to nothing (RELNOTES L145): an env: variable not set or
+// empty, a file: that cannot be read (the OS's words) or is empty, a dpapi: blob that does not open here - a seal at
+// machine scope opens only on the host that made it. The reason names the reference, never what it read; a value that
+// is no reference is itself, with no error.
+func ResolveWhy(v string) (string, error) {
 	switch {
 	case strings.HasPrefix(v, "env:"):
-		return os.Getenv(strings.TrimPrefix(v, "env:"))
+		name := strings.TrimPrefix(v, "env:")
+		s, ok := os.LookupEnv(name)
+		if !ok {
+			return "", fmt.Errorf("the variable %q is not set for this process", name)
+		}
+		if s == "" {
+			return "", fmt.Errorf("the variable %q is empty", name)
+		}
+		return s, nil
 	case strings.HasPrefix(v, "dpapi:"):
-		// a credential Admin > Instances sealed on Windows (task 204, inventory_windows.go)
-		s, err := ResolveDPAPI(strings.TrimPrefix(v, "dpapi:"))
-		if err != nil {
-			return ""
+		// a credential sealed on Windows by Admin > Instances or 'pgvigil secret seal' (inventory_windows.go)
+		path := strings.TrimPrefix(v, "dpapi:")
+		s, err := dpapiOpen(path)
+		var pathErr *fs.PathError
+		switch {
+		case err == nil && s == "", errors.Is(err, os.ErrInvalid):
+			return "", fmt.Errorf("the dpapi: secret %q is empty", path)
+		case errors.Is(err, ErrDPAPIOffWindows):
+			return "", fmt.Errorf("the dpapi: secret %q opens on Windows only (this host is not): %w", path, err)
+		case errors.As(err, &pathErr):
+			return "", fmt.Errorf("the dpapi: secret %q cannot be read%s: %w", path, readAs(), err)
+		case err != nil:
+			// Windows' own refusal to decrypt: a machine-scope seal opens only on the host that sealed it; the fix
+			// follows where the blob lives - a page instance's (instances/) is entered again on the page, any other
+			// sealed again with 'pgvigil secret seal'
+			fix := "seal it again here with 'pgvigil secret seal'"
+			if filepath.Base(filepath.Dir(path)) == "instances" {
+				fix = "enter the instance's credential again in Admin > Instances"
+			}
+			return "", fmt.Errorf("the dpapi: secret %q did not open on this host (%w): a machine-scope seal opens only on the host that sealed it - %s", path, err, fix)
 		}
-		return s
+		return s, nil
 	case strings.HasPrefix(v, "file:"):
-		b, err := os.ReadFile(strings.TrimPrefix(v, "file:"))
-		if err != nil {
-			return ""
+		path := strings.TrimPrefix(v, "file:")
+		if st, err := os.Stat(path); err == nil && st.IsDir() {
+			return "", fmt.Errorf("the file: secret %q is a folder", path)
 		}
-		return strings.TrimRight(string(b), "\r\n")
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("the file: secret cannot be read%s: %w", readAs(), err)
+		}
+		s := strings.TrimRight(string(b), "\r\n")
+		if s == "" {
+			return "", fmt.Errorf("the file: secret %q is empty", path)
+		}
+		return s, nil
 	default:
-		return v
+		return v, nil
 	}
+}
+
+// ErrDPAPIOffWindows is ResolveDPAPI's answer off Windows, where no dpapi: blob opens.
+var ErrDPAPIOffWindows = errors.New("a dpapi: reference is read on Windows only")
+
+// dpapiOpen opens a dpapi: blob: ResolveDPAPI, replaced by a test for Windows' own answers.
+var dpapiOpen = ResolveDPAPI
+
+// readAs names the account a read failed as (" as the account <name>"; "" when it is not read): a service reads with
+// its own account, and a unit may hide folders from it (ProtectHome, PrivateTmp) that a shell sees.
+func readAs() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return " as the account " + u.Username
+	}
+	return ""
+}
+
+// WhyEmpty is why a reference resolves to nothing ("" when it resolves, or is no reference): the words a refusal adds.
+// A reference whose value is only white space resolves (Resolve's answer is unchanged) but connects nowhere: it is said.
+func WhyEmpty(raw string) string {
+	s, err := ResolveWhy(raw)
+	if err != nil {
+		return err.Error()
+	}
+	if raw != "" && s != raw && strings.TrimSpace(s) == "" {
+		return fmt.Sprintf("%q holds only white space", raw)
+	}
+	return ""
 }
 
 // renamedCollections: a collection whose read moved to another (task 401: the counters of mssql_cpu and mssql_activity
@@ -1091,4 +1229,19 @@ func (i Instance) SecretRef() *secrets.Ref {
 		return &secrets.Ref{ID: strings.TrimSpace(ps.Ref), Invalid: err.Error()}
 	}
 	return &r
+}
+
+// ParseLogLevel reads a log level word: debug, info, warn or error, in any case; empty is info (RELNOTES L172).
+func ParseLogLevel(v string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return slog.LevelInfo, fmt.Errorf("%q is not a log level: debug, info, warn or error", v)
 }

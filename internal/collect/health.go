@@ -21,6 +21,10 @@ const (
 	// counted once more as Import Failed. DBA Dash keeps its FailedCount and ImportFailedCount apart and judges their
 	// sum; pgvigil's failed holds both and the page shows failed - import_failed beside Import Failed
 	OutcomeImportFailed = "import failed"
+	// OutcomeTimedOut (L250): the run ran past its deadline (twice its interval, clamped to 2-30 minutes; the first
+	// run after a start 30) and was cancelled by the loop, which sets this with 'timed out after <d>' as the error.
+	// The hour counts it as a failure.
+	OutcomeTimedOut = "timed out"
 )
 
 // PartialOutcome is OutcomePartial for a run whose logged status is "partial", "" for any other (the SQL Server
@@ -39,6 +43,8 @@ func outcomeOf(res Result) string {
 	switch {
 	case res.Err != nil && res.Outcome == OutcomeImportFailed:
 		return OutcomeImportFailed
+	case res.Err != nil && res.Outcome == OutcomeTimedOut:
+		return OutcomeTimedOut
 	case res.Err != nil:
 		return OutcomeError
 	case res.Outcome != "" && res.Outcome != OutcomeImportFailed: // 'import failed' is an error's outcome: nothing without one

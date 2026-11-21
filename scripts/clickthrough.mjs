@@ -27,6 +27,11 @@ import os from 'node:os';
 const [mode, port, base] = process.argv.slice(2, 5);
 if (!['list', 'walk'].includes(mode) || !port || !base) { console.error('usage: node scripts/clickthrough.mjs list <cdp port> <base url/> <pages.json> <shards> | walk <cdp port> <base url/> <shard.json> <out.json> <shots dir> <work dir>'); process.exit(2); }
 const U = base.endsWith('/') ? base : base + '/';
+// the base path the walk runs under ('/' at the root, '/pgvigil/' behind the proxy): a server file's link is
+// <base>api/... (or api/... against <base href>); a read or a link on this origin outside the base is an escape
+const BASEPATH = new URL(U).pathname;
+const apiHref = h => h.startsWith(BASEPATH + 'api/') || h.startsWith('api/');
+const outsideBase = h => BASEPATH !== '/' && h.startsWith('/') && !h.startsWith('//') && !h.startsWith(BASEPATH);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const [a5, a6, a7, a8] = process.argv.slice(5);
 const work = mode === 'walk' ? a8 : fs.mkdtempSync(path.join(os.tmpdir(), 'clickthrough-list-'));
@@ -84,6 +89,8 @@ const connect = async () => {
     if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); return; }
     const p = d.params;
     if (d.method === 'Network.responseReceived' && p.response.url.startsWith(U + 'api/')) net.push({ url: p.response.url.slice(U.length - 1), status: p.response.status });
+    // under a base, any answer on this origin outside it is an escape (nginx's own 404): a FAIL row, whatever its status
+    else if (d.method === 'Network.responseReceived' && BASEPATH !== '/' && p.response.url.startsWith(new URL(U).origin + '/') && !p.response.url.startsWith(U)) net.push({ url: '(outside the base) ' + p.response.url.slice(new URL(U).origin.length), status: 404 });
     if (d.method === 'Network.loadingFailed' && p.type !== 'Document' && p.errorText !== 'net::ERR_BLOCKED_BY_CLIENT') net.push({ url: '(failed) ' + p.errorText, status: 0 });
     if (d.method === 'Runtime.exceptionThrown') exc.push((p.exceptionDetails.exception?.description || p.exceptionDetails.text || '').split('\n')[0].slice(0, 200));
     if (d.method === 'Runtime.consoleAPICalled' && p.type === 'error') exc.push('console.error: ' + p.args.map(a => a.value ?? a.description ?? '').join(' ').slice(0, 200));
@@ -440,7 +447,8 @@ for (const pg of [...pagesOf, ...chromePage]) {
       if (c.disabled) { row.kind = c.reason ? 'disabled' : 'off without words'; row.why = c.reason; row.off = await offNotes().catch(() => []); if (!c.reason && row.off.length) row.kind = 'disabled'; out.clicks.push(row); continue; }
       if (c.tag === 'A' && last.sig !== 'CTX' && !/^(dlg|menu) /.test(last.sig) && p.length === 1) {
         const h = c.href || '';
-        if (h !== '' && h !== '#' && !h.startsWith('#/') && !h.startsWith('/api/')) { row.kind = 'outside'; row.href = h; out.clicks.push(row); continue; }
+        if (outsideBase(h)) { row.kind = 'api 404'; row.href = h; row.why = 'a link outside the base ' + BASEPATH; out.clicks.push(row); continue; }
+        if (h !== '' && h !== '#' && !h.startsWith('#/') && !apiHref(h)) { row.kind = 'outside'; row.href = h; out.clicks.push(row); continue; }
       }
       if (c.tag === 'A' && last.sig !== 'CTX' && !/^(dlg|menu) /.test(last.sig) && p.length === 1 && (c.href || '').startsWith('#/')) {
         const h = c.href;
@@ -480,7 +488,7 @@ for (const pg of [...pagesOf, ...chromePage]) {
       const okC = await settled(30000);
       if (chooser.length) { await sleep(800); await settled(15000); }
       // a link to the server's own file (a .xdl, a .sqlplan): its download is given up to 5 s to start
-      if (c.tag === 'A' && /^\/api\//.test(c.href || '')) for (let i = 0; i < 25 && dlCount() <= dl0; i++) await sleep(200);
+      if (c.tag === 'A' && apiHref(c.href || '')) for (let i = 0; i < 25 && dlCount() <= dl0; i++) await sleep(200);
       // the grid menu's Export Excel and Export file items: the file is built in the page first, given up to 5 s to start
       if (p[0].sig === 'CTX' && /^menu B Export (Excel|file)/.test(p[1]?.sig ?? '') && !/▸$/.test(last.sig)) for (let i = 0; i < 25 && dlCount() <= dl0; i++) await sleep(200);
       const after = await ev(state).catch(e => ({ errors: ['(page gone) ' + e], mark: false }));

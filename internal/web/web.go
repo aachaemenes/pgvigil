@@ -538,6 +538,10 @@ func (s *Server) Handler() http.Handler {
 		panic(err) // the embed path is fixed at build time
 	}
 	files := http.FileServerFS(sub)
+	shell, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		panic(err) // the embed path is fixed at build time
+	}
 	// no method in the pattern: "GET /" and the method-less "/api/" gate would be two patterns
 	// neither of which is more specific, which the mux refuses
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -551,6 +555,11 @@ func (s *Server) Handler() http.Handler {
 			if _, err := fs.Stat(sub, strings.TrimPrefix(r.URL.Path, "/")); err != nil {
 				r.URL.Path = "/"
 			}
+		}
+		if base := baseFrom(r); base != "" && r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(withBaseHref(shell, base))
+			return
 		}
 		files.ServeHTTP(w, r)
 	})
@@ -572,6 +581,10 @@ func hostSet(hosts []string) map[string]bool {
 func LoopbackHosts(port string) []string {
 	return []string{"localhost:" + port, "127.0.0.1:" + port, "[::1]:" + port, "localhost", "127.0.0.1", "[::1]"}
 }
+
+// Secure is secure for a handler around Handler() - serve's UnderBase, so its 404 outside the base and its redirect of
+// the bare base are answered only to a Host the server takes, with the same headers.
+func (s *Server) Secure(h http.Handler) http.Handler { return s.secure(h) }
 
 // secure refuses a Host the server does not answer to (a DNS-rebinding page would send its
 // own name) and adds the headers an admin UI wants: no framing, no sniffing, same origin, HSTS under TLS.
@@ -1108,12 +1121,21 @@ func (s *Server) rateLookback(ctx context.Context, id int, collection string) in
 
 // multi runs named queries in order into one JSON object; the first error ends the reply.
 func (s *Server) multi(w http.ResponseWriter, r *http.Request, parts []part) {
+	s.multiPost(w, r, parts, nil)
+}
+
+// multiPost is multi with a rework per named part after its read, for a column a Go rule computes (the streaks'
+// backing-off line, L214: the rule is collect's, shared with the loop, never re-done in SQL).
+func (s *Server) multiPost(w http.ResponseWriter, r *http.Request, parts []part, posts map[string]func(*table)) {
 	out := map[string]*table{}
 	for _, p := range parts {
 		t, err := s.query(r.Context(), p.sql, p.args...)
 		if err != nil {
 			s.reply(w, r, nil, fmt.Errorf("%s: %w", p.name, err))
 			return
+		}
+		if f := posts[p.name]; f != nil {
+			f(t)
 		}
 		// a part that read a window cut to its reach carries what it read beside its columns and rows (query's markRead)
 		out[p.name] = t
@@ -1146,12 +1168,18 @@ func onlyPart(r *http.Request, parts []part) ([]part, error) {
 
 // multiPart is multi over the part ?part= names (onlyPart), 400 for an unknown one.
 func (s *Server) multiPart(w http.ResponseWriter, r *http.Request, parts []part) {
+	s.multiPartPost(w, r, parts, nil)
+}
+
+// multiPartPost is multiPart with multiPost's reworks (the Collector page's streaks: rn-l214 N-7, one copy of the
+// ?part= handling).
+func (s *Server) multiPartPost(w http.ResponseWriter, r *http.Request, parts []part, posts map[string]func(*table)) {
 	ps, err := onlyPart(r, parts)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	s.multi(w, r, ps)
+	s.multiPost(w, r, ps, posts)
 }
 
 // replication: the newest snapshot's objects, the instance's replication checks, and the lag of

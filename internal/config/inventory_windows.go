@@ -3,6 +3,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,24 +36,36 @@ func prepareDir(dir string) error {
 // writeSecret (Windows): the value sealed with DPAPI at machine scope (any process of this machine can open it,
 // none elsewhere), written beside its final name and renamed over it.
 func writeSecret(dir, name, value string) (string, error) {
+	p := filepath.Join(dir, name+".dpapi")
+	if err := SealDPAPIAt(p, value); err != nil {
+		return "", err
+	}
+	return "dpapi:" + p, nil
+}
+
+// SealDPAPIAt writes value sealed with DPAPI at machine scope to exactly path, beside it first and renamed over it
+// ('pgvigil config import' puts a moved secret back where the references name it, RELNOTES L155).
+func SealDPAPIAt(path, value string) error {
+	if value == "" {
+		return errors.New("nothing to seal")
+	}
 	in := []byte(value)
 	var out windows.DataBlob
 	if err := windows.CryptProtectData(&windows.DataBlob{Size: uint32(len(in)), Data: &in[0]}, nil, nil, 0, nil,
 		windows.CRYPTPROTECT_LOCAL_MACHINE|windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
-		return "", err
+		return err
 	}
-	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }()
+	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }() // the system's copy: nothing to do if it fails
 	blob := unsafe.Slice(out.Data, out.Size)
-	p := filepath.Join(dir, name+".dpapi")
-	tmp := p + ".new"
+	tmp := path + ".new"
 	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
-		return "", err
+		return err
 	}
-	if err := os.Rename(tmp, p); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return "", err
+		return err
 	}
-	return "dpapi:" + p, nil
+	return nil
 }
 
 // ResolveDPAPI opens a dpapi: reference's blob.
@@ -67,6 +81,77 @@ func ResolveDPAPI(path string) (string, error) {
 	if err := windows.CryptUnprotectData(&windows.DataBlob{Size: uint32(len(b)), Data: &b[0]}, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
 		return "", err
 	}
-	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }()
+	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }() // the system's copy: nothing to do if it fails
 	return strings.TrimRight(string(unsafe.Slice(out.Data, out.Size)), "\r\n"), nil
+}
+
+// ownedLikeParent (Windows): nothing to do - a folder or file made under the configuration's folder inherits its
+// access list (the installer's: SYSTEM, the Administrators and the service's own account).
+func ownedLikeParent(string) error { return nil }
+
+// OwnLikeFolder gives path its folder's owner and the installer's mode (ownedLikeParent); on Windows a new file
+// inherits its folder's access list, so nothing is done.
+func OwnLikeFolder(path string) error { return ownedLikeParent(path) }
+
+func knownAccount(account string) error {
+	if _, _, err := LookupAccount(account); err != nil {
+		return fmt.Errorf("the account %s: %w", account, err)
+	}
+	return nil
+}
+
+// prepareDirAs (Windows): prepareDir's protected list with the named account's SID in place of this process's.
+func prepareDirAs(dir, account string) error {
+	sid, _, err := LookupAccount(account)
+	if err != nil {
+		return fmt.Errorf("the account %s: %w", account, err)
+	}
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;" + sid.String() + ")")
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+}
+
+// ownFileAs (Windows): nothing - the file inherits the folder's list.
+func ownFileAs(string, string) error { return nil }
+
+// sealAccess (Windows; rn-l9 B1): a sealed secret's folder gets a protected list - SYSTEM and the Administrators full,
+// the installed service's account read (account; "" = none installed: the first two alone) - never the list of
+// wherever the folder sits (an elevated prompt starts in System32, whose list lets every local account read); a file
+// under it takes that list by inheritance.
+func sealAccess(path, _ string, account string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return nil
+	}
+	sddl := "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	if account != "" {
+		sid, _, err := LookupAccount(account)
+		if err != nil {
+			return fmt.Errorf("the service's account %s: %w", account, err)
+		}
+		sddl += "(A;OICI;FR;;;" + sid.String() + ")"
+	}
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+}
+
+// writeSecretOwned (Windows): writeSecret - the file takes its folder's protected list, the account in it.
+func writeSecretOwned(dir, name, value, _ string) (string, error) {
+	return writeSecret(dir, name, value)
 }

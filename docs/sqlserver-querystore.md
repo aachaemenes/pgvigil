@@ -13,6 +13,14 @@ For a store that holds data (READ_WRITE or READ_ONLY), in two steps:
 
 1. The intervals to read, from `sys.query_store_runtime_stats_interval`: every interval that ended after the start of the newest interval the repository holds for the database, the oldest first, 200 intervals a run. The newest stored one is read again each time, because it was still open. A first read starts 24 hours back; no read starts more than 7 days back. A backlog longer than 200 intervals (a first read of a store with 1-minute intervals, a collector that was stopped for days) is read over the following runs, each going on where the one before ended.
 2. The runtime statistics and the wait statistics of those intervals only (`sys.query_store_runtime_stats`, `sys.query_store_wait_stats`, filtered by the first and last interval id), summed per plan and interval on the server. Only the plans in an interval's first 50 by total duration, by CPU, by logical reads, by largest memory grant or by wait time leave the server, together with the interval's totals over every plan.
+   Where the store keeps other replicas' rows (Query Store for secondary replicas: SQL Server 2025's choice, Managed
+   Instance's Always-up-to-date policy; `sys.query_store_replicas` is read wherever the database has it - SQL Server
+   2022 CU28 holds it too), a READ_WRITE database's runtime and wait reads drop the rows whose `replica_group_id` the
+   view assigns to other roles alone: the primary's own (role 1) and any group the view does not list, or a NULL one,
+   are kept - a row cut is cut for good, so the cut never guesses (rn-l17 S2). A read-only database (an availability
+   group's readable secondary, a Managed Instance's readable replica) is not cut: its figures are every group's summed,
+   as before (rn-l17 N2: its local role is not read there). Not proven: a failover - which group is the primary's
+   afterwards.
 
 Then, for those plans by their ids, and for every forced plan: the plan's properties, its query's hash, object and text (`sys.query_store_plan`, `sys.query_store_query`, `sys.query_store_query_text`), and the plan's showplan XML once (the repository says which plans it already holds). Last, the automatic tuning recommendations (`sys.dm_db_tuning_recommendations`, 2017 and later; the first 200 by score).
 
@@ -20,7 +28,7 @@ Then, for those plans by their ids, and for every forced plan: the plan's proper
 
 The store's history never leaves the server, and text, plans and plan XML are read for the candidate plans alone. Inside the store the access paths have not been looked at (not proven: no proof reads the plans of the collector's statements). SQL Server keeps the runtime statistics clustered by plan, not by interval (read on SQL Server 2022: `plan_id, runtime_stats_interval_id, execution_type`), so the filter on the interval can make SQL Server read the store's runtime statistics table through once per database and run, as SSMS's own Query Store reports and `sp_QuickieStore` do. That table is bounded by the store's `MAX_STORAGE_SIZE_MB`; on a store of many gigabytes the hourly read is a real read, and the collection's interval can be raised or the collection switched off per instance.
 
-Each read is one SELECT run through that database's `sys.sp_executesql`; it changes no session setting. The collector's own statements run inside the database and are captured by its Query Store like any other session's: two to seven short statements per database a run.
+Each read is one SELECT run through that database's `sys.sp_executesql`; it changes no session setting. The collector's own statements run inside the database and are captured by its Query Store like any other session's: two to eight short statements per database a run (the replica role's probe is the eighth).
 
 ### Bounds of one run
 

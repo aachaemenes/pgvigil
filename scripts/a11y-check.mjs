@@ -110,6 +110,7 @@ let offFail = 0; let selftest = null;
 // the status style is remembered per origin too: every page in the solid style (the default), and the pages that carry
 // status cells again in the quiet one
 pages.push('#/summary|range');   // the Summary once more with the range panel open, so axe scans the panel too
+pages.push('#/summary|appfiles');   // and with the tabbed viewer of two files the Windows app posts (its tabs, Close tab)
 // a Diff with both sides picked (the walk above opens only its empty form): two instances, then one instance at two times
 pages.push(`#/diff?m=i&a=${onprem.instance_id}&b=${cloud.instance_id}`, `#/diff?m=t&a=${onprem.instance_id}&ta=${encodeURIComponent(new Date(Date.now() - 86400e3).toISOString())}`);
 // TAGALL: the pages a tag folder gained (router.ts tagPages), opened under the tag click-check.mjs takes (both engines,
@@ -150,6 +151,17 @@ for (const theme of ['light', 'dark']) {
       const shown = await ev(`(async () => { if (!document.querySelector('#bar [role="dialog"]')) document.querySelector('#bar [aria-haspopup="dialog"]')?.click(); await new Promise(r => setTimeout(r, 300)); return !!document.querySelector('#bar [role="dialog"]'); })()`, true);
       if (!shown) { failed++; console.log(`FAIL render ${style} ${theme} ${entry}: the range panel did not open`); continue; }
     }
+    if (open === 'appfiles') {
+      // two files posted as the Windows app posts them (window.pgvigilAppFile, base64 parts): the viewer opens tabbed
+      const plan = '<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.564"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT 1" StatementType="SELECT" StatementSubTreeCost="0.1"><QueryPlan><RelOp NodeId="0" PhysicalOp="Constant Scan" LogicalOp="Constant Scan" EstimateRows="1" EstimatedTotalSubtreeCost="0.1"/></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>';
+      const graph = '<deadlock><victim-list><victimProcess id="p1"/></victim-list><process-list><process id="p1" spid="55"/><process id="p2" spid="61"/></process-list><resource-list/></deadlock>';
+      const shown = await ev(`(async () => { const b = t => btoa(unescape(encodeURIComponent(t)));
+        window.pgvigilAppFile({ id: 901, name: 'a.sqlplan', part: 0, parts: 1, data: b(${JSON.stringify(plan)}) });
+        window.pgvigilAppFile({ id: 902, name: 'b.xdl', part: 0, parts: 1, data: b(${JSON.stringify(graph)}) });
+        for (let i = 0; i < 24; i++) { if (document.querySelectorAll('dialog.fd-viewer[open] [role=tab]').length === 2) return true; await new Promise(r => setTimeout(r, 250)); }
+        return false; })()`, true);
+      if (!shown) { failed++; console.log(`FAIL render ${style} ${theme} ${entry}: the app files' tabbed viewer did not open`); continue; }
+    }
     const offRead = await offCheck();
     if (selftest === null) {
       // five off buttons without a reason, each a way to miss one: no description, a description that names no element,
@@ -181,6 +193,8 @@ for (const theme of ['light', 'dark']) {
       const k = perRule.get(v.id) ?? { impact: v.impact, help: v.help, nodes: 0, pages: new Set() };
       k.nodes += v.nodes.length; k.pages.add(style + ' ' + theme + ' ' + entry); perRule.set(v.id, k);
     }
+    // the viewer is a page-level dialog: closed before the next page (a hash change keeps it open)
+    if (open === 'appfiles') await ev(`document.querySelectorAll('dialog.fd-viewer[open]').forEach(d => d.close()); 'ok'`);
   }
 }
 console.log('');

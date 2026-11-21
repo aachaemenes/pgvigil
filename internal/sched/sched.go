@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	mrand "math/rand/v2"
@@ -293,7 +294,12 @@ func startInstance(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *con
 	for _, t := range applicationTags(in) {
 		log.Warn("tag not taken: an application is set on Admin > Applications", "instance", in.Name, "tag", t)
 	}
-	started := 0
+	type run struct {
+		name string
+		iv   time.Duration
+	}
+	var runs []run
+	var shortest time.Duration // the instance's shortest collection interval: its back-off's cap (rn-l214 B-1)
 	for _, c := range engines.Specs(in.Engine) {
 		iv := cfg.Interval(in, c.Name, c.Default)
 		if iv <= 0 {
@@ -303,14 +309,22 @@ func startInstance(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *con
 			log.Debug("collection off by config", "instance", in.Name, "collection", c.Name, "why", why)
 			continue
 		}
-		started++
+		if shortest == 0 || iv < shortest {
+			shortest = iv
+		}
+		runs = append(runs, run{c.Name, iv})
+	}
+	// before any loop starts, so no first run asks the gate without them: the cap, and a changed instance's next try
+	// now (S-4)
+	collect.BackoffStart(in.Name, shortest)
+	for _, c := range runs {
 		wg.Add(1)
 		go func(in config.Instance, name string, iv time.Duration) {
 			defer wg.Done()
 			loop(ctx, log, r, in, name, iv)
-		}(in, c.Name, iv)
+		}(in, c.name, c.iv)
 	}
-	return started
+	return len(runs)
 }
 
 // firstStartSpread: the window a collection's first run after a start falls in - each loop waits a random offset in
@@ -329,6 +343,35 @@ func firstStart(iv time.Duration) time.Duration {
 	return 0
 }
 
+// The run deadline (L250, PerformanceMonitor's check_hung_collector_job): every run is cancelled at twice its
+// interval, clamped between runDeadlineFloor and runDeadlineCap; the first run after a start gets the cap whole (PM's
+// first-run allowance). Variables so a test can scale the clock.
+var (
+	runDeadlineFloor = 2 * time.Minute
+	runDeadlineCap   = 30 * time.Minute
+)
+
+// runLimit: one run's deadline - runDeadline from its interval, never under the engine's own limit for the
+// collection (rn-l214 S-2: SQL Server's own timeout and its write; 0 for PostgreSQL).
+func runLimit(iv time.Duration, first bool, name string) time.Duration {
+	return max(runDeadline(iv, first), engines.RunLimit(name))
+}
+
+// runDeadline: one run's limit from its interval; the first run after a start gets the cap.
+func runDeadline(iv time.Duration, first bool) time.Duration {
+	if first {
+		return runDeadlineCap
+	}
+	d := 2 * iv
+	if d < runDeadlineFloor {
+		d = runDeadlineFloor
+	}
+	if d > runDeadlineCap {
+		d = runDeadlineCap
+	}
+	return d
+}
+
 func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string, iv time.Duration) {
 	jitter := firstStart(iv)
 	select {
@@ -336,19 +379,45 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 		return
 	case <-time.After(jitter):
 	}
-	run := func() {
+	// run answers whether the run passed the back-off's gate (a held run did not: N-4 keeps the first-run allowance
+	// for the loop's first run that tries)
+	run := func(first bool) bool {
+		// the back-off (L214): an instance whose own connect failed 3 times in a row is held by every one of its
+		// loops inside its window, one probe at a time after it; a held run counts no failure and ends no failing
+		// streak (collect.Result.Held: rn-l214 B-2)
+		skip, note, release := collect.ConnectBackoff(in.Name, time.Now())
+		if skip {
+			collect.RecordRunEvery(in.Name, in.Engine, name, collect.Result{Note: note, Held: true}, iv)
+			return false
+		}
+		if release != nil {
+			// the probe is this run's: free again when the run ends, whatever it did (a run that ends before any
+			// instance connect, a stop or the deadline cutting it short - none may hold the instance)
+			defer release()
+		}
+		// the run deadline (L250): a hung run is cancelled, its loop ticks on; the cancel reaches the driver (pgx
+		// sends a cancel request, go-mssqldb an attention) and a repository write in flight rolls back. Never under
+		// the engine's own limit for the collection (rn-l214 S-2: SQL Server's own timeout, then its write)
+		limit := runLimit(iv, first, name)
+		rctx, rcancel := context.WithTimeout(ctx, limit)
+		defer rcancel()
 		// the run's imports taken again after a deadlock (repo.Import counts them) go to its heartbeat row (N4)
 		var retries atomic.Int64
-		res := engines.RunOnce(repo.WithRetryCounter(ctx, &retries), log, r, in, name)
+		res := engines.RunOnce(repo.WithRetryCounter(rctx, &retries), log, r, in, name)
 		res.Retries = int(retries.Load())
+		if res.Err != nil && ctx.Err() == nil && errors.Is(rctx.Err(), context.DeadlineExceeded) {
+			res.Err = fmt.Errorf("timed out after %s: %w", limit, res.Err)
+			res.Outcome = collect.OutcomeTimedOut
+		}
 		if res.Err == nil || ctx.Err() == nil { // task 201: the heartbeat counts the run, never one the stop cut short
 			collect.RecordRunEvery(in.Name, in.Engine, name, res, iv) // task 201 DONE-2 N3: the span's interval
 		}
 		if res.Err != nil && ctx.Err() == nil {
 			log.Warn("collection failed", "instance", in.Name, "collection", name, "err", res.Err)
 		}
+		return true
 	}
-	run()
+	first := !run(true)
 	t := time.NewTicker(iv)
 	defer t.Stop()
 	for {
@@ -356,7 +425,9 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			run()
+			if run(first) {
+				first = false
+			}
 		}
 	}
 }

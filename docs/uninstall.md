@@ -75,13 +75,15 @@ A run without a terminal (a script, a configuration tool) names the database ins
    (`pgvigil-export.timer` and `.service`, with `/etc/pgvigil/pgvigil-export.env`; what it wrote at its
    destination is yours and is not touched); on Windows each scheduled task whose action runs a pgvigil
    executable with `purge` or `export` (deleted with `schtasks /Delete`). Then the service definition (Linux: the unit, disabled,
-   `daemon-reload`; Windows: the service, with its virtual account `NT SERVICE\pgvigil`).
+   `daemon-reload`; Windows: the service, with its virtual account `NT SERVICE\pgvigil`; an account it ran as instead -
+   a gMSA or a named account - stays, and so does that account's 'Log on as a service' right, listed as kept: another
+   service may run as it too, and secpol.msc > Local Policies > User Rights Assignment takes the right away by hand).
 9. The binary, its `.previous` copy, the configuration, the environment file (`repo.dsn` and `reports.dsn` on Windows), the purge's env
    file (Linux: the `EnvironmentFile=` the purge unit names, `/etc/pgvigil/pgvigil-purge.env` by README: the
    repository owner's connection string) or its configuration copy (Windows: `pgvigil-purge.yaml` beside the
-   configuration), the logs, the page's credential folders `instances/` and `sources/` beside the configuration, each
-   listed with its file count (the passwords of the monitored servers added in the page: a decommissioned host keeps
-   none of them), and the configuration folder.
+   configuration), the logs, the page's credential folders `instances/` and `sources/` and the sealed connection
+   strings' folder `secrets/` (`pgvigil secret seal`) beside the configuration, each listed with its file count (the
+   passwords of the monitored servers: a decommissioned host keeps none of them), and the configuration folder.
 10. Linux: the service account, last.
 
 A step that fails stops the run and names what is left; the same command runs again from there (the configuration
@@ -136,7 +138,7 @@ Named on every run, never removed:
 - Linux: a service account the install did not create. `pgvigil install` marks the account it creates (its comment is
   `created by pgvigil install`); an account that was there before, or one made by an earlier release, is kept with its
   `userdel` line. A marked account with a process still running as it is kept too.
-- A credential folder (`instances/`, `sources/`) that is a link or a junction to another place: removing the link
+- A credential folder (`instances/`, `sources/`, `secrets/`) that is a link or a junction to another place: removing the link
   would leave the passwords where it points, so it is named with its target for you to clear by hand.
 - Windows: the repository owner's connection-string file that `pgvigil-purge.yaml` names (`file:<path>`, a place you
   chose): named, for you to delete when no other task needs it.
@@ -167,10 +169,11 @@ pgvigil-app.exe uninstall      # the machine-wide app: its files, start-at-login
 pgvigil-app.exe uninstall -user   # a user's own app (as that user)
 ```
 
-These leave the account, the repository and its roles, the dumps, `pgvigil.previous`, the page's credential folders
-beside the config (`instances/` and `sources/`: the passwords of the monitored servers added in the page, 0600 files on
-Linux, DPAPI blobs on Windows; `-purge` keeps them and the folder with them: `rm -r /etc/pgvigil/instances
-/etc/pgvigil/sources`, or `Remove-Item -Recurse "$env:ProgramData\pgvigil\instances", "$env:ProgramData\pgvigil\sources"`),
+These leave the account, the repository and its roles, the dumps, `pgvigil.previous`, the credential folders beside
+the config (`instances/` and `sources/`: the passwords of the monitored servers added in the page; `secrets/`: the
+connection strings `pgvigil secret seal` sealed for the file's instances - files on Linux, DPAPI blobs on Windows;
+`-purge` keeps them and the folder with them: `rm -r /etc/pgvigil/instances /etc/pgvigil/sources /etc/pgvigil/secrets`,
+or `Remove-Item -Recurse "$env:ProgramData\pgvigil\instances", "$env:ProgramData\pgvigil\sources", "$env:ProgramData\pgvigil\secrets"`),
 and on Windows the PATH entry and the policy key; `-all` takes them.
 
 Not seen on Windows by this project's proofs yet: the Windows steps are checked by unit tests and a Windows build of

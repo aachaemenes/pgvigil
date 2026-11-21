@@ -92,6 +92,16 @@ func Gated(in config.Instance, name string) (skip bool, why string) {
 	return false, ""
 }
 
+// RunLimit is an engine's own limit for one run of the named collection, which sched's run deadline never undercuts
+// (rn-l214 S-2): SQL Server's per collection (mssql.RunLimit), 0 for PostgreSQL (its reads are bounded by their
+// statement_timeout inside the loop's deadline) and for a name no engine knows.
+func RunLimit(name string) time.Duration {
+	if e, ok := EngineOf(name); ok && e == config.EngineSQLServer {
+		return mssql.RunLimit(name)
+	}
+	return 0
+}
+
 // RunOnce runs one collection against one instance through its engine's collector package.
 func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) collect.Result {
 	e, ok := EngineOf(name)

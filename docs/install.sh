@@ -8,11 +8,14 @@
 #   PGVIGIL_VERSION=v0.2.0      a given tag (default: the latest release)
 #   PGVIGIL_BASE_URL=<url>      the folder that holds <version>/<asset> (default: the GitHub release downloads)
 #   PGVIGIL_NO_SERVICE=1        download and verify only; the binary lands in the current folder as ./pgvigil
+#   PGVIGIL_USER=<name>         the service's account (default pgvigil, made as a system user when missing), as --user
 #
 # Offline (no network: a local folder, a mounted USB stick or a share holding the extracted offline bundle,
 # pgvigil-offline-<version>-linux-amd64; docs/airgap.md), as root:
 #   sh <folder>/install.sh --from <folder> [--fips | --plain] [--trust-root <dir>]
 #                          [--owner-dsn-file <path>] [--dump <file> | --no-dump] [--pg-dump <path>]
+#                          [--user <name>] [--help | -h]
+# --user (a fresh install; an upgrade keeps the installed account): the system user the service runs as.
 # The binary and SHA256SUMS are copied into a new folder of root's alone, the copies verified and only the copies run
 # (a share or a stick can change between a check and a use). A fresh install runs 'pgvigil install'; on a host where the
 # service is installed it is an upgrade, 'pgvigil install -upgrade' (refusals first, then stop, dump, migrate, swap,
@@ -24,9 +27,20 @@
 # POSIX sh (dash, busybox ash, bash): no arrays, no [[ ]], no local. Needs curl or wget, and sha256sum or shasum.
 set -eu
 
-FROM=""; FLAVOUR=""; TRUST=""; UPFLAGS=""
+usage() {
+  cat <<'USAGE'
+pgvigil installer for Linux and macOS. Online: curl -fsSL https://pgvigil.com/install.sh | sh
+  PGVIGIL_VERSION=<tag>  PGVIGIL_BASE_URL=<url>  PGVIGIL_NO_SERVICE=1  PGVIGIL_USER=<name>
+Offline, as root: sh <folder>/install.sh --from <folder> [--fips | --plain] [--trust-root <dir>]
+                  [--owner-dsn-file <path>] [--dump <file> | --no-dump] [--pg-dump <path>] [--user <name>]
+--user: the system user the service runs as (default pgvigil, made when missing); a fresh install only.
+USAGE
+}
+FROM=""; FLAVOUR=""; TRUST=""; UPFLAGS=""; SVCUSER="${PGVIGIL_USER:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
+    --help|-h) usage; exit 0 ;;
+    --user) [ $# -ge 2 ] || { printf 'pgvigil install: --user needs an account name\n' >&2; exit 1; }; SVCUSER=$2; shift 2 ;;
     --from) [ $# -ge 2 ] || { printf 'pgvigil install: --from needs a folder\n' >&2; exit 1; }; FROM=$2; shift 2 ;;
     --fips) FLAVOUR=fips; shift ;;
     --plain) FLAVOUR=plain; shift ;;
@@ -36,9 +50,10 @@ while [ $# -gt 0 ]; do
       case "$2" in *[!A-Za-z0-9/._:+@=-]*) printf 'pgvigil install: %s %s: a path of letters, digits and / . _ - : + @ = only\n' "$1" "$2" >&2; exit 1 ;; esac
       UPFLAGS="$UPFLAGS -${1#--} $2"; shift 2 ;;
     --no-dump) UPFLAGS="$UPFLAGS -no-dump"; shift ;;
-    *) printf 'pgvigil install: unknown argument %s (see the header of this script)\n' "$1" >&2; exit 1 ;;
+    *) printf 'pgvigil install: unknown argument %s (--help lists them)\n' "$1" >&2; exit 1 ;;
   esac
 done
+case "$SVCUSER" in *[!A-Za-z0-9._-]*) printf 'pgvigil install: --user %s: a system user name of letters, digits and . _ - only\n' "$SVCUSER" >&2; exit 1 ;; esac
 if [ -z "$FROM" ] && { [ -n "$FLAVOUR" ] || [ -n "$TRUST" ] || [ -n "$UPFLAGS" ]; }; then
   printf 'pgvigil install: --fips, --plain, --trust-root and the upgrade flags go with --from\n' >&2; exit 1
 fi
@@ -134,12 +149,13 @@ if [ -n "$FROM" ]; then
     exit 0
   fi
   if [ -n "$INSTALLED" ]; then
+    [ -z "$SVCUSER" ] || die "--user goes with a fresh install: the upgrade keeps the installed account"
     say "an installed collector was found ($UNIT): upgrading it"
     # shellcheck disable=SC2086 # UPFLAGS holds checked words only (letters, digits and path characters)
     "$WORK/$ASSET" install -upgrade $UPFLAGS
   else
     [ -z "$UPFLAGS" ] || die "--owner-dsn-file, --dump, --no-dump and --pg-dump go with an upgrade; no installed collector was found"
-    "$WORK/$ASSET" install
+    if [ -n "$SVCUSER" ]; then "$WORK/$ASSET" install -user "$SVCUSER"; else "$WORK/$ASSET" install; fi
   fi
   exit $?
 fi
@@ -183,12 +199,18 @@ if [ "${PGVIGIL_NO_SERVICE:-}" = "1" ]; then
   exit 0
 fi
 
+# a re-run over an installed collector keeps its account ('pgvigil install' reads the unit's User=): --user goes with a
+# fresh install only, here as with --from
+if [ -n "$SVCUSER" ] && [ -f /etc/systemd/system/pgvigil.service ]; then
+  die "--user goes with a fresh install: the installed collector keeps its account (pgvigil.service's User=)"
+fi
+
 # the install needs root: already root, else sudo, else say what to run
 if [ "$(id -u)" = 0 ]; then
-  "$WORK/$ASSET" install
+  if [ -n "$SVCUSER" ]; then "$WORK/$ASSET" install -user "$SVCUSER"; else "$WORK/$ASSET" install; fi
 elif command -v sudo >/dev/null 2>&1; then
   say "running 'pgvigil install' with sudo"
-  sudo "$WORK/$ASSET" install
+  if [ -n "$SVCUSER" ]; then sudo "$WORK/$ASSET" install -user "$SVCUSER"; else sudo "$WORK/$ASSET" install; fi
 else
   mv "$WORK/$ASSET" ./pgvigil
   die "not root and no sudo: run 'su -c \"./pgvigil install\"' with the binary now in the current folder"

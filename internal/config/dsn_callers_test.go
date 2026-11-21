@@ -30,13 +30,15 @@ func TestEveryInstanceDSNCallerIsKnown(t *testing.T) {
 		"internal/mssql/mssql.go":        "Connect: readSecret",
 		// task 390a: the Entra sign-in of the dsn for Resource Manager's token, no database dial
 		// (password_secret refuses a fedauth= dsn: validatePasswordSecret)
-		"internal/mssql/failovergroups.go":  "ARMToken: the dsn's Entra identity, no dial",
-		"internal/mssql/actions.go":         "openMonitor: OpenRead with the door's Secret; Actions is the actions login's",
-		"internal/actions/actions.go":       "DoorsFromConfig: the door's Secret; connect: secrets.FillPG",
-		"internal/actions/explain.go":       "plans.Connect with the door's Secret",
-		"internal/collect/jobs_actions.go":  "jobConn: secrets.FillPG with the door's Secret",
-		"internal/config/config.go":         "validatePasswordSecret: no dial",
-		"cmd/pgvigil/serve.go":              "the SQL Server door's Secret",
+		"internal/mssql/failovergroups.go": "ARMToken: the dsn's Entra identity, no dial",
+		"internal/mssql/actions.go":        "openMonitor: OpenRead with the door's Secret; Actions is the actions login's",
+		"internal/actions/actions.go":      "DoorsFromConfig: the door's Secret; connect: secrets.FillPG",
+		"internal/actions/explain.go":      "plans.Connect with the door's Secret",
+		"internal/collect/jobs_actions.go": "jobConn: secrets.FillPG with the door's Secret",
+		"internal/config/config.go":        "validatePasswordSecret: no dial",
+		"cmd/pgvigil/serve.go":             "the SQL Server door's Secret",
+		// L181: pgvigil check tests each instance through the page's own test with the instance's password_secret
+		"cmd/pgvigil/check.go":              "checkRun: web.CheckConnection with in.SecretRef()",
 		"internal/web/actions.go":           "superusers: secrets.FillPG with the door's Secret",
 		"internal/web/q_indexes.go":         "advisor.Run with the door's Secret",
 		"internal/web/q_plans.go":           "plans.Explain / plans.Hypo with the door's Secret; L121 an emptiness check",

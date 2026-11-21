@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/aachaemenes/pgvigil/internal/alerts"
 	"github.com/aachaemenes/pgvigil/internal/reportmail"
@@ -24,8 +25,11 @@ func runAlerts(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	chs := st.Channels
 	dsn := st.DSN()
-	if dsn == "" {
-		dsn = cfg.Repository.DSN()
+	if strings.TrimSpace(dsn) == "" {
+		// no alerts_dsn: the repository's, refused in run's words when it resolves to nothing (never pgx's defaults)
+		if dsn, err = repoDSNOf(fs.Lookup("config").Value.String(), cfg); err != nil {
+			return err
+		}
 	}
 	alerts.SetTextPolicy(alerts.PolicyOfConfig(cfg.QueryText, queryTextByName(cfg)))
 	res, err := alerts.Once(ctx, dsn, chs)

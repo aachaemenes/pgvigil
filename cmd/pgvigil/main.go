@@ -6,6 +6,7 @@
 //	pgvigil migrate  -config pgvigil.yaml            apply the repository schema
 //	pgvigil migrate  -config pgvigil.yaml -print     print the statements migrate would run (read only: nothing applied)
 //	pgvigil alerts   -config pgvigil.yaml            one pass of the alert channels (the alerts: list)
+//	pgvigil check    -config pgvigil.yaml [-json] [-instance name]...   the install's read-only health check (its own exit codes: docs/check.md)
 //	pgvigil serve    -config pgvigil.yaml [-listen 127.0.0.1:8080] [-tls-cert f -tls-key f]   web UI and JSON API (read only)
 //	pgvigil user     <add|passwd|enable|disable|remove|list> -config pgvigil.yaml [name]        the UI's logins
 //	pgvigil cert     [-hosts a,b] [-out dir]                                                 a self-signed TLS pair
@@ -54,7 +55,9 @@ var version = "dev"
 
 func main() { os.Exit(run(os.Args[1:])) }
 
-// run returns the process exit code: 0 ok, 1 a failure, 2 a usage error, 3 a configuration error.
+// run returns the process exit code: 0 ok, 1 a failure, 2 a usage error, 3 a configuration error - except 'pgvigil
+// check', whose error carries its own (1 the configuration, 2 the repository, 3 any WARN or FAIL while the repository
+// answers: docs/check.md).
 // Deferred cleanup (the signal context) runs before os.Exit this way.
 func run(args []string) int {
 	if len(args) < 1 {
@@ -64,7 +67,12 @@ func run(args []string) int {
 	if handled, code := maybeRunAsService(args); handled { // Windows: `run` under the service control manager
 		return code
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	bad := applyLogLevel("")
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+	// the process's default logger too: a package that logs through slog's default (the repository before SetLog, a
+	// library) and loadFile's override line follow the level
+	slog.SetDefault(log)
+	warnBadLevel(log, bad)
 	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -75,6 +83,10 @@ func run(args []string) int {
 		fmt.Println(versionLine())
 	case "migrate":
 		err = runMigrate(ctx, log, args[1:])
+	case "check":
+		err = runCheck(ctx, log, args[1:])
+	case "secret":
+		err = runSecret(args[1:])
 	case "collect":
 		err = runCollect(ctx, log, args[1:])
 	case "run":
@@ -99,6 +111,10 @@ func run(args []string) int {
 		err = runTag(ctx, args[1:])
 	case "report":
 		err = runReport(ctx, args[1:])
+	case "config":
+		err = runConfig(args[1:])
+	case "instance":
+		err = runInstance(ctx, args[1:])
 	case "install":
 		err = runInstall(log, args[1:])
 	case "uninstall":
@@ -110,6 +126,7 @@ func run(args []string) int {
 	case "mssql-agent-alerts":
 		err = runMSSQLAgentAlerts(args[1:])
 	case "import":
+		dbadash.LoadConfig = loadFile // the file's log_level applied as every command's load does
 		err = dbadash.ImportCommand(ctx, log, os.Stdout, args[1:])
 	default:
 		usage()
@@ -178,7 +195,7 @@ func runMSSQLXE(args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|export|tag|report|install|uninstall|mcp|mssql-xe|mssql-agent-alerts|import|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|check|secret|roles|serve|user|cert|demo|purge|export|tag|report|config|instance|install|uninstall|mcp|mssql-xe|mssql-agent-alerts|import|version> [-config file] [-once collection] [-instance name]")
 	fmt.Fprintln(os.Stderr, "       "+dbadash.ImportUsage)
 }
 
@@ -204,7 +221,7 @@ func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet
 
 // loadConfigAt reads and checks the configuration file at path (loadConfig's checks, for a command with its own flags).
 func loadConfigAt(path string, needInstance bool) (*config.Config, error) {
-	cfg, err := config.Load(path)
+	cfg, err := loadFile(path)
 	if err != nil {
 		return nil, &configError{err}
 	}
@@ -249,7 +266,11 @@ func runMigrate(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	r, err := repo.Open(ctx, cfg.Repository.DSN())
+	repoDSN, err := repoDSNOf(*path, cfg)
+	if err != nil {
+		return err
+	}
+	r, err := repo.Open(ctx, repoDSN)
 	if err != nil {
 		return err
 	}
@@ -275,6 +296,7 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	warnInlinePasswords(log, cfg) // L9
 	if cfg.Flags.Once == "" {
 		return fmt.Errorf("collect needs -once <collection>; known: %v", engines.Names())
 	}
@@ -291,7 +313,11 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
 	if len(targets) == 0 {
 		return fmt.Errorf("no configured instance named %q", cfg.Flags.Instance)
 	}
-	r, err := repo.Open(ctx, cfg.Repository.DSN())
+	repoDSN, err := repoDSNOf("", cfg)
+	if err != nil {
+		return err
+	}
+	r, err := repo.Open(ctx, repoDSN)
 	if err != nil {
 		return err
 	}
@@ -357,6 +383,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	warnInlinePasswords(log, cfg) // L9: an inline PostgreSQL password still loads, with a warning naming the fix
 	for _, w := range collect.CustomWarnings() {
 		log.Warn(w)
 	}
@@ -364,8 +391,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	// an empty repository dsn (a fresh install's env file not filled yet) is a config error: exit 3, which the unit's
 	// RestartPreventExitStatus=3 and the Windows service's recovery leave stopped - never a restart loop
 	if strings.TrimSpace(cfg.Repository.DSN()) == "" {
-		return &configError{fmt.Errorf("config %s: the repository dsn (%s) resolves to nothing: fill in the env file or the file it names",
-			fs.Lookup("config").Value.String(), cfg.Repository.DSNRaw)}
+		return emptyRepoDSN(fs.Lookup("config").Value.String(), cfg.Repository.DSNRaw)
 	}
 	// the alerts: list (task 60): the sender runs beside the scheduler as alerts_dsn (a login IN ROLE pgvigil_alerter), else the repository's dsn
 	ast, err := alerts.LoadFile(fs.Lookup("config").Value.String())
@@ -381,6 +407,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer r.Close()
+	r.SetLog(log) // the repository's own lines (an import ended by a deadlock) on the process's logger and level
 	ok, latest, err := r.SchemaCurrent(ctx)
 	if err != nil {
 		return err
@@ -394,22 +421,26 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer waitBeat() // the last minute and the stop mark are written before the process ends
+	// L9 (0455): the instances whose dsn carries an inline password become a finding on each - the names only
+	if err := collect.NoteInlinePasswords(ctx, cfg.InlinePasswordInstances()); err != nil {
+		log.Warn("the inline-password finding was not written", "err", err)
+	}
 	go func() {
 		if err := dbadash.Run(ctx, log, cfg.Repository.DSN(), cfg.DBADash); err != nil {
-			log.Warn("dbadash door stopped", "err", err)
+			log.Error("dbadash door stopped", "err", err)
 		}
 	}()
 	// TEXT-NOW: the alert sends follow each instance's query_text policy as the file states it now
 	alerts.SetTextPolicy(alerts.PolicyOfConfig(cfg.QueryText, queryTextByName(cfg)))
 	go func() {
 		if err := alerts.Run(ctx, log, alertsDSN, ast.Channels); err != nil {
-			log.Warn("alert loop stopped", "err", err)
+			log.Error("alert loop stopped", "err", err)
 		}
 	}()
 	// task 171: the report mails queued by serve, mailed through the smtp channels on the sender's login
 	go func() {
 		if err := reportmail.Run(ctx, log, alertsDSN, ast.Channels); err != nil {
-			log.Warn("report mail loop stopped", "err", err)
+			log.Error("report mail loop stopped", "err", err)
 		}
 	}()
 	// task CQ: the request worker (cq.enabled; off = it returns at once): the actions and community runs serve wrote into
@@ -418,7 +449,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	go func() {
 		defer close(cqDone)
 		if err := cq.Run(ctx, log, cfg, r); err != nil {
-			log.Warn("request queue stopped", "err", err)
+			log.Error("request queue stopped", "err", err)
 		}
 	}()
 	defer func() {
@@ -456,4 +487,85 @@ func queryTextByName(cfg *config.Config) map[string]string {
 		m[in.Name] = in.QueryText
 	}
 	return m
+}
+
+// emptyWhy is " - <why>" for a dsn reference that resolves to nothing (RELNOTES L145: the variable, the file, a dpapi:
+// blob sealed on another host, a value of white space), "" when there is no reason to add. The reference is judged as
+// it was resolved: trimmed (config's DSN methods trim it too).
+func emptyWhy(raw string) string {
+	if w := config.WhyEmpty(strings.TrimSpace(raw)); w != "" {
+		return " - " + w
+	}
+	return ""
+}
+
+// emptyRepoDSN is the refusal of a repository dsn that resolves to nothing: its reason when there is one, else the
+// fresh install's fix (the env file or the file it names); path "" leaves the configuration's name out.
+func emptyRepoDSN(path, raw string) error {
+	head := "the repository dsn"
+	if path != "" {
+		head = "config " + path + ": the repository dsn"
+	}
+	if why := emptyWhy(raw); why != "" {
+		return &configError{fmt.Errorf("%s (%s) resolves to nothing%s", head, raw, why)}
+	}
+	return &configError{fmt.Errorf("%s (%s) resolves to nothing: fill in the env file or the file it names", head, raw)}
+}
+
+// repoDSNOf is the configuration's repository dsn, or emptyRepoDSN's refusal: every command that opens the repository
+// refuses one that resolves to nothing in run's words (exit 3), never repo.Open's.
+func repoDSNOf(path string, cfg *config.Config) (string, error) {
+	d := cfg.Repository.DSN()
+	if strings.TrimSpace(d) == "" {
+		return "", emptyRepoDSN(path, cfg.Repository.DSNRaw)
+	}
+	return d, nil
+}
+
+// logLevel is the level every logger of this process reads (RELNOTES L172): info until the environment's
+// PGVIGIL_LOG_LEVEL or the configuration's log_level says otherwise.
+var logLevel = new(slog.LevelVar)
+
+// loadFile reads the configuration file at path and applies its log_level (PGVIGIL_LOG_LEVEL wins): every command
+// that reads pgvigil.yaml reads it here, so the level holds for serve, mcp, purge and the rest as for run
+// (TestEveryConfigLoadAppliesTheLevel keeps it so). When the variable is set and differs from the file's
+// log_level, one Warn line names both: on a service the variable outlives restarts and upgrades.
+func loadFile(path string) (*config.Config, error) {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	applyLogLevel(cfg.LogLevel)
+	if env := strings.TrimSpace(os.Getenv("PGVIGIL_LOG_LEVEL")); env != "" && cfg.LogLevel != "" {
+		ev, envErr := config.ParseLogLevel(env)
+		fv, fileErr := config.ParseLogLevel(cfg.LogLevel)
+		if envErr == nil && fileErr == nil && ev != fv {
+			slog.Warn("PGVIGIL_LOG_LEVEL overrides the configuration's log_level", "PGVIGIL_LOG_LEVEL", env, "log_level", cfg.LogLevel, "config", path)
+		}
+	}
+	return cfg, nil
+}
+
+// warnBadLevel writes the one line for a PGVIGIL_LOG_LEVEL that is no level word (applyLogLevel's bad): the console
+// and the Windows service write the same line.
+func warnBadLevel(log *slog.Logger, bad string) {
+	if bad != "" {
+		log.Warn("PGVIGIL_LOG_LEVEL is not a log level (debug, info, warn or error): ignored", "value", bad)
+	}
+}
+
+// applyLogLevel sets logLevel from PGVIGIL_LOG_LEVEL, which wins, else from file (the configuration's log_level, ""
+// at start); it returns the variable's value when that is no level word (it is then ignored).
+func applyLogLevel(file string) (bad string) {
+	if env := strings.TrimSpace(os.Getenv("PGVIGIL_LOG_LEVEL")); env != "" {
+		if lv, err := config.ParseLogLevel(env); err == nil {
+			logLevel.Set(lv)
+			return ""
+		}
+		bad = env
+	}
+	if lv, err := config.ParseLogLevel(file); err == nil && file != "" {
+		logLevel.Set(lv)
+	}
+	return bad
 }

@@ -16,7 +16,8 @@ import (
 // ARMToken returns an access token for Azure Resource Manager (audience: the cloud's Resource Manager, e.g.
 // https://management.azure.com/) by the sign-in a SQL Server connection string names (task 390a, the failover group
 // read): its Entra service principal (the tenant named, <application id>@<tenant>: Resource Manager names none) or
-// its managed identity, through the process's one credential for that identity (the one its SQL tokens come from);
+// its managed identity or the az sign-in (Resource Manager then read as that az account, its token naming no tenant),
+// through the process's one credential for that identity (the one its SQL tokens come from);
 // a string that signs in with a SQL login or Windows has no Entra identity of its own, so azidentity's default chain
 // answers (the environment, a workload identity, a managed identity, the Azure CLI's sign-in). Nothing is stored.
 // Outside the public cloud the sign-in host is azidentity's AZURE_AUTHORITY_HOST (not proven: no lab).
@@ -55,6 +56,8 @@ func armCredential(dsn string) (azcore.TokenCredential, error) {
 		return credentialFor(identity{flow: ServicePrincipal, clientID: client, tenant: tenant, secret: sha256.Sum256([]byte(cfg.Password))}, cfg.Password)
 	case strings.EqualFold(fa, ManagedIdentity) || strings.EqualFold(fa, "ActiveDirectoryMSI"):
 		return credentialFor(identity{flow: ManagedIdentity, clientID: strings.TrimSpace(cfg.User), resourceID: strings.TrimSpace(cfg.Parameters["resource id"])}, "")
+	case strings.EqualFold(fa, AzCli):
+		return credentialFor(identity{flow: AzCli}, "")
 	}
 	defaultMu.Lock()
 	defer defaultMu.Unlock()

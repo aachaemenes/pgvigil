@@ -37,6 +37,7 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	pgdata := fs.String("pgdata", "pgvigil-demo-data", "data folder for -pgbin (made on the first run, reused after)")
 	serve := fs.Bool("serve", false, "after seeding, serve the UI on loopback without a login and keep the fleet live")
 	listen := fs.String("listen", "127.0.0.1:8080", "address to serve on (-serve; loopback only)")
+	basePath := fs.String("base-path", "", "serve the demo under this path, as serve -base-path does (-serve)")
 	open := fs.Bool("open", false, "with -serve: open the UI in an app-mode browser window (Edge or Chrome, its own window); the default browser when neither is found")
 	seed := fs.Uint64("seed", 1, "random seed: the same seed gives the same fleet")
 	n := fs.Int("instances", demo.FleetSize, "instances to seed: twelve PostgreSQL and three SQL Server (more repeats the twelve, for a scale run)")
@@ -62,6 +63,11 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	if *open && !*serve {
 		return errors.New("demo: -open needs -serve (there is no page to open without it)")
 	}
+	// the base path judged before the seed (minutes of work a bad flag would waste)
+	base, err := serveBasePath(*basePath, &config.Config{})
+	if err != nil {
+		return err
+	}
 
 	repoDSN := ""
 	switch {
@@ -78,11 +84,15 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	case *dsn != "":
 		repoDSN = config.Resolve(*dsn)
 	case *path != "":
-		cfg, err := config.Load(*path)
+		cfg, err := loadFile(*path)
 		if err != nil {
 			return err
 		}
-		repoDSN = cfg.Repository.DSN()
+		d, derr := repoDSNOf(*path, cfg)
+		if derr != nil {
+			return derr
+		}
+		repoDSN = d
 	default:
 		return errors.New("demo: name the repository with -config (or -dsn), or run one with -pgbin")
 	}
@@ -134,12 +144,14 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer srv.Close()
-	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second}
+	hs := &http.Server{Handler: srv.Secure(web.UnderBase(base, srv.Handler(), log)), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second,
+		// net/http's own lines (a TLS handshake error) at Warn on this logger, so log_level governs them
+		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
-	log.Info("pgvigil demo serving", "url", fmt.Sprintf("http://%s/", ln.Addr()), "login", false)
+	log.Info("pgvigil demo serving", "url", underBase(fmt.Sprintf("http://%s/", ln.Addr()), base), "login", false)
 	if *open {
-		openWindow(log, browseURL("http", ln.Addr()))
+		openWindow(log, underBase(browseURL("http", ln.Addr()), base))
 	}
 
 	tick := time.NewTicker(time.Minute)

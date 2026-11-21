@@ -2,11 +2,12 @@
 // the actions door, the custom reports, the DBA Dash import and door).
 //
 // A string without fedauth (a SQL login, Windows authentication) opens the "sqlserver" driver exactly as before. A
-// string with fedauth=ActiveDirectoryServicePrincipal (auth entra) or ActiveDirectoryManagedIdentity (auth
-// entra-identity) opens through go-mssqldb's federated-authentication connector with a token provider of this
+// string with fedauth=ActiveDirectoryServicePrincipal (auth entra), ActiveDirectoryManagedIdentity (auth
+// entra-identity) or ActiveDirectoryAzCli (the az CLI's sign-in, RELNOTES L173) opens through go-mssqldb's federated-authentication connector with a token provider of this
 // package: ONE azidentity credential per identity for the life of the process, so the token cache answers every
 // later connect until the token nears its expiry (a service principal's cache is its credential's own; a managed
-// identity's is MSAL's, one for the process). Without this package the plain driver
+// identity's is MSAL's, one for the process; the az sign-in's is this package's own, azcache.go: azidentity caches
+// none for it). Without this package the plain driver
 // ignores fedauth and sends the application id and its secret as a SQL login (only go-mssqldb's azuread connector
 // reads fedauth, and it builds a new credential, so a new token request, for every connect: go-mssqldb v1.11.2
 // azuread/configuration.go).
@@ -23,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"os/user"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -39,6 +41,9 @@ import (
 const (
 	ServicePrincipal = "ActiveDirectoryServicePrincipal" // auth entra: the application id and its secret
 	ManagedIdentity  = "ActiveDirectoryManagedIdentity"  // auth entra-identity: the host's own Azure identity, no secret
+	// AzCli is the az CLI's sign-in of the account the process runs as (RELNOTES L173, the connection string's fedauth
+	// as pgvigil.yaml writes it): no login and no secret in the string; a person's serve, the Windows app, a one-off collect
+	AzCli = "ActiveDirectoryAzCli"
 )
 
 // Open returns a *sql.DB for a go-mssqldb connection string (URL or key=value form).
@@ -231,9 +236,12 @@ func sqlAudience(spn string) bool {
 	return false
 }
 
+// tenantName is a tenant id or domain as az takes it: letters, digits, '.' and '-'.
+var tenantName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$`)
+
 // identity names one Entra identity; its credential is made once per process and kept.
 type identity struct {
-	flow       string   // ServicePrincipal or ManagedIdentity
+	flow       string   // ServicePrincipal, ManagedIdentity or AzCli
 	clientID   string   // the application id, or a user-assigned identity's client id ("" = the system-assigned one)
 	resourceID string   // a user-assigned identity's resource id (managed identity only)
 	tenant     string   // the service principal's tenant: named in the string, else the one the server names
@@ -279,8 +287,14 @@ func tokenProvider(cfg msdsn.Config, fedauth string, h Holder) (byte, func(ctx c
 		id = identity{flow: ServicePrincipal, clientID: client, tenant: tenant, secret: sha256.Sum256([]byte(cfg.Password))}
 		secret = cfg.Password
 		workflow = mssql.FedAuthADALWorkflowPassword
+	case strings.EqualFold(fedauth, AzCli):
+		if cfg.Password != "" || strings.TrimSpace(cfg.User) != "" {
+			return 0, nil, errors.New("the az sign-in names its own account (az login, as the account this process runs as): the connection string holds no login and no password")
+		}
+		id = identity{flow: AzCli}
+		workflow = mssql.FedAuthADALWorkflowPassword
 	default:
-		return 0, nil, fmt.Errorf("fedauth %s is not one pgvigil opens: %s (auth entra) or %s (auth entra-identity)", fedauth, ServicePrincipal, ManagedIdentity)
+		return 0, nil, fmt.Errorf("fedauth %s is not one pgvigil opens: %s (auth entra), %s (auth entra-identity) or %s (the az sign-in)", fedauth, ServicePrincipal, ManagedIdentity, AzCli)
 	}
 	provide := func(ctx context.Context, serverSPN, stsURL string) (string, error) {
 		if h != nil {
@@ -304,7 +318,15 @@ func tokenProvider(cfg msdsn.Config, fedauth string, h Holder) (byte, func(ctx c
 		if !strings.HasSuffix(scope, "/.default") {
 			scope += "/.default"
 		}
-		tok, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{scope}})
+		opts := policy.TokenRequestOptions{Scopes: []string{scope}}
+		if key.flow == AzCli {
+			// the server names its tenant in the STS URL; az is asked for that tenant's token when the name has a
+			// tenant id's characters only (it reaches az's command line), else for the sign-in's own tenant
+			if tn := stsURL[strings.LastIndex(stsURL, "/")+1:]; tenantName.MatchString(tn) {
+				opts.TenantID = tn
+			}
+		}
+		tok, err := cred.GetToken(ctx, opts)
 		if err != nil {
 			forget(key) // a tenant the server named that the identity is not in: not kept (the map stays bounded)
 			return "", err
@@ -338,8 +360,15 @@ func forget(key identity) {
 
 // makeCredential is azidentity's credential for an identity.
 func makeCredential(key identity, secret string) (azcore.TokenCredential, error) {
-	if key.flow == ServicePrincipal {
+	switch key.flow {
+	case ServicePrincipal:
 		return azidentity.NewClientSecretCredential(key.tenant, key.clientID, secret, nil)
+	case AzCli:
+		c, err := azidentity.NewAzureCLICredential(nil)
+		if err != nil {
+			return nil, err
+		}
+		return newCachedCredential(c), nil
 	}
 	var o *azidentity.ManagedIdentityCredentialOptions
 	switch {

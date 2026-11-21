@@ -399,7 +399,9 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 		return nil
 	})
 	if err != nil {
-		_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), stage)
+		_ = logOn(ctx, func(wctx context.Context) error {
+			return r.LogCollectionStage(wctx, instanceID, name, start, time.Since(start), "error", err.Error(), stage)
+		})
 		res := Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start), Import: imp.Import, Imported: imp.Imported}
 		if EndedAtImport(err, lastImport) {
 			res.Outcome = OutcomeImportFailed
@@ -407,7 +409,9 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 		return res
 	}
 	d := time.Since(start)
-	_ = r.LogCollectionStage(ctx, instanceID, name, start, d, status, LeadNote(importErr, note), stage)
+	_ = logOn(ctx, func(wctx context.Context) error {
+		return r.LogCollectionStage(wctx, instanceID, name, start, d, status, LeadNote(importErr, note), stage)
+	})
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", n, "imports", parts, "ms", d.Milliseconds())
 	return Result{Rows: n, Duration: d, Outcome: partialOutcome(status), Import: imp.Import, Imported: imp.Imported}
 }

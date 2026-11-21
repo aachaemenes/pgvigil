@@ -60,6 +60,7 @@ collection_run_status	state							collection,last_status
 collection_runs_long_since	left-out							
 collector_beats	window	at						collector_id
 collector_heartbeat	state							collector_id,host,os,runs_as,version
+collector_inline_password	state							host,instance,collector_id
 collector_instances	state							collector_id,instance
 collector_load	window	minute						collector_id,target
 collector_probe	window	minute						collector_id,host,address,method

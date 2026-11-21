@@ -151,7 +151,7 @@ func unresolvedNote(n int) string {
 // checkConfig is what the commands check before they use the file: its shape, the collection names, the custom: list
 // and the alerts: block. The first error is the answer.
 func checkConfig(path string, raw []byte) error {
-	cfg, err := config.Load(path)
+	cfg, err := loadFile(path)
 	if err != nil {
 		return err
 	}
@@ -321,9 +321,9 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
 var knownKeys = map[string]bool{
 	"repository": true, "dsn": true, "instances": true, "views": true, "shared_editors": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
 	"password_secret": true, "ref": true,
-	"web": true, "readyz_without_login": true, // B6.4: the probes
+	"web": true, "readyz_without_login": true, "base_path": true, // B6.4: the probes; L55: the sub-path
 	"doors": true, "page_instance_reads": true, "reports_dsn": true,
-	"page_cloud_blocks": true, "page_aws_profiles": true,
+	"page_cloud_blocks": true, "page_aws_profiles": true, "discovery_auto_add": true,
 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
 	"gcp": true, "project": true, "instance": true, "credentials_file": true, "replicas": true,
 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
@@ -332,7 +332,7 @@ var knownKeys = map[string]bool{
 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
 	"azure": true, "subscription": true, "resource_group": true, // B24p; "server" and "cloud" are S2's alert channel keys below
 	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "backup_files": true, "reads": true, "auto_close_databases": true, "verify_timeout": true,
-	"import": true, "gmsa": true,
+	"import": true, "gmsa": true, "log_level": true,
 	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,
 	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
 	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,

@@ -1,0 +1,21 @@
+<!--
+  Builds pgvigil-<version>-x64.msi from pgvigil.wxs. WixToolset.Sdk is pinned to 5.0.2 (MS-RL; a build tool only):
+  WiX v6 and later carry the Open Source Maintenance Fee, which is not taken - do not raise the pin without that
+  decision. ICE validation runs inside the build (never suppressed).
+
+    dotnet build packaging/msi/pgvigil.wixproj -c Release -p:PgvVersion=0.4.0 -p:PgvBinary=C:\path\pgvigil.exe -o out
+-->
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <PgvVersion Condition="'$(PgvVersion)' == ''">0.0.0</PgvVersion>
+    <OutputName>pgvigil-$(PgvVersion)-x64</OutputName>
+    <DefineConstants>PgvVersion=$(PgvVersion);PgvBinary=$(PgvBinary)</DefineConstants>
+    <SuppressValidation>false</SuppressValidation>
+  </PropertyGroup>
+  <!-- BeforeBuild (rn-l189 N4): ahead of WiX's own 'empty Source' error, so this message is the one shown -->
+  <Target Name="PgvBinaryGiven" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(PgvBinary)' == '' Or !Exists('$(PgvBinary)')" Text="-p:PgvBinary=&lt;path to pgvigil.exe&gt; names no file: the MSI is built from the release's own windows/amd64 binary" />
+  </Target>
+</Project>

@@ -9,6 +9,8 @@
 //   - a grid or data set (.json: an array of rows or {columns, rows} as the API writes it; .csv: a header and rows; either
 //     gzipped as .gz): the rows as a grid, with every grid's menu and its export
 // A file is read in the browser only: nothing is sent to the server. Everything is set as text, never as markup.
+// One viewer holds a tab per file (L232): a file opened while it is open is one more tab; the Windows app's files (Explorer's
+// Open with) come as base64 parts through window.pgvigilAppFile and open as a dropped file does.
 import { Row } from './api';
 import { DlGraph, deadlockSvg, graphFromXml, resourceKind, sessionName } from './deadlock_graph';
 import { Col, el, fmtNum, grid } from './ui';
@@ -17,18 +19,82 @@ import { looksLikeStatistics, MAX_TEXT, readSaved, statsioView } from './mssql_s
 
 const MAX_BYTES = 64 * 1024 * 1024;
 
-// ---- the viewer window ----------------------------------------------------------------------------------------
+// ---- the viewer window: one dialog, a tab per file --------------------------------------------------------------
 
-function viewer(title: string, back: HTMLElement | null, ...kids: (Node | string)[]): HTMLDialogElement {
+interface ViewTab { title: string; tab: HTMLButtonElement; panel: HTMLElement }
+interface Viewer { dlg: HTMLDialogElement; head: HTMLElement; bar: HTMLElement; panels: HTMLElement; close: HTMLElement; closeTab: HTMLElement; tabs: ViewTab[] }
+let shown: Viewer | null = null;
+let tabSeq = 0;
+
+function newViewer(back: HTMLElement | null): Viewer {
   const close = el('button', { type: 'button' }, 'Close');
-  const dlg = el('dialog', { class: 'act-dialog fd-viewer', 'aria-label': title, style: 'width:min(96vw,90rem);max-width:96vw;max-height:92vh' },
-    el('h3', {}, title), el('div', { class: 'fd-body' }, ...kids), el('div', { style: 'margin-top:.6rem' }, close)) as HTMLDialogElement;
+  const closeTab = el('button', { type: 'button', hidden: '', title: 'Close the open tab (Ctrl+W in the app\'s window)' }, 'Close tab');
+  const head = el('h3', {});
+  const bar = el('div', { role: 'tablist', class: 'fd-tabs', 'aria-label': 'open files', hidden: '' });
+  const panels = el('div', {});
+  const dlg = el('dialog', { class: 'act-dialog fd-viewer', style: 'width:min(96vw,90rem);max-width:96vw;max-height:92vh' },
+    head, bar, panels, el('div', { style: 'margin-top:.6rem' }, close, ' ', closeTab)) as HTMLDialogElement;
+  const v: Viewer = { dlg, head, bar, panels, close, closeTab, tabs: [] };
   close.addEventListener('click', () => dlg.close());
-  dlg.addEventListener('close', () => { dlg.remove(); if (back?.isConnected) back.focus(); });
+  closeTab.addEventListener('click', () => closeOpenTab(v));
+  dlg.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'w') { e.preventDefault(); closeOpenTab(v); return; }
+    const i = v.tabs.findIndex(t => t.tab === e.target);
+    if (i < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const n = v.tabs.length, j = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : (i + (e.key === 'ArrowRight' ? 1 : n - 1)) % n;
+    select(v, v.tabs[j]);
+    v.tabs[j].tab.focus();
+  });
+  dlg.addEventListener('close', () => { dlg.remove(); if (shown === v) shown = null; if (back?.isConnected) back.focus(); });
   document.body.append(dlg);
   dlg.showModal();
   close.focus();
-  return dlg;
+  return v;
+}
+
+function select(v: Viewer, t: ViewTab) {
+  for (const x of v.tabs) {
+    const on = x === t;
+    x.tab.setAttribute('aria-selected', String(on));
+    x.tab.tabIndex = on ? 0 : -1;
+    x.panel.hidden = !on;
+  }
+  v.head.textContent = t.title;
+  v.dlg.setAttribute('aria-label', t.title);
+}
+
+// the tab bar and its close button show from the second file on: one file looks as it always did
+function showBar(v: Viewer) { v.bar.hidden = v.closeTab.hidden = v.tabs.length < 2; }
+
+function closeOpenTab(v: Viewer) {
+  const i = v.tabs.findIndex(t => t.tab.getAttribute('aria-selected') === 'true');
+  if (i < 0) return;
+  const [t] = v.tabs.splice(i, 1);
+  t.tab.remove();
+  t.panel.remove();
+  if (!v.tabs.length) { v.dlg.close(); return; }
+  const next = v.tabs[Math.min(i, v.tabs.length - 1)];
+  select(v, next);
+  showBar(v);
+  (v.tabs.length > 1 ? next.tab : v.close).focus();
+}
+
+// viewer opens a file's view: a tab in the open viewer, or a new viewer; label is the tab's words (the file's name).
+function viewer(title: string, label: string, back: HTMLElement | null, ...kids: (Node | string)[]): HTMLDialogElement {
+  const v = shown?.dlg.open ? shown : (shown = newViewer(back));
+  const id = `fd-panel-${++tabSeq}`;
+  const tab = el('button', { type: 'button', role: 'tab', id: `${id}-tab`, 'aria-controls': id, 'aria-selected': 'false', tabindex: '-1', class: 'fd-tab' }, label) as HTMLButtonElement;
+  const panel = el('div', { role: 'tabpanel', id, 'aria-labelledby': `${id}-tab`, class: 'fd-body', hidden: '' }, ...kids);
+  const t: ViewTab = { title, tab, panel };
+  tab.addEventListener('click', () => select(v, t));
+  v.tabs.push(t);
+  v.bar.append(tab);
+  v.panels.prepend(panel); // the newest panel first: a caller reads the view it just opened as the dialog's first .fd-body (mssql_plancache.ts)
+  select(v, t);
+  showBar(v);
+  if (v.tabs.length > 1) tab.focus();
+  return v.dlg;
 }
 const note = (t: string) => el('p', { class: 'meta' }, t);
 
@@ -267,23 +333,23 @@ export function openText(name: string, text: string, back: HTMLElement | null = 
       const v = all[0]?.getAttribute('victim');
       if (g && v && !g.processes.some(p => p.victim)) for (const p of g.processes) if (p.process === v) p.victim = true;
       const more = all.length > 1 ? [note(`${all.length} deadlocks in this file: the first is shown.`)] : [];
-      return viewer(`Deadlock graph: ${name}`, back, ...(g ? [...more, ...deadlockView(g)] : [el('p', { class: 'error' }, 'This is not a deadlock graph pgvigil can read: no <deadlock> with processes.')]));
+      return viewer(`Deadlock graph: ${name}`, name, back, ...(g ? [...more, ...deadlockView(g)] : [el('p', { class: 'error' }, 'This is not a deadlock graph pgvigil can read: no <deadlock> with processes.')]));
     }
     if (kind === 'sqlplan') {
       const doc = new DOMParser().parseFromString(text, 'application/xml');
-      if (doc.getElementsByTagName('parsererror').length || doc.documentElement.localName !== 'ShowPlanXML') return viewer(`Query plan: ${name}`, back, el('p', { class: 'error' }, 'This is not a showplan pgvigil can read: no <ShowPlanXML> document.'));
-      return viewer(`Query plan: ${name}`, back, ...planView(doc));
+      if (doc.getElementsByTagName('parsererror').length || doc.documentElement.localName !== 'ShowPlanXML') return viewer(`Query plan: ${name}`, name, back, el('p', { class: 'error' }, 'This is not a showplan pgvigil can read: no <ShowPlanXML> document.'));
+      return viewer(`Query plan: ${name}`, name, back, ...planView(doc));
     }
-    if (kind === 'grid') return viewer(`Grid: ${name}`, back, ...dataSetView(name, text));
+    if (kind === 'grid') return viewer(`Grid: ${name}`, name, back, ...dataSetView(name, text));
     if (kind === 'statsio') {
       const body = el('div', {}, note('Reading the messages ...'));
       void statsioView(name, text).then(k => body.replaceChildren(...k)).catch(e => body.replaceChildren(el('p', { class: 'error' }, String(e))));
-      return viewer(`STATISTICS IO / TIME: ${name}`, back, body);
+      return viewer(`STATISTICS IO / TIME: ${name}`, name, back, body);
     }
   } catch (e) {
-    return viewer(name, back, el('p', { class: 'error' }, 'Could not read the file: ' + (e instanceof Error ? e.message : String(e))));
+    return viewer(name, name, back, el('p', { class: 'error' }, 'Could not read the file: ' + (e instanceof Error ? e.message : String(e))));
   }
-  return viewer(name, back, el('p', { class: 'error' }, 'Not a file pgvigil opens: a deadlock graph (.xdl), a query plan (.sqlplan), a grid (.json, .csv, either .gz), or STATISTICS IO / TIME messages (.txt, .statistics.json).'));
+  return viewer(name, name, back, el('p', { class: 'error' }, 'Not a file pgvigil opens: a deadlock graph (.xdl), a query plan (.sqlplan), a grid (.json, .csv, either .gz), or STATISTICS IO / TIME messages (.txt, .statistics.json).'));
 }
 
 async function readFile(f: File): Promise<string> {
@@ -315,10 +381,54 @@ function decode(b: Uint8Array): string {
   if (b[0] === 0x3c && b[1] === 0x00) return new TextDecoder('utf-16le').decode(b);
   return new TextDecoder('utf-8').decode(b);
 }
-export async function openFile(f: File, back: HTMLElement | null = null, want?: What) {
-  try { openText(f.name.replace(/\.gz$/i, ''), await readFile(f), back, want); } catch (e) {
-    viewer(f.name, back, el('p', { class: 'error' }, e instanceof Error ? e.message : String(e)));
+// openFile opens a file in the viewer and returns the title its tab shows.
+export async function openFile(f: File, back: HTMLElement | null = null, want?: What): Promise<string> {
+  let dlg: HTMLDialogElement;
+  try { dlg = openText(f.name.replace(/\.gz$/i, ''), await readFile(f), back, want); } catch (e) {
+    dlg = viewer(f.name, f.name, back, el('p', { class: 'error' }, e instanceof Error ? e.message : String(e)));
   }
+  return dlg.getAttribute('aria-label') ?? f.name;
+}
+
+// ---- the Windows app's files ----------------------------------------------------------------------------------
+// app/win_files.go posts each file Explorer or a second start gave it as parts (app/openfiles.go PageScripts); the
+// page asks for the next with the app's bound pgvigilAppFiles and says what it opened with pgvigilAppOpened. Neither
+// promise ever resolves (the app answers by its own script calls), so neither is awaited.
+
+interface AppPart { id: number; name: string; part: number; parts: number; data?: string; error?: string }
+interface AppWindow { pgvigilAppFile?: (p: AppPart) => void; pgvigilAppPing?: () => void; pgvigilAppFiles?: () => unknown; pgvigilAppOpened?: (name: string, title: string) => unknown }
+const appWin = () => window as unknown as AppWindow;
+const appFiles = new Map<number, (Uint8Array | undefined)[]>();
+let appChain: Promise<unknown> = Promise.resolve();
+const MAX_PARTS = Math.ceil(MAX_BYTES / (3 * 1024 * 1024)) + 1;
+
+function unbase64(s: string): Uint8Array {
+  const t = atob(s), b = new Uint8Array(t.length);
+  for (let i = 0; i < t.length; i++) b[i] = t.charCodeAt(i);
+  return b;
+}
+
+// appFile takes one part; a file whose parts are all in opens after the files before it (a tab each, in order)
+function appFile(p: AppPart) {
+  if (!p || typeof p.id !== 'number' || typeof p.name !== 'string' || !(p.parts >= 1 && p.parts <= MAX_PARTS) || !(p.part >= 0 && p.part < p.parts)) return;
+  const told = (title: string) => { void appWin().pgvigilAppOpened?.(p.name, title); void appWin().pgvigilAppFiles?.(); };
+  if (p.error) {
+    const msg = p.error;
+    appChain = appChain.then(() => told(viewer(p.name, p.name, null, el('p', { class: 'error' }, msg)).getAttribute('aria-label') ?? p.name));
+    return;
+  }
+  const got = appFiles.get(p.id) ?? Array.from({ length: p.parts }, (): Uint8Array | undefined => undefined);
+  appFiles.set(p.id, got);
+  if (got.length !== p.parts) return; // a part that disagrees with the first on the count
+  got[p.part] = unbase64(p.data ?? '');
+  for (let i = 0; i < got.length; i++) if (!got[i]) return;
+  appFiles.delete(p.id);
+  const parts = got as Uint8Array[];
+  const all = new Uint8Array(parts.reduce((n, x) => n + x.length, 0));
+  let at = 0;
+  for (const x of parts) { all.set(x, at); at += x.length; }
+  // a file that failed to open asks for the next too: the app sends a file only when the page asks (one at a time)
+  appChain = appChain.then(() => openFile(new File([all], p.name))).then(told, () => { void appWin().pgvigilAppFiles?.(); });
 }
 
 // pick: the browser's file chooser for one kind
@@ -359,7 +469,14 @@ let installed = false;
 export function installFileDrop() {
   if (installed || typeof document === 'undefined') return;
   installed = true;
-  document.head.append(el('style', { id: 'fd-style' }, 'body.fd-over{outline:3px dashed var(--accent);outline-offset:-6px}.fd-viewer .fd-body{max-height:calc(92vh - 7rem);overflow:auto}'));
+  document.head.append(el('style', { id: 'fd-style' }, 'body.fd-over{outline:3px dashed var(--accent);outline-offset:-6px}.fd-viewer .fd-body{max-height:calc(92vh - 9rem);overflow:auto}.fd-viewer:has(.fd-tabs:not([hidden])) .fd-body{max-height:calc(92vh - 11.5rem)}'
+    + '.fd-tabs:not([hidden]){display:flex;flex-wrap:wrap;gap:.2rem;border-bottom:1px solid var(--line);margin:.2rem 0 .5rem}'
+    + '.fd-tab{border:1px solid var(--line);border-bottom:none;background:none;color:var(--muted);padding:.25rem .6rem;border-radius:4px 4px 0 0}'
+    + '.fd-tab[aria-selected=true]{color:var(--fg);font-weight:var(--fw-strong);box-shadow:inset 0 -2px 0 var(--accent)}'));
+  // the Windows app's files (window.pgvigilAppFiles is the app's own: in a browser it is not there, and nothing is asked)
+  appWin().pgvigilAppFile = appFile;
+  appWin().pgvigilAppPing = () => { void appWin().pgvigilAppFiles?.(); };
+  void appWin().pgvigilAppFiles?.();
   const hasFile = (e: DragEvent) => [...(e.dataTransfer?.types ?? [])].includes('Files');
   let depth = 0;
   document.addEventListener('dragenter', e => { if (hasFile(e)) { depth++; document.body.classList.add('fd-over'); } });
@@ -379,7 +496,7 @@ export function installFileDrop() {
     const stats = !/<deadlock[\s>]/.test(head) && !/<ShowPlanXML[\s>]/.test(head) && looksLikeStatistics(head);
     if (!/<deadlock[\s>]/.test(head) && !/<ShowPlanXML[\s>]/.test(head) && !stats) return;
     e.preventDefault();
-    if (t.length > MAX_TEXT) { viewer('pasted text', document.activeElement as HTMLElement | null, el('p', { class: 'error' }, `The pasted text is over ${MAX_TEXT / 1048576} MB: not read.`)); return; }
+    if (t.length > MAX_TEXT) { viewer('pasted text', 'pasted text', document.activeElement as HTMLElement | null, el('p', { class: 'error' }, `The pasted text is over ${MAX_TEXT / 1048576} MB: not read.`)); return; }
     openText(stats ? 'pasted messages' : /<deadlock[\s>]/.test(head) ? 'pasted deadlock graph' : 'pasted query plan', t, document.activeElement as HTMLElement | null, stats ? 'statsio' : undefined);
   });
 }

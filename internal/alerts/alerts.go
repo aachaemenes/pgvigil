@@ -1606,16 +1606,17 @@ const Every = time.Minute
 const maxBackoff = 30 * time.Minute
 
 // logPass logs one pass of Run: its result when something moved, and each part it could not read - on a quiet pass
-// too, where nothing else would say it.
+// too, where nothing else would say it. A failed pass and unjudged rules are Error lines: log_level: error still
+// shows that alerts are not going out.
 func logPass(log *slog.Logger, res Result, err error) {
 	switch {
 	case err != nil:
-		log.Warn("alerts pass failed", "err", err)
+		log.Error("alerts pass failed", "err", err)
 	case res.Sent+res.Failed+res.Cleared+res.Capped+res.Tests > 0:
 		log.Info("alerts pass", "result", res.String())
 	}
 	if res.RulesErr != nil {
-		log.Warn("alerts: the alert rules were not judged in this pass", "err", res.RulesErr)
+		log.Error("alerts: the alert rules were not judged in this pass", "err", res.RulesErr)
 	}
 	if res.TestsErr != nil {
 		log.Warn("alerts: the Send test requests were not read in this pass", "err", res.TestsErr)
@@ -1639,7 +1640,7 @@ func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error
 			pool = p
 			break
 		}
-		log.Warn("alerts: repository not reachable, retrying in 1m", "err", err)
+		log.Error("alerts: repository not reachable, retrying in 1m", "err", err)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -1683,7 +1684,7 @@ func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error
 			b.fails++
 			wait := min(time.Minute<<min(b.fails-1, 5), maxBackoff)
 			b.until = now.Add(wait)
-			log.Warn("alerts: channel failed", "channel", n, "err", e, "next_try", wait)
+			log.Error("alerts: channel failed", "channel", n, "err", e, "next_try", wait)
 		}
 		select {
 		case <-ctx.Done():
