@@ -37,6 +37,10 @@ type Doors struct {
 	// web.MetricsOff. What it opens: server names, engines, platforms, versions, every figure (tags and database names
 	// when metrics.tags / metrics.databases are on), to everyone who reads that Prometheus and its remote_write targets.
 	PrometheusMetrics bool `yaml:"prometheus_metrics"`
+	// DiscoveryAutoAdd lets a cloud discovery source of Admin > Instances add the servers it finds by itself (RELNOTES
+	// L237): each source then has its own switch, off until an admin ticks it. Off by default (the
+	// locked-down default): every found server is a proposal a person approves.
+	DiscoveryAutoAdd bool `yaml:"discovery_auto_add"`
 }
 
 // PageReadsOff is the refusal while the switch is off.

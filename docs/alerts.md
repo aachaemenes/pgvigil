@@ -585,7 +585,7 @@ their anchor go in the same message as it.
 ```yaml
 doors: {slack_actions: true}          # the one switch (Site settings lists it); default false
 slack_apps:
-  - app_id: A0123ABCD                 # the Slack app whose Interactivity Request URL is https://<serve>/api/slack/actions
+  - app_id: A0123ABCD                 # the Slack app whose Interactivity Request URL is https://<serve>/api/slack/actions (under web.base_path: https://<serve>/<base>/api/slack/actions)
     team_id: T0123ABCD                # its workspace (enterprise_id: E0123ABCD on Enterprise Grid)
     signing_secret: env:SLACK_SIGNING_SECRET
     users: {U0123ABCD: alice}         # Slack user id -> pgvigil user: who may click

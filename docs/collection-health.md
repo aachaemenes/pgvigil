@@ -18,12 +18,30 @@ The repository judges each collection of each instance (`pgvigil.collection_heal
 | OK | otherwise |
 
 A partial run counts as a success for the failures in a row and for Last Success, and as a problem in the warning
-rate. A skip is not a run, but a skip after failures ends the failures in a row. A run that could not connect, or
+rate. A skip is not a run, but a skip after failures ends the failures in a row - except a run the connect back-off
+held (below): it did not try, so a collection's failures in a row stand through the outage. A run that could not connect, or
 that connected and failed before pgvigil read the server's version, is a failed run. A collection failing now is
 listed even when the range holds none of its runs, while its last run is within three of its intervals (a day at
 least). An instance that is not active is not listed. The failures in a row are always now's; the rates are over
 the picked range. **Failed % 24hrs** is the rate the Summary judges (24 hours from the next whole hour, or from the
 acknowledgement below if that is later).
+
+The collector backs off a down server: after 3 failed connects of an instance in a row, no collection of it connects
+again for a minute from the last attempt, doubling each further failure up to 15 minutes but never longer than the
+host's span + 2 minutes - the span is the least collection interval of the collector's instances, 1 to 5 minutes, the
+one the 'collector or network' parent's freshness uses - so the failing instances' rows keep that parent standing
+through an outage, an instance slower than its host's fastest one too (a host with a minute collection waits at most 3
+minutes, whatever the failing instance's own interval; a host whose fastest is 5 minutes or slower, at most 7), then
+one probe at a time. A connect already under way that fails while the instance waits is counted on the
+minute's load but neither doubles the wait nor moves it. The held runs are skips, not failures, and end no
+collection's failures in a row; a refused login never counts (the server answered); a changed instance (its
+connection edited on Admin > Instances) tries again at once and keeps its count. The Collector page's Failing now
+panel says *backing off: n connects failed in a row since t; next try about t* (*due now* once that time is past).
+Every run also has a deadline of twice its interval (at least 2 and at most 30 minutes; the first run that tries
+after a start gets 30), never shorter than a SQL Server collection's own timeout plus 30 seconds for its write: a run
+past it is cancelled and counted failed as *timed out after d* - on the Collector errors page too - and the next tick
+starts fresh. A run the deadline cut while it wrote its rows is *timed out*, not *import failed*: the cut is
+pgvigil's own.
 
 ### Acknowledged errors
 

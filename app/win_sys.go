@@ -33,6 +33,7 @@ var (
 	pSetWindowLongPtrW             = user32.NewProc("SetWindowLongPtrW")
 	pCallWindowProcW               = user32.NewProc("CallWindowProcW")
 	pSendMessageW                  = user32.NewProc("SendMessageW")
+	pSendMessageTimeoutW           = user32.NewProc("SendMessageTimeoutW")
 	pCreatePopupMenu               = user32.NewProc("CreatePopupMenu")
 	pAppendMenuW                   = user32.NewProc("AppendMenuW")
 	pTrackPopupMenu                = user32.NewProc("TrackPopupMenu")
@@ -41,6 +42,7 @@ var (
 	pMessageBoxW                   = user32.NewProc("MessageBoxW")
 	pFindWindowW                   = user32.NewProc("FindWindowW")
 	pGetWindowThreadProcessID      = user32.NewProc("GetWindowThreadProcessId")
+	pAllowSetForegroundWindow      = user32.NewProc("AllowSetForegroundWindow")
 	pRegisterWindowMessageW        = user32.NewProc("RegisterWindowMessageW")
 	pSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
 	pCreateIconIndirect            = user32.NewProc("CreateIconIndirect")
@@ -65,6 +67,7 @@ const (
 	wmSetIcon       = 0x0080
 	wmContextMenu   = 0x007B
 	wmCommand       = 0x0111
+	wmCopyData      = 0x004A
 	wmLButtonUp     = 0x0202
 	wmLButtonDblClk = 0x0203
 	wmRButtonUp     = 0x0205
@@ -76,6 +79,9 @@ const (
 	wmQuit      = wmApp + 4 // pgvigil-app -quit
 	wmUpdate    = wmApp + 5 // the update check found a newer release
 	wmServeGone = wmApp + 6 // a serve this app started has exited
+	wmFilesAsk  = wmApp + 7 // the page asks for the waiting files
+	wmFilesRead = wmApp + 8 // a waiting file is read: its parts go to the page
+	wmFilesAdd  = wmApp + 9 // a second start's files, taken in after its WM_COPYDATA has its answer
 
 	ninBalloonUserClick = 0x0405
 

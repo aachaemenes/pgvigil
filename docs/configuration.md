@@ -262,6 +262,20 @@ doors:
   Its Clear is its own control; an emptied fieldset clears nothing.
 - Not in this release: a `gcp:` block on a page instance (its credentials file is a path on the host).
 
+### A cloud discovery source that adds what it finds
+
+A cloud discovery source of Admin > Instances (aws, azure, gcp) may add the servers it finds without a click, through
+the approve a person would make and never past one of its ticks - only on this door, off by default, and the source's
+own switch ([Discovery](discovery.md#adding-what-a-source-finds-by-itself)):
+
+```yaml
+doors:
+  discovery_auto_add: on   # a cloud discovery source may add the servers it finds by itself (its own switch too)
+```
+
+Serve reads the door at its start; the store refuses the switch turned on without it. The servers it adds are read
+with the source's login, as an approve with nothing typed: give the source a least-privilege login first.
+
 ### Community tools and custom reports on a page instance
 
 `pgvigil serve` runs Community tools and custom reports on an instance of `pgvigil.yaml` through its read login. On
@@ -337,6 +351,37 @@ metrics:
 Prometheus text format, read with a signed-in session or `metrics.token` (`file:/path` or `env:NAME`, 32 bytes at
 least); it opens server names, engines, platforms, versions and every figure to whoever reads that Prometheus. Its
 `metrics:` block holds `token`, `cache_seconds`, `databases`, `max_databases`, `include_databases` and `tags`.
+
+
+### From the command line (pgvigil instance)
+
+On serve's host, after `pgvigil install`, the page's add, list and disable run headless:
+
+```
+pgvigil instance add -config <pgvigil.yaml> -name pg7 -engine postgres -dsn-stdin [-platform auto] [-tag prod]... [-no-test]
+pgvigil instance list -config <pgvigil.yaml>
+pgvigil instance disable -config <pgvigil.yaml> -name pg7
+```
+
+`add` takes the page's own path: the connection string on stdin - typed at the prompt (not shown) or piped
+(`echo <string> | ...` in a shell, `'<string>' | pgvigil ...` in PowerShell 7: Windows PowerShell 5.1 pipes ASCII, so a
+password character outside it arrives as `?`) - never a flag. It is read into the page's fields: the sign-ins the page
+takes (an az one stays in `pgvigil.yaml`; on Linux `windows` is Kerberos and is taken), only what the string itself
+names (a password, port or database the shell's `PGPASSWORD`, `PGPORT`, `PGDATABASE` or passfile would add is never
+taken; a `service=` or `PGSERVICE` is refused, and so is a key a page instance does not keep - each named - or a second
+host), every SQL Server option the string names. Before the string is read: the platform word checked against the
+engine's (the file's own words), `-config` against the installed service's configuration (another one is refused),
+the repository dsn resolved (a reference that resolves to nothing is refused with its reason), a name `pgvigil.yaml`
+holds refused. Then the page's connection test (a refusal writes nothing; `-no-test` skips it) - run as the account
+running the command: for a Windows, Kerberos or passfile sign-in the command says that the service's own sign-in was
+not tried - the credential written in `instances/` for the installed service's account (a 0600 file it owns on Linux,
+given to it through the open file; a DPAPI blob in its protected folder on Windows; never the administrator's: serve
+must keep reading it), and the page's repository function with the configuration's repository login, audited as
+`cli:<the account>` (on Linux the account by its uid and, under sudo, the login's own: `cli:root (login alice)`).
+`-tag` splits on white space as the page's field does. `list` shows the file's and the page's instances with each
+one's newest successful collection (`no successful run now` when no collection's last run succeeded: each keeps its
+last run only); a page instance that `pgvigil.yaml` also names is shown as left out, with no age. Where no pgvigil
+service is installed `add` is refused: the service's account owns the page's credentials.
 
 ## SQL Server schema history (mssql_schema)
 
@@ -417,3 +462,89 @@ web:
 
 The collector's own state (a collection failing, the alert sender idle, the repository's autovacuum behind) is a
 finding on the Collector page and the Summary, never a probe's answer.
+
+## The UI under a sub-path, behind a reverse proxy (web: base_path)
+
+`pgvigil serve` can answer under a sub-path - `https://tools.example.org/pgvigil/` - for a reverse proxy that passes
+the path whole:
+
+```yaml
+web:
+  base_path: /pgvigil   # a leading '/', no trailing one; empty (the default) = the root
+```
+
+`pgvigil serve -base-path /pgvigil` says the same and wins over the file. With a base path every route is under it:
+the pages, `/pgvigil/api/...`, the probes (`/pgvigil/livez`, `/pgvigil/readyz`), `/pgvigil/metrics`. `/pgvigil` alone
+is sent to `/pgvigil/` (and a redirect pgvigil writes stays under it); any other path is a 404, and the log names
+the base path once. A base path is ASCII letters, digits, `.`, `_`, `~` and `-` between its slashes. The session
+cookie's path is the base path's, so its header is not sent to the other paths of the host - but a sub-path **shares
+its origin** with every app on that host: any script there (another app's page, or a flaw in it) can call
+`/pgvigil/api/...` with a signed-in user's session and send pgvigil's own request header, and two pgvigil installs
+under two paths of one host share the browser's stored settings. Give pgvigil its own host name unless every app on
+the host is trusted as much as pgvigil. pgvigil takes the prefix from this setting only, never from a header such as
+`X-Forwarded-Prefix` (a header any client can send).
+
+The proxy must pass the path as it came, and a Host header pgvigil accepts: on a loopback listen (`-listen
+127.0.0.1:8080`, the default) serve takes only a loopback Host, which nginx sends by default and Caddy must be told.
+
+nginx:
+
+```nginx
+location /pgvigil/ {
+    proxy_pass http://127.0.0.1:8080;   # no URI part: the path goes through whole
+    proxy_http_version 1.1;
+    proxy_read_timeout 90s;             # the activity page's reads run up to 75 s (nginx's default is 60 s)
+    client_max_body_size 8m;            # an inventory import takes 5 MB, a community gate body 6 MB (nginx's default 1 MB)
+}
+```
+
+nginx sends the upstream's own `Host` (`127.0.0.1:8080`) by default, which a loopback listen takes; a
+`proxy_set_header Host $host;` line, or an `upstream {}` block's name, sends a Host serve refuses (421 unknown host)
+- leave them out, or add that name to what serve accepts.
+
+Caddy:
+
+```
+redir /pgvigil /pgvigil/ 308
+handle /pgvigil/* {
+    reverse_proxy 127.0.0.1:8080 {
+        header_up Host {upstream_hostport}
+    }
+}
+```
+
+`handle`, not `handle_path` (which strips the prefix). A proxy that strips the prefix is not served: pgvigil answers
+404 to every path. Set `alerts_base_url` (the alerts' links) to the address with the prefix,
+`https://tools.example.org/pgvigil` - serve warns once at its start when it does not carry the base path. The
+session cookie is `Secure` when serve's own listener is TLS (`-tls-cert`); behind a proxy that ends TLS, keep serve on
+loopback and let the proxy send `Strict-Transport-Security` (serve's loopback HTTP listener does not). Behind any
+proxy, the sign-in limit counts the proxy's address: five wrong passwords from anyone hold every sign-in for a
+minute (README, the sign-in limit). The Slack door's address is under the base too:
+`https://tools.example.org/pgvigil/api/slack/actions`.
+
+Not proven: Apache httpd and IIS as the proxy; a proxy that rewrites the pages it passes.
+
+## Log verbosity (log_level)
+
+```yaml
+log_level: info        # debug | info (the default) | warn | error
+```
+
+The level of every line the collector (`pgvigil run`), `pgvigil serve` and the other commands write to their log -
+stderr, the journal under systemd, and for the Windows service `logs\pgvigil.log` beside its configuration
+(`%ProgramData%\pgvigil\logs\pgvigil.log` by default). `warn` keeps the warnings and failures only; `debug` adds
+the few lines written for a problem's read. `error` keeps the failures alone, and those include every line that says
+alerts or report mails are not going out: a failed alert pass, alert rules not judged, a channel that failed, the
+repository out of reach for the sender, a loop of `pgvigil run` that stopped.
+
+The environment's `PGVIGIL_LOG_LEVEL` wins over the file: for a command run by hand, and for the service through its
+own environment - on Windows the service's registry `Environment` value
+(`HKLM\SYSTEM\CurrentControlSet\Services\pgvigil`), on Linux `/etc/pgvigil/pgvigil.env` (not a `systemctl edit`
+drop-in: an `Environment=` there makes `pgvigil uninstall -all`'s host check refuse). On a service the variable
+outlives restarts and `install -upgrade`, so when it is set and differs from the file's `log_level`, each start
+writes one warning naming both (a warning: not shown when the variable says `error`). An unknown word in the variable
+is ignored with one warning, on the console and in the Windows service's log alike; an unknown word in the file -
+`warning` too, PostgreSQL's spelling - is refused at load (the collector stops with exit 3, and `pgvigil check`
+names the four words before a restart). The level is read at each start: a change needs the service restarted. The
+Windows service's `service starting` line is written before its configuration is read: only `PGVIGIL_LOG_LEVEL`
+governs that one line.

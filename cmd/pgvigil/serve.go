@@ -50,14 +50,19 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	noLogin := fs.Bool("no-login", false, "serve without the UI login (allowed on a loopback listen only)")
 	open := fs.Bool("open", false, "open the UI in an app-mode browser window (Edge or Chrome, its own window) once it listens; the default browser when neither is found")
 	sessionHours := fs.Int("session-hours", 12, "hours a login stays valid")
+	basePath := fs.String("base-path", "", "serve the UI under this path behind a reverse proxy that passes the path whole (e.g. /pgvigil); default pgvigil.yaml's web.base_path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := config.Load(*path)
+	cfg, err := loadFile(*path)
 	if err != nil {
 		return err
 	}
 	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
+	base, err := serveBasePath(*basePath, cfg)
+	if err != nil {
+		return err
+	}
 	// the Daily checks mail's block (reports.daily_checks): a missing or unknown key stops serve here, by its name
 	dailyChecks, err := reportmail.LoadDailyChecks(*path)
 	if err != nil {
@@ -75,11 +80,15 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		d = config.Resolve(*dsn)
 	}
 	if strings.TrimSpace(d) == "" {
-		src := "repository.dsn " + cfg.Repository.DSNRaw
+		src, why := "repository.dsn "+cfg.Repository.DSNRaw, emptyWhy(cfg.Repository.DSNRaw)
 		if *dsn != "" {
-			src = "-dsn " + *dsn
+			src, why = "-dsn "+*dsn, emptyWhy(*dsn)
 		}
-		return &configError{fmt.Errorf("config %s: the repository dsn (%s) resolves to nothing: fill in the env file or the file it names", *path, src)}
+		tail := ": fill in the env file or the file it names" // a reason given is its own fix
+		if why != "" {
+			tail = ""
+		}
+		return &configError{fmt.Errorf("config %s: the repository dsn (%s) resolves to nothing%s%s", *path, src, why, tail)}
 	}
 	host, _, err := net.SplitHostPort(*listen)
 	if err != nil {
@@ -237,6 +246,12 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if why := srv.StoreReportsOff(ctx); why != "" {
 		log.Warn("custom reports on the store are off", "reason", why)
 	}
+	// the alerts' links: alerts_base_url without the base path lands every link outside the UI (one WARN)
+	if ast, aerr := alerts.LoadFile(*path); aerr == nil {
+		if w := alertsBaseWarning(ast.BaseURL(), base); w != "" {
+			log.Warn(w, "alerts_base_url", ast.BaseURL(), "base_path", base)
+		}
+	}
 	// task 403b K5: the Slack door (doors.slack_actions and slack_apps: in the file), off by default. serve reads only
 	// the door's part of the file and its apps' signing secrets (never the channels, whose tokens are not on serve);
 	// with the switch on, a fault there stops serve with its reason, and the door needs the UI login's users
@@ -249,7 +264,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 			return errors.New("doors.slack_actions needs the UI login (a click writes as the pgvigil user its Slack user maps to): serve without -no-login, or turn the door off")
 		}
 		web.SetSlackDoor(door)
-		log.Info("the Slack door is on", "path", alerts.SlackPath, "apps", strings.Join(door.AppIDs(), ","))
+		log.Info("the Slack door is on", "path", base+alerts.SlackPath, "apps", strings.Join(door.AppIDs(), ","))
 	}
 	pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}, Hypo: map[string]bool{}, DefaultQueryText: cfg.QueryText}
 	for _, in := range cfg.Instances {
@@ -312,7 +327,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	go srv.RunReportMail(ctx)
 
 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
-	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg}
+	hs := &http.Server{Handler: srv.Secure(web.UnderBase(base, srv.Handler(), log)), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg,
+		// net/http's own lines (a TLS handshake error) at Warn on this logger, so log_level governs them
+		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
 	errc := make(chan error, 1)
 	scheme := "http"
 	if useTLS {
@@ -321,9 +338,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	} else {
 		go func() { errc <- hs.Serve(ln) }()
 	}
-	log.Info("pgvigil serve started", "url", fmt.Sprintf("%s://%s/", scheme, ln.Addr()), "login", !*noLogin)
+	log.Info("pgvigil serve started", "url", underBase(fmt.Sprintf("%s://%s/", scheme, ln.Addr()), base), "login", !*noLogin)
 	if *open {
-		openWindow(log, browseURL(scheme, ln.Addr()))
+		openWindow(log, underBase(browseURL(scheme, ln.Addr()), base))
 	}
 	select {
 	case <-ctx.Done():
@@ -355,4 +372,16 @@ func expectedIntervals(cfg *config.Config) web.Expected {
 		e.Instances[in.Name] = instanceIntervals(cfg, in)
 	}
 	return e
+}
+
+// serveBasePath is the sub-path the UI is served under: -base-path when given, else pgvigil.yaml's web.base_path;
+// either held to config.ValidBasePath's words.
+func serveBasePath(flagValue string, cfg *config.Config) (string, error) {
+	if flagValue == "" {
+		return cfg.Web.BasePath, nil
+	}
+	if err := config.ValidBasePath(flagValue); err != nil {
+		return "", fmt.Errorf("-base-path: %w", err)
+	}
+	return flagValue, nil
 }

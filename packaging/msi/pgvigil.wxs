@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  pgvigil's Windows Installer package (L189). Built by pgvigil.wixproj on WixToolset.Sdk 5.0.2 (MS-RL, a build tool
+  only, no fee; WiX v6 starts the Open Source Maintenance Fee - not taken) from the release's own windows/amd64
+  binary: -p:PgvVersion=<x.y.z> -p:PgvBinary=<path to pgvigil.exe>.
+
+  perMachine; the UpgradeCode below is fixed for every version (docs/install.ps1 reads it to refuse an MSI machine);
+  a MajorUpgrade replaces an older version and refuses a downgrade (docs/upgrade.md holds the way back).
+
+  The MSI places ONE file, pgvigil.exe, under %ProgramFiles%\pgvigil, and that folder on the machine PATH (its own
+  entry, removed with it). Everything else - the service pgvigil under its virtual account, the ACLs of
+  %ProgramData%\pgvigil, the configuration file - is made by 'pgvigil install -no-start', run as a deferred custom
+  action from the installed file (install.go stays the one owner of the service: no ServiceInstall table, no
+  custom-action DLL in the Binary table); a separate action then starts the service and its failure is ignored (rn-l189
+  B1: a service that stops at once - a repository behind the new binary, a refused login - must not roll an install
+  back; the operator migrates, then starts it). A removal runs 'pgvigil uninstall' the same way (the configuration
+  and the data under %ProgramData%\pgvigil are kept, as that verb keeps them; this host is retired as a collector);
+  an upgrade stops the service before its old file is replaced and lets the new 'pgvigil install' take it from there.
+  The upgrade removes the old version after the new one's InstallInitialize, so a failed upgrade rolls back to the old
+  one whole. A machine whose service another installer made (install.ps1, 'pgvigil install') is refused at a fresh
+  install (rn-l189 S7): one owner per machine.
+
+  No operator group (a named difference from PerformanceMonitor's MSI): pgvigil's access is one model, roles in its
+  own store; a Windows group would be a second door beside it (docs/msi.md).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="pgvigil"
+           Manufacturer="pgvigil"
+           Version="$(var.PgvVersion)"
+           UpgradeCode="E2AB00E7-0D75-4F83-BE94-E0F5EDE96B6C"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Compressed="yes">
+    <SummaryInformation Description="pgvigil $(var.PgvVersion) - the collector and its service" />
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer pgvigil is installed. This installer does not go back: docs/upgrade.md holds the way back." />
+    <!-- rn-l189 S7: a service pgvigil this package did not make (install.ps1 or 'pgvigil install' made it) refuses a
+         fresh install - the MSI's 'pgvigil install' would re-point it to its own configuration and leave it stopped. An
+         upgrade and a downgrade find this package's own service, so neither is judged here (a downgrade is refused by
+         MajorUpgrade's own words, never by these) -->
+    <Property Id="PGVSERVICEIMAGE">
+      <RegistrySearch Id="PgvServiceImage" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\pgvigil" Name="ImagePath" Type="raw" Bitness="always64" />
+    </Property>
+    <Launch Condition="Installed OR WIX_UPGRADE_DETECTED OR WIX_DOWNGRADE_DETECTED OR NOT PGVSERVICEIMAGE"
+            Message="A pgvigil service is already installed on this machine by install.ps1 or 'pgvigil install': remove it with 'pgvigil uninstall' first, then install the MSI (docs/msi.md). One installer owns a machine." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="pgvigil">
+        <Component Id="PgvigilExe">
+          <File Id="PgvigilExeFile" Name="pgvigil.exe" Source="$(var.PgvBinary)" KeyPath="yes" />
+          <!-- rn-l189 S6: 'pgvigil check' and 'pgvigil migrate' work from any new shell, as after install.ps1 -->
+          <Environment Id="PgvigilPath" Name="PATH" Value="[INSTALLFOLDER]" Part="last" System="yes" Action="set" Permanent="no" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="pgvigil" Level="1">
+      <ComponentRef Id="PgvigilExe" />
+    </Feature>
+
+    <!-- M2 (a): the service, its ACLs and the configuration come from 'pgvigil install' (its Windows defaults are
+         %ProgramFiles%\pgvigil and %ProgramData%\pgvigil); NT AUTHORITY\SYSTEM runs it (deferred, not impersonated).
+         -no-start (rn-l189 B1): its failure is the install's alone; -bin the MSI's own file (N2: an INSTALLFOLDER set
+         on the command line never leaves a second copy the MSI does not own) -->
+    <CustomAction Id="PgvInstall" FileRef="PgvigilExeFile" ExeCommand="install -no-start -bin &quot;[#PgvigilExeFile]&quot;"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <!-- the start (B1): a service without its repository yet, or one that stops at once (the repository behind this
+         binary: migrate, then Start-Service), fails here harmlessly -->
+    <CustomAction Id="PgvStart" Directory="System64Folder" ExeCommand="&quot;[System64Folder]net.exe&quot; start pgvigil"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <!-- a removal: the service goes with 'pgvigil uninstall'; the configuration and data stay -->
+    <CustomAction Id="PgvUninstall" FileRef="PgvigilExeFile" ExeCommand="uninstall"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <!-- an upgrade's removal of the old version: only stop the service, so its file can be replaced (net.exe waits
+         for the stop); the new version's 'pgvigil install' replaces the service -->
+    <CustomAction Id="PgvStop" Directory="System64Folder" ExeCommand="&quot;[System64Folder]net.exe&quot; stop pgvigil"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="PgvStop" After="InstallInitialize" Condition="UPGRADINGPRODUCTCODE" />
+      <Custom Action="PgvUninstall" After="PgvStop" Condition="(REMOVE=&quot;ALL&quot;) AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="PgvInstall" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="PgvStart" After="PgvInstall" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

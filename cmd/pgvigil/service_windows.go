@@ -111,7 +111,32 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 	}
 	defer func() { _ = m.Disconnect() }()
 	existing, err := m.OpenService(serviceName)
+	runsAs := ""
 	if err == nil {
+		if c, cerr := existing.Config(); cerr == nil {
+			runsAs = c.ServiceStartName
+		}
+	} else {
+		existing = nil
+	}
+	// 'Log on as a service' for every account but the virtual one (RELNOTES L150), first - before the binary, the
+	// configuration or the service changes: CreateService grants no right. A refused grant ends the install here, but
+	// where the service already runs as this very account (it keeps the rights it holds): a new account without the
+	// right would replace a working one and fail every start (grantFailureStops)
+	if needsLogonRight(o.User) {
+		switch err := grantServiceLogon(o.User); {
+		case err == nil:
+			fmt.Println(logonRightGranted(o.User))
+		case !grantFailureStops(existing != nil, runsAs, o.User):
+			log.Warn("the right 'Log on as a service' was not granted; the service keeps the rights its account holds", "account", o.User, "err", err)
+		default:
+			if existing != nil {
+				_ = existing.Close()
+			}
+			return false, "", fmt.Errorf("the right 'Log on as a service' for %s: %w (nothing was changed: grant it in secpol.msc, or install as the virtual account)", o.User, err)
+		}
+	}
+	if existing != nil {
 		// an upgrade: the running binary cannot be replaced while the service holds it
 		if err := stopIfRunning(log, existing); err != nil {
 			_ = existing.Close()
@@ -129,7 +154,7 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return false, "", err
 	}
-	for _, f := range []struct{ path, content string }{{o.Config, configTemplate("file:" + dsnFile)}, {dsnFile, ""}} {
+	for _, f := range []struct{ path, content string }{{o.Config, templateWithGMSA(configTemplate("file:"+dsnFile), o.User)}, {dsnFile, ""}} {
 		wrote, err := writeIfAbsent(f.path, f.content, 0o600)
 		if err != nil {
 			return false, "", err
@@ -140,11 +165,18 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 			log.Info("kept", "path", f.path)
 		}
 	}
+	// a kept configuration is never edited: a gMSA with no gmsa: line there is told the line to add (RELNOTES L131)
+	if b, err := os.ReadFile(o.Config); err == nil {
+		if line := gmsaLineToAdd(string(b), o.User); line != "" {
+			fmt.Println(line)
+		}
+	}
 	cfg := mgr.Config{
 		DisplayName:      "pgvigil collector",
 		Description:      "PostgreSQL monitoring collector: polls the instances named in its configuration and writes to the pgvigil repository.",
 		StartType:        mgr.StartAutomatic,
 		ServiceStartName: o.User,
+		Password:         o.Password, // -password-stdin's, else '' = NULL: a virtual account or a gMSA (CreateServiceW)
 	}
 	var s *mgr.Service
 	if existing != nil {
@@ -156,6 +188,7 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 		}
 		c.BinaryPathName = windows.EscapeArg(o.Bin) + " run -config " + windows.EscapeArg(o.Config)
 		c.DisplayName, c.Description, c.StartType, c.ServiceStartName = cfg.DisplayName, cfg.Description, cfg.StartType, cfg.ServiceStartName
+		c.Password = o.Password // '' = NULL: ChangeServiceConfigW keeps the stored password (an upgrade)
 		if err := s.UpdateConfig(c); err != nil {
 			_ = s.Close()
 			return false, "", fmt.Errorf("update service: %w", err)
@@ -190,11 +223,19 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 			log.Warn("icacls failed; set the permission by hand", "args", strings.Join(args, " "), "err", err, "out", strings.TrimSpace(string(out)))
 		}
 	}
-	icacls(dataDir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", o.User+":(OI)(CI)R")
-	icacls(filepath.Dir(o.Bin), "/grant", o.User+":(OI)(CI)RX")
+	// the account by its SID (*S-1-...), read now the service exists (a virtual account resolves only then): icacls
+	// reads neither '.\user' nor a localised name the way the service manager does
+	who := o.User
+	if sid, _, err := config.LookupAccount(o.User); err == nil {
+		who = "*" + sid.String()
+	} else {
+		log.Warn("the service account's SID was not read; icacls is given its name", "account", o.User, "err", err)
+	}
+	icacls(dataDir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", who+":(OI)(CI)R")
+	icacls(filepath.Dir(o.Bin), "/grant", who+":(OI)(CI)RX")
 	// the service reads its folder and writes only under logs\ (so a deleted log is made again, and the
 	// config and repo.dsn stay out of its reach)
-	icacls(logDir, "/grant", o.User+":(OI)(CI)M")
+	icacls(logDir, "/grant", who+":(OI)(CI)M")
 	log.Info("permissions set", "data", dataDir, "readers", "SYSTEM, Administrators, "+o.User, "writable by the service", logDir)
 	ready, why := configReady(o.Config, "")
 	if o.NoStart && ready {
@@ -385,9 +426,12 @@ func maybeRunAsService(args []string) (bool, int) {
 		defer func() { _ = f.Close() }()
 		w = f
 	}
-	log := slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	bad := applyLogLevel("") // PGVIGIL_LOG_LEVEL in the service's environment; the configuration's log_level at its load
+	log := slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: logLevel}))
+	slog.SetDefault(log)        // slog's default writes to the service's log file too, at its level
 	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged
 	log.Info("service starting", "version", version)
+	warnBadLevel(log, bad) // an unknown word in the service's environment said in its log, as the console says it
 	if err := svc.Run(serviceName, &pgvigilService{args: args[1:], log: log}); err != nil {
 		log.Error("service run failed", "err", err)
 		return true, 1
@@ -931,7 +975,14 @@ func windowsItems(inst installOptions, found bool) []removal {
 			_ = m.Disconnect()
 		}
 	}
-	items = append(items, removal{what: "the service " + serviceName + " (its virtual account " + serviceAccount + " ends with it)", present: found, kept: pending, remove: func() error {
+	runsAs := "(its virtual account " + serviceAccount + " ends with it)"
+	if needsLogonRight(inst.User) {
+		runsAs = "(it runs as " + inst.User + ", an account the install did not make: it stays)"
+	}
+	if found && needsLogonRight(inst.User) {
+		items = append(items, removal{what: "the 'Log on as a service' right of " + inst.User, present: true, kept: logonRightKept(inst.User)})
+	}
+	items = append(items, removal{what: "the service " + serviceName + " " + runsAs, present: found, kept: pending, remove: func() error {
 		m, err := connectSCM()
 		if err != nil {
 			return err
@@ -988,4 +1039,25 @@ func windowsItems(inst installOptions, found bool) []removal {
 		items = append(items, removal{what: "the dump folder " + d, present: true, kept: "the repository's dumps: yours to keep or delete"})
 	}
 	return items
+}
+
+// installedAccount is the account the installed service runs as (found false: no service).
+func installedAccount() (string, bool) {
+	inst, found, err := installedServiceConfig()
+	if err != nil || !found {
+		return "", false
+	}
+	return inst.User, true
+}
+
+// unitAccount: Windows names its service's account through installedAccount.
+func unitAccount() string { return "" }
+
+// installedConfigPath is the configuration the installed service runs with (found false: no service).
+func installedConfigPath() (string, bool) {
+	inst, found, err := installedServiceConfig()
+	if err != nil || !found || inst.Config == "" {
+		return "", false
+	}
+	return inst.Config, true
 }

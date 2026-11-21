@@ -1,7 +1,10 @@
 package web
 
 import (
+	"fmt"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
@@ -196,7 +199,10 @@ SELECT i.instance_id, i.name AS instance, i.engine,
 // sqlCollectorStreaks: the collections failing now ($1 the instance, 0 = all) - per instance and collection the
 // streak that speaks (collector_streaks_now: the lowest of the hosts still reading it, as the findings)
 const sqlCollectorStreaks = `
-SELECT s.instance_id, i.name AS instance, s.collection, s.fail_streak, s.failing_since, s.last_run_at, s.last_error
+SELECT s.instance_id, i.name AS instance, s.collection, s.fail_streak, s.failing_since, s.last_run_at, s.last_error,
+       -- the host's span (0121's collector_span: its least collection interval, 1 to 5 minutes), the back-off's cap
+       -- (rn-l214 B-1 as ruled 21:55), for the connect streak's backing-off line alone
+       CASE WHEN s.collection = '(connect)' THEN extract(epoch FROM pgvigil.collector_span(s.host))::int END AS every_s
   FROM pgvigil.collector_streaks_now s
   JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
  WHERE s.fail_streak > 0 AND ($1::int = 0 OR s.instance_id = $1)
@@ -278,5 +284,57 @@ func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
 			part{"connections", sqlCollectorConns, nil},
 			part{"purges", sqlCollectorPurges, nil})
 	}
-	s.multiPart(w, r, parts)
+	s.multiPartPost(w, r, parts, map[string]func(*table){"streaks": func(t *table) { backingOff(t, s.log) }})
+}
+
+// backingOff (L214, B2): the streaks table gains two columns - for an instance's own (connect) streak of 3 or more,
+// backing_off 'backing off: <n> connects failed in a row' and backoff_next, the next try from the same rule the loop's
+// gate uses (collect.BackoffWindow over the stored streak and the host's span, every_s); nil on
+// every other row. No time is formatted here: the page formats failing_since and backoff_next as its other times
+// and says 'due now' once the next try is past (rn-l214 N-2: a stopped collector's row). A table without one of the
+// columns it reads gains neither column and the reason is logged (S-5: never a silent page).
+func backingOff(t *table, log *slog.Logger) {
+	col := map[string]int{}
+	for i, c := range t.Columns {
+		col[c] = i
+	}
+	idx := [4]int{}
+	for k, name := range []string{"collection", "fail_streak", "last_run_at", "every_s"} {
+		i, ok := col[name]
+		if !ok {
+			if log != nil {
+				log.Warn("the Collector page's streaks have no column "+name+": no backing-off line", "columns", t.Columns)
+			}
+			return
+		}
+		idx[k] = i
+	}
+	ci, fi, li, ei := idx[0], idx[1], idx[2], idx[3]
+	t.Columns = append(t.Columns, "backing_off", "backoff_next")
+	for i, row := range t.Rows {
+		var words, next any
+		last, okLast := row[li].(time.Time)
+		if row[ci] == "(connect)" && okLast {
+			fails := asInt(row[fi])
+			if at, on := collect.BackoffWindow(fails, last, time.Duration(asInt(row[ei]))*time.Second); on {
+				words, next = fmt.Sprintf("backing off: %d connects failed in a row", fails), at
+			}
+		}
+		row = append(row, words, next)
+		t.Rows[i] = row
+	}
+}
+
+// asInt: a query's integer however the driver typed it; 0 for NULL (every_s on a row without an interval known;
+// fail_streak is NOT NULL, 0121).
+func asInt(v any) int {
+	switch n := v.(type) {
+	case int64:
+		return int(n)
+	case int32:
+		return int(n)
+	case int:
+		return n
+	}
+	return 0
 }

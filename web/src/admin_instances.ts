@@ -35,6 +35,7 @@ interface AdminData {
   // B24p: whether this install uses page instances' cloud blocks (doors.page_cloud_blocks), its words when off, and
   // each row whose block the collector will not use, with why
   cloud_blocks?: { on: boolean; off_words: string; notes: Record<string, string> };
+  auto_add_door?: { on: boolean; off_words: string };   // L237: doors.discovery_auto_add in pgvigil.yaml
   checks?: Table | null; // ST1 (Check all): admin_checks.ts
   can?: Can | null;   // what the session's role may do (B24f): every write of this page needs admin
 }
@@ -111,6 +112,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
   const settings = instanceSettings({ send, say, draw: () => draw(), lock: c => lock(c), why });
 
   let cloudNotes: Record<string, string> = {}; // B24p: why a row's cloud block is not used (the latest draw's)
+  let autoDoor = { on: false, off_words: '' };   // L237: whether a cloud source may add what it finds by itself
   let openedFromLink = '';
   async function draw(): Promise<void> {
     editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
@@ -129,6 +131,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
     const page = pageAll.filter(inFolder), file = fileAll.filter(inFolder), sources = rowsOf(d.sources), props = rowsOf(d.proposals), audit = rowsOf(d.audit);
     whyNot = d.writable ? '' : String(d.why_not ?? '');
     cloudNotes = d.cloud_blocks?.notes ?? {};
+    autoDoor = d.auto_add_door ?? { on: false, off_words: '' };
     checks.set(d);
     settings.set(d);
     root.replaceChildren(
@@ -212,7 +215,9 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       // page doors (none on an install whose doors.page_instance_reads is off)
       const dw = r.body.doors ? String(r.body.doors) : '';
       const doors = dw ? ` ${dw.charAt(0).toUpperCase()}${dw.slice(1)}.` : '';
-      say(done + doors + (r.body.sync_error ? ` The first read failed: ${String(r.body.sync_error)}` : ''));
+      // a cloud source that adds what it finds says so (L237: the step runs after the read, detached)
+      const auto = typeof r.body.auto === 'string' ? ` ${r.body.auto.charAt(0).toUpperCase()}${r.body.auto.slice(1)}.` : '';
+      say(done + doors + auto + (r.body.sync_error ? ` The first read failed: ${String(r.body.sync_error)}` : ''));
       return true;
     } catch (e) { for (const b of own()) b.disabled = false; say(`Not done: ${(e as Error).message}`, true); return false; }
   }
@@ -375,6 +380,8 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'regions', label: 'regions read', wide: true, fmt: (v, r) => r.kind !== 'aws' ? '' : v ? `${String(v)}${r.regions_read_at ? ` (swept ${fmtTime(r.regions_read_at)})` : ''}` : 'swept at the next read' },
     { key: 'tag_keys', label: 'cloud tags taken', wide: true, fmt: (v, r) => ['aws', 'azure', 'gcp'].includes(String(r.kind))
       ? `${v ? String(v) : 'none'}${r.seen_tag_keys ? ` (seen: ${String(r.seen_tag_keys)})` : ''}` : '' },
+    { key: 'auto_add', label: 'adds what it finds', fmt: (v, r) => !['aws', 'azure', 'gcp'].includes(String(r.kind)) ? '' : !v ? 'no (a person approves)'
+      : autoDoor.on ? badge('by itself', 'info') : badge(`on, but not by itself on this install (${autoDoor.off_words})`, 'warn') },
     { key: 'reading', label: 'now', fmt: v => v ? badge('a read is running', 'info') : '' },
     { key: 'actions', fmt: (_v, r) => {
       const n = String(r.name), cloud = ['aws', 'azure', 'gcp'].includes(String(r.kind));
@@ -391,12 +398,21 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
         edit.addEventListener('click', () => {
           const regions = input('regions', { value: String(r.regions ?? ''), size: '30', placeholder: 'us-east-2 us-west-2' });
           const keys = input('tag_keys', { value: String(r.tag_keys ?? ''), size: '30', placeholder: String(r.seen_tag_keys ?? 'env team') });
-          const save = el('button', { type: 'button', 'aria-label': `Save ${n}'s ${r.kind === 'aws' ? 'regions and ' : ''}cloud tags` }, 'Save');
+          // L237: the source's own switch, turned on only with pgvigil.yaml's door open (the store refuses it otherwise);
+          // one that is on can always be turned off. The door's words sit beside the label, named once by
+          // aria-describedby.
+          const shut = !autoDoor.on && !r.auto_add;
+          const auto = el('input', { type: 'checkbox', ...(autoDoor.on ? {} : { 'aria-describedby': `admin-auto-off-${n}` }), ...(shut ? { disabled: '' } : {}) }) as HTMLInputElement;
+          auto.checked = Boolean(r.auto_add);
+          const autoField = el('span', {}, el('label', {}, auto, ' Add the servers this source finds by itself'),
+            autoDoor.on ? '' : el('span', { id: `admin-auto-off-${n}`, class: 'meta' }, ` (${autoDoor.off_words})`));
+          const save = el('button', { type: 'button', 'aria-label': `Save ${n}'s ${r.kind === 'aws' ? 'regions, ' : ''}cloud tags and its switch to add what it finds` }, 'Save');
           const cancel = el('button', { type: 'button', class: 'link', 'aria-label': `Cancel the edit of ${n}` }, 'Cancel');
-          const box = el('span', { class: 'actions' }, r.kind === 'aws' ? field('Regions', regions) : '', field('Cloud tag keys taken in', keys), ' ', save, ' ', cancel);
+          const box = el('span', { class: 'actions' }, r.kind === 'aws' ? field('Regions', regions) : '', field('Cloud tag keys taken in', keys), ' ', autoField, ' ', save, ' ', cancel);
           save.addEventListener('click', () => {
             const data: Record<string, unknown> = { op: 'edit', name: n, tag_keys: keys.value.trim() };
             if (r.kind === 'aws') data.regions = regions.value.trim();
+            if (auto.checked !== Boolean(r.auto_add)) data.auto_add = auto.checked;   // the switch sent only when it changes
             void act('admin/sources', data, `${n}: kept; the next read applies it.`);
           });
           cancel.addEventListener('click', () => { void draw(); });
@@ -485,6 +501,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       const parts: (HTMLElement | string)[] = [];
       if (r.entra_only) parts.push(badge(String(v ?? 'Entra only'), 'warn'));
       if (r.serverless) parts.push(badge(String(r.serverless), r.auto_pause ? 'warn' : 'ok'));   // the auto-pause check judged it: OK without one
+      if (r.auto_note && r.state === 'proposed' && !r.gone && autoDoor.on) parts.push(el('span', { class: 'meta' }, `not added by itself: ${String(r.auto_note)}`));   // L237
       return parts.length ? el('span', {}, ...parts.flatMap((x, i) => i ? [' ', x] : [x])) : '';
     } },
     { key: 'state', fmt: (v, r) => r.gone ? badge('gone from the source', 'warn') : String(v ?? ''), cls: (v, r) => r.gone || v == null || v === '' ? '' : 'status ok' },

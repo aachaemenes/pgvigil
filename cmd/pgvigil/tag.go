@@ -41,11 +41,15 @@ func runTag(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Load(*path)
+	cfg, err := loadFile(*path)
 	if err != nil {
 		return err
 	}
-	conn, err := pgx.Connect(ctx, cfg.Repository.DSN())
+	repoDSN, err := repoDSNOf(*path, cfg)
+	if err != nil {
+		return err
+	}
+	conn, err := pgx.Connect(ctx, repoDSN)
 	if err != nil {
 		return fmt.Errorf("repository: %w", err)
 	}

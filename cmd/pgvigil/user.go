@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/aachaemenes/pgvigil/internal/auth"
-	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/repo"
 	"golang.org/x/term"
 )
@@ -32,7 +31,12 @@ func runUser(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Load(path)
+	cfg, err := loadFile(path)
+	if err != nil {
+		return err
+	}
+	// a repository dsn that resolves to nothing is refused before the password is asked
+	repoDSN, err := repoDSNOf(path, cfg)
 	if err != nil {
 		return err
 	}
@@ -47,7 +51,7 @@ func runUser(ctx context.Context, log *slog.Logger, args []string) error {
 			return err
 		}
 	}
-	r, err := repo.Open(ctx, cfg.Repository.DSN())
+	r, err := repo.Open(ctx, repoDSN)
 	if err != nil {
 		return err
 	}

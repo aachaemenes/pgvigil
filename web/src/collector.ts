@@ -30,6 +30,14 @@ function probeWords(r: Row): string {
   return `not answering since ${fmtTime(r.probe_last_answered)}`;
 }
 
+// an instance backing off in words (L214; rn-l214 N-2): the server's count, the streak's start and the next try in the
+// page's own time format; a next try already past says 'due now' (a stopped collector's row keeps its last window)
+function backoffLine(r: Row, now = Date.now()): string {
+  const next = Date.parse(String(r.backoff_next ?? ''));
+  const when = Number.isNaN(next) ? '' : next <= now ? '; next try due now' : `; next try about ${fmtTime(r.backoff_next)}`;
+  return `${r.instance}: ${r.backing_off}${r.failing_since == null ? '' : ` since ${fmtTime(r.failing_since)}`}${when}`;
+}
+
 type Parts = Record<string, Table | null>;
 
 const stateWord: Record<string, string> = { up: 'Up', stopped: 'Stopped', ended: 'Ended', 'not seen': 'Not seen', retired: 'Retired' };
@@ -156,6 +164,10 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       + 'Newest read: now against the newest row stored by the collection on any instance; the oldest instance\'s newest read is the instance furthest behind.'));
 
   const failPanel = panel('Failing now', 'failed runs in a row, per instance and collection',
+    // the back-off (L214): an instance whose own connects fail is held by the loop's rule; the words and the next try
+    // come from the server (backing_off, backoff_next), the same Go rule the loop reads; the times are formatted here
+    // as the table's, and a next try already past (a stopped collector's row) says so (rn-l214 N-2)
+    ...streaks.filter(r => r.backing_off).map(r => el('p', { class: 'state' }, backoffLine(r))),
     streaks.length ? grid(streaks, [
       { key: 'instance', fmt: (_v, r) => instLink(ctx, r) }, { key: 'collection' },
       { key: 'fail_streak', label: 'failed in a row', num: true, fmt: fmtNum },

@@ -8,11 +8,17 @@
 #   $env:PGVIGIL_VERSION = 'v0.2.0'      a given tag (default: the latest release)
 #   $env:PGVIGIL_BASE_URL = '<url>'      the folder that holds <version>/<asset> (default: the GitHub release downloads)
 #   $env:PGVIGIL_NO_SERVICE = '1'        download and verify only; pgvigil.exe lands in the current folder
+#   $env:PGVIGIL_SERVICE_ACCOUNT = '<a>' the service's account, as -ServiceAccount below (the online form takes no parameters)
 #
 # Offline (no network: a local folder, a mounted USB drive or a UNC share holding the extracted offline bundle,
 # pgvigil-offline-<version>-windows-amd64; docs/airgap.md), from an elevated PowerShell:
 #   & <folder>\install.ps1 -From <folder> [-Fips | -Plain] [-TrustRoot <dir>] [-App] [-UpdateCheck]
 #                           [-OwnerDsnFile <path>] [-Dump <file> | -NoDump] [-PgDump <path>]
+#                           [-ServiceAccount <DOMAIN\name$ | DOMAIN\user | .\user>] [-Help]
+# -ServiceAccount (a fresh install; an upgrade keeps the installed account): the service runs as its virtual account
+# NT SERVICE\pgvigil by default, or as a group Managed Service Account DOMAIN\name$ (no password anywhere: preferred), or
+# as a named account, whose password is asked here (Read-Host, not shown) and handed to 'pgvigil install -password-stdin'
+# on its standard input - never a parameter. The install grants the account 'Log on as a service'.
 # The binary and SHA256SUMS are copied into a new folder for SYSTEM and Administrators only, the copies verified and
 # only the copies run (a share or a drive can change between a check and a use). A fresh install runs
 # 'pgvigil install' and puts the folder on the machine PATH; where the service pgvigil exists it is an upgrade,
@@ -33,9 +39,23 @@ param(
     [string]$OwnerDsnFile,
     [string]$Dump,
     [switch]$NoDump,
-    [string]$PgDump
+    [string]$PgDump,
+    [string]$ServiceAccount,
+    [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
+if ($Help) {
+    Write-Host @'
+pgvigil installer for Windows (elevated). Online: irm https://pgvigil.com/install.ps1 | iex
+  $env:PGVIGIL_VERSION, $env:PGVIGIL_BASE_URL, $env:PGVIGIL_NO_SERVICE = '1', $env:PGVIGIL_SERVICE_ACCOUNT
+Offline: & <folder>\install.ps1 -From <folder> [-Fips | -Plain] [-TrustRoot <dir>] [-App] [-UpdateCheck]
+           [-OwnerDsnFile <path>] [-Dump <file> | -NoDump] [-PgDump <path>]
+           [-ServiceAccount <DOMAIN\name$ | DOMAIN\user | .\user>]
+-ServiceAccount: the virtual account NT SERVICE\pgvigil by default; a gMSA DOMAIN\name$ needs no password and is
+preferred; a named account's password is asked (not shown) and passed on stdin. A fresh install only.
+'@
+    return
+}
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 function Add-MachinePath([string]$dir) {
@@ -46,15 +66,126 @@ function Add-MachinePath([string]$dir) {
     }
 }
 
+# A machine whose pgvigil came from the MSI (docs/msi.md) is upgraded and removed with msiexec only: two installers
+# over one service would each undo the other's files. The MSI's UpgradeCode is fixed for every version; Windows
+# Installer keeps it under Installer\UpgradeCodes in its packed form (each of the first three groups reversed, then
+# every pair of the rest swapped): 7E00BA2E57D038F4EB490E5FDE9EB6C6 (msi_words_test.go computes it from the wxs).
+function Test-MsiInstall {
+    $upgradeCode = 'E2AB00E7-0D75-4F83-BE94-E0F5EDE96B6C'
+    $hex = $upgradeCode.Replace('-', '')
+    $rev = { param([string]$part) $chars = $part.ToCharArray(); [array]::Reverse($chars); return (-join $chars) }
+    $packed = (& $rev $hex.Substring(0, 8)) + (& $rev $hex.Substring(8, 4)) + (& $rev $hex.Substring(12, 4))
+    foreach ($pair in 0..7) { $packed += (& $rev $hex.Substring(16 + 2 * $pair, 2)) }
+    foreach ($root in 'HKLM:\SOFTWARE\Classes\Installer\UpgradeCodes', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UpgradeCodes') {
+        if (Test-Path -LiteralPath (Join-Path $root $packed)) { return $true }
+    }
+    return $false
+}
+# rn-l189 N9: only when a service install would follow - $env:PGVIGIL_NO_SERVICE = '1' (download and verify only) is
+# the way to fetch the new binary and migrate before an MSI upgrade (docs/msi.md)
+if ((Test-MsiInstall) -and $env:PGVIGIL_NO_SERVICE -ne '1') {
+    throw 'pgvigil install: this machine''s pgvigil came from the MSI (its UpgradeCode is installed). Upgrade it with msiexec /i pgvigil-<version>-x64.msi and remove it with msiexec /x - never with this script (docs/msi.md)'
+}
+
 if (-not $From -and ($Fips -or $Plain -or $TrustRoot -or $App -or $UpdateCheck -or $OwnerDsnFile -or $Dump -or $NoDump -or $PgDump)) {
     throw 'pgvigil install: -Fips, -Plain, -TrustRoot, -App, -UpdateCheck and the upgrade switches go with -From <folder>'
 }
-# a native command's stderr under 'Stop' in Windows PowerShell 5.1 throws when it is redirected: run such a command with
-# 'Continue' and read its exit code instead
-function Invoke-Native([scriptblock]$cmd) {
+# a native command's stderr under 'Stop' in Windows PowerShell 5.1 throws when it is redirected - in ISE, in a remoting
+# session, under '2>&1 | Tee-Object' - even on success (pgvigil logs its INFO lines to stderr): run every native command
+# through this, with 'Continue', and judge it by its exit code. -Stream (rn-l189 S3) shows each line as it comes - the
+# install and the upgrade (a dump and a migrate with the service stopped): an interrupt keeps what was said, the
+# upgrade's own way-back line among it; the lines are still returned in Out
+function Invoke-Native([scriptblock]$cmd, [switch]$Stream) {
     $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { $out = & $cmd 2>&1 | ForEach-Object { "$_" }; return @{ Code = $LASTEXITCODE; Out = ($out -join "`n") } } finally { $ErrorActionPreference = $eap }
+    try {
+        $out = & $cmd 2>&1 | ForEach-Object { $line = "$_"; if ($Stream) { Write-Host $line }; $line }
+        return @{ Code = $LASTEXITCODE; Out = ($out -join "`n") }
+    } finally { $ErrorActionPreference = $eap }
 }
+# one argument as a Windows program's command line takes it (CommandLineToArgvW's rules): quoted when it holds white
+# space or a quote, a quote escaped, the backslashes before a quote or the closing quote doubled
+function ConvertTo-NativeArgument([string]$a) {
+    if ($a -ne '' -and $a -notmatch '[\s"]') { return $a }
+    $b = [regex]::Replace($a, '(\\*)"', { param($m) $m.Groups[1].Value + $m.Groups[1].Value + '\"' })
+    $b = [regex]::Replace($b, '(\\+)$', { param($m) $m.Groups[1].Value + $m.Groups[1].Value })
+    return '"' + $b + '"'
+}
+# a secret handed to a native command's standard input as BYTES, never through PowerShell's pipe: Windows PowerShell
+# 5.1 encodes a pipe to a native command with $OutputEncoding (US-ASCII unless set, each non-ASCII character a '?'),
+# and a value set in the calling function did not reach the pipe inside the scriptblock Invoke-Native runs (a
+# 17-character password holding a 2-byte character reached the reader as 17 bytes). .NET Framework's ProcessStartInfo
+# has no StandardInputEncoding (only .NET 5 and later): Process.Start wraps stdin in a writer of Console.InputEncoding,
+# which under a UTF-8 console code page (chcp 65001, or Windows' 'Use Unicode UTF-8' setting) puts a BOM (EF BB BF)
+# before the first bytes - pgvigil's -password-stdin drops a leading BOM (cmd/pgvigil/svcaccount.go,
+# readServicePassword). The bytes are written to the stream under StandardInput, flushed, and stdin is closed. stdout
+# and stderr are decoded as UTF-8 (what pgvigil writes to a pipe) and read a line at a time as they come - one pending
+# read on each, never two reads to the end one after the other, so a child that fills one pipe while the other is read
+# cannot hang it - each line shown as Invoke-Native -Stream shows it and returned in Out; Code is the child's exit
+# code. Ctrl+C waits for the child (its own hidden console; the read loop holds PowerShell's stop until it ends - an
+# install takes seconds). The secret is never on the command line, in the environment, in a file or in a line shown.
+function Invoke-NativeStdin([string]$exePath, [string[]]$arguments, [byte[]]$inBytes) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exePath
+    $psi.Arguments = (@($arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $psi.StandardErrorEncoding = New-Object System.Text.UTF8Encoding $false
+    $psi.CreateNoWindow = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    try {
+        $lines = New-Object System.Collections.Generic.List[string]
+        try {
+            $stream = $p.StandardInput.BaseStream
+            $stream.Write($inBytes, 0, $inBytes.Length)
+            $stream.Flush()
+        } catch [System.IO.IOException] {
+            # the child ended before it read its stdin: its own words below say why
+            $lines.Add('stdin not written: the program ended before reading it')
+            Write-Host $lines[0]
+        } finally {
+            try { $p.StandardInput.Close() } catch [System.IO.IOException] { }
+        }
+        $readers = @($p.StandardOutput, $p.StandardError)
+        $pending = @($readers[0].ReadLineAsync(), $readers[1].ReadLineAsync())
+        while ($null -ne $pending[0] -or $null -ne $pending[1]) {
+            $live = [System.Threading.Tasks.Task[]]@($pending | Where-Object { $null -ne $_ })
+            $done = $live[[System.Threading.Tasks.Task]::WaitAny($live)]
+            $k = if ([object]::ReferenceEquals($done, $pending[0])) { 0 } else { 1 }
+            $line = $done.Result
+            if ($null -eq $line) { $pending[$k] = $null; continue }
+            Write-Host $line
+            $lines.Add($line)
+            $pending[$k] = $readers[$k].ReadLineAsync()
+        }
+        $p.WaitForExit()
+        return @{ Code = $p.ExitCode; Out = ($lines -join "`n") }
+    } finally { $p.Dispose() }
+}
+# 'pgvigil install' as the service's account (RELNOTES L131): none named = the virtual account; a gMSA (DOMAIN\name$)
+# or NT SERVICE\<name> without a password (pgvigil takes NT SERVICE\pgvigil alone); any other account's password read
+# here, not shown, and written to -password-stdin as its UTF-8 bytes (no BOM: a BOM would be read as the password's
+# first bytes) and CRLF, the line end -password-stdin strips - never a parameter, never written to a file; the byte
+# copy is zeroed and the plain copy's reference dropped after the call (the string stays in memory until collected)
+function Invoke-PgvigilInstall([string]$exePath, [string]$account) {
+    if (-not $account) { return Invoke-Native { & $exePath install } -Stream }
+    if ($account -match '\$$' -or $account -like 'NT SERVICE\*') { return Invoke-Native { & $exePath install -user $account } -Stream }
+    $sec = Read-Host -AsSecureString "the password of $account (not shown)"
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    $bytes = $null
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        $bytes = (New-Object System.Text.UTF8Encoding $false).GetBytes($plain + "`r`n")
+        return Invoke-NativeStdin $exePath @('install', '-user', $account, '-password-stdin') $bytes
+    } finally {
+        if ($null -ne $bytes) { [Array]::Clear($bytes, 0, $bytes.Length) }
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        $plain = $null
+    }
+}
+$account = if ($ServiceAccount) { $ServiceAccount } else { $env:PGVIGIL_SERVICE_ACCOUNT }
 if ($From) {
     if ($Fips -and $Plain) { throw 'pgvigil install: -Fips and -Plain name opposite builds' }
     if ($UpdateCheck -and -not $App) { throw 'pgvigil install: -UpdateCheck goes with -App (it is the app''s setting)' }
@@ -101,10 +232,10 @@ if ($From) {
             Copy-Item -LiteralPath $bundle -Destination (Join-Path $work 'SHA256SUMS.bundle')
             $env:SIGSTORE_ROOT_FILE = Join-Path $TrustRoot 'fulcio.pem'; $env:SIGSTORE_REKOR_PUBLIC_KEY = Join-Path $TrustRoot 'rekor.pub'; $env:SIGSTORE_CT_LOG_PUBLIC_KEY_FILE = Join-Path $TrustRoot 'ctfe.pub'
             $cs = $cosign.Source; $bf = Join-Path $work 'SHA256SUMS.bundle'; $sf = Join-Path $work 'SHA256SUMS'
-            $r = Invoke-Native { & $cs verify-blob --offline --bundle $bf `
+            $verify = Invoke-Native { & $cs verify-blob --offline --bundle $bf `
                 --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/$version" `
                 --certificate-oidc-issuer https://token.actions.githubusercontent.com $sf }
-            if ($r.Code -ne 0) { throw "pgvigil install: the signature of SHA256SUMS does not verify against the trust root in $TrustRoot for ${version}: nothing was installed ($($r.Out))" }
+            if ($verify.Code -ne 0) { throw "pgvigil install: the signature of SHA256SUMS does not verify against the trust root in $TrustRoot for ${version}: nothing was installed ($($verify.Out))" }
             Write-Host "signature of SHA256SUMS verified (the release workflow of $version, with the trust root in $TrustRoot)"
         } else {
             Write-Host "signature not verified here: the checksums prove the files are the ones SHA256SUMS names, not where they came from; verify the signature on the connected side, or pass -TrustRoot <the site's own trust root> (docs/airgap.md)"
@@ -128,18 +259,19 @@ if ($From) {
             return
         }
         if ($svc) {
+            if ($account) { throw 'pgvigil install: -ServiceAccount goes with a fresh install: the upgrade keeps the installed account' }
             Write-Host 'the service pgvigil is installed: upgrading it'
             $up = @('install', '-upgrade')
             if ($OwnerDsnFile) { $up += @('-owner-dsn-file', $OwnerDsnFile) }
             if ($Dump) { $up += @('-dump', $Dump) }
             if ($NoDump) { $up += '-no-dump' }
             if ($PgDump) { $up += @('-pg-dump', $PgDump) }
-            & $exe @up
-            if ($LASTEXITCODE -ne 0) { throw "pgvigil install -upgrade exited with $LASTEXITCODE" }
+            $upRes = Invoke-Native { & $exe @up } -Stream
+            if ($upRes.Code -ne 0) { throw "pgvigil install -upgrade exited with $($upRes.Code)" }
         } else {
             if ($OwnerDsnFile -or $Dump -or $NoDump -or $PgDump) { throw 'pgvigil install: -OwnerDsnFile, -Dump, -NoDump and -PgDump go with an upgrade; the service pgvigil is not installed' }
-            & $exe install
-            if ($LASTEXITCODE -ne 0) { throw "pgvigil install exited with $LASTEXITCODE" }
+            $inst = Invoke-PgvigilInstall $exe $account
+            if ($inst.Code -ne 0) { throw "pgvigil install exited with $($inst.Code)" }
             Add-MachinePath (Join-Path $env:ProgramFiles 'pgvigil')
         }
         if ($App) {
@@ -171,6 +303,11 @@ switch ($env:PROCESSOR_ARCHITECTURE) {
     'AMD64' { $arch = 'amd64' }
     default { throw "pgvigil install: no Windows release for CPU '$($env:PROCESSOR_ARCHITECTURE)' (amd64 only)" }
 }
+# the account goes with a fresh install: a re-run over the installed service keeps its account (and a
+# PGVIGIL_SERVICE_ACCOUNT left set would ask for a password at every re-run)
+if ($account -and -not $noService -and (Get-CimInstance -ClassName Win32_Service -Filter "Name='pgvigil'" -ErrorAction SilentlyContinue)) {
+    throw 'pgvigil install: -ServiceAccount (or PGVIGIL_SERVICE_ACCOUNT) goes with a fresh install: the service pgvigil is installed and keeps its account (clear PGVIGIL_SERVICE_ACCOUNT; another account: pgvigil install -user)'
+}
 if (-not $noService) {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -200,8 +337,8 @@ try {
         Write-Host ".\pgvigil.exe $version is ready (no service installed)"
         return
     }
-    & (Join-Path $work $asset) install
-    if ($LASTEXITCODE -ne 0) { throw "pgvigil install exited with $LASTEXITCODE" }
+    $inst = Invoke-PgvigilInstall (Join-Path $work $asset) $account
+    if ($inst.Code -ne 0) { throw "pgvigil install exited with $($inst.Code)" }
     $binDir = Join-Path $env:ProgramFiles 'pgvigil'
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     if (($machinePath -split ';') -notcontains $binDir) {

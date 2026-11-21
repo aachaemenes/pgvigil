@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // The -open switch of serve and demo: the UI in an app-mode browser window (the page in its own
@@ -112,4 +114,25 @@ func openWindow(log *slog.Logger, url string) string {
 	}
 	log.Warn("open: no browser could be started; open the URL yourself", "url", url)
 	return ""
+}
+
+// underBase is the UI's address under web.base_path: u (ending in '/') with the base and its '/'; u itself at the root
+func underBase(u, base string) string {
+	if base == "" {
+		return u
+	}
+	return strings.TrimSuffix(u, "/") + base + "/"
+}
+
+// alertsBaseWarning: the words when alerts_base_url's path is not the base path the UI is served under (every alert's
+// link would land outside it), or "" - no base, no address, or the address carries the base.
+func alertsBaseWarning(alertsBase, base string) string {
+	if alertsBase == "" || base == "" {
+		return ""
+	}
+	u, err := url.Parse(alertsBase)
+	if err != nil || strings.TrimSuffix(u.Path, "/") == base {
+		return ""
+	}
+	return "alerts_base_url does not carry the UI's base path: each alert's link would open outside the UI - give it the address with the prefix (docs/configuration.md, The UI under a sub-path)"
 }

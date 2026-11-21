@@ -72,9 +72,20 @@ import (
 type installOptions struct {
 	Bin     string // where the binary lives when installed
 	Config  string // the config file
-	User    string // the service account (Linux: a system user; Windows: fixed to the virtual account)
+	User    string // the service account (Linux: a system user; Windows: the virtual account, a gMSA or a named account)
 	NoStart bool   // write everything, start nothing
-	Purge   bool   // uninstall: remove the config folder and the binary too
+	// PasswordStdin (Windows, a named account): Password is read from stdin and handed to the service manager alone -
+	// never written, logged or put in an error
+	PasswordStdin bool
+	Password      string
+	// PrintGMSA: print the script that makes the gMSA -user names, for the principals in GMSAHosts (RELNOTES L142)
+	PrintGMSA   bool
+	GMSAHosts   string
+	keptAccount bool // the account came from the installed service (keepInstalledAccount), not from -user
+	// installedUser is the account the installed service runs as ("" = none): -user naming it keeps its password
+	installedUser string
+
+	Purge bool // uninstall: remove the config folder and the binary too
 
 	Upgrade      bool   // install: upgrade the installed collector (stop, dump, migrate, swap, start)
 	OwnerDSNEnv  string // the variable holding the repository owner's connection string
@@ -91,17 +102,26 @@ type installOptions struct {
 	set map[string]bool // the flags named on the command line
 }
 
+// userFlagHelp is -user's help: what the account is on each OS (RELNOTES L131).
+const userFlagHelp = "the service's account. Linux: a system user, made when missing. Windows: the service's virtual account " +
+	`NT SERVICE\pgvigil` + " (the default), or a group Managed Service Account " + `DOMAIN\name$` +
+	" (gMSA: no password anywhere, Windows changes it; preferred), or a named account " + `DOMAIN\user` + " or " + `.\user` +
+	" with -password-stdin"
+
 func parseInstallArgs(name string, args []string, def installOptions) (installOptions, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	o := def
 	fs.StringVar(&o.Bin, "bin", def.Bin, "path the binary is installed to")
 	fs.StringVar(&o.Config, "config", def.Config, "path of the configuration file")
-	fs.StringVar(&o.User, "user", def.User, "service account (Linux; install creates it as a system user when missing)")
+	fs.StringVar(&o.User, "user", def.User, userFlagHelp)
 	// the repository owner's connection and the dump: -upgrade's (install) and -drop-repository's (uninstall -all)
 	with := "-upgrade"
 	if name == "install" {
 		fs.BoolVar(&o.NoStart, "no-start", false, "install and enable, but do not start the service")
 		fs.BoolVar(&o.Upgrade, "upgrade", false, "upgrade the installed collector: stop, dump, migrate, swap, start (docs/upgrade.md)")
+		fs.BoolVar(&o.PasswordStdin, "password-stdin", false, passwordStdinHelp)
+		fs.BoolVar(&o.PrintGMSA, "print-gmsa", false, "print the PowerShell a domain admin runs to make the gMSA -user names (DOMAIN\\name$), and the SQL Server login line; pgvigil runs none of it and changes nothing")
+		fs.StringVar(&o.GMSAHosts, "host", "", "with -print-gmsa: the computers (NAME$) or the group allowed to use the gMSA, comma separated (default: this host)")
 	} else {
 		with = "-drop-repository"
 		fs.BoolVar(&o.Purge, "purge", false, "also remove the installer's files, their folder when empty, and the binary")
@@ -151,12 +171,37 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	if o.User == "" {
 		return o, errors.New("-user must name an account")
 	}
+	if o.set["host"] && !o.PrintGMSA {
+		return o, errors.New("-host goes with -print-gmsa only")
+	}
 	return o, nil
 }
 
 func runInstall(log *slog.Logger, args []string) error {
 	o, err := parseInstallArgs("install", args, defaultInstallOptions())
+	if errors.Is(err, flag.ErrHelp) {
+		return nil // -h: the flags are printed, nothing is wrong
+	}
 	if err != nil {
+		return err
+	}
+	host, _ := os.Hostname()
+	if o.PrintGMSA {
+		hosts := []string{netbiosHost(host) + "$"}
+		if o.set["host"] {
+			hosts = strings.Split(o.GMSAHosts, ",")
+		}
+		script, err := gmsaScript(o.User, hosts)
+		if err != nil {
+			return err
+		}
+		fmt.Print(script)
+		return nil
+	}
+	// the account's check and its password before anything changes (RELNOTES L131); a re-run keeps the installed one
+	installed, found := installedAccount()
+	keepInstalledAccount(&o, installed, found)
+	if _, err := prepareAccount(&o, runtime.GOOS, netbiosHost(host), os.Stdin); err != nil {
 		return err
 	}
 	if o.Upgrade {
@@ -168,6 +213,9 @@ func runInstall(log *slog.Logger, args []string) error {
 
 func runUninstall(log *slog.Logger, args []string) error {
 	o, err := parseInstallArgs("uninstall", args, defaultInstallOptions())
+	if errors.Is(err, flag.ErrHelp) {
+		return nil // -h: the flags are printed, nothing is wrong
+	}
 	if err != nil {
 		return err
 	}
@@ -323,8 +371,9 @@ func writeIfAbsent(path, content string, mode os.FileMode) (bool, error) {
 
 // ownFiles are the files the installer itself puts beside the config (and the folder of the Windows log); reports.dsn
 // is the store reports' login on Windows (reportsDSNFor), which -purge removes with repo.dsn.
-// instances/ and sources/ are the page's credential folders (task 204, config.SecretDir / SourceSecretDir), beside the config.
-var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "reports.dsn", "pgvigil.log", "logs", "instances", "sources"}
+// instances/ and sources/ are the page's credential folders (task 204, config.SecretDir / SourceSecretDir), beside the config;
+// secrets/ is the folder of 'pgvigil secret seal' (L9, config.FileSecretDir).
+var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "reports.dsn", "pgvigil.log", "logs", "instances", "sources", "secrets"}
 
 // dedicatedFolder refuses a config folder that is not the installer's own. The installer sets that
 // folder's permissions and -purge removes it, so it must be named pgvigil, or not exist yet, or hold
@@ -396,7 +445,7 @@ var (
 // value. Only a platform with no service environment (neither) reads this process's environment, as the binary run by
 // hand would.
 func serviceRepoDSN(path, envFile string) (dsn, raw string, err error) {
-	cfg, err := config.Load(path)
+	cfg, err := loadFile(path)
 	if err != nil {
 		return "", "", err
 	}
@@ -476,6 +525,10 @@ schedules:
 
 # What statement text the repository may hold: full | normalized | none (an instance can override it).
 query_text: full
+
+# The log's level: debug | info | warn | error, info when unset (a restart applies a change). PGVIGIL_LOG_LEVEL in the
+# service's environment wins over it. At error the log still says when alerts are not going out.
+# log_level: info
 
 # The instances to collect: listed here, or added in the page (Admin > Instances). Each dsn is env:NAME or
 # file:/path; the login is a pg_monitor member ('pgvigil roles' prints its CREATE ROLE).
@@ -1167,14 +1220,20 @@ func foreignFiles(dir string, own ...string) []string {
 	return other
 }
 
-// credentialItems lists the page's credential folders beside the config (task 204: instances/ and sources/, the
-// monitored servers' passwords) one by one with their file count; a folder that is a link (or a junction) is kept and
-// named with its target, since removing the link would leave the passwords where it points. own gets the names
-// removeFolder may take with the configuration folder (a kept link is not among them).
+// credentialItems lists the credential folders beside the config - the page's (task 204: instances/ and sources/, the
+// monitored servers' passwords) and the sealed connection strings' (L9: secrets/, 'pgvigil secret seal') - one by one
+// with their file count; a folder that is a link (or a junction) is kept and named with its target, since removing
+// the link would leave the passwords where it points. own gets the names removeFolder may take with the configuration
+// folder (a kept link is not among them).
 func credentialItems(cfgDir string, removeTree func(string) error) (items []removal, own []string) {
-	for _, name := range []string{"instances", "sources"} {
+	for _, f := range []struct{ name, what string }{
+		{"instances", "the page's credential folder "},
+		{"sources", "the page's credential folder "},
+		{"secrets", "the sealed connection strings' folder "},
+	} {
+		name := f.name
 		d := filepath.Join(cfgDir, name)
-		it := removal{what: "the page's credential folder " + d}
+		it := removal{what: f.what + d}
 		fi, err := os.Lstat(d)
 		if err != nil {
 			items = append(items, it)

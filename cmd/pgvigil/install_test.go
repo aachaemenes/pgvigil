@@ -238,8 +238,11 @@ func TestCredentialItems(t *testing.T) {
 	}
 	var removed []string
 	items, own := credentialItems(dir, func(d string) error { removed = append(removed, filepath.Base(d)); return nil })
-	if len(items) != 2 || !items[0].present || items[0].what != "the page's credential folder "+filepath.Join(dir, "instances")+" (2 files: the monitored servers' passwords)" ||
-		items[1].present || items[1].what != "the page's credential folder "+filepath.Join(dir, "sources") || strings.Join(own, ",") != "instances,sources" {
+	if len(items) != 3 || !items[0].present || items[0].what != "the page's credential folder "+filepath.Join(dir, "instances")+" (2 files: the monitored servers' passwords)" ||
+		items[1].present || items[1].what != "the page's credential folder "+filepath.Join(dir, "sources") ||
+		// L9: 'pgvigil secret seal''s folder goes with -all too - a sealed connection string must not outlive it
+		items[2].present || items[2].what != "the sealed connection strings' folder "+filepath.Join(dir, "secrets") ||
+		strings.Join(own, ",") != "instances,sources,secrets" {
 		t.Fatalf("items %+v own %v", items, own)
 	}
 	if err := items[0].remove(); err != nil || strings.Join(removed, ",") != "instances" {
@@ -250,7 +253,7 @@ func TestCredentialItems(t *testing.T) {
 		t.Skip("no symlinks here:", err)
 	}
 	items, own = credentialItems(dir, func(string) error { return nil })
-	if !items[1].present || items[1].remove != nil || !strings.Contains(items[1].kept, "a link to "+target) || strings.Join(own, ",") != "instances" {
+	if !items[1].present || items[1].remove != nil || !strings.Contains(items[1].kept, "a link to "+target) || strings.Join(own, ",") != "instances,secrets" {
 		t.Fatalf("a linked folder: %+v own %v", items[1], own)
 	}
 }

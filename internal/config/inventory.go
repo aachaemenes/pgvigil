@@ -347,6 +347,132 @@ func WriteSecret(dir, name, value string) (string, error) {
 	return writeSecret(dir, name+"-"+hex.EncodeToString(rnd[:]), value)
 }
 
+// PrepareDirAs gives dir the protected access of the page's credential folders, held by account (the installed
+// service's): 0700 as it elsewhere, SYSTEM, the Administrators and the account on Windows (config import's
+// instances/ and sources/).
+func PrepareDirAs(dir, account string) error {
+	if err := knownAccount(account); err != nil {
+		return err
+	}
+	return prepareDirAs(dir, account)
+}
+
+// OwnFileAs gives a credential file to account: 0600 as it elsewhere; on Windows the file takes its folder's list.
+func OwnFileAs(path, account string) error { return ownFileAs(path, account) }
+
+// WriteSecretAs is WriteSecret for an account that is not this process's (RELNOTES L170: 'pgvigil instance add', run
+// by an administrator, writes the page's credential for the service's account): the folder's access and the file's
+// owner are that account's, so serve keeps reading every page credential. An account that does not exist is refused
+// before anything is written.
+func WriteSecretAs(dir, name, value, account string) (string, error) {
+	if !pageName.MatchString(name) {
+		return "", fmt.Errorf("not a valid name for a credential file: %q", name)
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", errors.New("nothing to store")
+	}
+	if err := knownAccount(account); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := prepareDirAs(dir, account); err != nil {
+		return "", fmt.Errorf("the credential folder's access for %s: %w", account, err)
+	}
+	var rnd [6]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return "", err
+	}
+	// the owner given through the open file before its rename (Windows: the folder's list, inherited)
+	return writeSecretOwned(dir, name+"-"+hex.EncodeToString(rnd[:]), value, account)
+}
+
+// FileSecretDir is the folder 'pgvigil secret seal' writes a file instance's sealed connection string into: secrets/
+// beside the config file (apart from the page's instances/ and sources/).
+func FileSecretDir(configPath string) string { return besideConfig(configPath, "secrets") }
+
+// SealFileSecret stores value for a file instance beside the configuration (FileSecretDir) and returns its reference
+// (L9): the same forms as WriteSecret - a DPAPI blob at machine scope on Windows (dpapi:), a file elsewhere (file:).
+// Its access is set, never inherited from wherever the folder happens to sit (rn-l9 B1): on Windows a protected list
+// of SYSTEM, the Administrators and the installed service's account (account; "" = no service installed: the first
+// two alone); elsewhere the configuration FILE's owner and group (rn-l9 S6: the file the service is known to read),
+// a folder 0750 and a file 0640 when that file's group may read, else 0700 and 0600 - and the service's account must
+// be able to read the result, or it is removed and refused in words. The file's stem is the name made safe (N2: any
+// name pgvigil.yaml takes); each seal is a file of its own (<stem>-<random>).
+func SealFileSecret(configPath, name, value, account string) (string, error) {
+	if strings.TrimSpace(name) == "" {
+		return "", errors.New("no instance name")
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", errors.New("nothing to store")
+	}
+	if _, err := os.Stat(configPath); err != nil {
+		return "", fmt.Errorf("the configuration file: %w", err)
+	}
+	dir := FileSecretDir(configPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := sealAccess(dir, configPath, account); err != nil {
+		return "", fmt.Errorf("the secrets folder's access: %w", err)
+	}
+	var rnd [6]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return "", err
+	}
+	ref, err := writeSecret(dir, SecretStem(name)+"-"+hex.EncodeToString(rnd[:]), value)
+	if err != nil {
+		return "", err
+	}
+	p := strings.TrimPrefix(strings.TrimPrefix(ref, "file:"), "dpapi:")
+	if err := sealAccess(p, configPath, account); err != nil {
+		_ = os.Remove(p)
+		return "", fmt.Errorf("the secret file's access: %w", err)
+	}
+	return ref, nil
+}
+
+// SecretStem is an instance's name made safe for a file name (rn-l9 N2): the characters a page name allows kept, any
+// other one an underscore, at most 63; "instance" for a name with none left.
+func SecretStem(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if b.Len() >= 63 {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.', r == '@', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	stem := strings.TrimLeft(b.String(), ".-_@")
+	if stem == "" {
+		return "instance"
+	}
+	return stem
+}
+
+// SealedFiles names the files secrets/ holds for an instance besides keep (rn-l9 N8: each seal leaves the previous
+// one, with its old password, until it is deleted).
+func SealedFiles(configPath, name, keep string) []string {
+	ents, err := os.ReadDir(FileSecretDir(configPath))
+	if err != nil {
+		return nil
+	}
+	own := regexp.MustCompile(`^` + regexp.QuoteMeta(SecretStem(name)) + `-[0-9a-f]{12}\.[a-z]+$`)
+	var out []string
+	for _, e := range ents {
+		p := filepath.Join(FileSecretDir(configPath), e.Name())
+		if own.MatchString(e.Name()) && !strings.HasSuffix(keep, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // RemoveSecret deletes the file a reference names when it lies in dir; a reference elsewhere is left alone.
 func RemoveSecret(dir, ref string) error {
 	_, p, ok := strings.Cut(ref, ":")

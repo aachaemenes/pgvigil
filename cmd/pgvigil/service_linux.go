@@ -309,7 +309,7 @@ func uninstallService(log *slog.Logger, o installOptions) error {
 		}
 		log.Info("removed", "binary", o.Bin)
 	} else {
-		fmt.Printf("the service is gone; %s and %s are kept (-purge removes the installer's files; the page's instances/ and sources/ go with uninstall -all).\n", filepath.Dir(o.Config), o.Bin)
+		fmt.Printf("the service is gone; %s and %s are kept (-purge removes the installer's files; the credential folders instances/, sources/ and secrets/ go with uninstall -all).\n", filepath.Dir(o.Config), o.Bin)
 	}
 	fmt.Printf("the account %s is kept; remove it with: userdel %s\n", o.User, o.User)
 	return nil
@@ -825,4 +825,30 @@ func processesOf(uid string, skipService bool) []string {
 		}
 	}
 	return out
+}
+
+// installedAccount is the installed unit's User= (found false: no unit): a re-run without -user keeps it, as on
+// Windows - the default would move the service to the pgvigil user, away from the page's credential folders its
+// account owns.
+func installedAccount() (string, bool) {
+	u := unitAccount()
+	return u, u != ""
+}
+
+// unitAccount is the installed unit's User= ("" = no unit): the account the page's credentials belong to.
+func unitAccount() string {
+	o, found, err := installedUnit()
+	if err != nil || !found {
+		return ""
+	}
+	return o.User
+}
+
+// installedConfigPath is the configuration the installed unit runs with (found false: no unit).
+func installedConfigPath() (string, bool) {
+	o, found, err := installedUnit()
+	if err != nil || !found || o.Config == "" {
+		return "", false
+	}
+	return o.Config, true
 }

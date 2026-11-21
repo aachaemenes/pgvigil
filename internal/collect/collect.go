@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"sort"
 	"strings"
@@ -123,7 +124,30 @@ type Result struct {
 	CPUMs, Reads *int64
 	// Retries: the run's imports taken again after a deadlock (sched's loop sets it from repo.WithRetryCounter; N4)
 	Retries int
+	// Held: the run was held by the instance's connect back-off (L214; sched's loop, never a collection): the hour
+	// counts it skipped, and it ends no failing streak of the instance's collections - 0121's 'collection failing'
+	// stands through an outage (rn-l214 B-2). Its Note says why.
+	Held bool
 }
+
+// logTimeout: one collection_log write's own limit (rn-l214 S-1), as SQL Server's repoTimeout.
+const logTimeout = 30 * time.Second
+
+// logOn writes one of a run's collection_log rows on a context the run's deadline does not cut (rn-l214 S-1: sched's
+// L250 cancels a hung run, and its 'error' row must still reach the Collector errors page and the instance's
+// Collection dates line), with its own limit; a run a stop cut (stopCut) records nothing, as before.
+func logOn(ctx context.Context, write func(context.Context) error) error {
+	if stopCut(ctx) {
+		return ctx.Err()
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), logTimeout)
+	defer cancel()
+	return write(wctx)
+}
+
+// stopCut: the run's context was cancelled by a stop (pgvigil's own shutdown, the instance's loops ending) - never by
+// the run's own deadline, which is the run's failure and recorded (rn-l214 S-1).
+func stopCut(ctx context.Context) bool { return errors.Is(ctx.Err(), context.Canceled) }
 
 // TimedImport runs one write into the repository and adds its time to the run's import time; a write that fails
 // marks the run 'import failed' (its caller returns the error as the run's Err). Two imports of one run sum.
@@ -146,15 +170,56 @@ SET statement_timeout = '30s';
 SET lock_timeout = '2s';
 SET application_name = 'pgvigil';`
 
+// ErrUnparsedDSN is the failed connect of a dsn that does not parse, in fixed words (rn-l9 B2): its own text is never
+// shown, as it may hold a password.
+var ErrUnparsedDSN = errors.New("the dsn does not parse as a PostgreSQL connection string (its text is not shown: it may hold a password; env: and file: hold the whole connection string)")
+
+// UnparsedDSN is the answer for a dsn pgx.ParseConfig refused: ErrUnparsedDSN's fixed words, and - only when the refusal
+// wraps a certificate or key file pgx could not read while parsing (sslrootcert, sslkey, sslcert: pgx wraps those
+// with %w; a passfile's failure is dropped and a service file's is formatted, so neither reaches here) - UnreadFileWords.
+// errors.Is(err, ErrUnparsedDSN) holds either way.
+func UnparsedDSN(parseErr error) error {
+	if w := UnreadFileWords(parseErr); w != "" {
+		return &unparsedFileError{words: w}
+	}
+	return ErrUnparsedDSN
+}
+
+// UnreadFileWords is " - a file it names could not be read: <op> <path>: <reason>" for a parse error that wraps a
+// *fs.PathError (found by errors.As), or "": the file error's own words, never the parse error's text, which carries
+// the connection string. The path itself is shown only when it holds no '=': pgx's keyword=value parser lets an empty
+// value take the next token ('sslrootcert= password=x' reads the path "password=x"), and a misplaced quote puts a
+// password inside a path - such a path is said to be not shown.
+func UnreadFileWords(parseErr error) string {
+	var pe *fs.PathError
+	if !errors.As(parseErr, &pe) {
+		return ""
+	}
+	if strings.Contains(pe.Path, "=") {
+		return " - a file it names could not be read: " + pe.Op + " (its path is not shown: it holds a keyword=value, an empty value in the dsn took the next word): " + pe.Err.Error()
+	}
+	return " - a file it names could not be read: " + pe.Op + " " + pe.Path + ": " + pe.Err.Error()
+}
+
+type unparsedFileError struct{ words string }
+
+func (e *unparsedFileError) Error() string { return ErrUnparsedDSN.Error() + e.words }
+func (e *unparsedFileError) Unwrap() error { return ErrUnparsedDSN }
+
 // Connect opens one connection to an instance with the safety settings applied.
 func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	dsn := in.DSN()
-	if dsn == "" {
-		return nil, InstanceConnect(in.Name, fmt.Errorf("connect %s: dsn %q resolved to an empty string (unset variable or unreadable file)", in.Name, in.DSNRaw))
+	if strings.TrimSpace(dsn) == "" { // white space connects nowhere: refused as an empty one, with its reason
+		return nil, InstanceConnect(in.Name, fmt.Errorf("connect %s: dsn %q resolved to an empty string (%s)", in.Name, in.DSNRaw, EmptyDSNWhy(in.DSNRaw)))
 	}
 	// task 201 DONE-2 (N10): pgx.Connect's own two steps, with DefaultConnectTimeout where the DSN sets no
 	// connect_timeout; a DSN that does not parse is a failed connect, as before
 	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		// rn-l9 B2: never pgconn's ParseConfigError - it carries the whole string and masks a password only in its
+		// usual spellings; a bare password behind env: or file: would reach the streak, the findings and the logs
+		err = UnparsedDSN(err)
+	}
 	var conn *pgx.Conn
 	var took time.Duration
 	if err == nil {
@@ -205,15 +270,19 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		// the server did not answer: recorded, so the 'server unreachable' finding sees it (0118); a connect cut by
 		// pgvigil's own shutdown (ctx cancelled) is not the server's failure and is not recorded
 		var se *secrets.ReadError
-		if errors.As(err, &se) && ctx.Err() == nil {
+		if errors.As(err, &se) && !stopCut(ctx) {
 			// the password could not be read from AWS Secrets Manager (B24e): the collection's error, not the server's
-			if lerr := r.LogSecretFailure(ctx, in.Name, config.EnginePostgres, in.Platform, in.Tags, name, start, time.Since(start), err); lerr != nil {
+			if lerr := logOn(ctx, func(wctx context.Context) error {
+				return r.LogSecretFailure(wctx, in.Name, config.EnginePostgres, in.Platform, in.Tags, name, start, time.Since(start), err)
+			}); lerr != nil {
 				log.Warn("the secret's failure was not recorded", "instance", in.Name, "collection", name, "err", lerr)
 			}
 			return Result{Err: err, Duration: time.Since(start)}
 		}
-		if ctx.Err() == nil {
-			if lerr := r.LogConnectFailure(ctx, in.Name, config.EnginePostgres, in.Platform, in.Tags, name, start, time.Since(start), err); lerr != nil {
+		if !stopCut(ctx) { // the run's deadline is no stop: its failed connect is recorded (rn-l214 S-1)
+			if lerr := logOn(ctx, func(wctx context.Context) error {
+				return r.LogConnectFailure(wctx, in.Name, config.EnginePostgres, in.Platform, in.Tags, name, start, time.Since(start), err)
+			}); lerr != nil {
 				log.Warn("the failed connect was not recorded", "instance", in.Name, "collection", name, "err", lerr)
 			}
 		}
@@ -227,8 +296,10 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		// connected, then failed: recorded as the collection's failed run ('detect: '), so its failures in a
 		// row reach the run status as the hourly counts do; a read cut by pgvigil's own shutdown is not recorded
-		if ctx.Err() == nil {
-			if lerr := r.LogRunFailure(ctx, in.Name, config.EnginePostgres, name, start, time.Since(start), err); lerr != nil {
+		if !stopCut(ctx) {
+			if lerr := logOn(ctx, func(wctx context.Context) error {
+				return r.LogRunFailure(wctx, in.Name, config.EnginePostgres, name, start, time.Since(start), err)
+			}); lerr != nil {
 				log.Warn("the failed run was not recorded", "instance", in.Name, "collection", name, "err", lerr)
 			}
 		}
@@ -246,13 +317,17 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			in.AWS = nil
 			if skip, _ := Gated(c, in); skip {
 				why = "the page's aws: block is not used: " + why
-				_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
+				_ = logOn(ctx, func(wctx context.Context) error {
+					return r.LogCollection(wctx, instanceID, name, start, time.Since(start), "skipped", why)
+				})
 				return Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
 			}
 		}
 	}
 	if ok, why := c.Applies(info); !ok {
-		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
+		_ = logOn(ctx, func(wctx context.Context) error {
+			return r.LogCollection(wctx, instanceID, name, start, time.Since(start), "skipped", why)
+		})
 		return Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
 	}
 	// a collection imported in parts (the schema collection: one call per database, under jsonb's 256 MB limit)
@@ -269,11 +344,15 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	if errors.Is(err, ErrSkip) {
 		why := strings.TrimSuffix(err.Error(), ": "+ErrSkip.Error())
-		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
+		_ = logOn(ctx, func(wctx context.Context) error {
+			return r.LogCollection(wctx, instanceID, name, start, time.Since(start), "skipped", why)
+		})
 		return Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
 	}
 	if err != nil {
-		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
+		_ = logOn(ctx, func(wctx context.Context) error {
+			return r.LogCollection(wctx, instanceID, name, start, time.Since(start), "error", err.Error())
+		})
 		return Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	// the log readers' auto_explain lines become plan rows too (the plans table, 0029), masked by the instance's
@@ -283,7 +362,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	var imp Result // the run's import time and, when a write fails, its outcome (B6g-1, N27)
 	if extra := planRowsFromLog(name, rows, in.QueryText); len(extra) > 0 {
 		if err := imp.TimedImport(func() error { return r.Import(ctx, instanceID, "plans", start, extra) }); err != nil {
-			_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), "import")
+			_ = logOn(ctx, func(wctx context.Context) error {
+				return r.LogCollectionStage(wctx, instanceID, name, start, time.Since(start), "error", err.Error(), "import")
+			})
 			return Result{Err: fmt.Errorf("import plans from %s's %s: %w", in.Name, name, err), Duration: time.Since(start),
 				Outcome: imp.Outcome, Import: imp.Import, Imported: true}
 		}
@@ -302,7 +383,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	rows = kept
 	if err := imp.TimedImport(func() error { return r.Import(ctx, instanceID, name, start, rows) }); err != nil {
-		_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), "import")
+		_ = logOn(ctx, func(wctx context.Context) error {
+			return r.LogCollectionStage(wctx, instanceID, name, start, time.Since(start), "error", err.Error(), "import")
+		})
 		return Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start),
 			Outcome: imp.Outcome, Import: imp.Import, Imported: true}
 	}
@@ -317,7 +400,18 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			break
 		}
 	}
-	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
+	_ = logOn(ctx, func(wctx context.Context) error {
+		return r.LogCollection(wctx, instanceID, name, start, d, status, note)
+	})
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
 	return Result{Rows: len(rows), Duration: d, Outcome: partialOutcome(status), Import: imp.Import, Imported: imp.Imported}
+}
+
+// EmptyDSNWhy is why a dsn reference resolved to nothing (RELNOTES L145), or the general words when there is no reason
+// to add.
+func EmptyDSNWhy(raw string) string {
+	if w := config.WhyEmpty(raw); w != "" {
+		return w
+	}
+	return "unset variable or unreadable file"
 }
