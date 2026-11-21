@@ -19,6 +19,10 @@
 #  B  'dotnet build packaging\msi\pgvigil.wixproj' exit 0 for 0.0.1 and for 0.0.2, each in its own intermediate folder
 #     (obj\<version>\) and each .msi made, the build's seconds printed (a build of a second or two linked nothing); a failed
 #     build prints every line of its output that names an error and its last target lines
+#  C0 (the reads the rows below lean on, shown in this run's own log first): a function that returns @(one object)
+#     hands its caller the bare object, and a [pscustomobject]'s Count under this PowerShell ('COUNT OF ONE RETURNED
+#     [<n>]'; empty under Windows PowerShell 5.1), against @(<call>)'s Count ('[1]'); Q0 each Windows Installer query
+#     the M1 read uses, run alone on the 0.0.2 package ('QUERY <sql> ok <rows>' or 'QUERY <sql> refused: <words>')
 #  M1 the 0.0.2 package's Binary table is absent or empty (no custom-action DLL ships) - read in a child powershell.exe,
 #     so no COM object of the read holds the package open when the undo removes it
 #  I1 'msiexec /i' of 0.0.1 exit 0: %ProgramFiles%\pgvigil\pgvigil.exe there, the service pgvigil made, the exe
@@ -162,6 +166,27 @@ try {
     }
     if (-not ((Test-Path -LiteralPath $msi['0.0.1']) -and (Test-Path -LiteralPath $msi['0.0.2']))) { throw 'no package to install: the rows after B need both' }
 
+    # C0: a function's @(one object) as its caller gets it, under this PowerShell - the read U1 and D1 lean on
+    function Get-OneWrapped { return @([pscustomobject]@{ DisplayVersion = '0.0.2' }) }
+    $one = Get-OneWrapped
+    Write-Host "C0 COUNT OF ONE RETURNED [$($one.Count)] AS @(...) [$(@(Get-OneWrapped).Count)] under $($PSVersionTable.PSVersion)"
+    # Q0: each query of the M1 read run alone on the 0.0.2 package, in its own child (its COM objects end with it)
+    foreach ($q in @("SELECT ``Name`` FROM ``_Tables`` WHERE ``Name`` = 'Binary'", 'SELECT `Name` FROM `_Tables`', 'SELECT `Name` FROM `Binary`')) {
+        $qScript = @'
+$installer = New-Object -ComObject WindowsInstaller.Installer
+$db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @('PGV_MSI_PATH', 0))
+try {
+    $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('PGV_SQL'))
+    $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+    $n = 0; while ($view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)) { $n++ }
+    'ok ' + $n + ' row(s)'
+} catch { 'refused: ' + $_.Exception.InnerException.Message }
+'@
+        $qScript = $qScript.Replace('PGV_MSI_PATH', $msi['0.0.2'].Replace("'", "''")).Replace('PGV_SQL', $q.Replace("'", "''"))
+        $qr = Invoke-Native { & powershell.exe -NoProfile -NonInteractive -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($qScript))) }
+        Write-Host "Q0 QUERY $q $((("$($qr.Out)" -split "`n") | Where-Object { $_ -match '^(ok|refused)' } | Select-Object -First 1))"
+    }
+
     # M1: in a child powershell.exe - its COM objects (the installer, the database, the views, the records) end with it,
     # so none holds the package open for the undo; it prints one line: 'BINARY absent', 'BINARY empty' or 'BINARY holds <names>'
     $m1Script = @'
@@ -169,7 +194,8 @@ $ErrorActionPreference = 'Stop'
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @('PGV_MSI_PATH', 0))
 function Read-Column([string]$sql) {
-    $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql))
+    try { $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql)) }
+    catch { 'BINARY unread: Windows Installer refused the query ' + $sql + ' - ' + $_.Exception.InnerException.Message; exit 1 }
     $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
     $vals = @()
     while ($true) {
@@ -182,7 +208,8 @@ function Read-Column([string]$sql) {
     $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($view)
     return , $vals
 }
-$tables = Read-Column "SELECT ``Name`` FROM ``_Tables`` WHERE ``Name`` = 'Binary'"
+$all = Read-Column 'SELECT `Name` FROM `_Tables`'
+$tables = @($all | Where-Object { $_ -eq 'Binary' })
 $names = @()
 if ($tables.Count) { $names = Read-Column 'SELECT `Name` FROM `Binary`' }
 if (-not $tables.Count) { 'BINARY absent' } elseif ($names.Count) { 'BINARY holds ' + ($names -join ', ') } else { 'BINARY empty' }
@@ -201,19 +228,19 @@ if (-not $tables.Count) { 'BINARY absent' } elseif ($names.Count) { 'BINARY hold
     # U1: the host configured with a repository that never answers, then the upgrade
     [IO.File]::WriteAllText((Join-Path $DataDir 'repo.dsn'), "host=pgvigil-none.invalid dbname=x user=x connect_timeout=2`r`n")
     $res = Invoke-Msi '/i' $msi['0.0.2'] 'install-2.log'
-    $inst = Get-Installed
+    $inst = @(Get-Installed)   # @(): one product comes back from the function as a bare object (C0)
     $said = if (Test-Path -LiteralPath $Exe) { "$((Invoke-Native { & $Exe version }).Out)" } else { 'no exe' }
     $svc = Get-CimInstance Win32_Service -Filter "Name='pgvigil'"
     $runsMsiExe = $svc -and ($svc.PathName -like "*$Exe*")
-    Row 'U1' ($res.Code -eq 0 -and $inst.Count -eq 1 -and $inst[0].DisplayVersion -eq '0.0.2' -and $said -match '\b0\.0\.2\b' -and $runsMsiExe) "upgrade to 0.0.2 exit $($res.Code); installed $(($inst | ForEach-Object { $_.DisplayVersion }) -join ', '); the exe says '$said'; the service $(if ($svc) { $svc.State + ' ' + $svc.PathName } else { 'GONE' })$(if ($res.Code -ne 0) { '; log: ' + (Get-LogTail $res.Log) })"
+    Row 'U1' ($res.Code -eq 0 -and $inst.Count -eq 1 -and $inst[0].DisplayVersion -eq '0.0.2' -and $said -match '\b0\.0\.2\b' -and $runsMsiExe) "upgrade to 0.0.2 exit $($res.Code); installed $($inst.Count): $(($inst | ForEach-Object { $_.DisplayVersion }) -join ', '); the exe says '$said'; the service $(if ($svc) { $svc.State + ' ' + $svc.PathName } else { 'GONE' })$(if ($res.Code -ne 0) { '; log: ' + (Get-LogTail $res.Log) })"
 
     # D1
     $res = Invoke-Msi '/i' $msi['0.0.1'] 'downgrade.log'
     $refusal = (Test-Path -LiteralPath $res.Log) -and (Select-String -LiteralPath $res.Log -SimpleMatch 'A newer pgvigil is installed' -Quiet)
     $wrongWords = (Test-Path -LiteralPath $res.Log) -and (Select-String -LiteralPath $res.Log -SimpleMatch 'A pgvigil service is already installed' -Quiet)
-    $inst = Get-Installed
+    $inst = @(Get-Installed)
     $d1ok = $res.Code -ne 0 -and $refusal -and -not $wrongWords -and $inst.Count -eq 1 -and $inst[0].DisplayVersion -eq '0.0.2'
-    Row 'D1' $d1ok "the downgrade exit $($res.Code), the refusal in its log $refusal, the service condition's words $wrongWords; installed $(($inst | ForEach-Object { $_.DisplayVersion }) -join ', ')$(if (-not $d1ok) { '; log: ' + (Get-LogTail $res.Log) })"
+    Row 'D1' $d1ok "the downgrade exit $($res.Code), the refusal in its log $refusal, the service condition's words $wrongWords; installed $($inst.Count): $(($inst | ForEach-Object { $_.DisplayVersion }) -join ', ')$(if (-not $d1ok) { '; log: ' + (Get-LogTail $res.Log) })"
 
     # S1: install.ps1 over an MSI machine, in a process of its own
     $ps = Invoke-Native { & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "`$env:PGVIGIL_NO_SERVICE = ''; try { & '$InstallScript'; 'NOT REFUSED' } catch { 'REFUSED: ' + `$_ }" }
