@@ -20,9 +20,14 @@
 #   P1 install.ps1's password write, a password holding a 2-byte and a 3-byte character: the service manager logs the
 #      account on
 #   P1d install.ps1's write, in its own scope shape, hands a native reader exactly the password's UTF-8 and CRLF, the
-#      line end -password-stdin strips ('P1D True <bytes> crlf'; the reader compares a SHA-256, never prints the bytes)
-#   P1a the same two rows with an ASCII-only password (no regression): logged on, 'P1D True <bytes> crlf'
-#   P1l neither password is on the command line install.ps1 builds, in an environment variable, in a file written under
+#      line end -password-stdin strips ('P1D True <bytes> crlf bom 0'; the reader compares a SHA-256, never prints the
+#      bytes)
+#   P1a the same two rows with an ASCII-only password (no regression): logged on, 'P1D True <bytes> crlf bom 0'
+#   P1u the 2-byte / 3-byte password again under a UTF-8 console code page (Console.InputEncoding 65001, as chcp 65001):
+#      logged on, and the reader sees the BOM .NET Framework's stdin writer puts first ('P1D True <bytes> crlf bom 1');
+#      NOT RUN, with its words, where the console's code page cannot be set (the UTF-8 console case then not proven)
+#   P1l neither password is on the command line (rebuilt from the same arguments; the guard on install.ps1's own write
+#      line is P1d's target pin), in an environment variable, in a file written under
 #      %TEMP% or %ProgramData%\pgvigil since the P rows began, in a line the installs printed, or in this proof's own
 #      transcript of the P rows (its log of them)
 #   G1 -print-gmsa prints the script and changes nothing; install.ps1 parses and its -Help returns
@@ -75,6 +80,7 @@ public static class PgvProofLsa {
 '@
 
 $failed = 0
+$tx = $null; $txOn = $false; $txRead = $false; $ieOrig = $null   # the P rows' transcript and the console's input code page: the outer finally ends both
 function Row([string]$name, [bool]$ok, [string]$what) {
     if ($ok) { Write-Host "OK   $name $what" } else { Write-Host "FAIL $name $what"; $script:failed++ }
 }
@@ -116,9 +122,11 @@ function Get-StartResult {
     Start-Sleep -Seconds 2
     return @{ LoggedOn = (($res.Code -ne 1069) -and ($logonFailed -eq 0)); StartName = $startName; What = "sc start $($res.Code), logon-failure events $logonFailed$(if ($said) { ': ' + $said })" }
 }
-# the native reader P0, P1d and P1a hand bytes to: the SHA-256 of what came, without its trailing CR / LF, compared with
-# PGV_P1D_WANT; prints 'P1D <equal> <bytes> <line end: crlf, none or other:<hex>>' - never the bytes
-$P1DReader = '$in = [Console]::OpenStandardInput(); $ms = New-Object IO.MemoryStream; $in.CopyTo($ms); $b = $ms.ToArray(); $n = $b.Length; while ($n -gt 0 -and ($b[$n - 1] -eq 10 -or $b[$n - 1] -eq 13)) { $n-- }; $h = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($b, 0, $n)).Replace(''-'', '''').ToLower(); $e = if ($b.Length - $n -eq 2 -and $b[$n] -eq 13 -and $b[$n + 1] -eq 10) { ''crlf'' } elseif ($b.Length -eq $n) { ''none'' } else { ''other:'' + (($b[$n..($b.Length - 1)] | ForEach-Object { $_.ToString(''x2'') }) -join '''') }; ''P1D '' + ($h -eq $env:PGV_P1D_WANT) + '' '' + $n + '' '' + $e'
+# the native reader P0, P1d, P1a and P1u hand bytes to: the SHA-256 of what came, without a leading BOM (EF BB BF: what
+# .NET Framework's stdin writer puts first under a UTF-8 console code page; pgvigil drops it) and without its trailing
+# CR / LF, compared with PGV_P1D_WANT; prints 'P1D <equal> <bytes> <line end: crlf, none or other:<hex>> bom <0|1>' -
+# never the bytes
+$P1DReader = '$in = [Console]::OpenStandardInput(); $ms = New-Object IO.MemoryStream; $in.CopyTo($ms); $b = $ms.ToArray(); $s = 0; if ($b.Length -ge 3 -and $b[0] -eq 239 -and $b[1] -eq 187 -and $b[2] -eq 191) { $s = 3 }; $n = $b.Length; while ($n -gt $s -and ($b[$n - 1] -eq 10 -or $b[$n - 1] -eq 13)) { $n-- }; $h = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($b, $s, $n - $s)).Replace(''-'', '''').ToLower(); $e = if ($b.Length - $n -eq 2 -and $b[$n] -eq 13 -and $b[$n + 1] -eq 10) { ''crlf'' } elseif ($b.Length -eq $n) { ''none'' } else { ''other:'' + (($b[$n..($b.Length - 1)] | ForEach-Object { $_.ToString(''x2'') }) -join '''') }; ''P1D '' + ($h -eq $env:PGV_P1D_WANT) + '' '' + ($n - $s) + '' '' + $e + '' bom '' + [int]($s -eq 3)'
 function Get-P1DWant([string]$secret) { [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash((New-Object System.Text.UTF8Encoding $false).GetBytes($secret))).Replace('-', '').ToLower() }
 function Get-P1DLine($out) { "$out" -split "`n" | Where-Object { $_ -match '^P1D ' } | Select-Object -First 1 }
 # install.ps1's functions as the file defines them (parsed out of it): the password write and what it calls
@@ -214,7 +222,6 @@ try {
     $pwA = 'Pv9!' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
     $pStart = (Get-Date).AddSeconds(-2)
     $tx = Join-Path $env:TEMP ('pgvproof-p-' + [Guid]::NewGuid().ToString('N') + '.txt')
-    $txOn = $false
     try { Start-Transcript -LiteralPath $tx -Force | Out-Null; $txOn = $true } catch { Write-Host "     the P rows' transcript did not start: $($_.Exception.Message)" }
     $outs = @()
     Set-LocalUser -Name $name -Password (ConvertTo-SecureString $pwU -AsPlainText -Force)
@@ -231,7 +238,7 @@ try {
     $wantU = (New-Object System.Text.UTF8Encoding $false).GetBytes($pwU).Length
     $rd = Invoke-ScriptPipeReader $pwU; $outs += "$($rd.Out)"
     $rdLine = Get-P1DLine $rd.Out
-    Row 'P1d' ($rdLine -eq "P1D True $wantU crlf") "install.ps1's write hands a native reader the password's UTF-8 ($wantU bytes) and CRLF under $($PSVersionTable.PSVersion): $(if ($rdLine) { $rdLine } else { 'no answer: ' + $rd.Out })"
+    Row 'P1d' ($rdLine -eq "P1D True $wantU crlf bom 0") "install.ps1's write hands a native reader the password's UTF-8 ($wantU bytes) and CRLF under $($PSVersionTable.PSVersion): $(if ($rdLine) { $rdLine } else { 'no answer: ' + $rd.Out })"
     Set-LocalUser -Name $name -Password (ConvertTo-SecureString $pwA -AsPlainText -Force)
     $res = Invoke-ScriptPipe $acct $pwA; $outs += "$($res.Out)"
     $st = Get-StartResult
@@ -239,8 +246,24 @@ try {
     $null = Invoke-Native { & $Exe uninstall }
     $rd = Invoke-ScriptPipeReader $pwA; $outs += "$($rd.Out)"
     $rdLine = Get-P1DLine $rd.Out
-    Row 'P1a' ($rdLine -eq "P1D True $($pwA.Length) crlf") "install.ps1's write hands a native reader the ASCII password ($($pwA.Length) bytes) and CRLF: $(if ($rdLine) { $rdLine } else { 'no answer: ' + $rd.Out })"
-    if ($txOn) { try { Stop-Transcript | Out-Null } catch { $txOn = $false } }
+    Row 'P1a' ($rdLine -eq "P1D True $($pwA.Length) crlf bom 0") "install.ps1's write hands a native reader the ASCII password ($($pwA.Length) bytes) and CRLF: $(if ($rdLine) { $rdLine } else { 'no answer: ' + $rd.Out })"
+    # P1u: the 2-byte / 3-byte password again under a UTF-8 console code page
+    try { $ieOrig = [Console]::InputEncoding; [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $true } catch {
+        $ieOrig = $null; Write-Host "NOT RUN P1u (the console's input code page cannot be set here: $($_.Exception.Message)) - the UTF-8 console case NOT PROVEN"
+    }
+    if ($null -ne $ieOrig) {
+        try {
+            Set-LocalUser -Name $name -Password (ConvertTo-SecureString $pwU -AsPlainText -Force)
+            $res = Invoke-ScriptPipe $acct $pwU; $outs += "$($res.Out)"
+            $st = Get-StartResult
+            Row 'P1u' ($res.Code -eq 0 -and $st.LoggedOn) "install.ps1's password write under the console code page $([Console]::InputEncoding.CodePage): install exit $($res.Code), logged on as $($st.StartName) ($($st.What))"
+            $null = Invoke-Native { & $Exe uninstall }
+            $rd = Invoke-ScriptPipeReader $pwU; $outs += "$($rd.Out)"
+            $rdLine = Get-P1DLine $rd.Out
+            Row 'P1u' ($rdLine -eq "P1D True $wantU crlf bom 1") "under that code page the reader gets a BOM, then the password's UTF-8 ($wantU bytes) and CRLF: $(if ($rdLine) { $rdLine } else { 'no answer: ' + $rd.Out })"
+        } finally { [Console]::InputEncoding = $ieOrig; $ieOrig = $null }
+    }
+    if ($txOn) { try { Stop-Transcript | Out-Null } catch { } ; $txOn = $false; $txRead = $true }
     # P1l: every place either password could have been left (counts only, never the value)
     . ([scriptblock]::Create((Get-InstallFunctionText @('ConvertTo-NativeArgument'))))   # the proof keeps its own Invoke-Native
     $cmdLine = (@(@('install', '-user', $acct, '-password-stdin') | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
@@ -251,10 +274,10 @@ try {
             Get-ChildItem -LiteralPath $_ -Recurse -File -Force -ErrorAction SilentlyContinue } | Where-Object { $_.LastWriteTime -ge $pStart -and $_.FullName -ne $tx -and $_.Length -lt 20MB })
     $inFiles = @($files | Where-Object { @(Select-String -LiteralPath $_.FullName -SimpleMatch -Pattern $pwU, $pwA -List -ErrorAction SilentlyContinue).Count }).Count
     $inOut = @($outs | Where-Object { $_.Contains($pwU) -or $_.Contains($pwA) }).Count
-    $txLines = if ($txOn -and (Test-Path -LiteralPath $tx)) { @(Get-Content -LiteralPath $tx).Count } else { -1 }
+    $txLines = if ($txRead -and (Test-Path -LiteralPath $tx)) { @(Get-Content -LiteralPath $tx).Count } else { -1 }
     $inTx = if ($txLines -ge 0) { @(Select-String -LiteralPath $tx -SimpleMatch -Pattern $pwU, $pwA -ErrorAction SilentlyContinue).Count } else { -1 }
     Remove-Item -LiteralPath $tx -Force -ErrorAction SilentlyContinue
-    Row 'P1l' ((-not $inCmd) -and $inEnv -eq 0 -and $inFiles -eq 0 -and $inOut -eq 0 -and $txLines -gt 0 -and $inTx -eq 0) "neither password on the command line install.ps1 builds: $(-not $inCmd); in the environment: $inEnv; in files written since the P rows began under %TEMP% and %ProgramData%\pgvigil: $inFiles of $($files.Count); in the installs' lines: $inOut; in the P rows' transcript: $(if ($txLines -ge 0) { "$inTx ($txLines lines read)" } else { 'not read (it did not start)' })"
+    Row 'P1l' ((-not $inCmd) -and $inEnv -eq 0 -and $inFiles -eq 0 -and $inOut -eq 0 -and $txLines -gt 0 -and $inTx -eq 0) "neither password on the command line (rebuilt from the same arguments; the guard on install.ps1's own write line is P1d's target pin): $(-not $inCmd); in the environment: $inEnv; in files written since the P rows began under %TEMP% and %ProgramData%\pgvigil: $inFiles of $($files.Count); in the installs' lines: $inOut; in the P rows' transcript: $(if ($txLines -ge 0) { "$inTx ($txLines lines read)" } else { 'not read (it did not start)' })"
     $pwU = $null; $pwA = $null
 
     # G1
@@ -265,6 +288,10 @@ try {
     $help = (Invoke-Native { & powershell.exe -NoProfile -File $Script -Help }).Out
     Row 'G1' ($parseErrors.Count -eq 0 -and $help -match 'ServiceAccount') "install.ps1 parses under $($PSVersionTable.PSVersion) ($($parseErrors.Count) errors) and -Help names -ServiceAccount"
 } finally {
+    # a P row that threw left the transcript running or the console's code page changed: both ended here, the file removed
+    if ($txOn) { try { Stop-Transcript | Out-Null } catch { } }
+    if ($tx) { Remove-Item -LiteralPath $tx -Force -ErrorAction SilentlyContinue }
+    if ($null -ne $ieOrig) { try { [Console]::InputEncoding = $ieOrig } catch { } }
     # Z: the undo, each step read back
     if (Get-Service -Name pgvigil -ErrorAction SilentlyContinue) { $null = Invoke-Native { & $Exe uninstall } }
     $null = Invoke-Native { & $Exe uninstall -purge }

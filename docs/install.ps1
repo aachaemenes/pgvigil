@@ -114,11 +114,15 @@ function ConvertTo-NativeArgument([string]$a) {
 # 5.1 encodes a pipe to a native command with $OutputEncoding (US-ASCII unless set, each non-ASCII character a '?'),
 # and a value set in the calling function did not reach the pipe inside the scriptblock Invoke-Native runs (a
 # 17-character password holding a 2-byte character reached the reader as 17 bytes). .NET Framework's ProcessStartInfo
-# has no StandardInputEncoding, so nothing here depends on an encoding setting: the bytes are written to the stream
-# under StandardInput, flushed, and stdin is closed. stdout and stderr are read a line at a time as they come - one
-# pending read on each, never two reads to the end one after the other, so a child that fills one pipe while the
-# other is read cannot hang it - each line shown as Invoke-Native -Stream shows it and returned in Out; Code is the
-# child's exit code. The secret is never on the command line, in the environment, in a file or in a line shown.
+# has no StandardInputEncoding (only .NET 5 and later): Process.Start wraps stdin in a writer of Console.InputEncoding,
+# which under a UTF-8 console code page (chcp 65001, or Windows' 'Use Unicode UTF-8' setting) puts a BOM (EF BB BF)
+# before the first bytes - pgvigil's -password-stdin drops a leading BOM (cmd/pgvigil/svcaccount.go,
+# readServicePassword). The bytes are written to the stream under StandardInput, flushed, and stdin is closed. stdout
+# and stderr are decoded as UTF-8 (what pgvigil writes to a pipe) and read a line at a time as they come - one pending
+# read on each, never two reads to the end one after the other, so a child that fills one pipe while the other is read
+# cannot hang it - each line shown as Invoke-Native -Stream shows it and returned in Out; Code is the child's exit
+# code. Ctrl+C waits for the child (its own hidden console; the read loop holds PowerShell's stop until it ends - an
+# install takes seconds). The secret is never on the command line, in the environment, in a file or in a line shown.
 function Invoke-NativeStdin([string]$exePath, [string[]]$arguments, [byte[]]$inBytes) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exePath
@@ -127,6 +131,8 @@ function Invoke-NativeStdin([string]$exePath, [string[]]$arguments, [byte[]]$inB
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $psi.StandardErrorEncoding = New-Object System.Text.UTF8Encoding $false
     $psi.CreateNoWindow = $true
     $p = [System.Diagnostics.Process]::Start($psi)
     try {
