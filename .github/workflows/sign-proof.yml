@@ -1,0 +1,194 @@
+# The signing proof, against SSL.com's eSigner SANDBOX: the three Windows files a release signs
+# (pgvigil_<v>_windows_amd64.exe, its _fips twin, pgvigil-app.exe) built as release.yml builds them, signed in ONE
+# batch_sign by scripts/signing/sign-windows.sh, then checked by scripts/signing/verify-windows.sh - the same two
+# scripts the release runs. The account is the vendor's published DEMO account, written here as constants
+# (https://www.ssl.com/guide/esigner-demo-credentials-and-certificates/, read 2026-11-20): not a credential of this
+# project. Nothing is released or published, no deployment environment and no stored secret is read, the token reads
+# only; every artifact is named SANDBOX and kept 3 days. A sandbox signature never passes as a production one: its
+# chain ends at the vendor's development root (the verify job's red rows show it in the same run).
+# The trigger: workflow_dispatch alone cannot start it - GitHub's page: "This event will only trigger a workflow run
+# if the workflow file exists on the default branch." - so a push to the branch sign-proof runs it; once it has run,
+# a dispatch on that branch works too.
+name: sign-proof
+
+on:
+  push:
+    branches: [sign-proof]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  V: 0.0.0-sandbox
+
+jobs:
+  rows:
+    # the scripts' and this file's own rows, offline
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq osslsigncode
+      - run: bash scripts/signing/rows.sh
+
+  build:
+    # the two Windows binaries of the release job, the same source and flags (plain, then FIPS 140-3)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: |
+          set -euo pipefail
+          mkdir -p unsigned
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$V" \
+            -o "unsigned/pgvigil_${V}_windows_amd64.exe" ./cmd/pgvigil
+          CGO_ENABLED=0 GOFIPS140=v1.0.0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$V" \
+            -o "unsigned/pgvigil_${V}_windows_amd64_fips.exe" ./cmd/pgvigil
+          ls -l unsigned
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pgvigil-SANDBOX-unsigned-binaries
+          path: unsigned/*.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  app:
+    # the Windows app, built on Windows as the release's app job builds it
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+      - shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p unsigned
+          (cd app && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -H=windowsgui -X main.version=$V" -o ../unsigned/pgvigil-app.exe .)
+          ls -l unsigned
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pgvigil-SANDBOX-unsigned-app
+          path: unsigned/pgvigil-app.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  sign:
+    needs: [rows, build, app]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pgvigil-SANDBOX-unsigned-*
+          merge-multiple: true
+          path: tosign
+      - name: the three files, then one batch_sign over them
+        env:
+          SIGN_MODE: sandbox
+          # the vendor's published demo values (the page above): the sandbox account and its EV code-signing TOTP seed;
+          # on this step alone, as the release's account will be
+          SIGN_USERNAME: esigner_demo
+          SIGN_PASSWORD: "esignerDemo#1"
+          SIGN_TOTP_SECRET: "RDXYgV9qju+6/7GnMf1vCbKexXVJmUVr+86Wq/8aIGg="
+        run: |
+          set -euo pipefail
+          ls -l tosign
+          [ "$(ls tosign/*.exe | wc -l)" -eq 3 ]
+          java -version 2>&1 | head -1
+          bash scripts/signing/sign-windows.sh tosign
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pgvigil-SANDBOX-signed
+          path: tosign/*.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  verify:
+    needs: sign
+    runs-on: ubuntu-24.04   # osslsigncode 2.8
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq osslsigncode && osslsigncode --version | head -1
+      - uses: actions/download-artifact@v4
+        with:
+          name: pgvigil-SANDBOX-signed
+          path: signed
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pgvigil-SANDBOX-unsigned-*
+          merge-multiple: true
+          path: unsigned
+      - name: red - a planted unsigned file fails the verify
+        run: |
+          set +e -uo pipefail   # the step's shell runs with -e; a red row reads the exit code itself
+          out=$(SIGN_MODE=sandbox bash scripts/signing/verify-windows.sh "unsigned/pgvigil_${V}_windows_amd64.exe"); rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 1 ] && grep -qE '^FAIL pgvigil_.*_windows_amd64.exe: not signed' <<<"$out"
+      - name: red - the sandbox files fail a production-mode verify, each for its chain
+        run: |
+          set +e -uo pipefail   # the step's shell runs with -e; a red row reads the exit code itself
+          out=$(SIGN_MODE=production bash scripts/signing/verify-windows.sh signed/*.exe); rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 1 ] && [ "$(grep -cE "^FAIL .* \(production\): .*the chain does not verify against SSL.com's roots" <<<"$out")" -eq 3 ]
+      - name: red - a timestamp that does not verify fails (a CA bundle that holds no timestamp root)
+        run: |
+          set +e -uo pipefail   # the step's shell runs with -e; a red row reads the exit code itself
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/unrelated.key -out /tmp/unrelated.pem -days 1 -subj "/CN=not a timestamp root" 2>/dev/null
+          out=$(TSA_CA_BUNDLE=/tmp/unrelated.pem SIGN_MODE=sandbox bash scripts/signing/verify-windows.sh "signed/pgvigil_${V}_windows_amd64.exe"); rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 1 ] && grep -qE '^FAIL .*no timestamp, or one that does not verify' <<<"$out"
+      - name: red - the demo signature grafted on other bytes fails (one byte of the program changed after signing)
+        run: |
+          set +e -uo pipefail   # the step's shell runs with -e; a red row reads the exit code itself
+          g=/tmp/grafted.exe; cp "signed/pgvigil_${V}_windows_amd64.exe" "$g"
+          b=$(od -An -tx1 -j 8192 -N 1 "$g" | tr -d ' \n'); n=41; [ "$b" = 41 ] && n=42
+          printf "\x$n" | dd of="$g" bs=1 seek=8192 conv=notrunc status=none
+          out=$(SIGN_MODE=sandbox bash scripts/signing/verify-windows.sh "$g"); rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 1 ] && grep -qE '^FAIL .*a digest does not match the file' <<<"$out"
+      - name: red - forged signatures fail (a planted signer's subject; a self-made certificate with the demo subject; a nested signature)
+        run: bash scripts/signing/rows.sh "unsigned/pgvigil_${V}_windows_amd64.exe"
+      - name: green - every signed file passes the sandbox verify, its signer printed
+        run: SIGN_MODE=sandbox bash scripts/signing/verify-windows.sh signed/*.exe
+
+  windows:
+    # each signed file read by Windows itself; Status 'Valid' is not promised for a sandbox file (its root is in no
+    # Windows store). Fails on no signature, no timestamp, or a signer that is not the demo one; and the signed
+    # _fips.exe must still print its fips140 line.
+    needs: sign
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pgvigil-SANDBOX-signed
+          path: signed
+      - shell: pwsh
+        run: |
+          $files = @(Get-ChildItem signed -Filter *.exe)
+          $bad = @()
+          if ($files.Count -ne 3) { $bad += "$($files.Count) signed files, not 3" }
+          foreach ($f in $files) {
+            $s = Get-AuthenticodeSignature -FilePath $f.FullName
+            Write-Host "$($f.Name) Status: $($s.Status)"
+            Write-Host "$($f.Name) StatusMessage: $($s.StatusMessage)"
+            Write-Host "$($f.Name) SignerCertificate.Subject: $($s.SignerCertificate.Subject)"
+            Write-Host "$($f.Name) TimeStamperCertificate.Subject: $($s.TimeStamperCertificate.Subject)"
+            if ($s.Status -in @('NotSigned', 'HashMismatch', 'NotSupportedFileFormat') -or -not $s.SignerCertificate) {
+              $bad += "$($f.Name): no signature that covers the file ($($s.Status))"
+            } elseif (-not $s.TimeStamperCertificate) {
+              $bad += "$($f.Name): no timestamp"
+            } elseif ($s.SignerCertificate.Subject -notmatch '(^|, )CN=Esigner LLC(,|$)' -or $s.SignerCertificate.Subject -notmatch '(^|, )OU=Cloud Signing Demo(,|$)') {
+              $bad += "$($f.Name): the signer is not the vendor's demo subject"
+            }
+          }
+          $fips = @($files | Where-Object Name -like '*_fips.exe')
+          if ($fips.Count -eq 1) {
+            $line = (& $fips[0].FullName version 2>&1 | Out-String) -split "`r?`n" | Where-Object { $_ -match 'fips140' } | Select-Object -First 1
+            Write-Host "$($fips[0].Name) fips140 line: $line"
+            if ($line -notmatch 'fips140 on \(module v1\.0\.0\)') { $bad += "$($fips[0].Name): no 'fips140 on (module v1.0.0)' line" }
+          } else { $bad += "$($fips.Count) _fips.exe files, not 1" }
+          if ($bad.Count) { $bad | ForEach-Object { Write-Host "FAIL $_" }; exit 1 }
+          Write-Host 'PASS: every signed file read on Windows'
