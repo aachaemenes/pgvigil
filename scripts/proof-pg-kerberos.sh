@@ -167,15 +167,16 @@ echo "== C: every PostgreSQL collection once, by the keytab"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -F '|' -c "$1"; }
 COLLS=$("$BIN" collect -config "$WORK/k1.yaml" -once no_such_collection 2>&1 | grep -o 'known: \[[^]]*\]' | tr -d '[]' | tr ' ' '\n' | grep -v '^mssql_\|^known:' | grep . || true)
 if [ "$(grep -c . <<<"$COLLS")" -ge 20 ]; then
-  # every listed collection is accounted for: it logged a row (ok or skipped), or the instance's configuration does not
-  # name its source, so the run stops before any connect, prints '(skipped: <why>)' and logs no row (collect.Gated:
-  # amcheck, custom, logs, pgbouncer, pi and the cloud reads on a k1.yaml that names none of them); a run that exited
-  # non-zero, or a collection neither logged nor said skipped, fails the row
+  # every listed collection is accounted for: it logged a row (ok or skipped), or it is one of the nine whose source
+  # k1.yaml does not name (collect.Gated: amcheck, custom, logs, pgbouncer, pi and the cloud reads), so the run stops
+  # before any connect, prints '(skipped: <why>)' on its own result line and logs no row; a run that exited non-zero,
+  # a collection neither logged nor said skipped, or a no-row skip outside the nine fails the row (a later gated
+  # collection fails it until it is added to GATED_WANT)
+  GATED_WANT=$'amcheck\ncloud_replicas\ncustom\ndms\nio\nlogs\npgbouncer\npi\nserverless'
   : > "$WORK/c.exit"; : > "$WORK/c.gated"
   for c in $COLLS; do
-    "$BIN" collect -config "$WORK/k1.yaml" -once "$c" -instance k1 > "$WORK/c-one.out" 2>&1 || echo "$c" >> "$WORK/c.exit"
-    cat "$WORK/c-one.out" >> "$WORK/c.out"
-    if grep -qF "k1 $c: " "$WORK/c-one.out" && grep -F "k1 $c: " "$WORK/c-one.out" | grep -qF '(skipped: '; then echo "$c" >> "$WORK/c.gated"; fi
+    "$BIN" collect -config "$WORK/k1.yaml" -once "$c" -instance k1 > "$WORK/c-$c.out" 2>&1 || echo "$c" >> "$WORK/c.exit"
+    if grep -q "^k1 $c: [0-9]* row(s) in .*(skipped: " "$WORK/c-$c.out"; then echo "$c" >> "$WORK/c.gated"; fi
   done
   LISTED=$(grep -c . <<<"$COLLS")
   BADC=$(q "select d.collection || ' ' || d.status || ' ' || left(coalesce(d.note, ''), 120) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'k1' and d.status not in ('ok', 'skipped') order by 1")
@@ -184,10 +185,16 @@ if [ "$(grep -c . <<<"$COLLS")" -ge 20 ]; then
   MISSING=$(comm -23 <(sort -u <<<"$COLLS") <(sort -u <<<"$LOGGED") | grep . || true)
   UNSAID=$(comm -23 <(sort -u <<<"$MISSING") <(sort -u "$WORK/c.gated") | grep . || true)
   EXITED=$(tr '\n' ' ' < "$WORK/c.exit")
+  EXTRA=$(comm -23 <(sort -u <<<"$MISSING") <(sort -u <<<"$GATED_WANT") | grep . || true)
   NM=$(grep -c . <<<"$MISSING" || true)
-  if [ -z "$BADC" ] && [ -z "$UNSAID" ] && [ -z "$EXITED" ]; then
+  if [ -z "$BADC" ] && [ -z "$UNSAID" ] && [ -z "$EXITED" ] && [ -z "$EXTRA" ]; then
     ok "C: $LISTED collections by the keytab - $NC logged, each ok or skipped; $NM not configured on this instance, skipped before any connect: $(tr '\n' ' ' <<<"$MISSING")"
-  else bad "C: $NC of $LISTED logged; not ok or skipped: ${BADC:-none}; neither logged nor said skipped: ${UNSAID:-none}; exited non-zero: ${EXITED:-none}"; fi
+  else
+    bad "C: $NC of $LISTED logged; not ok or skipped: ${BADC:-none}; neither logged nor said skipped: $(tr '\n' ' ' <<<"${UNSAID:-none}"); exited non-zero: ${EXITED:-none}; a no-row skip outside the nine: $(tr '\n' ' ' <<<"${EXTRA:-none}")"
+    for c in $(sort -u <<<"$UNSAID"$'\n'"$(tr ' ' '\n' <<<"$EXITED")"$'\n'"$EXTRA" | grep .); do
+      echo "   $c's own output:"; sed 's/^/     /' "$WORK/c-$c.out"
+    done
+  fi
 else bad "C: the PostgreSQL collections were not listed"; fi
 
 echo "== K3: the principal's key rotated at the KDC"
