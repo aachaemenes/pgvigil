@@ -182,7 +182,7 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @('PGV_MSI_PATH', 0))
 try {
     $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('PGV_SQL'))
-    $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+    [void]$view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
     $n = 0; while ($view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)) { $n++ }
     'ok ' + $n + ' row(s)'
 } catch {
@@ -221,7 +221,7 @@ function Read-Column([string]$sql) {
         try { $er = $installer.GetType().InvokeMember('LastErrorRecord', 'InvokeMethod', $null, $installer, $null); if ($er) { $words += ' | ' + $er.GetType().InvokeMember('FormatText', 'InvokeMethod', $null, $er, $null) } } catch { }
         Write-Host ('BINARY unread: Windows Installer refused the query ' + $sql + ' - ' + $words); exit 1
     }
-    $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+    [void]$view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
     $vals = @()
     while ($true) {
         $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
@@ -229,7 +229,7 @@ function Read-Column([string]$sql) {
         $vals += $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, 1)
         $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($rec)
     }
-    $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
+    [void]$view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
     $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($view)
     return , $vals
 }
