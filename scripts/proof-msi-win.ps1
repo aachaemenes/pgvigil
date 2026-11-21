@@ -229,7 +229,7 @@ function Read-Column([string]$sql) {
         $vals += $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, 1)
         $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($rec)
     }
-    $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
+    [void]$view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
     $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($view)
     return , $vals
 }

@@ -66,7 +66,9 @@ jobs:
           # rn-l189 S1: the table's presence from _Tables first; a failure of any read after that fails the step (a
           # broken COM read never passes as an absent table)
           function Read-Column([string]$sql) {
-            $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql))
+            # a refused query names itself (a run's log then says which read Windows Installer refused)
+            try { $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql)) }
+            catch { throw ('Windows Installer refused the query ' + $sql + ' - ' + $(if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message })) }
             [void]$view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
             $vals = @()
             while ($true) {
