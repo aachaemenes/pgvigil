@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/microsoft/go-mssqldb/msdsn"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
@@ -55,7 +56,9 @@ const (
 )
 
 // fileDSNError says why a file instance's dsn cannot be used, in fixed words, or "". A parse error is never passed on:
-// pgconn's ParseConfigError carries the whole string and masks a password only in its usual spellings.
+// pgconn's ParseConfigError carries the whole string and masks a password only in its usual spellings - a PostgreSQL
+// dsn refused because a file it names could not be read adds that file error's own words (collect.UnreadFileWords), as
+// the collector's connect and the page's connection test do.
 func fileDSNError(engine, dsn string) string {
 	if strings.TrimSpace(dsn) == "" {
 		return emptyFileDSN
@@ -66,6 +69,9 @@ func fileDSNError(engine, dsn string) string {
 		_, err = msdsn.Parse(dsn)
 	default:
 		_, err = pgx.ParseConfig(dsn)
+		if err != nil {
+			return unparsedFileDSN + collect.UnreadFileWords(err)
+		}
 	}
 	if err != nil {
 		return unparsedFileDSN

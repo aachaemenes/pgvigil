@@ -175,22 +175,35 @@ SET application_name = 'pgvigil';`
 var ErrUnparsedDSN = errors.New("the dsn does not parse as a PostgreSQL connection string (its text is not shown: it may hold a password; env: and file: hold the whole connection string)")
 
 // UnparsedDSN is the answer for a dsn pgx.ParseConfig refused: ErrUnparsedDSN's fixed words, and - only when the refusal
-// wraps a file pgx could not read while parsing (sslkey, sslcert, sslrootcert, passfile, a service file: it reads them
-// as it parses) - that file error's own words found by errors.As (the operation, the path, the system's reason), never
-// the parse error's own text, which carries the connection string. errors.Is(err, ErrUnparsedDSN) holds either way.
+// wraps a certificate or key file pgx could not read while parsing (sslrootcert, sslkey, sslcert: pgx wraps those
+// with %w; a passfile's failure is dropped and a service file's is formatted, so neither reaches here) - UnreadFileWords.
+// errors.Is(err, ErrUnparsedDSN) holds either way.
 func UnparsedDSN(parseErr error) error {
-	var pe *fs.PathError
-	if errors.As(parseErr, &pe) {
-		return &unparsedFileError{file: pe}
+	if w := UnreadFileWords(parseErr); w != "" {
+		return &unparsedFileError{words: w}
 	}
 	return ErrUnparsedDSN
 }
 
-type unparsedFileError struct{ file *fs.PathError }
-
-func (e *unparsedFileError) Error() string {
-	return ErrUnparsedDSN.Error() + " - a file it names could not be read: " + e.file.Error()
+// UnreadFileWords is " - a file it names could not be read: <op> <path>: <reason>" for a parse error that wraps a
+// *fs.PathError (found by errors.As), or "": the file error's own words, never the parse error's text, which carries
+// the connection string. The path itself is shown only when it holds no '=': pgx's keyword=value parser lets an empty
+// value take the next token ('sslrootcert= password=x' reads the path "password=x"), and a misplaced quote puts a
+// password inside a path - such a path is said to be not shown.
+func UnreadFileWords(parseErr error) string {
+	var pe *fs.PathError
+	if !errors.As(parseErr, &pe) {
+		return ""
+	}
+	if strings.Contains(pe.Path, "=") {
+		return " - a file it names could not be read: " + pe.Op + " (its path is not shown: it holds a keyword=value, an empty value in the dsn took the next word): " + pe.Err.Error()
+	}
+	return " - a file it names could not be read: " + pe.Op + " " + pe.Path + ": " + pe.Err.Error()
 }
+
+type unparsedFileError struct{ words string }
+
+func (e *unparsedFileError) Error() string { return ErrUnparsedDSN.Error() + e.words }
 func (e *unparsedFileError) Unwrap() error { return ErrUnparsedDSN }
 
 // Connect opens one connection to an instance with the safety settings applied.
