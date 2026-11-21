@@ -16,8 +16,9 @@
 #   (-p:RestoreConfigFile), so no NuGet.Config is made in the running account's profile
 #   a run cut before its end (a time limit, a dropped session): the same command with -Undo runs the undo alone
 # Expected (written before its first run, 2026-11-20):
-#  B  'dotnet build packaging\msi\pgvigil.wixproj' exit 0 for 0.0.1 and for 0.0.2, each .msi made (a failed build prints every
-#     line of its output that names an error)
+#  B  'dotnet build packaging\msi\pgvigil.wixproj' exit 0 for 0.0.1 and for 0.0.2, each in its own intermediate folder
+#     (obj\<version>\) and each .msi made, the build's seconds printed (a build of a second or two linked nothing); a failed
+#     build prints every line of its output that names an error and its last target lines
 #  M1 the 0.0.2 package's Binary table is absent or empty (no custom-action DLL ships) - read in a child powershell.exe,
 #     so no COM object of the read holds the package open when the undo removes it
 #  I1 'msiexec /i' of 0.0.1 exit 0: %ProgramFiles%\pgvigil\pgvigil.exe there, the service pgvigil made, the exe
@@ -141,14 +142,22 @@ try {
         $ver = $pair[0]; $outDir = Join-Path $Work "msi-$ver"
         $restore = @()
         if ($NugetConfig) { $restore = @("-p:RestoreConfigFile=$NugetConfig") }
-        $build = Invoke-Native { & $Dotnet build (Join-Path $MsiDir 'pgvigil.wixproj') -c Release "-p:PgvVersion=$ver" "-p:PgvBinary=$($pair[1])" @restore -o $outDir }
+        # each version its own intermediate folder and no incremental build: a second build in the project's one
+        # obj\Release found the first version's outputs up to date, linked no package and failed its copy (MSB3030 after a
+        # second); --no-incremental relinks even if the folder property were not honoured (the first package is already
+        # copied out to its own -o folder)
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $build = Invoke-Native { & $Dotnet build (Join-Path $MsiDir 'pgvigil.wixproj') -c Release --no-incremental -v:n "-p:PgvVersion=$ver" "-p:PgvBinary=$($pair[1])" "-p:IntermediateOutputPath=obj\$ver\" @restore -o $outDir }
+        $sw.Stop()
         $made = Join-Path $outDir "pgvigil-$ver-x64.msi"
         $msi[$ver] = $made
         $lastLines = (("$($build.Out)" -split "`n" | Where-Object { $_ } | Select-Object -Last 3) -join ' | ')
-        Row 'B' ($build.Code -eq 0 -and (Test-Path -LiteralPath $made)) "dotnet build of $ver exit $($build.Code), $made $(if (Test-Path -LiteralPath $made) { (Get-Item -LiteralPath $made).Length } else { 'MISSING' }) bytes; last: $lastLines"
+        Row 'B' ($build.Code -eq 0 -and (Test-Path -LiteralPath $made)) "dotnet build of $ver exit $($build.Code) in $([int]$sw.Elapsed.TotalSeconds) s, $made $(if (Test-Path -LiteralPath $made) { (Get-Item -LiteralPath $made).Length } else { 'MISSING' }) bytes; last: $lastLines"
         # a failed build's own words: every line that names an error (the last three lines say only how many)
         if ($build.Code -ne 0) {
             @("$($build.Out)" -split "`n" | Where-Object { $_ -match '(?i)\berror\b' -and $_ -notmatch '^\s*\d+ Error\(s\)' } | Select-Object -First 20) | ForEach-Object { Write-Host "     build $ver error: $($_.Trim())" }
+            # and which targets ran or were skipped as up to date before it failed (normal verbosity's target lines)
+            @("$($build.Out)" -split "`n" | Where-Object { $_ -match '(?i)^\s*skipping target|^\s*target "|^[A-Za-z_][A-Za-z0-9_]*:\s*$' } | Select-Object -Last 40) | ForEach-Object { Write-Host "     build $ver target: $($_.Trim())" }
         }
     }
     if (-not ((Test-Path -LiteralPath $msi['0.0.1']) -and (Test-Path -LiteralPath $msi['0.0.2']))) { throw 'no package to install: the rows after B need both' }
