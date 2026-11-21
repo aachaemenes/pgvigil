@@ -177,7 +177,7 @@ var ErrUnparsedDSN = errors.New("the dsn does not parse as a PostgreSQL connecti
 func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	dsn := in.DSN()
 	if strings.TrimSpace(dsn) == "" { // white space connects nowhere: refused as an empty one, with its reason
-		return nil, InstanceConnect(in.Name, &UnresolvedRefError{Instance: in.Name, Ref: in.DSNRaw, Why: EmptyDSNWhy(in.DSNRaw)})
+		return nil, InstanceConnect(in.Name, fmt.Errorf("connect %s: dsn %q resolved to an empty string (%s)", in.Name, in.DSNRaw, EmptyDSNWhy(in.DSNRaw)))
 	}
 	// task 201 DONE-2 (N10): pgx.Connect's own two steps, with DefaultConnectTimeout where the DSN sets no
 	// connect_timeout; a DSN that does not parse is a failed connect, as before
@@ -243,17 +243,6 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 				return r.LogSecretFailure(wctx, in.Name, config.EnginePostgres, in.Platform, in.Tags, name, start, time.Since(start), err)
 			}); lerr != nil {
 				log.Warn("the secret's failure was not recorded", "instance", in.Name, "collection", name, "err", lerr)
-			}
-			return Result{Err: err, Duration: time.Since(start)}
-		}
-		var ue *UnresolvedRefError
-		if errors.As(err, &ue) && !stopCut(ctx) {
-			// the connection string reference resolved to nothing: the server was not asked - the instance's own
-			// 'connection string unresolved', never a connect failure
-			if lerr := logOn(ctx, func(wctx context.Context) error {
-				return r.LogReferenceFailure(wctx, in.Name, config.EnginePostgres, in.Platform, in.Tags, name, start, time.Since(start), ue.Ref, ue.Why)
-			}); lerr != nil {
-				log.Warn("the unresolved reference was not recorded", "instance", in.Name, "collection", name, "err", lerr)
 			}
 			return Result{Err: err, Duration: time.Since(start)}
 		}
