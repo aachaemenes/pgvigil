@@ -102,18 +102,36 @@ func TestInstallScriptRefusesAnMSIMachineL189(t *testing.T) {
 // wherever it is redirected (ISE, a remoting session, '2>&1 | Tee-Object'): a SUCCESSFUL 'pgvigil install' then throws on
 // its first slog INFO line. Every call of the downloaded pgvigil.exe goes through the script's Invoke-Native (stderr read
 // under 'Continue', judged by the exit code) - none is a bare '& <exe> install'. Since RELNOTES L131 the offline and the
-// online install call Invoke-PgvigilInstall, whose three calls (no account; a gMSA or NT SERVICE account;
-// -password-stdin) take the exe as $exePath.
+// online install call Invoke-PgvigilInstall: its two calls without a password (no account; a gMSA or NT SERVICE
+// account) go through Invoke-Native, and its -password-stdin call goes through Invoke-NativeStdin, which writes the
+// password's UTF-8 bytes and CRLF to the child's standard input - never PowerShell's pipe, which encodes a native
+// command's input with $OutputEncoding (US-ASCII in Windows PowerShell 5.1: each non-ASCII character a '?'). Both the
+// served copy (deploy/) and the docs copy hold that write and no pipe into a native command.
 func TestInstallScriptNativeCallsWrapped(t *testing.T) {
 	ps := readRepoFile(t, "docs/install.ps1")
 	exe := `(\$exe|\$exePath|\(Join-Path \$work \$asset\))\s+(@up|install)\b`
 	all := regexp.MustCompile(`&\s*`+exe).FindAllString(ps, -1)
-	wrapped := regexp.MustCompile(`Invoke-Native\s*\{\s*(\$plain\s*\|\s*)?&\s*`+exe).FindAllString(ps, -1)
+	wrapped := regexp.MustCompile(`Invoke-Native\s*\{\s*&\s*`+exe).FindAllString(ps, -1)
 	if len(all) != len(wrapped) {
 		t.Errorf("install.ps1 runs pgvigil.exe %d time(s), %d of them through Invoke-Native: a bare call throws on its stderr under 'Stop' in 5.1's ISE - call it through Invoke-Native", len(all), len(wrapped))
 	}
-	if len(wrapped) != 4 {
-		t.Errorf("install.ps1 has %d install calls through Invoke-Native, want 4 (the offline upgrade; Invoke-PgvigilInstall's three)", len(wrapped))
+	if len(wrapped) != 3 {
+		t.Errorf("install.ps1 has %d install calls through Invoke-Native, want 3 (the offline upgrade; Invoke-PgvigilInstall's two without a password)", len(wrapped))
+	}
+	for _, f := range []string{"docs/install.ps1", "deploy/install.ps1"} {
+		text := readRepoFile(t, f)
+		if n := strings.Count(text, "return Invoke-NativeStdin $exePath @('install', '-user', $account, '-password-stdin') $bytes"); n != 1 {
+			t.Errorf("%s writes the password through Invoke-NativeStdin %d time(s), want 1", f, n)
+		}
+		if !strings.Contains(text, "(New-Object System.Text.UTF8Encoding $false).GetBytes($plain + \"`r`n\")") {
+			t.Errorf("%s does not make the password's bytes as UTF-8 without a BOM plus CRLF (the line end -password-stdin strips)", f)
+		}
+		if !strings.Contains(text, "$stream = $p.StandardInput.BaseStream") || !strings.Contains(text, "$stream.Write($inBytes, 0, $inBytes.Length)") {
+			t.Errorf("%s does not write the bytes to the stream under StandardInput", f)
+		}
+		if m := regexp.MustCompile(`\|\s*&\s*\$?[\w.]+`).FindAllString(text, -1); len(m) > 0 {
+			t.Errorf("%s pipes into a native command (%q): Windows PowerShell 5.1 encodes that pipe with $OutputEncoding", f, m)
+		}
 	}
 	if n := len(regexp.MustCompile(`Invoke-PgvigilInstall\s+(\$exe|\(Join-Path \$work \$asset\))\s`).FindAllString(ps, -1)); n != 2 {
 		t.Errorf("install.ps1 calls Invoke-PgvigilInstall %d time(s), want 2 (the offline and the online install)", n)
@@ -223,8 +241,13 @@ func TestInstallScriptMSIOrderL189(t *testing.T) {
 		t.Errorf("the MSI refusal (at %d, download-only let through) must come before the first download (at %d)", refuse, download)
 	}
 	streamed := regexp.MustCompile(`Invoke-Native\s*\{[^}]*&\s*(\$exe|\$exePath)\s+(@up|install)[^}]*\}\s*-Stream`).FindAllString(ps, -1)
-	if len(streamed) != 4 {
-		t.Errorf("%d install calls stream their output, want 4 (the offline upgrade; Invoke-PgvigilInstall's three)", len(streamed))
+	if len(streamed) != 3 {
+		t.Errorf("%d install calls through Invoke-Native stream their output, want 3 (the offline upgrade; Invoke-PgvigilInstall's two without a password)", len(streamed))
+	}
+	// the -password-stdin call: Invoke-NativeStdin shows each line as it comes, as Invoke-Native -Stream does
+	fn := regexp.MustCompile(`(?s)function Invoke-NativeStdin\(.*?\n}\n`).FindString(ps)
+	if !strings.Contains(fn, "Write-Host $line") || !strings.Contains(fn, "ReadLineAsync()") {
+		t.Errorf("Invoke-NativeStdin does not show each line as it comes (Write-Host per ReadLineAsync line)")
 	}
 	if regexp.MustCompile(`Write-Host \$\w+\.Out`).MatchString(ps) {
 		t.Error("a caller prints an install's output again after -Stream showed it")

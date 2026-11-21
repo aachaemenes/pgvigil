@@ -133,8 +133,10 @@ func TestGMSANameQuotedInTheScript(t *testing.T) {
 	}
 }
 
-// TestInstallScriptsKeepTheInstalledAccount: install.ps1 pipes the password as UTF-8 without a BOM, set in the
-// caller's scope before the pipe; both installers refuse an account where the service is installed on the online
+// TestInstallScriptsKeepTheInstalledAccount: install.ps1 makes the password's bytes as UTF-8 without a BOM plus CRLF
+// and writes them through Invoke-NativeStdin right after, with no $OutputEncoding left to depend on (a pipe into a
+// native command is encoded with it; Windows PowerShell 5.1's US-ASCII turned each non-ASCII character into '?');
+// both installers refuse an account where the service is installed on the online
 // path too; the docs/ and deploy/ copies are the same.
 func TestInstallScriptsKeepTheInstalledAccount(t *testing.T) {
 	read := func(f string) string {
@@ -145,8 +147,11 @@ func TestInstallScriptsKeepTheInstalledAccount(t *testing.T) {
 		return string(b)
 	}
 	ps := read("../../docs/install.ps1")
-	if !regexp.MustCompile(`(?s)\$OutputEncoding = New-Object System\.Text\.UTF8Encoding \$false\s*\n\s*return Invoke-Native \{ \$plain \| & \$exePath install`).MatchString(ps) {
-		t.Error("install.ps1 does not set $OutputEncoding to UTF-8 without a BOM right before the password's pipe")
+	if !regexp.MustCompile("(?s)\\$bytes = \\(New-Object System\\.Text\\.UTF8Encoding \\$false\\)\\.GetBytes\\(\\$plain \\+ \"`r`n\"\\)\\s*\\n\\s*return Invoke-NativeStdin \\$exePath @\\('install', '-user', \\$account, '-password-stdin'\\) \\$bytes").MatchString(ps) {
+		t.Error("install.ps1 does not make the password's UTF-8 bytes plus CRLF right before writing them through Invoke-NativeStdin")
+	}
+	if regexp.MustCompile(`\$OutputEncoding\s*=`).MatchString(ps) {
+		t.Error("install.ps1 still sets $OutputEncoding: nothing may depend on PowerShell's pipe encoding for the password")
 	}
 	if !strings.Contains(ps, "-ServiceAccount (or PGVIGIL_SERVICE_ACCOUNT) goes with a fresh install: the service pgvigil is installed") {
 		t.Error("install.ps1's online path does not refuse an account over the installed service")

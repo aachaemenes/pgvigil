@@ -102,23 +102,85 @@ function Invoke-Native([scriptblock]$cmd, [switch]$Stream) {
         return @{ Code = $LASTEXITCODE; Out = ($out -join "`n") }
     } finally { $ErrorActionPreference = $eap }
 }
+# one argument as a Windows program's command line takes it (CommandLineToArgvW's rules): quoted when it holds white
+# space or a quote, a quote escaped, the backslashes before a quote or the closing quote doubled
+function ConvertTo-NativeArgument([string]$a) {
+    if ($a -ne '' -and $a -notmatch '[\s"]') { return $a }
+    $b = [regex]::Replace($a, '(\\*)"', { param($m) $m.Groups[1].Value + $m.Groups[1].Value + '\"' })
+    $b = [regex]::Replace($b, '(\\+)$', { param($m) $m.Groups[1].Value + $m.Groups[1].Value })
+    return '"' + $b + '"'
+}
+# a secret handed to a native command's standard input as BYTES, never through PowerShell's pipe: Windows PowerShell
+# 5.1 encodes a pipe to a native command with $OutputEncoding (US-ASCII unless set, each non-ASCII character a '?'),
+# and a value set in the calling function did not reach the pipe inside the scriptblock Invoke-Native runs (a
+# 17-character password holding a 2-byte character reached the reader as 17 bytes). .NET Framework's ProcessStartInfo
+# has no StandardInputEncoding (only .NET 5 and later): Process.Start wraps stdin in a writer of Console.InputEncoding,
+# which under a UTF-8 console code page (chcp 65001, or Windows' 'Use Unicode UTF-8' setting) puts a BOM (EF BB BF)
+# before the first bytes - pgvigil's -password-stdin drops a leading BOM (cmd/pgvigil/svcaccount.go,
+# readServicePassword). The bytes are written to the stream under StandardInput, flushed, and stdin is closed. stdout
+# and stderr are decoded as UTF-8 (what pgvigil writes to a pipe) and read a line at a time as they come - one pending
+# read on each, never two reads to the end one after the other, so a child that fills one pipe while the other is read
+# cannot hang it - each line shown as Invoke-Native -Stream shows it and returned in Out; Code is the child's exit
+# code. Ctrl+C waits for the child (its own hidden console; the read loop holds PowerShell's stop until it ends - an
+# install takes seconds). The secret is never on the command line, in the environment, in a file or in a line shown.
+function Invoke-NativeStdin([string]$exePath, [string[]]$arguments, [byte[]]$inBytes) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exePath
+    $psi.Arguments = (@($arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $psi.StandardErrorEncoding = New-Object System.Text.UTF8Encoding $false
+    $psi.CreateNoWindow = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    try {
+        $lines = New-Object System.Collections.Generic.List[string]
+        try {
+            $stream = $p.StandardInput.BaseStream
+            $stream.Write($inBytes, 0, $inBytes.Length)
+            $stream.Flush()
+        } catch [System.IO.IOException] {
+            # the child ended before it read its stdin: its own words below say why
+            $lines.Add('stdin not written: the program ended before reading it')
+            Write-Host $lines[0]
+        } finally {
+            try { $p.StandardInput.Close() } catch [System.IO.IOException] { }
+        }
+        $readers = @($p.StandardOutput, $p.StandardError)
+        $pending = @($readers[0].ReadLineAsync(), $readers[1].ReadLineAsync())
+        while ($null -ne $pending[0] -or $null -ne $pending[1]) {
+            $live = [System.Threading.Tasks.Task[]]@($pending | Where-Object { $null -ne $_ })
+            $done = $live[[System.Threading.Tasks.Task]::WaitAny($live)]
+            $k = if ([object]::ReferenceEquals($done, $pending[0])) { 0 } else { 1 }
+            $line = $done.Result
+            if ($null -eq $line) { $pending[$k] = $null; continue }
+            Write-Host $line
+            $lines.Add($line)
+            $pending[$k] = $readers[$k].ReadLineAsync()
+        }
+        $p.WaitForExit()
+        return @{ Code = $p.ExitCode; Out = ($lines -join "`n") }
+    } finally { $p.Dispose() }
+}
 # 'pgvigil install' as the service's account (RELNOTES L131): none named = the virtual account; a gMSA (DOMAIN\name$)
 # or NT SERVICE\<name> without a password (pgvigil takes NT SERVICE\pgvigil alone); any other account's password read
-# here, not shown, and piped to -password-stdin - never a parameter, never written; the plain copy's reference is
-# dropped after the call (the string stays in memory until it is collected)
+# here, not shown, and written to -password-stdin as its UTF-8 bytes (no BOM: a BOM would be read as the password's
+# first bytes) and CRLF, the line end -password-stdin strips - never a parameter, never written to a file; the byte
+# copy is zeroed and the plain copy's reference dropped after the call (the string stays in memory until collected)
 function Invoke-PgvigilInstall([string]$exePath, [string]$account) {
     if (-not $account) { return Invoke-Native { & $exePath install } -Stream }
     if ($account -match '\$$' -or $account -like 'NT SERVICE\*') { return Invoke-Native { & $exePath install -user $account } -Stream }
     $sec = Read-Host -AsSecureString "the password of $account (not shown)"
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    $bytes = $null
     try {
         $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-        # a pipe to a native command is encoded with $OutputEncoding - US-ASCII in Windows PowerShell 5.1, which turns
-        # every non-ASCII character of the password into '?': UTF-8 for this call, without a BOM (a BOM would be read
-        # as the password's first bytes); set here, in the caller's scope the pipe reads, not inside the scriptblock
-        $OutputEncoding = New-Object System.Text.UTF8Encoding $false
-        return Invoke-Native { $plain | & $exePath install -user $account -password-stdin } -Stream
+        $bytes = (New-Object System.Text.UTF8Encoding $false).GetBytes($plain + "`r`n")
+        return Invoke-NativeStdin $exePath @('install', '-user', $account, '-password-stdin') $bytes
     } finally {
+        if ($null -ne $bytes) { [Array]::Clear($bytes, 0, $bytes.Length) }
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
         $plain = $null
     }
