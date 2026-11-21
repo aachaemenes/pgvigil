@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"sort"
 	"strings"
@@ -173,6 +174,25 @@ SET application_name = 'pgvigil';`
 // shown, as it may hold a password.
 var ErrUnparsedDSN = errors.New("the dsn does not parse as a PostgreSQL connection string (its text is not shown: it may hold a password; env: and file: hold the whole connection string)")
 
+// UnparsedDSN is the answer for a dsn pgx.ParseConfig refused: ErrUnparsedDSN's fixed words, and - only when the refusal
+// wraps a file pgx could not read while parsing (sslkey, sslcert, sslrootcert, passfile, a service file: it reads them
+// as it parses) - that file error's own words found by errors.As (the operation, the path, the system's reason), never
+// the parse error's own text, which carries the connection string. errors.Is(err, ErrUnparsedDSN) holds either way.
+func UnparsedDSN(parseErr error) error {
+	var pe *fs.PathError
+	if errors.As(parseErr, &pe) {
+		return &unparsedFileError{file: pe}
+	}
+	return ErrUnparsedDSN
+}
+
+type unparsedFileError struct{ file *fs.PathError }
+
+func (e *unparsedFileError) Error() string {
+	return ErrUnparsedDSN.Error() + " - a file it names could not be read: " + e.file.Error()
+}
+func (e *unparsedFileError) Unwrap() error { return ErrUnparsedDSN }
+
 // Connect opens one connection to an instance with the safety settings applied.
 func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	dsn := in.DSN()
@@ -185,7 +205,7 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	if err != nil {
 		// rn-l9 B2: never pgconn's ParseConfigError - it carries the whole string and masks a password only in its
 		// usual spellings; a bare password behind env: or file: would reach the streak, the findings and the logs
-		err = ErrUnparsedDSN
+		err = UnparsedDSN(err)
 	}
 	var conn *pgx.Conn
 	var took time.Duration

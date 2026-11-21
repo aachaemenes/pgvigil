@@ -928,7 +928,7 @@ func testConnectionList(ctx context.Context, engine, dsn string, sec *secrets.Re
 		if err != nil {
 			// rn-l9 B2: never pgconn's ParseConfigError - it carries the whole string and masks a password only in
 			// its usual spellings ('pgvigil check' prints this detail; a bare password behind env: or file: is a string)
-			return testResult{detail: collect.ErrUnparsedDSN.Error()}
+			return testResult{detail: collect.UnparsedDSN(err).Error()}
 		}
 		if err := secrets.FillPG(cctx, pcfg, dsn, sec); err != nil {
 			return testResult{detail: err.Error()}
