@@ -309,9 +309,8 @@ func (h *Heartbeat) instanceConnect(instance string, err error, now time.Time) e
 }
 
 func (h *Heartbeat) instanceConnectTimed(instance string, err error, now time.Time, took time.Duration) error {
-	var ue *UnresolvedRefError
-	if err != nil && (errors.Is(err, context.Canceled) || errors.As(err, &ue)) {
-		return &connectError{err} // a stop cut it, or the reference gave nothing to dial: no attempt, no streak
+	if err != nil && errors.Is(err, context.Canceled) {
+		return &connectError{err} // a stop cut it: no attempt, no streak
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
