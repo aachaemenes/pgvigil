@@ -67,7 +67,7 @@ jobs:
           # broken COM read never passes as an absent table)
           function Read-Column([string]$sql) {
             $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql))
-            $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+            [void]$view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
             $vals = @()
             while ($true) {
               $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
