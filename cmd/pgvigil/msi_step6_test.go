@@ -47,7 +47,8 @@ func TestMSIBinaryStepRunsAsWritten(t *testing.T) {
 	}{
 		{"absent", "Binary table: absent", 0},
 		{"empty", "Binary table: empty", 0},
-		{"dll", "holds CustomActionDll: no custom-action DLL may ship", 1},
+		// the words up to 'DLL' only: PowerShell's error view wraps the message at the console's width
+		{"dll", "the MSI's Binary table holds CustomActionDll: no custom-action DLL", 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out, err := exec.Command(pwsh, "-NoProfile", "-NonInteractive", "-File", filepath.Join("testdata", "msi-step6-standin.ps1"), "-Workflow", wf, "-Case", c.name).CombinedOutput()
