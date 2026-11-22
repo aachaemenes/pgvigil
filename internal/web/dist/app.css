@@ -111,12 +111,13 @@ header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: cente
 #crumb a { text-decoration: underline; text-underline-offset: var(--ul-offset); }   /* told from the crumb text by more than colour (WCAG 1.4.1) */
 #bar { display: flex; gap: var(--sp-2); align-items: center; margin-left: auto; flex-wrap: wrap; }
 #show-tree { display: none; }
-body.tree-hidden { grid-template-columns: 0 minmax(0, 1fr); }
+body.tree-hidden { grid-template-columns: minmax(0, 1fr); }   /* one column: #tree is display: none, so #content takes the first */
 body.tree-hidden #tree { display: none; }
 body.tree-hidden #show-tree { display: inline-block; }
 body.signin { grid-template-columns: minmax(0, 1fr); }
 body.signin #tree, body.signin #tabs, body.signin #show-tree { display: none; }
-#tree { background: var(--surface-panel); border-right: var(--bw) solid var(--line); padding: var(--sp-2); overflow-y: auto; position: sticky; top: 3rem; height: calc(100vh - 3rem); }
+#tree { background: var(--surface-panel); border-right: var(--bw) solid var(--line); padding: var(--sp-2); overflow-y: auto; position: sticky;
+        top: var(--head-h, 3rem); height: calc(100vh - var(--head-h, 3rem)); }   /* under the header whatever its lines (main.ts keeps --head-h) */
 .tree-top { display: flex; gap: var(--sp-1); margin-bottom: var(--sp-2); }
 .tree-top input { flex: 1; min-width: 0; }
 .tree-hide { padding: var(--sp-half) var(--sp-2); }

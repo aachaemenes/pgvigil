@@ -90,7 +90,8 @@ const collapsed = new Set<string>(JSON.parse(lsGet('pgvigil.collapsed') ?? '[]')
 let filter = '';
 let last: { f: Fleet; ctx: Ctx } | null = null;
 
-const search = el('input', { type: 'search', placeholder: 'Find instance, database, table', 'aria-label': 'find an instance, a database or a table by name' });
+// the placeholder fits the box at the tree's width (260 px); the title and the label say it whole
+const search = el('input', { type: 'search', placeholder: 'Instance, database, table', title: 'Find an instance, a database or a table by name', 'aria-label': 'find an instance, a database or a table by name' });
 const list = el('div', { class: 'tree-list' });
 search.addEventListener('input', () => { filter = search.value.trim().toLowerCase(); draw(); findNames(search.value.trim()); });
 
