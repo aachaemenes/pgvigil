@@ -57,9 +57,9 @@
     <li>Its own database gives each part its own role. The collector adds data only through its import functions. The web page reads, and records each action it runs. The alert sender holds a login of its own. The sign-in check runs through one function nobody else can call.</li>
     <li>The web page has its own sign-in (argon2id password hashes, strict cookies, rate limits) and refuses to listen beyond the local machine without HTTPS.</li>
   </ul>
-  <p>The statement-text setting (<code>query_text</code>) applies when the text is read, not only when it is collected. A page, an export, a report mail, an alert or the MCP door started with the configuration file (<code>pgvigil mcp -config</code>) shows the text an instance's setting allows now:</p>
+  <p>In v0.3.0 the statement-text setting (<code>query_text</code>) applies when the text is collected. From v0.4.0 it will also apply when the text is read: a page, an export, a report mail, an alert or the MCP door started with the configuration file (<code>pgvigil mcp -config</code>) will show the text an instance's setting allows now:</p>
   <table>
-    <thead><tr><th scope="col"><code>query_text</code> now</th><th scope="col">Keeps from now on</th><th scope="col">Shows of the text kept before</th></tr></thead>
+    <thead><tr><th scope="col"><code>query_text</code> now</th><th scope="col">Keeps from now on</th><th scope="col">Shows of the text kept before, from v0.4.0</th></tr></thead>
     <tbody>
       <tr><th scope="row"><code>full</code></th><td>the text as is</td><td>the text as it was kept</td></tr>
       <tr><th scope="row"><code>normalized</code></th><td>the text with every literal replaced</td><td>the text with its literals replaced</td></tr>
@@ -67,10 +67,10 @@
     </tbody>
   </table>
   <ul class="list">
-    <li>Without <code>-config</code> the MCP door knows no setting and reads every instance as keeping no text. It returns no statement text, plan or deadlock graph, and its log says so and names <code>-config</code>.</li>
-    <li>Two cases are the admin's own.<ul>
-      <li>A custom report on the store runs its own SQL as the reports login and reads the stored text as it was kept. The Custom reports page says so while any instance keeps less than the full text.</li>
-      <li>A report mail rendered before a change is sent as it was rendered.</li>
+    <li>Without <code>-config</code> the MCP door will know no setting and will read every instance as keeping no text. It will return no statement text, plan or deadlock graph, and its log will say so and name <code>-config</code>.</li>
+    <li>Two cases will be the admin's own.<ul>
+      <li>A custom report on the store will run its own SQL as the reports login and read the stored text as it was kept. The Custom reports page will say so while any instance keeps less than the full text.</li>
+      <li>A report mail rendered before a change will be sent as it was rendered.</li>
     </ul></li>
   </ul>
 </div></div></section>
