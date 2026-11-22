@@ -43,7 +43,8 @@ fs.mkdirSync(out, { recursive: true });
 
 const pages = fs.readdirSync('docs').filter(f => f.endsWith('.html')).sort();
 const links = new Map();   // href -> the first page that names it
-for (const page of pages) for (const width of [1440, 760, 390]) for (const scheme of ['light', 'dark']) {
+const WIDTHS = [1440, 760, 390], SCHEMES = ['light', 'dark'];
+for (const page of pages) for (const width of WIDTHS) for (const scheme of SCHEMES) {
   const narrow = width <= 760;   // the site's own break: site.css shows the menu at 760 px and under
   const name = `${page.replace('.html', '')}-${width}-${scheme}`;
   await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 600 });
@@ -226,4 +227,4 @@ for (const [h, page] of links) {
   say(st === 200 && anchored, `link ${h} on ${page}: ${st}${frag && frag !== 'readme' ? `, #${frag} ${anchored ? 'found' : 'NOT on the page'}` : ''}`);
 }
 if (failed) { console.log(`FAIL ${failed} check(s)`); process.exit(1); }
-console.log(`site: ${pages.length} pages x 2 widths x 2 schemes as expected, ${links.size} links answer`);
+console.log(`site: ${pages.length} pages x ${WIDTHS.length} widths x ${SCHEMES.length} schemes as expected, ${links.size} links answer`);
