@@ -36,15 +36,15 @@
 <main id="main">
 <div class="wrap page-head">
   <h1>Security</h1>
-  <p>pgvigil reads the PostgreSQL and SQL Server servers it watches and changes nothing there unless you turn on an action. What it touches, what it keeps and what it sends are listed here.</p>
+  <p>pgvigil reads the PostgreSQL servers it watches, and from v0.4.0 SQL Server servers too, and changes nothing there unless you turn on an action. What it touches, what it keeps and what it sends are listed here.</p>
 </div>
 
 <section class="plain"><div class="wrap"><div class="text">
   <h2>The servers it watches</h2>
   <ul class="list">
-    <li>PostgreSQL is read through a <code>pg_monitor</code> login, in read-only sessions with statement and lock timeouts. SQL Server is read through a least-privilege login, never sysadmin: view rights, read access to the databases, and the two rights its error log and default trace readers need (ALTER TRACE, EXECUTE on xp_readerrorlog).</li>
-    <li>No agent and no service runs on a watched server. A few optional pieces are created by the DBA from scripts pgvigil prints, each documented. On SQL Server, small Extended Events sessions. On PostgreSQL, an event trigger that records schema changes, and on your own servers a function that lets pgvigil read the server log. Extensions are used where you already have them.</li>
-    <li>Cancelling or ending a session, and starting or stopping a SQL Server job, are off by default. Turned on, they run through a separate login kept for those actions, and every use is logged. On SQL Server that login needs SQLAgentOperatorRole, which also lets it read and switch jobs on and off; <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-actions.md">the actions page</a> lists every right.</li>
+    <li>PostgreSQL is read through a <code>pg_monitor</code> login, in read-only sessions with statement and lock timeouts. From v0.4.0, SQL Server will be read through a least-privilege login, never sysadmin: view rights, read access to the databases, and the two rights its error log and default trace readers need (ALTER TRACE, EXECUTE on xp_readerrorlog).</li>
+    <li>No agent and no service runs on a watched server. A few optional pieces are created by the DBA from scripts pgvigil prints, each documented. From v0.4.0, on SQL Server, small Extended Events sessions. On PostgreSQL, an event trigger that records schema changes, and on your own servers a function that lets pgvigil read the server log. Extensions are used where you already have them.</li>
+    <li>Cancelling or ending a session is off by default, and so, from v0.4.0, is starting or stopping a SQL Server job. Turned on, they run through a separate login kept for those actions, and every use is logged. From v0.4.0, on SQL Server, that login will need SQLAgentOperatorRole, which also lets it read and switch jobs on and off; <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-actions.md">the actions page</a> will list every right.</li>
   </ul>
 </div></div></section>
 
@@ -53,7 +53,7 @@
   <ul class="list">
     <li>Passwords can stay out of the config file. An inline one is refused for SQL Server and for the actions and EXPLAIN logins, not for a PostgreSQL server's own login.</li>
     <li>You choose whether statement text is kept as is, with every literal replaced, or not at all.</li>
-    <li>Whichever you choose, the password-shaped parts of the statements, plans and Extended Events reports it keeps are masked before they are stored, on SQL Server and on PostgreSQL. The shapes and the mask's known limits are listed below.</li>
+    <li>Whichever you choose, v0.3.0 masks two password forms in the statement and log text it keeps; from v0.4.0 the password-shaped parts of the statements, plans and Extended Events reports it keeps will be masked before they are stored, on SQL Server and on PostgreSQL. The shapes and the mask's known limits are listed below.</li>
     <li>Its own database gives each part its own role. The collector adds data only through its import functions. The web page reads, and records each action it runs. The alert sender holds a login of its own. The sign-in check runs through one function nobody else can call.</li>
     <li>The web page has its own sign-in (argon2id password hashes, strict cookies, rate limits) and refuses to listen beyond the local machine without HTTPS.</li>
   </ul>
@@ -135,7 +135,7 @@
     <li>Every release is built by GitHub Actions from a tag, with a SHA256SUMS file signed through Sigstore and an SBOM for each platform; the Go modules are pinned and scanned for known vulnerabilities.</li>
     <li>FIPS 140-3 builds for Linux and Windows on the Go Cryptographic Module (CMVP certificate #5247). An <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/airgap.md">offline install</a>, a hardened systemd unit and AWS GovCloud through the region setting.</li>
     <li>The web page is checked against WCAG 2.1 AA in both themes. Every dependency's licence is in <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/notices.md">the notices</a>.</li>
-    <li>Problems go to <a href="mailto:support@pgvigil.com">support@pgvigil.com</a>. The UI's About page fills in a mail with the versions, and <code>pgvigil report</code> writes a local zip of masked diagnostics. pgvigil sends neither itself. A vulnerability is reported privately through GitHub (<a href="https://github.com/aachaemenes/pgvigil/security/advisories/new">Report a vulnerability</a>).</li>
+    <li>Problems go to <a href="mailto:support@pgvigil.com">support@pgvigil.com</a>. From v0.4.0 the UI's About page will fill in a mail with the versions, and <code>pgvigil report</code> will write a local zip of masked diagnostics; pgvigil will send neither itself. A vulnerability is reported privately through GitHub (<a href="https://github.com/aachaemenes/pgvigil/security/advisories/new">Report a vulnerability</a>).</li>
   </ul>
 </div></div></section>
 
