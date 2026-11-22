@@ -14,7 +14,7 @@
     "vue": "3.5.44"
   },
   "devDependencies": {
-    "esbuild": "0.25.12",
+    "esbuild": "0.28.2",
     "tsrs": "7.1.0-beta.tsrs4",
     "typescript": "5.9.3"
   }
