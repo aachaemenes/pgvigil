@@ -21,6 +21,9 @@ const [port, base, axePath, out, ...flags] = process.argv.slice(2);
 const fs = await import('node:fs');
 const noNet = flags.includes('--no-net');
 const TEXT = 720;   // the text column's width in px (site.css .text)
+// the line a page with a Download button carries while the released version monitors PostgreSQL alone (it goes when
+// v0.4.0 is released)
+const RELEASED = 'v0.3.0 monitors PostgreSQL. SQL Server monitoring is in the source today and ships in v0.4.0.';
 const axeSrc = fs.readFileSync(axePath, 'utf8');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
@@ -142,7 +145,13 @@ for (const page of pages) for (const width of [1440, 760, 390]) for (const schem
       const demo = qa('main .hero a[href="install.html"]').map(a => a.textContent.trim());
       const v4 = qa('main h2').find(h => /^Coming in v0\\.4\\.0/.test(h.textContent.trim()) && !h.closest('.grid2'));
       const v4box = v4 && v4.closest('.text, section');
-      return { icons, og, blocks, jobs: jobs ? jobs.textContent.replace(/\\s+/g, ' ').trim() : null, tested, shots, demo,
+      // the release check said by version: a sentence about the app's release check that says 'off by default' names
+      // the version it means; a page with a Download button in its main part carries the released version's line
+      const words = e => e.textContent.replace(/\\s+/g, ' ').trim();
+      const release = qa('main p, main li').map(words).filter(t => /newer release|new release/i.test(t) && /off by default/i.test(t) && !/v0\\.[0-9]+\\.[0-9]+/.test(t)).map(t => t.slice(0, 60));
+      const downloads = qa('main a.btn').filter(a => words(a) === 'Download').length;
+      const notes = qa('main p.note').filter(n => words(n) === ${JSON.stringify(RELEASED)}).length;
+      return { icons, og, blocks, jobs: jobs ? jobs.textContent.replace(/\\s+/g, ' ').trim() : null, tested, shots, demo, release, downloads, notes,
                v4: v4box ? { points: v4box.querySelectorAll('li').length, words: v4box.textContent.trim().split(/\\s+/).length } : null };
     })()`);
     const iconOk = /^200 image\//.test(c.icons.ico) && /^200 image\//.test(c.icons.touch);
@@ -158,13 +167,16 @@ for (const page of pages) for (const width of [1440, 760, 390]) for (const schem
     const testedBad = c.tested.filter(t => !t.ok).map(t => '"' + t.start + '"'), shotsBad = c.shots.filter(x => !x.ok).map(x => x.src);
     const demoOk = c.demo.every(t => t === 'Install and try the demo'), v4Ok = !c.v4 || c.v4.points === 2;
     // on the home page each part must be there to be read: a renamed heading, a moved link or headline never passes
+    const releaseOk = !c.release.length, noteOk = !c.downloads || c.notes >= 1;
     const homeOk = page !== 'index.html' || (c.tested.length === 2 && c.demo.length === 1 && !!c.v4 && c.shots.length === 6);
-    say(iconOk && ogOk && blocksOk && jobsOk && !testedBad.length && !shotsBad.length && demoOk && v4Ok && homeOk, `${page} page: icons favicon.ico ${c.icons.ico}, img/apple-touch-icon.png ${c.icons.touch}; ${ogSay}` +
+    say(iconOk && ogOk && blocksOk && jobsOk && !testedBad.length && !shotsBad.length && demoOk && v4Ok && homeOk && releaseOk && noteOk, `${page} page: icons favicon.ico ${c.icons.ico}, img/apple-touch-icon.png ${c.icons.touch}; ${ogSay}` +
       (c.blocks ? `; the service install's blocks ${c.blocks.length}: ${c.blocks.join(' | ')}` : '') + (c.jobs !== null ? `; the jobs picture's row: "${c.jobs.slice(0, 80)}"${jobsOk ? '' : ' names more than jobs'}` : '') +
       (c.tested.length ? `; the tested lines ${testedBad.length ? 'NO bold Tested / Not tested yet at ' + testedBad.join(', ') : 'in bold'}` : '') +
       (c.shots.length ? `; the linked shots ${shotsBad.length ? 'NO full-size words under ' + shotsBad.join(' ') : 'say they open full size'}` : '') +
       (c.demo.length ? `; the hero's install link "${c.demo.join('" "')}"${demoOk ? '' : ' (NO: "Install and try the demo")'}` : '') +
       (c.v4 ? `; the v0.4.0 block ${c.v4.points} point(s), ${c.v4.words} words${v4Ok ? '' : ' (NO: two points)'}` : '') +
+      (releaseOk ? '' : `; NO: the release check 'off by default' with no version: "${c.release.join('" "')}"`) +
+      (c.downloads ? `; the released version's line by the Download button ${noteOk ? 'given' : 'NO'}` : '') +
       (homeOk ? '' : `; NO: the home page's parts not all found (tested lines ${c.tested.length} of 2, install link ${c.demo.length} of 1, v0.4.0 block ${c.v4 ? 1 : 0} of 1, linked shots ${c.shots.length} of 6)`));
   }
 }
