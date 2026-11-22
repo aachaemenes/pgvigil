@@ -115,7 +115,7 @@ for (const page of pages) for (const width of [1440, 390]) for (const scheme of 
     const c = await ev(`(async () => {
       const q = s => document.querySelector(s), qa = s => [...document.querySelectorAll(s)];
       const served = async (sel, h) => { if (!q(sel)) return 'not linked'; try { const r = await fetch(h); return r.status + ' ' + (r.headers.get('content-type') || ''); } catch (e) { return String(e).slice(0, 40); } };
-      const icons = { ico: await served('link[rel="icon"][href="favicon.ico"]', 'favicon.ico'), touch: await served('link[rel="apple-touch-icon"][href="img/icon-180.png"]', 'img/icon-180.png') };
+      const icons = { ico: await served('link[rel="icon"][href="favicon.ico"]', 'favicon.ico'), touch: await served('link[rel="apple-touch-icon"][href="img/apple-touch-icon.png"]', 'img/apple-touch-icon.png') };
       const meta = p => (q('meta[property="' + p + '"]') || q('meta[name="' + p + '"]'))?.getAttribute('content') ?? null;
       const og = meta('og:image') && { img: meta('og:image'), w: meta('og:image:width'), h: meta('og:image:height'), alt: meta('og:image:alt'), card: meta('twitter:card') };
       const svc = qa('main h2').find(e => e.textContent.trim() === 'Install as a service')?.closest('section');
@@ -134,7 +134,7 @@ for (const page of pages) for (const width of [1440, 390]) for (const scheme of 
     }
     const blocksOk = !c.blocks || (c.blocks.length === 2 && /^Linux.*: install\.sh$/.test(c.blocks[0]) && /^Windows.*: install\.ps1$/.test(c.blocks[1]));
     const jobsOk = c.jobs === null || !/backup|storage|volume/i.test(c.jobs);
-    say(iconOk && ogOk && blocksOk && jobsOk, `${page} page: icons favicon.ico ${c.icons.ico}, img/icon-180.png ${c.icons.touch}; ${ogSay}` +
+    say(iconOk && ogOk && blocksOk && jobsOk, `${page} page: icons favicon.ico ${c.icons.ico}, img/apple-touch-icon.png ${c.icons.touch}; ${ogSay}` +
       (c.blocks ? `; the service install's blocks ${c.blocks.length}: ${c.blocks.join(' | ')}` : '') + (c.jobs !== null ? `; the jobs picture's row: "${c.jobs.slice(0, 80)}"${jobsOk ? '' : ' names more than jobs'}` : ''));
   }
 }
@@ -142,8 +142,8 @@ ws.close();
 
 // the site's icons are the app's own files, byte for byte
 const same = (a, b) => { try { return fs.readFileSync(a).equals(fs.readFileSync(b)); } catch { return false; } };
-const icoSame = same('docs/favicon.ico', 'internal/web/dist/favicon.ico'), touchSame = same('docs/img/icon-180.png', 'internal/web/dist/icon-180.png');
-say(icoSame && touchSame, `icons: docs/favicon.ico ${icoSame ? 'is' : 'is NOT'} internal/web/dist/favicon.ico, docs/img/icon-180.png ${touchSame ? 'is' : 'is NOT'} internal/web/dist/icon-180.png`);
+const icoSame = same('docs/favicon.ico', 'internal/web/dist/favicon.ico'), touchSame = same('docs/img/apple-touch-icon.png', 'internal/web/dist/icon-180.png');
+say(icoSame && touchSame, `icons: docs/favicon.ico ${icoSame ? 'is' : 'is NOT'} internal/web/dist/favicon.ico, docs/img/apple-touch-icon.png ${touchSame ? 'is' : 'is NOT'} internal/web/dist/icon-180.png`);
 
 // the sitemap: every page once, each lastmod on or after the day its page last changed - git's last commit of the page
 // (today for a page changed and not committed), or, where the tree carries no history, the file PGVIGIL_SITE_DATES names
