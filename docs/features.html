@@ -6,20 +6,22 @@
 <title>Features - pgvigil</title>
 <meta name="description" content="What pgvigil shows for PostgreSQL and SQL Server: the fleet summary, running queries and blocking, statements and slow queries, performance, jobs, backups, storage, replication, configuration changes, alerts and exports.">
 <link rel="canonical" href="https://pgvigil.com/features.html">
+<link rel="icon" href="favicon.ico" sizes="32x32">
 <link rel="icon" href="img/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
 <link rel="stylesheet" href="site.css">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="top"><div class="bar">
-  <a class="brand" href="./"><img src="img/mark.svg" width="24" height="24" alt="" style="vertical-align:-6px;margin-right:.45rem">pgvigil</a>
+  <a class="brand" href="./"><img src="img/mark.svg" width="24" height="24" alt="">pgvigil</a>
   <nav class="links" aria-label="Site">
     <a href="features.html" aria-current="page">Features</a>
     <a href="install.html">Install</a>
     <a href="security.html">Security</a>
     <a href="https://github.com/aachaemenes/pgvigil#readme">Docs</a>
     <a href="https://github.com/aachaemenes/pgvigil">GitHub</a>
-    <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
+    <a class="btn" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
   </nav>
   <details class="menu"><summary>Menu</summary><nav aria-label="Site menu">
     <a href="features.html" aria-current="page">Features</a>
@@ -86,16 +88,16 @@
     <h2 class="h3">If you already run other tools</h2>
     <p>A site that runs DBA Dash can import its SQL Server instances and their statuses into the same tree. Grafana can read the same database through ready-made dashboards. An AI assistant on the same machine can read it through a read-only MCP server.</p>
   </div>
-  <div>
+  <div class="wide">
     <h2 class="h3">Coming in v0.4.0: a remote collector</h2>
     <p>For networks no outside server may connect into. A collector-only pgvigil inside the network will read PostgreSQL and SQL Server and write a bundle every 5 minutes by default: NDJSON per view, a manifest and SHA256 sums. It will push to Azure Blob for pgvigil to poll, or go through an S3 or GCS bucket, a share, SFTP or USB. Your pgvigil will take in each bundle once.</p>
   </div>
 </div></div></section>
 
-<section class="plain"><div class="wrap text">
+<section class="plain"><div class="wrap"><div class="text">
   <h2>What it reads</h2>
   <p>The full list of what is collected from each engine, how often and with which right, is in the documentation: <a href="https://github.com/aachaemenes/pgvigil#what-it-collects-today">PostgreSQL</a> and <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver.md">SQL Server</a>.</p>
-</div></section>
+</div></div></section>
 
 <div class="wrap next"><a class="btn primary" href="install.html">Install pgvigil</a> <a class="btn" href="security.html">Security</a></div>
 </main>

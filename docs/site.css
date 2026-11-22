@@ -1,5 +1,6 @@
 /* pgvigil.com: one stylesheet for every page. Light and dark follow the reader's system setting. */
 :root {
+  color-scheme: light dark;   /* the browser's own parts (scroll bars, form controls) follow the scheme too */
   --bg: #ffffff; --fg: #16191f; --muted: #555d6b; --line: #e3e6eb; --soft: #f6f7f9;
   --accent: #1d5fd1; --accent-fg: #ffffff; --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 8px 24px rgba(16, 24, 40, .08);
   --head: rgba(255, 255, 255, .88);
@@ -32,10 +33,11 @@ header.top {
 }
 .bar { max-width: 1120px; margin: 0 auto; padding: 0 20px; height: 60px; display: flex; align-items: center; gap: 1.5rem; }
 .brand { font-weight: 700; font-size: 1.12rem; color: var(--fg); text-decoration: none; letter-spacing: -.01em; margin-right: auto; }
+.brand img { vertical-align: -6px; margin-right: .45rem; }
 .links { display: flex; align-items: center; gap: 1.4rem; }
 .links a { color: var(--muted); text-decoration: none; font-size: .96rem; }
 .links a:hover, .links a[aria-current="page"] { color: var(--fg); }
-.links a.btn { color: var(--accent-fg); }
+.links a.btn { color: var(--accent); }   /* the header's Download in the quiet style */
 .menu { display: none; position: relative; }
 .menu summary { list-style: none; cursor: pointer; padding: .35rem .7rem; border: 1px solid var(--line); border-radius: 6px; font-size: .95rem; }
 .menu summary::-webkit-details-marker { display: none; }
@@ -53,20 +55,20 @@ header.top {
 main { display: block; }
 .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
 .text { max-width: 720px; }
-.hero { padding: 4.5rem 0 2.5rem; }
+.hero { padding-top: 4.5rem; padding-bottom: 2.5rem; }   /* top and bottom only: .wrap's side padding holds */
 .hero h1 { font-size: clamp(2rem, 4.4vw, 3rem); line-height: 1.12; letter-spacing: -.02em; margin: 0 0 1rem; }
 .hero p { font-size: 1.18rem; color: var(--muted); margin: 0 0 1.8rem; max-width: 40rem; }
 .actions { display: flex; flex-wrap: wrap; gap: .7rem; }
 .shot { margin: 0; }
 .shot img { display: block; width: 100%; border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); background: var(--soft); }
 .shot figcaption { color: var(--muted); font-size: .9rem; margin-top: .6rem; }
-.lead-shot { padding: 0 0 4rem; }
+.lead-shot { padding-bottom: 4rem; }
 
 .row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.75fr); gap: 2.6rem; align-items: center; padding: 3.2rem 0; border-top: 1px solid var(--line); }
 .row.flip { grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); }
 .row.flip .row-text { order: 2; }
 .row h2 { font-size: 1.45rem; line-height: 1.25; margin: 0 0 .7rem; letter-spacing: -.01em; }
-.row p { margin: 0; color: var(--muted); }
+.row p { margin: 0; }
 @media (max-width: 900px) {
   .row, .row.flip { grid-template-columns: minmax(0, 1fr); gap: 1.4rem; padding: 2.4rem 0; }
   .row.flip .row-text { order: 0; }
@@ -75,20 +77,24 @@ main { display: block; }
 section.plain { padding: 3rem 0; border-top: 1px solid var(--line); }
 section.plain h2 { font-size: 1.45rem; margin: 0 0 1rem; letter-spacing: -.01em; }
 section.plain h3 { font-size: 1.08rem; margin: 1.6rem 0 .4rem; }
-section.plain p, section.plain li { color: var(--muted); }
-section.plain p strong, section.plain li strong { color: var(--fg); }
-.page-head { padding: 3.5rem 0 1rem; }
+.page-head { padding-top: 3.5rem; padding-bottom: 1rem; }
 .page-head h1 { font-size: clamp(1.8rem, 3.6vw, 2.4rem); letter-spacing: -.02em; margin: 0 0 .6rem; }
 .page-head p { color: var(--muted); font-size: 1.1rem; margin: 0; max-width: 42rem; }
 ul.list { padding-left: 1.2rem; margin: 0; }
 ul.list li { margin-bottom: .55rem; }
-ol.steps { padding-left: 1.3rem; } ol.steps li { margin-bottom: .6rem; color: var(--muted); }
+ul.list ul { padding-left: 1.2rem; margin: .55rem 0 0; }
+table { border-collapse: collapse; margin: .4rem 0 1.4rem; font-size: .96rem; }
+th, td { text-align: left; vertical-align: top; padding: .45rem 1rem .45rem 0; border-bottom: 1px solid var(--line); }
+thead th { font-weight: 600; }
+ol.steps { padding-left: 1.3rem; } ol.steps li { margin-bottom: .6rem; }
 pre { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1rem; overflow-x: auto; line-height: 1.55; margin: .8rem 0 1.2rem; }
 p code, li code { background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: .05rem .3rem; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 1.2rem 2.4rem; }
 .grid2 h3 { margin-top: .4rem; }
+.grid2 > .wide { grid-column: 1 / -1; }   /* a card on a row of its own spans it, its prose at the text column's width */
+.grid2 > .wide > p { max-width: 720px; }
 section.plain h2.h3 { font-size: 1.08rem; margin: .4rem 0 .4rem; letter-spacing: 0; }   /* a group's heading: the page's second level, drawn small */
-.next { padding: 2.6rem 0 4rem; border-top: 1px solid var(--line); }
+.next { padding-top: 2.6rem; padding-bottom: 4rem; border-top: 1px solid var(--line); }
 
 footer { border-top: 1px solid var(--line); color: var(--muted); font-size: .92rem; }
 footer .wrap { padding-top: 1.8rem; padding-bottom: 2.6rem; }
