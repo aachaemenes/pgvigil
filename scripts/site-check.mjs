@@ -82,18 +82,19 @@ for (const page of pages) for (const width of [1440, 390]) for (const scheme of 
     `${name}: '${r.title}', body ${r.bg} (${r.bg === want ? 'the scheme' : 'wanted ' + want}), sideways ${r.sideways} px, header held ${r.stuck}, nav ${width < 600 ? `menu opened ${menu?.open} with ${menu?.links} links` : 'links'} ${navOk}, images broken ${r.broken.length ? r.broken.join(' ') : 0}, axe ${nodes} node(s)${nodes ? ' ' + JSON.stringify(ax) : ''}, page ${r.h} px`);
   for (const h of r.hrefs) if (!links.has(h)) links.set(h, page);
 
-  // the layout: at 1440 the prose and the section headings start at the h1's left edge and no paragraph or list item is
-  // wider than the text column; a grid's last card ends at the grid's right edge (no card left alone in a row); a
-  // section's paragraphs and list items, a row's text and the steps in the ink colour (the grey is the captions');
-  // no filled button in the header, which keeps its Download link; no style attribute; both colour schemes declared
+  // the layout: the h1 at least 16 px from the window's left edge, and the prose, the section headings, the summary
+  // picture and the closing buttons start at the h1's left edge; at 1440 no paragraph or list item is wider than the
+  // text column; a grid's last card ends at the grid's right edge (no card left alone in a row); a section's paragraphs
+  // and list items, a row's text and the steps in the ink colour (the grey is the captions'); no filled button in the
+  // header, which keeps its Download link; no style attribute; both colour schemes declared
   const wide = width >= 1200;
   const lay = await ev(`(() => {
     const box = e => e.getBoundingClientRect(), ink = getComputedStyle(document.body).color;
     const label = e => e.tagName.toLowerCase() + (e.className ? '.' + String(e.className).trim().replace(/\\s+/g, '.') : '');
     const left = e => { const s = getComputedStyle(e); return box(e).left + parseFloat(s.paddingLeft) + parseFloat(s.borderLeftWidth); };
     const h1 = document.querySelector('main h1'), x0 = h1 ? box(h1).left : NaN;
-    const offset = ${wide} ? [...document.querySelectorAll('main .text, main h2')].filter(e => !e.closest('.grid2, .row'))
-      .filter(e => !(Math.abs(left(e) - x0) <= 1)).map(e => label(e) + ' at ' + Math.round(left(e)) + ' (the h1 at ' + Math.round(x0) + ')') : [];
+    const offset = [...document.querySelectorAll('main .text, main h2, main .lead-shot, main .next')].filter(e => !e.closest('.grid2, .row'))
+      .filter(e => !(Math.abs(left(e) - x0) <= 1)).map(e => label(e) + ' at ' + Math.round(left(e)) + ' (the h1 at ' + Math.round(x0) + ')');
     const tooWide = ${wide} ? [...document.querySelectorAll('main p, main li')].filter(e => box(e).width > ${TEXT} + 1)
       .map(e => label(e) + ' "' + e.textContent.trim().slice(0, 24) + '" ' + Math.round(box(e).width) + ' px') : [];
     const alone = [...document.querySelectorAll('main .grid2')].filter(g => g.lastElementChild && Math.abs(box(g.lastElementChild).right - box(g).right) > 1)
@@ -101,12 +102,12 @@ for (const page of pages) for (const width of [1440, 390]) for (const scheme of 
     const grey = [...document.querySelectorAll('main section.plain p, main section.plain li, main .row p, main ol.steps li')]
       .filter(e => getComputedStyle(e).color !== ink).length;
     const filled = [...document.querySelectorAll('header.top .btn')].filter(b => getComputedStyle(b).backgroundColor !== 'rgba(0, 0, 0, 0)').length;
-    return { offset, tooWide, alone, grey, filled, download: !!document.querySelector('header.top .links a[href$="/releases/latest"]'),
+    return { edge: Math.round(x0), offset, tooWide, alone, grey, filled, download: !!document.querySelector('header.top .links a[href$="/releases/latest"]'),
              styled: document.querySelectorAll('[style]').length, scheme: getComputedStyle(document.documentElement).colorScheme };
   })()`);
   const list = (a, at390) => !wide && at390 ? 'not read at 390' : a.length ? 'NO ' + a.join(', ') : 'yes';
-  say(!lay.offset.length && !lay.tooWide.length && !lay.alone.length && !lay.grey && !lay.filled && lay.download && !lay.styled && lay.scheme === 'light dark',
-    `${name} layout: prose at the h1's left ${list(lay.offset, true)}; within the text width ${list(lay.tooWide, true)}; grid rows full ${list(lay.alone)}; prose in the ink colour ${lay.grey ? 'NO ' + lay.grey + ' in grey' : 'yes'}; header buttons filled ${lay.filled}${lay.download ? '' : ', no Download'}; style attributes ${lay.styled}; color-scheme '${lay.scheme}'`);
+  say(lay.edge >= 16 && !lay.offset.length && !lay.tooWide.length && !lay.alone.length && !lay.grey && !lay.filled && lay.download && !lay.styled && lay.scheme === 'light dark',
+    `${name} layout: the h1 ${lay.edge} px from the window's edge${lay.edge >= 16 ? '' : ' (NO: under 16)'}; prose at the h1's left ${list(lay.offset)}; within the text width ${list(lay.tooWide, true)}; grid rows full ${list(lay.alone)}; prose in the ink colour ${lay.grey ? 'NO ' + lay.grey + ' in grey' : 'yes'}; header buttons filled ${lay.filled}${lay.download ? '' : ', no Download'}; style attributes ${lay.styled}; color-scheme '${lay.scheme}'`);
 
   // the page, once: the two icons linked and served; a page with og:image gives its size (the picture's own), its alt and
   // the twitter card; the service install's two blocks, each under its own heading; the jobs picture's row in jobs words

@@ -7,9 +7,10 @@
 # Expected: one 'ok' line per page, width and scheme (the scheme's page background, no sideways scroll, the header held
 # at the top after a scroll, the phone menu at 390 opened with its six links and the links at 1440, every image
 # loaded, 0 axe nodes under WCAG 2.1 A / AA and the heading and landmark rules), one 'ok ... layout' line per render
-# (the prose at the h1's left edge and within the text width at 1440, every grid row full, the prose in the ink colour,
-# no filled header button, no style attribute, both colour schemes), one 'ok ... page' line per page (the two icons, a
-# shared picture's size and alt, the install blocks, the rows' words), 'ok icons' (the app's own files), 'ok sitemap'
+# (the h1 off the window's edge and every block at its left edge, the prose within the text width at 1440, every grid
+# row full, the prose in the ink colour, no filled header button, no style attribute, both colour schemes), one
+# 'ok ... page' line per page (the two icons, a shared picture's size and alt, the install blocks, the rows' words),
+# 'ok icons' (the app's own files), 'ok sitemap'
 # (every page once, no lastmod older than its page; PGVIGIL_SITE_DATES names a '<page> <yyyy-mm-dd>' file where the
 # tree has no git history), one 'ok' line per link (200, its #anchor on the page; only the skip link jumps inside a
 # page; a 429 prints n/a), 'site: ... as expected', then 'OK: the site'; the PNGs.
