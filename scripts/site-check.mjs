@@ -4,7 +4,7 @@
 // at 1440), at 390 the menu opened (its six links shown, axe run with it open), every image loaded, and axe-core's WCAG
 // 2.1 A / AA rules plus heading-order, page-has-heading-one, landmark-one-main and landmark-unique with 0 violation nodes;
 // a full-page PNG per render. A layout line per render: at 1440 the prose starts at the h1's left edge and no paragraph
-// or list item is wider than the text column; a grid's last card ends at the grid's right edge; a section's paragraphs
+// or list item is wider than the text column; every row of a grid ends at its right edge; a section's paragraphs
 // and list items, a row's text and the steps in the ink colour; no filled button in the header; no style attribute; both
 // colour schemes declared. A page line per page: the two icons linked and served; a page with og:image gives its size,
 // its alt and the twitter card; the service install's two blocks each under its own heading; the jobs picture's row in
@@ -84,7 +84,7 @@ for (const page of pages) for (const width of [1440, 390]) for (const scheme of 
 
   // the layout: the h1 at least 16 px from the window's left edge, and the prose, the section headings, the summary
   // picture and the closing buttons start at the h1's left edge; at 1440 no paragraph or list item is wider than the
-  // text column; a grid's last card ends at the grid's right edge (no card left alone in a row); a section's paragraphs
+  // text column; every row of a grid ends at its right edge (no card left alone in a row); a section's paragraphs
   // and list items, a row's text and the steps in the ink colour (the grey is the captions'); no filled button in the
   // header, which keeps its Download link; no style attribute; both colour schemes declared
   const wide = width >= 1200;
@@ -97,17 +97,22 @@ for (const page of pages) for (const width of [1440, 390]) for (const scheme of 
       .filter(e => !(Math.abs(left(e) - x0) <= 1)).map(e => label(e) + ' at ' + Math.round(left(e)) + ' (the h1 at ' + Math.round(x0) + ')');
     const tooWide = ${wide} ? [...document.querySelectorAll('main p, main li')].filter(e => box(e).width > ${TEXT} + 1)
       .map(e => label(e) + ' "' + e.textContent.trim().slice(0, 24) + '" ' + Math.round(box(e).width) + ' px') : [];
-    const alone = [...document.querySelectorAll('main .grid2')].filter(g => g.lastElementChild && Math.abs(box(g.lastElementChild).right - box(g).right) > 1)
-      .map(g => 'its last card ' + Math.round(box(g.lastElementChild).width) + ' of ' + Math.round(box(g).width) + ' px');
+    // every row of a grid (its cards grouped by their top) ends at the grid's right edge: no card left alone in a row
+    const grids = [...document.querySelectorAll('main .grid2')];
+    const alone = grids.flatMap(g => {
+      const rows = new Map();
+      for (const c of g.children) { const t = Math.round(box(c).top); rows.set(t, Math.max(rows.get(t) ?? -Infinity, box(c).right)); }
+      return [...rows].filter(([, r]) => Math.abs(r - box(g).right) > 1).map(([t, r]) => 'a row at ' + t + ' ends at ' + Math.round(r) + ' of ' + Math.round(box(g).right) + ' px');
+    });
     const grey = [...document.querySelectorAll('main section.plain p, main section.plain li, main .row p, main ol.steps li')]
       .filter(e => getComputedStyle(e).color !== ink).length;
     const filled = [...document.querySelectorAll('header.top .btn')].filter(b => getComputedStyle(b).backgroundColor !== 'rgba(0, 0, 0, 0)').length;
-    return { edge: Math.round(x0), offset, tooWide, alone, grey, filled, download: !!document.querySelector('header.top .links a[href$="/releases/latest"]'),
+    return { edge: Math.round(x0), offset, tooWide, grids: grids.length, alone, grey, filled, download: !!document.querySelector('header.top .links a[href$="/releases/latest"]'),
              styled: document.querySelectorAll('[style]').length, scheme: getComputedStyle(document.documentElement).colorScheme };
   })()`);
   const list = (a, at390) => !wide && at390 ? 'not read at 390' : a.length ? 'NO ' + a.join(', ') : 'yes';
   say(lay.edge >= 16 && !lay.offset.length && !lay.tooWide.length && !lay.alone.length && !lay.grey && !lay.filled && lay.download && !lay.styled && lay.scheme === 'light dark',
-    `${name} layout: the h1 ${lay.edge} px from the window's edge${lay.edge >= 16 ? '' : ' (NO: under 16)'}; prose at the h1's left ${list(lay.offset)}; within the text width ${list(lay.tooWide, true)}; grid rows full ${list(lay.alone)}; prose in the ink colour ${lay.grey ? 'NO ' + lay.grey + ' in grey' : 'yes'}; header buttons filled ${lay.filled}${lay.download ? '' : ', no Download'}; style attributes ${lay.styled}; color-scheme '${lay.scheme}'`);
+    `${name} layout: the h1 ${lay.edge} px from the window's edge${lay.edge >= 16 ? '' : ' (NO: under 16)'}; prose at the h1's left ${list(lay.offset)}; within the text width ${list(lay.tooWide, true)}; grid rows full ${lay.grids ? list(lay.alone) : 'no grid'}; prose in the ink colour ${lay.grey ? 'NO ' + lay.grey + ' in grey' : 'yes'}; header buttons filled ${lay.filled}${lay.download ? '' : ', no Download'}; style attributes ${lay.styled}; color-scheme '${lay.scheme}'`);
 
   // the page, once: the two icons linked and served; a page with og:image gives its size (the picture's own), its alt and
   // the twitter card; the service install's two blocks, each under its own heading; the jobs picture's row in jobs words
@@ -158,10 +163,12 @@ say(icoSame && touchSame, `icons: docs/favicon.ico ${icoSame ? 'is' : 'is NOT'} 
   const listed = pages.map(p => [p, sm.filter(s => s.page === p).length]), extra = sm.filter(s => !pages.includes(s.page)).map(s => s.page);
   const dated = sm.filter(s => pages.includes(s.page)).map(s => ({ ...s, changed: changed(s.page) }));
   const undated = dated.filter(d => !d.changed).map(d => d.page);
-  say(listed.every(([, n]) => n === 1) && !extra.length && dated.every(d => !d.changed || d.mod >= d.changed),
-    `sitemap: ${dated.map(d => `${d.page} ${d.mod}${!d.changed ? '' : d.mod >= d.changed ? '' : ' (the page changed ' + d.changed + ')'}`).join(', ')}` +
-    (listed.some(([, n]) => n !== 1) ? `; listed ${listed.filter(([, n]) => n !== 1).map(([p, n]) => p + ' ' + n + ' times').join(', ')}` : '') + (extra.length ? `; no such page ${extra.join(' ')}` : ''));
-  if (undated.length) console.log(`n/a  sitemap: the day ${undated.join(' ')} last changed (no git history here and no PGVIGIL_SITE_DATES line)`);
+  // a page whose day of change is not read leaves the dates unread: an n/a line, never an 'ok' (the listing still FAILs)
+  const listOk = listed.every(([, n]) => n === 1) && !extra.length;
+  const smText = `sitemap: ${dated.map(d => `${d.page} ${d.mod}${!d.changed ? '' : d.mod >= d.changed ? '' : ' (the page changed ' + d.changed + ')'}`).join(', ')}` +
+    (listed.some(([, n]) => n !== 1) ? `; listed ${listed.filter(([, n]) => n !== 1).map(([p, n]) => p + ' ' + n + ' times').join(', ')}` : '') + (extra.length ? `; no such page ${extra.join(' ')}` : '');
+  if (undated.length && listOk) console.log(`n/a  ${smText}; the day ${undated.join(' ')} last changed not read (no git history here and no PGVIGIL_SITE_DATES line)`);
+  else say(listOk && dated.every(d => !d.changed || d.mod >= d.changed), smText);
 }
 
 for (const [h, page] of links) {

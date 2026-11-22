@@ -12,7 +12,7 @@
 # 'ok ... page' line per page (the two icons, a shared picture's size and alt, the install blocks, the rows' words),
 # 'ok icons' (the app's own files), 'ok sitemap'
 # (every page once, no lastmod older than its page; PGVIGIL_SITE_DATES names a '<page> <yyyy-mm-dd>' file where the
-# tree has no git history), one 'ok' line per link (200, its #anchor on the page; only the skip link jumps inside a
+# tree has no git history; with neither, an 'n/a  sitemap' line, never 'ok'), one 'ok' line per link (200, its #anchor on the page; only the skip link jumps inside a
 # page; a 429 prints n/a), 'site: ... as expected', then 'OK: the site'; the PNGs.
 # axe-core 4.14.0 is installed into a temporary folder from npm (as proof-a11y.sh does).
 set -euo pipefail
