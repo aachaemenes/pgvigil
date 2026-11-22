@@ -134,10 +134,11 @@ for (const page of pages) for (const width of [1440, 760, 390]) for (const schem
       // link to the install page names it; the v0.4.0 block holds its headline and two points
       const where = qa('main h2').find(h => h.textContent.trim() === 'Where it runs')?.parentElement;
       const tested = (where ? [...where.querySelectorAll('p')] : []).filter(p => /\\bTested on\\b|\\bnot tested yet\\b/i.test(p.textContent))
-        .map(p => { const b = [...p.querySelectorAll('strong')].map(x => x.textContent.trim());
-          return { ok: b.some(t => /^Tested\\b/.test(t)) && (!/not tested yet/i.test(p.textContent) || b.some(t => /^Not tested yet/.test(t))), start: p.textContent.trim().slice(0, 24) }; });
+        .map(p => { const b = [...p.querySelectorAll('strong')], opens = re => b.some(x => re.test(x.textContent.trim()) && x.previousSibling?.nodeName === 'BR');
+          return { ok: opens(/^Tested\\b/) && (!/not tested yet/i.test(p.textContent) || opens(/^Not tested yet/)), start: p.textContent.trim().slice(0, 24) }; });
       const shots = qa('main figure.shot').filter(f => f.querySelector('a img'))
-        .map(f => ({ src: f.querySelector('img').getAttribute('src'), ok: /opens? (it )?full size/i.test(f.querySelector('figcaption')?.textContent || '') }));
+        .map(f => ({ src: f.querySelector('img').getAttribute('src'), ok: /opens? (it )?full size/i.test(f.querySelector('figcaption')?.textContent || '')
+          && f.querySelector('a').getAttribute('href') === f.querySelector('img').getAttribute('src') }));
       const demo = qa('main .hero a[href="install.html"]').map(a => a.textContent.trim());
       const v4 = qa('main h2').find(h => /^Coming in v0\\.4\\.0/.test(h.textContent.trim()) && !h.closest('.grid2'));
       const v4box = v4 && v4.closest('.text, section');
@@ -156,12 +157,15 @@ for (const page of pages) for (const width of [1440, 760, 390]) for (const schem
     const jobsOk = c.jobs === null || !/backup|storage|volume/i.test(c.jobs);
     const testedBad = c.tested.filter(t => !t.ok).map(t => '"' + t.start + '"'), shotsBad = c.shots.filter(x => !x.ok).map(x => x.src);
     const demoOk = c.demo.every(t => t === 'Install and try the demo'), v4Ok = !c.v4 || c.v4.points === 2;
-    say(iconOk && ogOk && blocksOk && jobsOk && !testedBad.length && !shotsBad.length && demoOk && v4Ok, `${page} page: icons favicon.ico ${c.icons.ico}, img/apple-touch-icon.png ${c.icons.touch}; ${ogSay}` +
+    // on the home page each part must be there to be read: a renamed heading, a moved link or headline never passes
+    const homeOk = page !== 'index.html' || (c.tested.length === 2 && c.demo.length === 1 && !!c.v4 && c.shots.length === 6);
+    say(iconOk && ogOk && blocksOk && jobsOk && !testedBad.length && !shotsBad.length && demoOk && v4Ok && homeOk, `${page} page: icons favicon.ico ${c.icons.ico}, img/apple-touch-icon.png ${c.icons.touch}; ${ogSay}` +
       (c.blocks ? `; the service install's blocks ${c.blocks.length}: ${c.blocks.join(' | ')}` : '') + (c.jobs !== null ? `; the jobs picture's row: "${c.jobs.slice(0, 80)}"${jobsOk ? '' : ' names more than jobs'}` : '') +
       (c.tested.length ? `; the tested lines ${testedBad.length ? 'NO bold Tested / Not tested yet at ' + testedBad.join(', ') : 'in bold'}` : '') +
       (c.shots.length ? `; the linked shots ${shotsBad.length ? 'NO full-size words under ' + shotsBad.join(' ') : 'say they open full size'}` : '') +
-      (c.demo.length ? `; the hero's install link "${c.demo.join('" "')}"` : '') +
-      (c.v4 ? `; the v0.4.0 block ${c.v4.points} point(s), ${c.v4.words} words${v4Ok ? '' : ' (NO: two points)'}` : ''));
+      (c.demo.length ? `; the hero's install link "${c.demo.join('" "')}"${demoOk ? '' : ' (NO: "Install and try the demo")'}` : '') +
+      (c.v4 ? `; the v0.4.0 block ${c.v4.points} point(s), ${c.v4.words} words${v4Ok ? '' : ' (NO: two points)'}` : '') +
+      (homeOk ? '' : `; NO: the home page's parts not all found (tested lines ${c.tested.length} of 2, install link ${c.demo.length} of 1, v0.4.0 block ${c.v4 ? 1 : 0} of 1, linked shots ${c.shots.length} of 6)`));
   }
 }
 ws.close();
