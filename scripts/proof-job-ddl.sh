@@ -29,7 +29,7 @@
 #  F. the API: /api/jobs/history's changes carry script; /api/config/changes, /api/mssql/config/fleet,
 #     /api/mssql/traceflags answer with the rows of B, C and D; /api/jobs/thresholds answers levels and status
 #     (POST on a -no-login server is 403: thresholds need the UI login).
-#  G. go test of the packages it changed, go vet, tsc.
+#  G. go test of the packages it changed, go vet, the type check (npm run check).
 #  H. [added later, written before its first run] the script builders' cases, as tests written into a scratch copy
 #     (the slice owns no test file): cronScript named and unnamed, a backslash in a name (E''), a command holding
 #     $cmd$ and one ending in $cmd (the quote still closes where it should), $pgagent$ inside a pgAgent step (the
@@ -188,10 +188,10 @@ R=$(js "jobs/thresholds?instance=$IS" "print(d['writable'], len(rows('status')))
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'X-Pgvigil: 1' -d '{}' "$U/api/jobs/thresholds")" = 403 ] || fail "F: a write without the UI login"
 echo "F: OK"
 
-echo "--- G. tests, vet, tsc"
+echo "--- G. tests, vet, the type check"
 go vet ./internal/mssql ./internal/collect ./internal/web >"$OUT" 2>&1 || { cat "$OUT"; fail "G: vet"; }
 go test ./internal/mssql ./internal/collect ./internal/web -count=1 >"$OUT" 2>&1 || { tail -30 "$OUT"; fail "G: tests"; }
-if [ -x web/node_modules/.bin/tsc ]; then (cd web && node_modules/.bin/tsc --noEmit) || fail "G: tsc"; else echo "  tsc: not checked (no web/node_modules)"; fi
+if [ -d web/node_modules ]; then (cd web && npm run --silent check) || fail "G: the type check"; else echo "  the type check: not run (no web/node_modules)"; fi
 echo "G: OK"
 echo "--- H. the script builders"
 H=$WORK/h; mkdir -p "$H"; tar --exclude=./web/node_modules --exclude=./.git -cf - . | tar -C "$H" -xf -

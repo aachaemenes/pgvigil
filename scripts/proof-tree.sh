@@ -55,7 +55,21 @@ if [[ -z "$BIN" ]]; then
   rsync -a --exclude node_modules --exclude bin --exclude .git "$SRC/" "$WORK/src/"
   [[ -d "$SRC/web/node_modules" ]] || fail "no web/node_modules in $SRC: run npm ci in web/ first"
   ln -s "$SRC/web/node_modules" "$WORK/src/web/node_modules"
-  (cd "$WORK/src/web" && npm run build >/dev/null 2>&1) || fail "the web build failed"
+  if ! (cd "$WORK/src/web" && npm run build > "$WORK/web-build.log" 2>&1); then
+    tail -n 12 "$WORK/web-build.log"
+    grep -qE 'tsrs: (not found|command not found)|Cannot find the optional dependency @tsrs/' "$WORK/web-build.log" \
+      && fail "the web build failed: its type checker is not installed - run npm ci in web/"
+    fail "the web build failed"
+  fi
+  # the two type checks agree: 'check' (tsrs, TypeScript 7.1 beta's rules) and 'check:tsc' (TypeScript 5.9.3) give one
+  # verdict and read the same files besides their own standard libraries (a path is cut to web/'s own: node_modules is a
+  # link to $SRC's, which one checker may print through the link and the other by its real path)
+  c1=0; (cd "$WORK/src/web" && npm run --silent check > "$WORK/check.log" 2>&1) || c1=$?
+  c2=0; (cd "$WORK/src/web" && npm run --silent check:tsc > "$WORK/check-tsc.log" 2>&1) || c2=$?
+  [[ $c1 -eq $c2 ]] || { tail -n 6 "$WORK/check.log" "$WORK/check-tsc.log"; fail "the two type checks disagree: check exit $c1, check:tsc exit $c2"; }
+  files() { (cd "$WORK/src/web" && npx --no-install "$1" --noEmit --listFilesOnly 2>/dev/null) | sed -E 's#^.*/web/(src/|node_modules/)#\1#' | grep -vE '(^|/)lib\.[a-z0-9.]+\.d\.ts$' | sort; }
+  diff <(files tsrs) <(files tsc) > "$WORK/files.diff" || { head -12 "$WORK/files.diff"; fail "the two type checks read different files"; }
+  echo "ok   the two type checks agree (exit $c1; the same files)"
   (cd "$WORK/src" && CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil) || fail "the go build failed"
   BIN="$WORK/pgvigil"
 fi

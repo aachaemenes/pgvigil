@@ -22,7 +22,7 @@
 #   PGINF-2, the Password age report (written before its run):
 #     TestReportPwageNonFinite           red (before the fix): FAIL 'the Password age report's PostgreSQL part failed ...
 #                                        cannot convert infinity to integer' (PostgreSQL 18); green: PASS
-#   green (the fix): all seven PASS (counted: a skip or a missing test is a FAIL); PGINF_FULL=1: 'ok   tsc --noEmit' for
+#   green (the fix): all seven PASS (counted: a skip or a missing test is a FAIL); PGINF_FULL=1: 'ok   the type check (npm run check)' for
 #     web/ (roles.ts: '-infinity' badged expired) and ok for
 #     ./internal/collect/ and ./internal/web/ - their other tests gated on PGVIGIL_REPO_DSN / PGVIGIL_REPO_TEST_DSN
 #     run against this throwaway database too (collect: dms, statements, pi, versions, cloudwatch_io; web: actions,
@@ -61,8 +61,8 @@ if [ "${PGINF_FULL:-0}" = 1 ]; then
   go test ./internal/collect/ ./internal/web/ -count=1 2>&1 | tail -20
   [ "${PIPESTATUS[0]}" = 0 ] || RC=1
   echo "pginf: the web's type check (roles.ts)"
-  if (cd web && npm ci --silent --no-audit --no-fund >/dev/null 2>&1 && npx --no-install tsc --noEmit -p . 2>&1 | tail -10; exit "${PIPESTATUS[0]}"); then echo "ok   tsc --noEmit"
-  else echo "FAIL tsc --noEmit (or npm ci)"; RC=1; fi
+  if (cd web && npm ci --silent --no-audit --no-fund >/dev/null 2>&1 && npm run --silent check 2>&1 | tail -10; exit "${PIPESTATUS[0]}"); then echo "ok   the type check (npm run check)"
+  else echo "FAIL the type check (or npm ci)"; RC=1; fi
 fi
 echo "pginf: exit $RC"
 exit $RC

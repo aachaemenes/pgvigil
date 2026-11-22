@@ -13,7 +13,7 @@
 # password is made at run time and reaches the tools through environment files or the environment.
 #
 # Expected (written 11-15 before the first run; red before the change at B: no 'waits' family, no mssql_wait_core_points):
-#  A. the run's copy with the three wiring patches: npm ci and npm run build (tsc --noEmit, then esbuild) exit 0; go vet
+#  A. the run's copy with the three wiring patches: npm ci and npm run build (the type check, then esbuild) exit 0; go vet
 #     ./internal/mssql ./internal/web clean; go test ./internal/mssql -run 'TestBuildDocs' ok.
 #  B. migrate: one seed on waits.wait_s_per_core_min (off, fleet, above 180 / 299.999, for_minutes 0, created_by
 #     'pgvigil', client '0153 seed') with one 'seed' log row; a second migrate adds neither; metric_catalog's row
@@ -86,11 +86,11 @@ if [[ "${PGVIGIL_WIRING:-1}" == 1 ]]; then
   grep -q "0153 seed" "$GSRC/internal/repo/sql/0190_join_release2.sql" || wire scripts/proof-mssql-counter-checks-wiring.patch
   grep -q "mssql_wait_core_points" "$GSRC/internal/repo/sql/0190_join_release2.sql" || wire scripts/proof-mssql-waits-percore-wiring.patch
 fi
-(cd "$GSRC/web" && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -30 "$TMPD/web.log" >&2; fail "A: the web build (tsc --noEmit, esbuild)"; }
+(cd "$GSRC/web" && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -30 "$TMPD/web.log" >&2; fail "A: the web build (the type check, esbuild)"; }
 (cd "$GSRC" && go vet ./internal/mssql ./internal/web) > "$TMPD/vet.out" 2>&1 || { tail -20 "$TMPD/vet.out" >&2; fail "A: go vet"; }
 (cd "$GSRC" && go test ./internal/mssql -run 'TestBuildDocs' -count=1) > "$TMPD/test.out" 2>&1 || { tail -30 "$TMPD/test.out" >&2; fail "A: go test TestBuildDocs"; }
 (cd "$GSRC" && go build -o "$TMPD/pgvigil" ./cmd/pgvigil) || fail "A: the build"
-ok "A: tsc and the bundle, go vet, TestBuildDocs and the binary over the three wiring patches"
+ok "A: the type check and the bundle, go vet, TestBuildDocs and the binary over the three wiring patches"
 
 sq() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | timeout "${3:-180}" docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -I -W -h -1 -s "|" -l 60 -d "$0" -i /dev/stdin' "${2:-master}"; }
 sqb() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | timeout "${3:-180}" docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -b -I -W -h -1 -s "|" -l 60 -d "$0" -i /dev/stdin' "${2:-master}"; }

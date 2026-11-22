@@ -101,7 +101,7 @@
 #     uptime at a SQL Server instance accepted (as before); amcheck_age at a SQL Server instance refused 'no
 #     PostgreSQL instance' (as before).
 #  N. the page's wiring (web/src/mssql_hadr.ts and internal/web/q_mssql_hadr.go, joined apart from this file): the
-#     patch this file carries (wiring_patch) applies to a scratch copy of the tree, its web bundle builds (tsc,
+#     patch this file carries (wiring_patch) applies to a scratch copy of the tree, its web bundle builds (the type check,
 #     esbuild) and its binary serves /api/mssql/availability for the distributor: part replseries answers 2 or more
 #     buckets over the proof's window with the largest latency 120 s or more and 100 or more commands waiting; part
 #     replication carries the new columns (the transactional subscription running, continuous, latency 0, active);
@@ -801,7 +801,7 @@ else
   (cd "$SCR" && git apply --check "$WORK/wiring.patch" && git apply "$WORK/wiring.patch") || fail "N: the wiring patch does not apply to this tree"
   echo "  the wiring patch applied (web/src/mssql_hadr.ts, internal/web/q_mssql_hadr.go, docs/sqlserver-hadr.md)"
 fi
-(cd "$SCR/web" && npm ci --no-audit --no-fund > "$WORK/npm.log" 2>&1 && npm run build > "$WORK/web.log" 2>&1) || { tail -20 "$WORK/web.log" 2>/dev/null; tail -5 "$WORK/npm.log"; fail "N: the web build (tsc and esbuild) of the wired copy"; }
+(cd "$SCR/web" && npm ci --no-audit --no-fund > "$WORK/npm.log" 2>&1 && npm run build > "$WORK/web.log" 2>&1) || { tail -20 "$WORK/web.log" 2>/dev/null; tail -5 "$WORK/npm.log"; fail "N: the web build (the type check and esbuild) of the wired copy"; }
 (cd "$SCR" && CGO_ENABLED=0 go build -o "$WORK/pgvigil-wired" ./cmd/pgvigil) || fail "N: the build of the wired copy"
 for _ in 1 2 3; do
   PORT=$((20000 + RANDOM % 10000)); U="http://127.0.0.1:$PORT"
@@ -833,7 +833,7 @@ grep -q "Replication latency: the oldest command waiting" "$SCR/internal/web/dis
 grep -qF '{key:"subscription_status",label:"subscription"},{key:"agent_type",label:"agent"}' "$SCR/internal/web/dist/app.js" || fail "N: the Subscriptions grid lacks the agent column"
 grep -qF 'Log reader and snapshot agents' "$SCR/internal/web/dist/app.js" && ! grep -qF 'Log reader, snapshot and merge agents' "$SCR/internal/web/dist/app.js" || fail "N: the agents heading still names merge agents"
 kill "$SRVPID" 2>/dev/null; wait "$SRVPID" 2>/dev/null || true; SRVPID=
-echo "N: OK (tsc and the bundle built; replseries, replication and repllimits answer with the new rows)"
+echo "N: OK (the type check and the bundle built; replseries, replication and repllimits answer with the new rows)"
 
 echo "--- K. the statements as the monitoring login, the unit tests"
 step "the stub of crafted history" "$DIST" < <(stub_sql)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proof-gridmenu.sh: the grid menu's browser check on a fresh build - the web bundle (npm ci, npm run build: tsc and
+# proof-gridmenu.sh: the grid menu's browser check on a fresh build - the web bundle (npm ci, npm run build: the type check and
 # esbuild), a SQL Server container for case G-sql (docker; removed at the end), then scripts/menu-check.mjs with
 # PGVIGIL_MENU_ONLY=G (the GM cases G-menu .. G-themes; case G retired into G-select; menu-check.mjs's header names
 # each). menu-check itself builds the binary, seeds the demo into a throwaway database on PGVIGIL_ADMIN_DSN, serves it on
