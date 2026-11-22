@@ -62,6 +62,7 @@ main { display: block; }
 .shot { margin: 0; }
 .shot img { display: block; width: 100%; border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); background: var(--soft); }
 .shot figcaption { color: var(--muted); font-size: .9rem; margin-top: .6rem; }
+.wrap p.note { color: var(--muted); font-size: .9rem; margin: .8rem 0 0; max-width: 720px; }   /* a caption-style line beside a button, such as the released version's by the Download button */
 .lead-shot { padding-bottom: 4rem; }
 
 .row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.75fr); gap: 2.6rem; align-items: center; padding: 3.2rem 0; border-top: 1px solid var(--line); }

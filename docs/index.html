@@ -46,12 +46,13 @@
 <main id="main">
 <div class="wrap hero">
   <h1>Monitoring for PostgreSQL and SQL Server</h1>
-  <p>Free and open source. pgvigil runs on Linux or Windows and reads your PostgreSQL and SQL Server servers on a schedule through least-privilege logins (never sysadmin). It keeps their history in a PostgreSQL database. The Summary below shows which servers need you first.</p>
+  <p>Free and open source. pgvigil runs on Linux or Windows and reads your servers on a schedule: PostgreSQL through a pg_monitor login (never a superuser), SQL Server through a least-privilege login (never sysadmin). It keeps their history in a PostgreSQL database. The Summary below shows which servers need you first.</p>
   <div class="actions">
     <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
     <a class="btn" href="install.html">Install and try the demo</a>
     <a class="btn" href="https://github.com/aachaemenes/pgvigil">Source on GitHub</a>
   </div>
+  <p class="note">v0.3.0 monitors PostgreSQL. SQL Server monitoring is in the source today and ships in v0.4.0.</p>
 </div>
 
 <div class="wrap lead-shot">
@@ -106,7 +107,7 @@
       <h2>What it does not do</h2>
       <ul class="list">
         <li>Its collector never writes to a server it watches. Ending a session or starting a job is off until you turn it on, through a login kept for that alone, and every use is logged.</li>
-        <li>No agent runs on your database servers, and there is no telemetry. pgvigil talks to your servers, its own database, the cloud APIs you configure and your alert channels. The Windows app can look for a newer release on GitHub once a day, only when an administrator or the user turns it on; it is off by default.</li>
+        <li>No agent runs on your database servers, and there is no telemetry. pgvigil talks to your servers, its own database, the cloud APIs you configure and your alert channels. In v0.3.0 the Windows app looks for a newer release on GitHub once a day unless an administrator or the user turns it off; from v0.4.0 it will be off unless one of them turns it on.</li>
         <li>It is not a hosted service: you run it, and the data stays in your own database.</li>
         <li>It watches databases, not Kubernetes or your applications.</li>
       </ul>
