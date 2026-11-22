@@ -6,8 +6,8 @@
 // and landmark-unique with 0 violation nodes;
 // a full-page PNG per render. A layout line per render: at 1440 the prose starts at the h1's left edge and no paragraph
 // or list item is wider than the text column; every row of a grid ends at its right edge; a section's paragraphs
-// and list items, a row's text and the steps in the ink colour; no filled button in the header; no style attribute; both
-// colour schemes declared. A page line per page: the two icons linked and served; a page with og:image gives its size,
+// and list items, a row's text and the steps in the ink colour; at every width no code block's own text wider than its
+// box; no filled button in the header; no style attribute; both colour schemes declared. A page line per page: the two icons linked and served; a page with og:image gives its size,
 // its alt and the twitter card; the service install's two blocks each under its own heading; the jobs picture's row in
 // jobs words alone. Then the icons are the app's own bytes, the sitemap lists every page once with a lastmod on or after
 // the day the page last changed (git, or the file PGVIGIL_SITE_DATES names: '<page> <yyyy-mm-dd>' per line), every link
@@ -92,7 +92,8 @@ for (const page of pages) for (const width of WIDTHS) for (const scheme of SCHEM
   // picture and the closing buttons start at the h1's left edge; at 1440 no paragraph or list item is wider than the
   // text column; every row of a grid ends at its right edge (no card left alone in a row); a section's paragraphs
   // and list items, a row's text and the steps in the ink colour (the grey is the captions'); no filled button in the
-  // header, which keeps its Download link; no style attribute; both colour schemes declared
+  // header, which keeps its Download link; no style attribute; both colour schemes declared; at every width no code
+  // block's own text wider than its box (a command a first look cannot read whole is cut, though the box scrolls)
   const wide = width >= 1200;
   const lay = await ev(`(() => {
     const box = e => e.getBoundingClientRect(), ink = getComputedStyle(document.body).color;
@@ -112,13 +113,15 @@ for (const page of pages) for (const width of WIDTHS) for (const scheme of SCHEM
     });
     const grey = [...document.querySelectorAll('main section.plain p, main section.plain li, main .row p, main ol.steps li')]
       .filter(e => getComputedStyle(e).color !== ink).length;
+    const cut = [...document.querySelectorAll('main pre')].filter(e => e.scrollWidth > e.clientWidth + 1)
+      .map(e => '"' + e.textContent.trim().slice(0, 24) + '" ' + e.scrollWidth + ' of ' + e.clientWidth + ' px');
     const filled = [...document.querySelectorAll('header.top .btn')].filter(b => getComputedStyle(b).backgroundColor !== 'rgba(0, 0, 0, 0)').length;
-    return { edge: Math.round(x0), offset, tooWide, grids: grids.length, alone, grey, filled, download: !!document.querySelector('header.top .links a[href$="/releases/latest"]'),
+    return { edge: Math.round(x0), offset, tooWide, grids: grids.length, alone, grey, cut, filled, download: !!document.querySelector('header.top .links a[href$="/releases/latest"]'),
              styled: document.querySelectorAll('[style]').length, scheme: getComputedStyle(document.documentElement).colorScheme };
   })()`);
   const list = (a, wideOnly) => !wide && wideOnly ? `not read at ${width}` : a.length ? 'NO ' + a.join(', ') : 'yes';
-  say(lay.edge >= 16 && !lay.offset.length && !lay.tooWide.length && !lay.alone.length && !lay.grey && !lay.filled && lay.download && !lay.styled && lay.scheme === 'light dark',
-    `${name} layout: the h1 ${lay.edge} px from the window's edge${lay.edge >= 16 ? '' : ' (NO: under 16)'}; prose at the h1's left ${list(lay.offset)}; within the text width ${list(lay.tooWide, true)}; grid rows full ${lay.grids ? list(lay.alone) : 'no grid'}; prose in the ink colour ${lay.grey ? 'NO ' + lay.grey + ' in grey' : 'yes'}; header buttons filled ${lay.filled}${lay.download ? '' : ', no Download'}; style attributes ${lay.styled}; color-scheme '${lay.scheme}'`);
+  say(lay.edge >= 16 && !lay.offset.length && !lay.tooWide.length && !lay.alone.length && !lay.grey && !lay.cut.length && !lay.filled && lay.download && !lay.styled && lay.scheme === 'light dark',
+    `${name} layout: the h1 ${lay.edge} px from the window's edge${lay.edge >= 16 ? '' : ' (NO: under 16)'}; prose at the h1's left ${list(lay.offset)}; within the text width ${list(lay.tooWide, true)}; grid rows full ${lay.grids ? list(lay.alone) : 'no grid'}; prose in the ink colour ${lay.grey ? 'NO ' + lay.grey + ' in grey' : 'yes'}; code blocks within their box ${list(lay.cut)}; header buttons filled ${lay.filled}${lay.download ? '' : ', no Download'}; style attributes ${lay.styled}; color-scheme '${lay.scheme}'`);
 
   // the page, once: the two icons linked and served; a page with og:image gives its size (the picture's own), its alt and
   // the twitter card; the service install's two blocks, each under its own heading; the jobs picture's row in jobs words

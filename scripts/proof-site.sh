@@ -8,7 +8,8 @@
 # at the top after a scroll, the menu at 760 and 390 opened with its six links and the links at 1440, every image
 # loaded, 0 axe nodes under WCAG 2.1 A / AA and the heading and landmark rules), one 'ok ... layout' line per render
 # (the h1 off the window's edge and every block at its left edge, the prose within the text width at 1440, every grid
-# row full, the prose in the ink colour, no filled header button, no style attribute, both colour schemes), one
+# row full, the prose in the ink colour, every code block's text within its box, no filled header button, no style
+# attribute, both colour schemes), one
 # 'ok ... page' line per page (the two icons, a shared picture's size and alt, the install blocks, the rows' words),
 # 'ok icons' (the app's own files), 'ok sitemap' (every page once, no lastmod older than its page; PGVIGIL_SITE_DATES
 # names a '<page> <yyyy-mm-dd>' file where the tree has no git history; with neither, 'FAIL sitemap: ... no date
