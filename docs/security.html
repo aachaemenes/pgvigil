@@ -54,6 +54,8 @@
     <li>Passwords can stay out of the config file. An inline one is refused for SQL Server and for the actions and EXPLAIN logins, not for a PostgreSQL server's own login.</li>
     <li>You choose whether statement text is kept as is, with every literal replaced, or not at all.</li>
     <li>Whichever you choose, the password-shaped parts of the statements, plans and Extended Events reports it keeps are masked before they are stored, on SQL Server and on PostgreSQL. The shapes and the mask's known limits are listed below.</li>
+    <li>Its own database gives each part its own role. The collector adds data only through its import functions. The web page reads, and records each action it runs. The alert sender holds a login of its own. The sign-in check runs through one function nobody else can call.</li>
+    <li>The web page has its own sign-in (argon2id password hashes, strict cookies, rate limits) and refuses to listen beyond the local machine without HTTPS.</li>
   </ul>
   <p>The statement-text setting (<code>query_text</code>) applies when the text is read, not only when it is collected. A page, an export, a report mail, an alert or the MCP door started with the configuration file (<code>pgvigil mcp -config</code>) shows the text an instance's setting allows now:</p>
   <table>
@@ -70,8 +72,6 @@
       <li>A custom report on the store runs its own SQL as the reports login and reads the stored text as it was kept. The Custom reports page says so while any instance keeps less than the full text.</li>
       <li>A report mail rendered before a change is sent as it was rendered.</li>
     </ul></li>
-    <li>Its own database gives each part its own role. The collector adds data only through its import functions. The web page reads, and records each action it runs. The alert sender holds a login of its own. The sign-in check runs through one function nobody else can call.</li>
-    <li>The web page has its own sign-in (argon2id password hashes, strict cookies, rate limits) and refuses to listen beyond the local machine without HTTPS.</li>
   </ul>
 </div></div></section>
 

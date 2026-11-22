@@ -88,7 +88,7 @@ th, td { text-align: left; vertical-align: top; padding: .45rem 1rem .45rem 0; b
 thead th { font-weight: 600; }
 ol.steps { padding-left: 1.3rem; } ol.steps li { margin-bottom: .6rem; }
 pre { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1rem; overflow-x: auto; line-height: 1.55; margin: .8rem 0 1.2rem; }
-p code, li code { background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: .05rem .3rem; }
+p code, li code, th code, td code { background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: .05rem .3rem; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 1.2rem 2.4rem; }
 .grid2 h3 { margin-top: .4rem; }
 .grid2 > .wide { grid-column: 1 / -1; }   /* a card on a row of its own spans it, its prose at the text column's width */
