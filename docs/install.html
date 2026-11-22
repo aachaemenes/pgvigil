@@ -41,13 +41,13 @@
 
 <section class="plain"><div class="wrap"><div class="text">
   <h2>Try the demo</h2>
-  <p>Download pgvigil from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and give its <code>-pgbin</code> the path of the bin folder of any PostgreSQL install. One command builds a throwaway demo fleet of PostgreSQL and SQL Server servers with a week of history and opens it in its own window. No Docker. Tested on Linux. Not tested yet on Windows (a portable PostgreSQL, no admin rights).</p>
+  <p>Download pgvigil from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and give its <code>-pgbin</code> the path of the bin folder of any PostgreSQL install. One command builds a throwaway demo fleet with a week of history and opens it in its own window: PostgreSQL servers in v0.3.0, and SQL Server servers with them from v0.4.0. No Docker. Tested on Linux. Not tested yet on Windows (a portable PostgreSQL, no admin rights).</p>
 <pre tabindex="0"><code>pgvigil demo -pgbin &lt;path&gt; -serve -open</code></pre>
 </div></div></section>
 
 <section class="plain"><div class="wrap"><div class="text">
   <h2>Install as a service</h2>
-  <p>One line fetches the release, checks its checksum and installs the collector as a service. Run it again to upgrade.</p>
+  <p>One line fetches the release, checks its checksum and installs the collector as a service. Run it again to upgrade once v0.4.0 is released: v0.3.0 has no upgrade of its own.</p>
   <h3>Linux</h3>
 <pre tabindex="0"><code># a system account and a systemd unit
 curl -fsSL \
@@ -63,7 +63,7 @@ irm https://pgvigil.com/install.ps1 |
   <ol class="steps">
     <li>Download the file for your platform from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and check it against <code>SHA256SUMS</code>; the <a href="https://github.com/aachaemenes/pgvigil#releases-and-how-to-verify-one">README</a> shows the two commands.</li>
     <li>Create an empty database on a PostgreSQL 13 or later server for pgvigil's history (tested on 13, 16 and 18), and copy <code>pgvigil.example.yaml</code>. Keep passwords in the environment or a file, not in the config. pgvigil refuses an inline one for SQL Server and for the actions and EXPLAIN logins; it accepts one for a PostgreSQL server's own login and the repository.</li>
-    <li>Create the tables, the logins and the first web user. The login that owns pgvigil's database needs CREATEROLE: <code>migrate</code> creates pgvigil's own roles. The first web user is an admin; a user added later starts as a viewer, and <code>pgvigil user add -role operator</code> or <code>-role admin</code> gives more.</li>
+    <li>Create the tables, the logins and the first web user. The login that owns pgvigil's database needs CREATEROLE: <code>migrate</code> creates pgvigil's own roles. Web users get roles from v0.4.0: the first web user will be an admin, a user added later will start as a viewer, and <code>pgvigil user add -role operator</code> or <code>-role admin</code> will give more.</li>
     <li>Start the collector and the web page, over HTTPS with <code>pgvigil cert</code> or your own certificate.</li>
   </ol>
 <pre tabindex="0"><code>pgvigil migrate -config pgvigil.yaml
@@ -77,7 +77,7 @@ pgvigil serve -config pgvigil.yaml \
   -tls-cert pgvigil.crt \
   -tls-key pgvigil.key</code></pre>
   <p>A line that ends in <code>\</code> goes on in the next one. In PowerShell, end it with a backtick (<code>`</code>) instead.</p>
-  <p>On Windows, serve can take its certificate from the machine's certificate store, with the key left where it is: it is never read or exported. Use <code>-tls-thumbprint &lt;thumbprint&gt;</code> for one certificate, or <code>-tls-subject &lt;dns name&gt;</code> for the newest valid one that names the host in its Subject Alternative Name. A renewal is picked up within the hour, with no restart. Both read the store <code>-tls-store</code> names (default <code>LocalMachine\My</code>). A missing, expired or ambiguous certificate, or a key the account cannot open, stops serve with one line that says which. To let serve's account read the key, run <code>pgvigil cert -grant-key-access &lt;thumbprint&gt; -account DOMAIN\user</code> from an elevated prompt. It grants Read to that one account and prints the key's old access list first. certlm.msc &gt; the certificate &gt; All Tasks &gt; Manage Private Keys does the same by hand.</p>
+  <p>From v0.4.0, on Windows, serve will be able to take its certificate from the machine's certificate store, with the key left where it is: it will never be read or exported. <code>-tls-thumbprint &lt;thumbprint&gt;</code> will pick one certificate, and <code>-tls-subject &lt;dns name&gt;</code> the newest valid one that names the host in its Subject Alternative Name. A renewal will be picked up within the hour, with no restart. Both will read the store <code>-tls-store</code> names (default <code>LocalMachine\My</code>). A missing, expired or ambiguous certificate, or a key the account cannot open, will stop serve with one line that says which. To let serve's account read the key, <code>pgvigil cert -grant-key-access &lt;thumbprint&gt; -account DOMAIN\user</code>, run from an elevated prompt, will grant Read to that one account and print the key's old access list first. certlm.msc &gt; the certificate &gt; All Tasks &gt; Manage Private Keys does the same by hand.</p>
   <p>Adding servers, the SQL Server login, the cloud settings and every option are in the <a href="https://github.com/aachaemenes/pgvigil#readme">documentation</a>. For a site with no internet access, follow the <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/airgap.md">offline install</a>. To move an installed pgvigil to a new release, follow the <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/upgrade.md">upgrade</a> in its order.</p>
 </div></div></section>
 
