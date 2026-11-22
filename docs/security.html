@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Security - pgvigil</title>
-<meta name="description" content="How pgvigil keeps the servers it watches safe: read-only logins, no agent, no telemetry, separate logins for actions, signed releases, FIPS 140-3 builds and an offline install.">
+<meta name="description" content="How pgvigil keeps the servers it watches safe: least-privilege logins, no agent, no telemetry, separate logins for actions, signed releases, FIPS 140-3 builds and an offline install.">
 <link rel="canonical" href="https://pgvigil.com/security.html">
 <link rel="icon" href="favicon.ico" sizes="32x32">
 <link rel="icon" href="img/favicon.svg" type="image/svg+xml">
@@ -42,7 +42,7 @@
 <section class="plain"><div class="wrap"><div class="text">
   <h2>The servers it watches</h2>
   <ul class="list">
-    <li>PostgreSQL is read through a <code>pg_monitor</code> login, in read-only sessions with statement and lock timeouts. SQL Server is read through a login with view and read rights only, never sysadmin.</li>
+    <li>PostgreSQL is read through a <code>pg_monitor</code> login, in read-only sessions with statement and lock timeouts. SQL Server is read through a least-privilege login, never sysadmin: view rights, read access to the databases, and the two rights its error log and default trace readers need (ALTER TRACE, EXECUTE on xp_readerrorlog).</li>
     <li>No agent and no service runs on a watched server. A few optional pieces are created by the DBA from scripts pgvigil prints, each documented. On SQL Server, small Extended Events sessions. On PostgreSQL, an event trigger that records schema changes, and on your own servers a function that lets pgvigil read the server log. Extensions are used where you already have them.</li>
     <li>Cancelling or ending a session, and starting or stopping a SQL Server job, are off by default. Turned on, they run through a separate login kept for those actions, and every use is logged. On SQL Server that login needs SQLAgentOperatorRole, which also lets it read and switch jobs on and off; <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-actions.md">the actions page</a> lists every right.</li>
   </ul>

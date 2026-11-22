@@ -95,7 +95,7 @@
       <li>Bundles of plain files: one gzip-compressed NDJSON file per view, a manifest and SHA256 sums. The manifest names the instance, the versions, the time window, each file's row count and how each read ended. A security team can open any bundle with gunzip and jq before it leaves.</li>
       <li>Any way out the site allows. The collector will write straight into an Azure Blob container that pgvigil polls, with an Event Grid queue as a later option. An S3 or GCS bucket, a file share, SFTP, or a one-way copy or USB for a closed network will work too. Filebeat can carry the same files where a log pipeline is the only way out.</li>
       <li>Statement text will be hashed or left out, by a setting on the site's side.</li>
-      <li>Those servers will show "as of the last bundle that arrived". A site that goes quiet will raise an alert. Actions that need a live connection (ending a session, starting a job, EXPLAIN) will be off for those servers, with the reason shown.</li>
+      <li>Those servers will show "as of the last bundle that arrived": their data is as fresh as the interval. A site that goes quiet will raise an alert. Actions that need a live connection (ending a session, starting a job, EXPLAIN) will be off for those servers, with the reason shown.</li>
       <li>The collector package on GitHub releases, signed, next to the offline bundle, with its setup guide.</li>
     </ul>
   </div>
