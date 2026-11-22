@@ -129,11 +129,11 @@ for (const page of pages) for (const width of [1440, 760, 390]) for (const schem
       const blocks = svc ? [...svc.querySelectorAll('pre')].map(p => (p.previousElementSibling?.tagName === 'H3' ? p.previousElementSibling.textContent.trim() : '(no heading)') + ': ' +
         [/install\\.sh/.test(p.textContent) && 'install.sh', /install\\.ps1/.test(p.textContent) && 'install.ps1'].filter(Boolean).join(' and ')) : null;
       const jobs = qa('main .row').find(r => r.querySelector('img[src="img/jobs.png"]'))?.querySelector('.row-text');
-      // the tested lines ('Where it runs'): every paragraph naming what is tested starts that line with a bold 'Tested', and
+      // the tested lines ('Where it runs': the paragraphs that say 'Tested on'): each opens that line with a bold 'Tested', and
       // a bold 'Not tested yet' where it names what is not; every linked screenshot's caption says it opens full size; the hero's
       // link to the install page names it; the v0.4.0 block holds its headline and two points
       const where = qa('main h2').find(h => h.textContent.trim() === 'Where it runs')?.parentElement;
-      const tested = (where ? [...where.querySelectorAll('p')] : []).filter(p => /\\bTested on\\b|\\bnot tested yet\\b/i.test(p.textContent))
+      const tested = (where ? [...where.querySelectorAll('p')] : []).filter(p => /\\bTested on\\b/.test(p.textContent))
         .map(p => { const b = [...p.querySelectorAll('strong')], opens = re => b.some(x => re.test(x.textContent.trim()) && x.previousSibling?.nodeName === 'BR');
           return { ok: opens(/^Tested\\b/) && (!/not tested yet/i.test(p.textContent) || opens(/^Not tested yet/)), start: p.textContent.trim().slice(0, 24) }; });
       const shots = qa('main figure.shot').filter(f => f.querySelector('a img'))
