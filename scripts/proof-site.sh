@@ -21,7 +21,9 @@ OUT="${PGVIGIL_SITE_OUT:-.proof-site}"
 [[ "$(basename "$OUT")" == .proof-site* ]] || { echo "FAIL: PGVIGIL_SITE_OUT must be a folder named .proof-site*" >&2; exit 1; }
 WORK=$(mktemp -d); PORT=$((23000 + RANDOM % 8000)); CDP=$((PORT + 1)); SRV=""; CHR=""
 fail() { echo "FAIL: $*" >&2; exit 1; }
-cleanup() { [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true; [[ -n "$CHR" ]] && { kill "$CHR" 2>/dev/null; wait "$CHR" 2>/dev/null; } || true; rm -rf "$WORK"; }
+cleanup() { [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true; [[ -n "$CHR" ]] && { kill "$CHR" 2>/dev/null; wait "$CHR" 2>/dev/null; } || true
+  # Chromium's last cache writes can race the first removal: once more after a second, quietly
+  rm -rf "$WORK" 2>/dev/null || { sleep 1; rm -rf "$WORK" 2>/dev/null; } || true; }
 trap cleanup EXIT
 for t in python3 chromium node npm curl; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 for p in $PORT $CDP; do ss -ltnH "( sport = :$p )" | grep -q . && fail "port $p is in use: run again"; done
