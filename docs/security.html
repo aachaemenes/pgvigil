@@ -53,7 +53,7 @@
   <ul class="list">
     <li>Passwords can stay out of the config file. An inline one is refused for SQL Server and for the actions and EXPLAIN logins, not for a PostgreSQL server's own login.</li>
     <li>You choose whether statement text is kept as is, with every literal replaced, or not at all.</li>
-    <li>Whichever you choose, v0.3.0 masks two password forms in the statement and log text it keeps; from v0.4.0 the password-shaped parts of the statements, plans and Extended Events reports it keeps will be masked before they are stored, on SQL Server and on PostgreSQL. The shapes and the mask's known limits are listed below.</li>
+    <li>Whichever you choose, v0.3.0 masks two password forms in the statement and log text it keeps, and nothing in a scheduled job's text; from v0.4.0 the forms listed below will be masked in the statements, plans and Extended Events reports it keeps, on SQL Server and on PostgreSQL. The shapes and the mask's known limits are listed below.</li>
     <li>Its own database gives each part its own role. The collector adds data only through its import functions. The web page reads, and records each action it runs. The alert sender holds a login of its own. The sign-in check runs through one function nobody else can call.</li>
     <li>The web page has its own sign-in (argon2id password hashes, strict cookies, rate limits) and refuses to listen beyond the local machine without HTTPS.</li>
   </ul>
@@ -89,6 +89,7 @@
     <li>The password in a connection URI (<code>postgresql://user:password@host</code>).</li>
     <li>A role's or a user mapping's password set inside a dynamic <code>EXECUTE</code>.</li>
   </ul>
+  <p>v0.3.0 masks nothing in a scheduled job's text: a pg_cron job's command, and its runs' commands and messages, are stored and shown as written, a password inside them included, whatever the statement-text setting.</p>
   <p>In v0.3.0 a stored plan goes through the statement-text setting alone: <code>normalized</code> replaces its literals and <code>none</code> keeps no plan. The same two settings reach the four forms above: <code>normalized</code> replaces them where they are written as literals, and <code>none</code> keeps no statement text.</p>
   <p>From v0.4.0, on both engines, these will be masked in the statements, plans and Extended Events reports pgvigil keeps, before they are stored:</p>
   <ul class="list">
