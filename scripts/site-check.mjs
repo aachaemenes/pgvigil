@@ -1,8 +1,9 @@
-// The site's browser check (proof-site.sh): every page of docs/ (pgvigil.com) at 1440 and 390 px wide in the light and
-// the dark scheme. Per render: the scheme taken (the page's background is the scheme's), no sideways scroll, the header
-// still at the top of the window after a scroll down, the phone menu shown and the wide links hidden at 390 (the reverse
-// at 1440), at 390 the menu opened (its six links shown, axe run with it open), every image loaded, and axe-core's WCAG
-// 2.1 A / AA rules plus heading-order, page-has-heading-one, landmark-one-main and landmark-unique with 0 violation nodes;
+// The site's browser check (proof-site.sh): every page of docs/ (pgvigil.com) at 1440, 760 and 390 px wide in the
+// light and the dark scheme. Per render: the scheme taken (the page's background is the scheme's), no sideways scroll,
+// the header still at the top of the window after a scroll down, the menu shown and the wide links hidden at 760 and
+// 390 (the site's own break; the reverse at 1440), there the menu opened (its six links shown, axe run with it open),
+// every image loaded, and axe-core's WCAG 2.1 A / AA rules plus heading-order, page-has-heading-one, landmark-one-main
+// and landmark-unique with 0 violation nodes;
 // a full-page PNG per render. A layout line per render: at 1440 the prose starts at the h1's left edge and no paragraph
 // or list item is wider than the text column; every row of a grid ends at its right edge; a section's paragraphs
 // and list items, a row's text and the steps in the ink colour; no filled button in the header; no style attribute; both
@@ -39,7 +40,8 @@ fs.mkdirSync(out, { recursive: true });
 
 const pages = fs.readdirSync('docs').filter(f => f.endsWith('.html')).sort();
 const links = new Map();   // href -> the first page that names it
-for (const page of pages) for (const width of [1440, 390]) for (const scheme of ['light', 'dark']) {
+for (const page of pages) for (const width of [1440, 760, 390]) for (const scheme of ['light', 'dark']) {
+  const narrow = width <= 760;   // the site's own break: site.css shows the menu at 760 px and under
   const name = `${page.replace('.html', '')}-${width}-${scheme}`;
   await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 600 });
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }] });
@@ -62,7 +64,7 @@ for (const page of pages) for (const width of [1440, 390]) for (const scheme of 
              bg: getComputedStyle(document.body).backgroundColor, h: de.scrollHeight, title: document.title };
   })()`);
   // at phone width the menu is opened first, so its links are seen and scanned
-  const menu = width < 600 ? await ev(`(async () => { const d = document.querySelector('details.menu'); d.querySelector('summary').click(); await new Promise(r => setTimeout(r, 150));
+  const menu = narrow ? await ev(`(async () => { const d = document.querySelector('details.menu'); d.querySelector('summary').click(); await new Promise(r => setTimeout(r, 150));
     const links = [...d.querySelectorAll('nav a')].filter(a => a.getBoundingClientRect().height > 0).length; return { open: d.open, links }; })()`) : null;
   await ev(axeSrc);
   // two scans one after the other (axe runs one at a time): the WCAG rules, then the heading and landmark rules
@@ -77,9 +79,9 @@ for (const page of pages) for (const width of [1440, 390]) for (const scheme of 
   await sleep(150);
   const shot = await send('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(`${out}/${name}.png`, Buffer.from(shot.result.data, 'base64'));
-  const navOk = width < 600 ? (r.menu && !r.links && !!menu && menu.open && menu.links === 6) : (r.links && !r.menu);
+  const navOk = narrow ? (r.menu && !r.links && !!menu && menu.open && menu.links === 6) : (r.links && !r.menu);
   say(r.bg === want && r.sideways <= 0 && r.stuck && navOk && !r.broken.length && nodes === 0,
-    `${name}: '${r.title}', body ${r.bg} (${r.bg === want ? 'the scheme' : 'wanted ' + want}), sideways ${r.sideways} px, header held ${r.stuck}, nav ${width < 600 ? `menu opened ${menu?.open} with ${menu?.links} links` : 'links'} ${navOk}, images broken ${r.broken.length ? r.broken.join(' ') : 0}, axe ${nodes} node(s)${nodes ? ' ' + JSON.stringify(ax) : ''}, page ${r.h} px`);
+    `${name}: '${r.title}', body ${r.bg} (${r.bg === want ? 'the scheme' : 'wanted ' + want}), sideways ${r.sideways} px, header held ${r.stuck}, nav ${narrow ? `menu opened ${menu?.open} with ${menu?.links} links` : 'links'} ${navOk}, images broken ${r.broken.length ? r.broken.join(' ') : 0}, axe ${nodes} node(s)${nodes ? ' ' + JSON.stringify(ax) : ''}, page ${r.h} px`);
   for (const h of r.hrefs) if (!links.has(h)) links.set(h, page);
 
   // the layout: the h1 at least 16 px from the window's left edge, and the prose, the section headings, the summary
@@ -110,7 +112,7 @@ for (const page of pages) for (const width of [1440, 390]) for (const scheme of 
     return { edge: Math.round(x0), offset, tooWide, grids: grids.length, alone, grey, filled, download: !!document.querySelector('header.top .links a[href$="/releases/latest"]'),
              styled: document.querySelectorAll('[style]').length, scheme: getComputedStyle(document.documentElement).colorScheme };
   })()`);
-  const list = (a, at390) => !wide && at390 ? 'not read at 390' : a.length ? 'NO ' + a.join(', ') : 'yes';
+  const list = (a, wideOnly) => !wide && wideOnly ? `not read at ${width}` : a.length ? 'NO ' + a.join(', ') : 'yes';
   say(lay.edge >= 16 && !lay.offset.length && !lay.tooWide.length && !lay.alone.length && !lay.grey && !lay.filled && lay.download && !lay.styled && lay.scheme === 'light dark',
     `${name} layout: the h1 ${lay.edge} px from the window's edge${lay.edge >= 16 ? '' : ' (NO: under 16)'}; prose at the h1's left ${list(lay.offset)}; within the text width ${list(lay.tooWide, true)}; grid rows full ${lay.grids ? list(lay.alone) : 'no grid'}; prose in the ink colour ${lay.grey ? 'NO ' + lay.grey + ' in grey' : 'yes'}; header buttons filled ${lay.filled}${lay.download ? '' : ', no Download'}; style attributes ${lay.styled}; color-scheme '${lay.scheme}'`);
 
@@ -163,11 +165,12 @@ say(icoSame && touchSame, `icons: docs/favicon.ico ${icoSame ? 'is' : 'is NOT'} 
   const listed = pages.map(p => [p, sm.filter(s => s.page === p).length]), extra = sm.filter(s => !pages.includes(s.page)).map(s => s.page);
   const dated = sm.filter(s => pages.includes(s.page)).map(s => ({ ...s, changed: changed(s.page) }));
   const undated = dated.filter(d => !d.changed).map(d => d.page);
-  // a page whose day of change is not read leaves the dates unread: an n/a line, never an 'ok' (the listing still FAILs)
+  // a page whose day of change is not read leaves the dates uncompared: a FAIL, never an 'ok' (a proof that compared
+  // nothing never ends OK)
   const listOk = listed.every(([, n]) => n === 1) && !extra.length;
   const smText = `sitemap: ${dated.map(d => `${d.page} ${d.mod}${!d.changed ? '' : d.mod >= d.changed ? '' : ' (the page changed ' + d.changed + ')'}`).join(', ')}` +
     (listed.some(([, n]) => n !== 1) ? `; listed ${listed.filter(([, n]) => n !== 1).map(([p, n]) => p + ' ' + n + ' times').join(', ')}` : '') + (extra.length ? `; no such page ${extra.join(' ')}` : '');
-  if (undated.length && listOk) console.log(`n/a  ${smText}; the day ${undated.join(' ')} last changed not read (no git history here and no PGVIGIL_SITE_DATES line)`);
+  if (undated.length) say(false, `${smText}; no date source for ${undated.join(' ')}: set PGVIGIL_SITE_DATES or run in a git tree`);
   else say(listOk && dated.every(d => !d.changed || d.mod >= d.changed), smText);
 }
 

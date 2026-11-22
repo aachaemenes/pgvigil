@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # proof-site: the site (docs/, served as pgvigil.com) in a headless Chromium. docs/ is served on loopback as it is on
-# GitHub Pages (static files), and scripts/site-check.mjs renders every page at 1440 and 390 px in the light and dark
+# GitHub Pages (static files), and scripts/site-check.mjs renders every page at 1440, 760 and 390 px in the light and dark
 # schemes. Needs python3, chromium, node and npm.
 #   bash scripts/proof-site.sh [--no-net]          (the PNGs go to .proof-site/, emptied first; PGVIGIL_SITE_OUT may name
 #                                                  another folder whose name starts .proof-site)
 # Expected: one 'ok' line per page, width and scheme (the scheme's page background, no sideways scroll, the header held
-# at the top after a scroll, the phone menu at 390 opened with its six links and the links at 1440, every image
+# at the top after a scroll, the menu at 760 and 390 opened with its six links and the links at 1440, every image
 # loaded, 0 axe nodes under WCAG 2.1 A / AA and the heading and landmark rules), one 'ok ... layout' line per render
 # (the h1 off the window's edge and every block at its left edge, the prose within the text width at 1440, every grid
 # row full, the prose in the ink colour, no filled header button, no style attribute, both colour schemes), one
 # 'ok ... page' line per page (the two icons, a shared picture's size and alt, the install blocks, the rows' words),
-# 'ok icons' (the app's own files), 'ok sitemap'
-# (every page once, no lastmod older than its page; PGVIGIL_SITE_DATES names a '<page> <yyyy-mm-dd>' file where the
-# tree has no git history; with neither, an 'n/a  sitemap' line, never 'ok'), one 'ok' line per link (200, its #anchor on the page; only the skip link jumps inside a
-# page; a 429 prints n/a), 'site: ... as expected', then 'OK: the site'; the PNGs.
+# 'ok icons' (the app's own files), 'ok sitemap' (every page once, no lastmod older than its page; PGVIGIL_SITE_DATES
+# names a '<page> <yyyy-mm-dd>' file where the tree has no git history; with neither, 'FAIL sitemap: ... no date
+# source'), one 'ok' line per link (200, its #anchor on the page; only the skip link jumps inside a page; a 429 prints
+# n/a), 'site: ... as expected', then 'OK: the site'; the PNGs.
 # axe-core 4.14.0 is installed into a temporary folder from npm (as proof-a11y.sh does).
 set -euo pipefail
 cd "$(dirname "$0")/.."
