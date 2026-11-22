@@ -46,7 +46,7 @@
 <main id="main">
 <div class="wrap hero">
   <h1>Monitoring for PostgreSQL and SQL Server</h1>
-  <p>Free and open source. pgvigil runs on Linux or Windows and reads your PostgreSQL and SQL Server servers on a schedule through read-only logins. It keeps their history in a PostgreSQL database. The Summary below shows which servers need you first.</p>
+  <p>Free and open source. pgvigil runs on Linux or Windows and reads your PostgreSQL and SQL Server servers on a schedule through least-privilege logins (never sysadmin). It keeps their history in a PostgreSQL database. The Summary below shows which servers need you first.</p>
   <div class="actions">
     <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
     <a class="btn" href="install.html">Install and try the demo</a>
@@ -61,8 +61,8 @@
 <section class="plain"><div class="wrap"><div class="text">
   <h2>Coming in v0.4.0: servers pgvigil cannot reach</h2>
   <ul class="list">
-    <li>A remote collector inside a network no outside server may connect into will read PostgreSQL and SQL Server with read-only logins and write what it read as plain files every few minutes.</li>
-    <li>Your pgvigil will take in each bundle once and show those servers with the rest of the fleet, as of the last bundle that arrived. The <a href="features.html">Features</a> page has the details.</li>
+    <li>A remote collector inside a network no outside server may connect into will read PostgreSQL and SQL Server with least-privilege logins (never sysadmin) and write what it read as a bundle of plain files every few minutes.</li>
+    <li>Your pgvigil will take in each bundle once and show those servers with the rest of the fleet, as of the last bundle that arrived. The <a href="features.html#remote-collector">Features</a> page has the details.</li>
   </ul>
 </div></div></section>
 
@@ -99,8 +99,8 @@
     <div>
       <h2>Where it runs</h2>
       <p><strong>PostgreSQL 13 to 18.</strong><br><strong>Tested</strong> on self-hosted 13, 16 and 18 and on Amazon Aurora PostgreSQL 17.<br><strong>Not tested yet:</strong> Amazon RDS, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB, which pgvigil recognises.</p>
-      <p><strong>SQL Server.</strong><br><strong>Tested</strong> on SQL Server 2017, 2019, 2022 and 2025 on Linux, SQL Server 2016 on a Windows server, Amazon RDS for SQL Server (Express and Standard), Azure SQL Database (serverless, and a Basic elastic pool), Azure SQL Managed Instance (General Purpose) and Google Cloud SQL for SQL Server (Express).<br><strong>Not tested yet:</strong> Windows sign-in against a real domain, a vCore elastic pool and Managed Instance Business Critical.</p>
-      <p>The program is one file for Linux, Windows or macOS. The history lives in a PostgreSQL database you choose.</p>
+      <p><strong>SQL Server.</strong><br><strong>Tested</strong> on SQL Server 2017, 2019, 2022 and 2025 on Linux and SQL Server 2016 on a Windows server. Also on Amazon RDS for SQL Server (Express and Standard), Azure SQL Database (serverless, and a Basic elastic pool), Azure SQL Managed Instance (General Purpose) and Google Cloud SQL for SQL Server (Express).<br><strong>Not tested yet:</strong> Windows sign-in against a real domain, a vCore elastic pool and Managed Instance Business Critical.</p>
+      <p>The program is one file for Linux or Windows, and for macOS (the binary only, not tested yet). The history lives in a PostgreSQL database you choose.</p>
     </div>
     <div>
       <h2>What it does not do</h2>
