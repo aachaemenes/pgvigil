@@ -94,17 +94,24 @@ for (const th of ['light', 'dark']) {
   if (g.lines < 3 || g.scrollY < 1) { notProven(name, { ...g, why: g.lines < 3 ? 'the header holds fewer than three lines: the case is not made' : 'the page did not scroll' }); continue; }
   row(name, g.firstRowTop != null && g.treeTop >= g.headerBottom - 0.5 && g.firstRowTop >= g.headerBottom - 0.5 && g.treeBottom <= g.innerHeight + 0.5, g);
 }
-// ---- S1b: the header grows while the page is scrolled (the default range, scrolled, then the long range applied)
+// ---- S1b: the header grows while the page is scrolled: at 1600 x 900 under the default range, scrolled, then the long
+// range applied; where that does not grow it (the bar may hold both labels on its lines), the window narrowed to 1100,
+// still scrolled - either way the header's height changes under a scrolled page
 {
-  await theme('light'); await size(1366, 768);
+  await theme('light'); await size(1600, 900);
   await open('#/');
   await ev(`window.scrollTo(0, document.documentElement.scrollHeight)`); await sleep(500);
   const g1 = await ev(READ);
   await ev(`(() => { location.hash = '#/?' + ${JSON.stringify(longRange)}; return true; })()`); await settle();
   await ev(`window.scrollTo(0, document.documentElement.scrollHeight)`); await sleep(700);
-  const g2 = await ev(READ);
-  await shot('shell-tree-under-grown-header-light-1366x768');
-  const name = `S1b the tree under the header after it grew with the page scrolled (1366 x 768: ${g1.lines} lines, then ${g2.lines})`;
+  let g2 = await ev(READ), how = 'the long range applied';
+  if (!(g2.headerBottom > g1.headerBottom)) {
+    await size(1100, 900); await sleep(700);
+    await ev(`window.scrollTo(0, document.documentElement.scrollHeight)`); await sleep(500);
+    g2 = await ev(READ); how = 'the long range, then the window narrowed to 1100';
+  }
+  await shot('shell-tree-under-grown-header-light');
+  const name = `S1b the tree under the header after it grew with the page scrolled (${how}: ${g1.lines} lines, then ${g2.lines})`;
   if (!(g2.headerBottom > g1.headerBottom) || g2.scrollY < 1) notProven(name, { before: g1, after: g2, why: 'the header did not grow, or the page did not scroll' });
   else row(name, g2.firstRowTop != null && g2.treeTop >= g2.headerBottom - 0.5 && g2.firstRowTop >= g2.headerBottom - 0.5 && g2.treeBottom <= g2.innerHeight + 0.5, { before: g1, after: g2 });
 }
