@@ -70,7 +70,7 @@
 <div class="wrap">
   <div class="row">
     <div class="row-text"><h2>The whole fleet on one page</h2>
-      <p>One row per server, with CPU, waits and IO side by side. Sort by any column. A cell is coloured only past a threshold. The Summary above counts every check across the fleet.</p></div>
+      <p>In v0.3.0 the Summary above lists one row per server, a coloured cell per group of checks. From v0.4.0 it also counts every check across the fleet, and the Performance summary puts one row per server with CPU, waits and IO side by side: sort by any column, and a cell is coloured only past a threshold.</p></div>
     <figure class="shot"><a href="img/performance-summary.png"><img src="img/performance-summary.png" width="1600" height="900" loading="lazy" alt="Performance summary: one sortable row per server with CPU, waits by class and IO"></a><figcaption>Select the picture to open it full size.</figcaption></figure>
   </div>
   <div class="row flip">
@@ -80,7 +80,7 @@
   </div>
   <div class="row">
     <div class="row-text"><h2>Performance over time</h2>
-      <p>CPU, sessions, waits, transactions and IO on one time axis. Choose any range or a calendar period such as yesterday or the previous week. Every chart opens its detail.</p></div>
+      <p>CPU, sessions, waits, transactions and IO over any range you choose. From v0.4.0 they share one time axis, a calendar period such as yesterday or the previous week can be chosen, and every chart opens its detail.</p></div>
     <figure class="shot"><a href="img/performance.png"><img src="img/performance.png" width="1600" height="900" loading="lazy" alt="An instance's Performance page: CPU, sessions, waits and transactions on one time axis"></a><figcaption>Select the picture to open it full size.</figcaption></figure>
   </div>
   <div class="row flip">
@@ -90,7 +90,7 @@
   </div>
   <div class="row">
     <div class="row-text"><h2>Alerts</h2>
-      <p>A threshold on any metric, for one server, a tag or the whole fleet, sent by email, Teams, Slack or a webhook. Nothing is sent until you set up a channel.</p></div>
+      <p>Findings sent by email, Teams, Slack or a webhook, and from v0.4.0 a threshold on any metric, for one server, a tag or the whole fleet. Nothing is sent until you set up a channel.</p></div>
     <figure class="shot"><a href="img/alert-rules.png"><img src="img/alert-rules.png" width="1600" height="900" loading="lazy" alt="Alert rules: each rule with its metric, thresholds, scope and state"></a><figcaption>Select the picture to open it full size.</figcaption></figure>
   </div>
 </div>
@@ -106,7 +106,7 @@
     <div>
       <h2>What it does not do</h2>
       <ul class="list">
-        <li>Its collector never writes to a server it watches. Ending a session or starting a job is off until you turn it on, through a login kept for that alone, and every use is logged.</li>
+        <li>Its collector never writes to a server it watches. Ending a session is off until you turn it on, through a login kept for that alone, and every use is logged; from v0.4.0 so is starting a job.</li>
         <li>No agent runs on your database servers, and there is no telemetry. pgvigil talks to your servers, its own database, the cloud APIs you configure and your alert channels. In v0.3.0 the Windows app looks for a newer release on GitHub once a day unless an administrator or the user turns it off; from v0.4.0 it will be off unless one of them turns it on.</li>
         <li>It is not a hosted service: you run it, and the data stays in your own database.</li>
         <li>It watches databases, not Kubernetes or your applications.</li>
