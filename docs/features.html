@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Features - pgvigil</title>
-<meta name="description" content="What pgvigil shows for PostgreSQL and SQL Server: the fleet summary, running queries and blocking, statements and slow queries, performance, jobs, backups, storage, replication, configuration changes, alerts and exports.">
+<meta name="description" content="What pgvigil shows for PostgreSQL, and from v0.4.0 for SQL Server: the fleet summary, running queries and blocking, statements and slow queries, performance, jobs, backups, storage, replication, configuration changes, alerts and exports.">
 <link rel="canonical" href="https://pgvigil.com/features.html">
 <link rel="icon" href="favicon.ico" sizes="32x32">
 <link rel="icon" href="img/favicon.svg" type="image/svg+xml">
@@ -36,13 +36,13 @@
 <main id="main">
 <div class="wrap page-head">
   <h1>Features</h1>
-  <p>Every page works the same way on PostgreSQL and SQL Server. It has a short row of tabs and a grid you can sort, filter and export. Status colours show only where something needs you.</p>
+  <p>Every page works the same way on PostgreSQL, and from v0.4.0 on SQL Server too. It has a short row of tabs and a grid you can sort and export, and from v0.4.0 filter on the page. Status colours show only where something needs you.</p>
 </div>
 
 <section class="plain"><div class="wrap"><div class="grid2">
   <div>
     <h2 class="h3">The fleet at a glance</h2>
-    <p>The Summary counts every check across the fleet and lists one row per server. The Performance summary puts CPU, waits and IO of every server side by side. Tags such as prod or team:billing group the tree and filter the Performance summary.</p>
+    <p>The Summary lists one row per server, a coloured cell per group of checks; from v0.4.0 it also counts every check across the fleet. From v0.4.0 the Performance summary will put CPU, waits and IO of every server side by side. Tags such as prod or team:billing group the tree, and from v0.4.0 they will filter the Performance summary too.</p>
   </div>
   <div>
     <h2 class="h3">Running queries and blocking</h2>
@@ -50,11 +50,11 @@
   </div>
   <div>
     <h2 class="h3">Statements and slow queries</h2>
-    <p>The statements that cost the most over any window, as real per-interval numbers from pg_stat_statements, each with its trend. From the PostgreSQL server log: slow statements, deadlocks and failed logins. On SQL Server: deadlocks, blocking and slow statements from small Extended Events sessions you create from pgvigil's script. For a database without Query Store, the plan cache's statements (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">plan cache and indexes</a>).</p>
+    <p>The statements that cost the most over any window, as real per-interval numbers from pg_stat_statements, each with its trend. From the PostgreSQL server log: slow statements, deadlocks and failed logins. From v0.4.0, on SQL Server: deadlocks, blocking and slow statements from small Extended Events sessions you create from pgvigil's script, and for a database without Query Store, the plan cache's statements (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">plan cache and indexes</a>).</p>
   </div>
   <div>
     <h2 class="h3">Performance and metrics</h2>
-    <p>CPU, sessions, waits, transactions and IO on one time axis. A Metrics grid with the current, minimum, maximum and average of every counter. Host CPU and memory, and IO by type.</p>
+    <p>CPU, sessions, waits, transactions and IO over the range you pick, and from v0.4.0 on one time axis. From v0.4.0 a Metrics grid with the current, minimum, maximum and average of every counter. Host CPU and memory, and IO by type.</p>
   </div>
   <div>
     <h2 class="h3">Jobs and backups</h2>
@@ -62,23 +62,23 @@
   </div>
   <div>
     <h2 class="h3">Storage and growth</h2>
-    <p>Every volume with its growth per day and the days until it is full. The largest tables across the fleet and database sizes over time. On SQL Server, the data and log files, TempDB and the version store.</p>
+    <p>Every volume with its growth per day and the days until it is full. The largest tables across the fleet and database sizes over time. From v0.4.0, on SQL Server, the data and log files, TempDB and the version store.</p>
   </div>
   <div>
     <h2 class="h3">Replication and availability</h2>
-    <p>Streaming and logical replication, slots and the WAL they hold, and Aurora replicas (not tested yet). On SQL Server, Always On. Mirroring, log shipping and replication are tested on stand-in rows only, not on a real mirror, log shipping pair or distributor.</p>
+    <p>Streaming and logical replication, slots and the WAL they hold, and Aurora replicas (not tested yet). From v0.4.0, on SQL Server, Always On, and mirroring, log shipping and replication, tested on stand-in rows only, not on a real mirror, log shipping pair or distributor.</p>
   </div>
   <div>
     <h2 class="h3">Configuration and changes</h2>
-    <p>Settings with a history of every change, server properties, roles and permissions, schema changes, and a side-by-side diff of two servers or of one server at two times. The audit trail of pgaudit on PostgreSQL and of SQL Server Audit (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/audit.md">pgaudit</a>, <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-audit.md">SQL Server Audit</a>).</p>
+    <p>Settings with a history of every change, server properties, roles and permissions, and schema changes. From v0.4.0 a side-by-side diff of two servers or of one server at two times, and the audit trail of pgaudit on PostgreSQL and of SQL Server Audit (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/audit.md">pgaudit</a>, <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-audit.md">SQL Server Audit</a>).</p>
   </div>
   <div>
     <h2 class="h3">Health checks</h2>
-    <p>Vacuum and wraparound, unused and duplicate indexes, versions against the release calendar, extensions out of date and corruption signs. Your own SQL as a check, with its own thresholds. On SQL Server, the day-one checks of configuration, database options, CHECKDB and Agent alerts (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-checks.md">checks</a>). The error log, the default trace and system health (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-readers.md">readers</a>). Unused, duplicate and missing indexes with the statistics' health (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">indexes</a>).</p>
+    <p>Vacuum and wraparound, unused and duplicate indexes, versions against the release calendar, extensions out of date and corruption signs. Your own SQL as a check, with its own thresholds. From v0.4.0, on SQL Server: the day-one checks of configuration, database options, CHECKDB and Agent alerts (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-checks.md">checks</a>). Its error log, default trace and system health (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-readers.md">readers</a>). Its unused, duplicate and missing indexes with the statistics' health (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">indexes</a>).</p>
   </div>
   <div>
     <h2 class="h3">Alerts and exports</h2>
-    <p>A rule on any metric for a server, a tag or the fleet, sent by email, Teams, Slack, a webhook or a file. Every grid exports to Excel with its colours, or to CSV.</p>
+    <p>Findings sent by email, Teams, Slack, a webhook or a file, and from v0.4.0 a rule on any metric for a server, a tag or the fleet. Every grid exports to Excel with its colours, or to CSV.</p>
   </div>
   <div>
     <h2 class="h3">Cloud</h2>
