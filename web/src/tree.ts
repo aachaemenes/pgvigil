@@ -90,8 +90,10 @@ const collapsed = new Set<string>(JSON.parse(lsGet('pgvigil.collapsed') ?? '[]')
 let filter = '';
 let last: { f: Fleet; ctx: Ctx } | null = null;
 
-// the placeholder fits the box at the tree's width (260 px); the title and the label say it whole
-const search = el('input', { type: 'search', placeholder: 'Instance, database, table', title: 'Find an instance, a database or a table by name', 'aria-label': 'find an instance, a database or a table by name' });
+// the placeholder fits the box at the tree's width (260 px); the accessible name starts with the words it shows (WCAG
+// 2.5.3), and the title says what the name does not
+const search = el('input', { type: 'search', placeholder: 'Instance, database, table', 'aria-label': 'Instance, database, table: find one by name',
+  title: 'Instances are filtered as you type; databases and tables are found from two characters' });
 const list = el('div', { class: 'tree-list' });
 search.addEventListener('input', () => { filter = search.value.trim().toLowerCase(); draw(); findNames(search.value.trim()); });
 
