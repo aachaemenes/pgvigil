@@ -51,7 +51,7 @@
 <section class="plain"><div class="wrap"><div class="text">
   <h2>The data it keeps</h2>
   <ul class="list">
-    <li>Passwords can stay out of the config file. An inline one is refused for SQL Server and for the actions and EXPLAIN logins, not for a PostgreSQL server's own login.</li>
+    <li>Passwords can stay out of the config file. An inline one is refused for a DBA Dash repository and for the actions and EXPLAIN logins, and from v0.4.0 for a SQL Server it watches; not for a PostgreSQL server's own login.</li>
     <li>You choose whether statement text is kept as is, with every literal replaced, or not at all.</li>
     <li>Whichever you choose, v0.3.0 masks two password forms in the statement and log text it keeps, and nothing in a scheduled job's text; from v0.4.0 the forms listed below will be masked in the statements, plans and Extended Events reports it keeps, on SQL Server and on PostgreSQL. The shapes and the mask's known limits are listed below.</li>
     <li>Its own database gives each part its own role. The collector adds data only through its import functions. The web page reads, and records each action it runs. The alert sender holds a login of its own. The sign-in check runs through one function nobody else can call.</li>
@@ -79,18 +79,22 @@
   <h2>The password mask</h2>
   <p>v0.3.0 masks two forms in the statement and log text it collects, before it is stored:</p>
   <ul class="list">
-    <li>The value after PASSWORD or IDENTIFIED BY: a quoted string, or a parameter such as <code>$1</code>.</li>
-    <li>The value after <code>password=</code>, <code>passfile=</code>, <code>sslkey=</code>, <code>sslpassword=</code> or <code>pwd=</code>, with nothing round the <code>=</code>.</li>
+    <li>The value after PASSWORD or IDENTIFIED BY: a <code>'...'</code> or <code>E'...'</code> string, or a parameter such as <code>$1</code>.</li>
+    <li>The value after <code>password=</code>, <code>passfile=</code>, <code>sslkey=</code>, <code>sslpassword=</code> or <code>pwd=</code>, with nothing round the <code>=</code>, up to its first space.</li>
   </ul>
-  <p>v0.3.0 keeps these four forms as they are written:</p>
+  <p>v0.3.0 keeps these forms as they are written:</p>
   <ul class="list">
     <li>A key, passphrase or password given to a pgcrypto function.</li>
     <li>A connection string with spaces round its <code>=</code>.</li>
     <li>The password in a connection URI (<code>postgresql://user:password@host</code>).</li>
     <li>A role's or a user mapping's password set inside a dynamic <code>EXECUTE</code>.</li>
+    <li>A password after PASSWORD or IDENTIFIED BY written as a dollar-quoted (<code>$$...$$</code>) or a <code>U&amp;'...'</code> string.</li>
+    <li>The rest of a <code>password=</code> value after its first space: <code>password='my secret'</code> keeps <code>secret'</code>.</li>
+    <li>A password whose quoted value runs past the point where the text is cut (PostgreSQL's own <code>track_activity_query_size</code>, or pgvigil's cut before the mask): it has no closing quote left to match.</li>
   </ul>
+  <p>The schema-change log keeps no statement that names a password, a secret or a URI's password: it stores a note in its place.</p>
   <p>v0.3.0 masks nothing in a scheduled job's text: a pg_cron job's command, and its runs' commands and messages, are stored and shown as written, a password inside them included, whatever the statement-text setting.</p>
-  <p>In v0.3.0 a stored plan goes through the statement-text setting alone: <code>normalized</code> replaces its literals and <code>none</code> keeps no plan. The same two settings reach the four forms above: <code>normalized</code> replaces them where they are written as literals, and <code>none</code> keeps no statement text.</p>
+  <p>In v0.3.0 a plan from pg_store_plans or an on-demand EXPLAIN goes through the statement-text setting alone: <code>normalized</code> replaces its literals and <code>none</code> keeps no plan. An auto_explain plan read from the log has the two forms masked first. The same two settings reach the forms above: <code>normalized</code> replaces them where they are written as literals, and <code>none</code> keeps no statement text.</p>
   <p>From v0.4.0, on both engines, these will be masked in the statements, plans and Extended Events reports pgvigil keeps, before they are stored:</p>
   <ul class="list">
     <li>A PASSWORD, SECRET, KEY_SOURCE, IDENTITY_VALUE or IDENTIFIED BY value.</li>
@@ -106,7 +110,7 @@
 
 <section class="plain"><div class="wrap"><div class="text">
   <h2>Known limits of the mask</h2>
-  <p>A value stored by an earlier version is not masked again. v0.3.0's limits are the four forms above. From v0.4.0 the mask will have these:</p>
+  <p>A value stored by an earlier version is not masked again. v0.3.0's limits are the forms above and a scheduled job's text. From v0.4.0 the mask will have these:</p>
   <ul class="list">
     <li>A statement that a community procedure returns as an XML processing instruction is masked as the statement it is when the instruction is the whole value. Such statements are sp_WhoIsActive's formatted sql_text and sql_command, the DarlingData procedures' query text and a plan wrapped as <code>&lt;?query_plan ... ?&gt;</code>.</li>
     <li>SQL Server writes a <code>?&gt;</code> inside such an instruction as it is, so the value is not always XML. Four shapes are not covered in full:<ul>
