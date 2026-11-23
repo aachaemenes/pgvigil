@@ -8,7 +8,8 @@
 // or list item is wider than the text column; every row of a grid ends at its right edge; a section's paragraphs
 // and list items, a row's text and the steps in the ink colour; at every width no code block's own text wider than its
 // box; no filled button in the header; no style attribute; both colour schemes declared. A page line per page: the two icons linked and served; a page with og:image gives its size,
-// its alt and the twitter card; the service install's two blocks each under its own heading; the jobs picture's row in
+// its alt and the twitter card; the service install's two blocks each under its own heading; no code block under a heading
+// that names no shell goes on in a next line (a trailing backslash or backtick); the jobs picture's row in
 // jobs words alone. Then the icons are the app's own bytes, the sitemap lists every page once with a lastmod on or after
 // the day the page last changed (git, or the file PGVIGIL_SITE_DATES names: '<page> <yyyy-mm-dd>' per line), every link
 // of every page answers 200 (a page of the site by the local server, an outside one by a GET that follows redirects,
@@ -136,6 +137,11 @@ for (const page of pages) for (const width of WIDTHS) for (const scheme of SCHEM
       const blocks = svc ? [...svc.querySelectorAll('pre')].map(p => (p.previousElementSibling?.tagName === 'H3' ? p.previousElementSibling.textContent.trim() : '(no heading)') + ': ' +
         [/install\\.sh/.test(p.textContent) && 'install.sh', /install\\.ps1/.test(p.textContent) && 'install.ps1'].filter(Boolean).join(' and ')) : null;
       const jobs = qa('main .row').find(r => r.querySelector('img[src="img/jobs.png"]'))?.querySelector('.row-text');
+      // a code block under a heading that names no shell serves both sh and PowerShell: no line of it goes on in the next
+      // (a trailing backslash or backtick), which the other shell takes as an argument
+      const heading = e => { for (let n = e.previousElementSibling; n; n = n.previousElementSibling) if (/^H[1-6]$/.test(n.tagName)) return n.textContent.trim(); return ''; };
+      const cont = qa('main pre').filter(p => !/\\b(linux|sh|bash|windows|powershell)\\b/i.test(heading(p)) && p.textContent.split('\\n').some(l => /[\\\\\x60]\\s*$/.test(l)))
+        .map(p => (heading(p) || '(no heading)') + ': "' + p.textContent.trim().slice(0, 24) + '"');
       // the tested lines ('Where it runs': the paragraphs that say 'Tested on'): each opens that line with a bold 'Tested', and
       // a bold 'Not tested yet' where it names what is not; every linked screenshot's caption says it opens full size; the hero's
       // link to the install page names it; the v0.4.0 block holds its headline and two points
@@ -155,7 +161,7 @@ for (const page of pages) for (const width of WIDTHS) for (const scheme of SCHEM
       const release = qa('main p, main li').map(words).filter(t => /newer release|new release/i.test(t) && /off by default/i.test(t) && !/v0\\.[0-9]+\\.[0-9]+/.test(t)).map(t => t.slice(0, 60));
       const downloads = qa('main a.btn').filter(a => words(a) === 'Download').length;
       const notes = qa('main p.note').filter(n => words(n) === ${JSON.stringify(RELEASED)}).length;
-      return { icons, og, blocks, jobs: jobs ? jobs.textContent.replace(/\\s+/g, ' ').trim() : null, tested, shots, demo, release, downloads, notes,
+      return { icons, og, blocks, cont, jobs: jobs ? jobs.textContent.replace(/\\s+/g, ' ').trim() : null, tested, shots, demo, release, downloads, notes,
                v4: v4box ? { points: v4box.querySelectorAll('li').length, words: v4box.textContent.trim().split(/\\s+/).length } : null };
     })()`);
     const iconOk = /^200 image\//.test(c.icons.ico) && /^200 image\//.test(c.icons.touch);
@@ -166,6 +172,7 @@ for (const page of pages) for (const width of WIDTHS) for (const scheme of SCHEM
       ogOk = !!w && c.og.w === String(w) && c.og.h === String(h) && !!c.og.alt && c.og.card === 'summary_large_image';
       ogSay = `og:image ${c.og.img} (${w} x ${h}) width ${c.og.w} height ${c.og.h}, alt ${c.og.alt ? 'given' : 'none'}, twitter:card ${c.og.card}`;
     }
+    const contOk = !c.cont.length;
     const blocksOk = !c.blocks || (c.blocks.length === 2 && /^Linux.*: install\.sh$/.test(c.blocks[0]) && /^Windows.*: install\.ps1$/.test(c.blocks[1]));
     const jobsOk = c.jobs === null || !/backup|storage|volume/i.test(c.jobs);
     const testedBad = c.tested.filter(t => !t.ok).map(t => '"' + t.start + '"'), shotsBad = c.shots.filter(x => !x.ok).map(x => x.src);
@@ -173,12 +180,13 @@ for (const page of pages) for (const width of WIDTHS) for (const scheme of SCHEM
     // on the home page each part must be there to be read: a renamed heading, a moved link or headline never passes
     const releaseOk = !c.release.length, noteOk = !c.downloads || c.notes >= 1;
     const homeOk = page !== 'index.html' || (c.tested.length === 2 && c.demo.length === 1 && !!c.v4 && c.shots.length === 6);
-    say(iconOk && ogOk && blocksOk && jobsOk && !testedBad.length && !shotsBad.length && demoOk && v4Ok && homeOk && releaseOk && noteOk, `${page} page: icons favicon.ico ${c.icons.ico}, img/apple-touch-icon.png ${c.icons.touch}; ${ogSay}` +
+    say(iconOk && ogOk && blocksOk && contOk && jobsOk && !testedBad.length && !shotsBad.length && demoOk && v4Ok && homeOk && releaseOk && noteOk, `${page} page: icons favicon.ico ${c.icons.ico}, img/apple-touch-icon.png ${c.icons.touch}; ${ogSay}` +
       (c.blocks ? `; the service install's blocks ${c.blocks.length}: ${c.blocks.join(' | ')}` : '') + (c.jobs !== null ? `; the jobs picture's row: "${c.jobs.slice(0, 80)}"${jobsOk ? '' : ' names more than jobs'}` : '') +
       (c.tested.length ? `; the tested lines ${testedBad.length ? 'NO bold Tested / Not tested yet at ' + testedBad.join(', ') : 'in bold'}` : '') +
       (c.shots.length ? `; the linked shots ${shotsBad.length ? 'NO full-size words under ' + shotsBad.join(' ') : 'say they open full size'}` : '') +
       (c.demo.length ? `; the hero's install link "${c.demo.join('" "')}"${demoOk ? '' : ' (NO: "Install and try the demo")'}` : '') +
       (c.v4 ? `; the v0.4.0 block ${c.v4.points} point(s), ${c.v4.words} words${v4Ok ? '' : ' (NO: two points)'}` : '') +
+      (contOk ? '' : `; NO: a code block for both shells goes on in a next line: ${c.cont.join(', ')}`) +
       (releaseOk ? '' : `; NO: the release check 'off by default' with no version: "${c.release.join('" "')}"`) +
       (c.downloads ? `; the released version's line by the Download button ${noteOk ? 'given' : 'NO'}` : '') +
       (homeOk ? '' : `; NO: the home page's parts not all found (tested lines ${c.tested.length} of 2, install link ${c.demo.length} of 1, v0.4.0 block ${c.v4 ? 1 : 0} of 1, linked shots ${c.shots.length} of 6)`));
