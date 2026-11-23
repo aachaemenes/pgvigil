@@ -64,7 +64,7 @@ PM_REPO=erikdarlingdata/PerformanceMonitor
 # for this server AND these, so a kit that drops one is a BREAK (TestPinnedShapes holds this line to the code)
 KW_PRESETS="sp_IndexCleanup:@database_name sp_HumanEventsBlockViewer:@session_name sp_QuickieStore:@database_name"
 export KW_PRESETS
-PM_PIN=65bdb5f946f7       # 3.12.0's XE sessions (ports only, nothing installed); newest = the default branch's head
+PM_PIN=aa2aec5990eb       # 3.13.0's XE sessions (ports only, nothing installed); newest = the default branch's head
 
 envfail() {
   printf 'KITWATCH could not run: %s\n' "$1" > "$OUT/report.txt"
