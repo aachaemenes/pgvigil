@@ -5,7 +5,10 @@
 //       and its bottom at the window's - no row hidden under the header, none past the window. A header of fewer than
 //       three lines is NOT PROVEN (the case is not made), never a pass.
 //   S2  the tree hidden (1280 x 800 and 1600 x 900): the page's content as wide as the window less its margins
+//   S1b the same tree when the header grows while the page is scrolled: the page scrolled under the default range, then
+//       the long range applied - the header taller, the tree's top and first row at or below its new bottom
 //   S3  the tree's search box (1280 x 800 and 1600 x 900): its placeholder's words inside the box
+//   S4  the search box's accessible name starts with the words it shows (WCAG 2.5.3 Label in Name)
 // A shot of each case. SHELL_SWAP=<folder> serves that folder's app.js and app.css in place of the server's (the page
 // before a change, over the same serve).
 // Usage: node scripts/shell-layout-check.mjs <cdp port> <base url/> <user> <password> <out dir>
@@ -91,6 +94,20 @@ for (const th of ['light', 'dark']) {
   if (g.lines < 3 || g.scrollY < 1) { notProven(name, { ...g, why: g.lines < 3 ? 'the header holds fewer than three lines: the case is not made' : 'the page did not scroll' }); continue; }
   row(name, g.firstRowTop != null && g.treeTop >= g.headerBottom - 0.5 && g.firstRowTop >= g.headerBottom - 0.5 && g.treeBottom <= g.innerHeight + 0.5, g);
 }
+// ---- S1b: the header grows while the page is scrolled (the default range, scrolled, then the long range applied)
+{
+  await theme('light'); await size(1366, 768);
+  await open('#/');
+  await ev(`window.scrollTo(0, document.documentElement.scrollHeight)`); await sleep(500);
+  const g1 = await ev(READ);
+  await ev(`(() => { location.hash = '#/?' + ${JSON.stringify(longRange)}; return true; })()`); await settle();
+  await ev(`window.scrollTo(0, document.documentElement.scrollHeight)`); await sleep(700);
+  const g2 = await ev(READ);
+  await shot('shell-tree-under-grown-header-light-1366x768');
+  const name = `S1b the tree under the header after it grew with the page scrolled (1366 x 768: ${g1.lines} lines, then ${g2.lines})`;
+  if (!(g2.headerBottom > g1.headerBottom) || g2.scrollY < 1) notProven(name, { before: g1, after: g2, why: 'the header did not grow, or the page did not scroll' });
+  else row(name, g2.firstRowTop != null && g2.treeTop >= g2.headerBottom - 0.5 && g2.firstRowTop >= g2.headerBottom - 0.5 && g2.treeBottom <= g2.innerHeight + 0.5, { before: g1, after: g2 });
+}
 await theme('light');
 // ---- S2 and S3, at two window sizes
 for (const [w, h] of [[1280, 800], [1600, 900]]) {
@@ -103,12 +120,19 @@ for (const [w, h] of [[1280, 800], [1600, 900]]) {
     return { placeholder: i.placeholder, text: Math.ceil(c.measureText(i.placeholder).width), room: Math.floor(room), font: s.font }; })()`);
   await shot(`shell-search-box-${w}x${h}`);
   row(`S3 the tree's search box shows its placeholder whole (${w} x ${h})`, !!p && p.text <= p.room, p);
+  // S4: the box's accessible name (its aria-label, which names an input before its placeholder or title) starts with the
+  // words the box shows
+  if (w === 1280) {
+    const n = await ev(`(() => { const i = document.querySelector('#tree .tree-top input'); if (!i) return null; const norm = s => String(s ?? '').replace(/\\s+/g, ' ').trim().toLowerCase();
+      const name = i.getAttribute('aria-label') ?? (i.labels?.[0]?.textContent ?? '') ?? ''; return { name, placeholder: i.placeholder, title: i.title, starts: norm(name).startsWith(norm(i.placeholder)) }; })()`);
+    row(`S4 the tree's search box: its accessible name starts with the words it shows`, !!n && !!n.placeholder && n.starts, n);
+  }
   // S2: the tree hidden by its own control
   await ev(`document.querySelector('#tree .tree-hide')?.click()`); await sleep(600);
   const c = await ev(`(() => { const t = document.getElementById('tree'), c = document.getElementById('content'), r = c.getBoundingClientRect();
     return { treeShown: getComputedStyle(t).display !== 'none', contentLeft: Math.round(r.left), contentWidth: Math.round(r.width), windowWidth: document.documentElement.clientWidth }; })()`);
   await shot(`shell-tree-hidden-${w}x${h}`);
-  row(`S2 the tree hidden: the content as wide as the window (${w} x ${h})`, !c.treeShown && c.contentLeft <= 1 && c.contentWidth >= c.windowWidth - 1, c);
+  row(`S2 the tree hidden: the content as wide as the window (${w} x ${h})`, !c.treeShown && Math.abs(c.contentLeft) <= 1 && Math.abs(c.contentWidth - c.windowWidth) <= 1, c);
   await ev(`document.getElementById('show-tree')?.click()`); await sleep(400);
 }
 console.log(`shell-layout: ${ok} ok, ${fail} FAIL, ${np} NOT PROVEN`);
