@@ -53,7 +53,7 @@ SRV=""; MADE_CT=""; HOLD=(); KS_WHY=""
 
 # ---- the URLs: every source in one block (a 404 or a refusal = exit 3 naming the URL) ------------------------------
 FRK_REPO=BrentOzarULTD/SQL-Server-First-Responder-Kit; FRK_FILE=Install-All-Scripts.sql
-FRK_PIN=20260708          # 8.34 (@VersionDate 20260702); newest = the latest release's tag
+FRK_PIN=20261114          # 8.35 (@VersionDate 20261114); newest = the latest release's tag
 DD_REPO=erikdarlingdata/DarlingData; DD_FILE=Install-All/DarlingData.sql
 DD_PIN=205fc5137eb0       # 2026-11-01 (@version_date 20261101); newest = the default branch's head
 WIA_REPO=amachanic/sp_whoisactive; WIA_FILE=sp_WhoIsActive.sql
