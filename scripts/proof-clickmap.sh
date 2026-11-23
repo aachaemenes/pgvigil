@@ -331,9 +331,11 @@ VOLS=$(q "select string_agg(volume, '|') from pgvigil.mssql_volumes where instan
 ok "R: drives, history ($H points; a year $HY; 5 minutes '$H5'; a window off the list refused), dbspace ($NI instances), dbfiles (sql01 on $EVOL, erp01's pg_wal on $DATA), driveperf, collectiondates answer as the repository says; the write door refuses without the header and the login"
 
 # a repository-wide alert standing (no instance: 0190's alert_findings names it 'pgvigil', its instance_id NULL), so
-# click-check's tag row can prove such an alert stays listed under a tag folder as at the root
+# click-check's tag row can prove such an alert stays listed under a tag folder as at the root; keyed and sourced as the
+# product writes one (pgvigil.alert_key under source 'pgvigil repository': 0121's alert_key), so its own page answers
+# (the alert page refuses a key that is not 32 hexadecimal digits)
 q "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_name, source, setting, value, severity, first_sent_at, last_sent_at)
-   values ('demo-spool', 'fx-repo-wide', NULL, 'pgvigil', 'pgvigil collector', 'collector or network', 'collector not seen (fixture)', 'critical', now() - interval '30 minutes', now() - interval '30 minutes')" >/dev/null
+   values ('demo-spool', pgvigil.alert_key(NULL, 'pgvigil repository', 'collector or network', 'collector not seen (fixture)'), NULL, 'pgvigil', 'pgvigil repository', 'collector or network', 'collector not seen (fixture)', 'critical', now() - interval '30 minutes', now() - interval '30 minutes')" >/dev/null
 [[ $(q "select count(*) from pgvigil.instances where name = 'pgvigil'") == 0 ]] || fail "the demo has an instance named pgvigil: the repository-wide alert row cannot be told apart"
 
 echo "== C the click map (headless Chromium on CDP $CDP)"

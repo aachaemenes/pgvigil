@@ -122,14 +122,15 @@ fi
 echo "== the click map on the same build (scripts/click-check.mjs)"
 # the click map's tag Alerts row needs a repository-wide alert standing (no instance: 0190's alert_findings names it
 # 'pgvigil', its instance_id NULL), as proof-clickmap.sh seeds it; here it stands for the click map alone and is
-# deleted before the page walk, so the walk's rows are not changed by it
+# deleted before the page walk, so the walk's rows are not changed by it; keyed and sourced as the product writes one
+# (pgvigil.alert_key under source 'pgvigil repository'), so its own page answers
 REPO_ALERT=""
 if [[ -z "${PGVIGIL_DEMO_URL:-}" ]]; then
   NPG=$(psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "select count(*) from pgvigil.instances where name = 'pgvigil'") \
     || fail "the demo's instances could not be read before the repository-wide alert"
   [[ "$NPG" == 0 ]] || fail "the demo has an instance named pgvigil: the repository-wide alert row cannot be told apart"
   psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_name, source, setting, value, severity, first_sent_at, last_sent_at)
-    values ('demo-spool', 'fx-repo-wide', NULL, 'pgvigil', 'pgvigil collector', 'collector or network', 'collector not seen (fixture)', 'critical', now() - interval '30 minutes', now() - interval '30 minutes')" >/dev/null \
+    values ('demo-spool', pgvigil.alert_key(NULL, 'pgvigil repository', 'collector or network', 'collector not seen (fixture)'), NULL, 'pgvigil', 'pgvigil repository', 'collector or network', 'collector not seen (fixture)', 'critical', now() - interval '30 minutes', now() - interval '30 minutes')" >/dev/null \
     || fail "the repository-wide alert for the click map"
   REPO_ALERT=1
 fi
@@ -140,7 +141,7 @@ for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2
 node scripts/click-check.mjs "$CDP" "$URL" "$OUT/click.json" > "$OUT/click.txt" 2>&1; echo "the click map: rc $? - $(grep -E '^links: ' "$OUT/click.txt" | tail -1)"
 kill "$CHR" 2>/dev/null; CHR=""
 if [[ -n "$REPO_ALERT" ]]; then
-  psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "delete from pgvigil.alert_state where finding_key = 'fx-repo-wide' and instance_id is null" >/dev/null \
+  psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "delete from pgvigil.alert_state where finding_key = pgvigil.alert_key(NULL, 'pgvigil repository', 'collector or network', 'collector not seen (fixture)') and instance_id is null" >/dev/null \
     || fail "the repository-wide alert was not deleted before the walk"
 fi
 
