@@ -50,7 +50,7 @@
   </div>
   <div>
     <h2 class="h3">Statements and slow queries</h2>
-    <p>The statements that cost the most over any window, as real per-interval numbers from pg_stat_statements, each with its trend. From the PostgreSQL server log: slow statements, deadlocks and failed logins. From v0.4.0, on SQL Server: deadlocks, blocking and slow statements from small Extended Events sessions you create from pgvigil's script, and for a database without Query Store, the plan cache's statements (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">plan cache and indexes</a>).</p>
+    <p>The statements that cost the most over any window up to 31 days, as real per-interval numbers from pg_stat_statements, each with its history against one and seven days earlier on the Compare tab; from v0.4.0 a window up to a year and each statement's trend under its row. From the PostgreSQL server log: slow statements, deadlocks and failed logins. From v0.4.0, on SQL Server: deadlocks, blocking and slow statements from small Extended Events sessions you create from pgvigil's script, and for a database without Query Store, the plan cache's statements (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">plan cache and indexes</a>).</p>
   </div>
   <div>
     <h2 class="h3">Performance and metrics</h2>
@@ -66,7 +66,7 @@
   </div>
   <div>
     <h2 class="h3">Replication and availability</h2>
-    <p>Streaming and logical replication, slots and the WAL they hold, and Aurora replicas (not tested yet). From v0.4.0, on SQL Server, Always On, and mirroring, log shipping and replication, tested on stand-in rows only, not on a real mirror, log shipping pair or distributor.</p>
+    <p>Streaming and logical replication, slots and the WAL they hold, and Aurora replicas (not tested yet). From v0.4.0, on SQL Server, Always On, and mirroring, log shipping and replication; the last three are tested on stand-in rows only, not on a real mirror, log shipping pair or distributor.</p>
   </div>
   <div>
     <h2 class="h3">Configuration and changes</h2>
