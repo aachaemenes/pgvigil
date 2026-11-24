@@ -17,7 +17,7 @@ PGMON_PIN=v5.3.0          # 5.3.0 (commit 44fd9718c604); newest = the latest rel
 # PerformanceMonitor 3.12.0, the custom alert template pg-replication-lag (CustomAlertTemplates.cs L57-65: a sender's
 # replay lag at 30 s warning / 5 min critical) -> internal/repo/sql/0141_hadr_pg.sql, the pg_threshold_keys rows
 # 'standby_replay_lag' and 'logical_sender_lag' (seconds, warning 30, critical 300). KITWATCH already pins this
-# repository (PM_REPO, PM_PIN=65bdb5f946f7: 3.12.0); the port to add is the template's two thresholds in
+# repository (PM_REPO, PM_PIN); the port to add is the template's two thresholds in
 # Darling/PerformanceMonitor.Darling.Storage/CustomAlertTemplates.cs. Licence: MIT (THIRD-PARTY-NOTICES.md's row).
 # PM_REPO=erikdarlingdata/PerformanceMonitor; PM_PIN=aa2aec5990eb   (KITWATCH's own lines: not repeated)
 

@@ -126,7 +126,11 @@ raw "$FRK_REPO" "$FRK_PIN" "$FRK_FILE" "$WORK/pinned/frk.sql"; raw "$DD_REPO" "$
 if [[ $MODE == check && -f internal/community/kits/shapes.json ]]; then
   for k in frk dd wia; do
     want=$(python3 -c 'import json,sys; print(next((x.get("sha256", "") for x in json.load(open(sys.argv[1]))["kits"] if x["kit"] == sys.argv[2]), ""))' internal/community/kits/shapes.json "$k")
+    url=$(python3 -c 'import json,sys; print(next((x.get("url", "") for x in json.load(open(sys.argv[1]))["kits"] if x["kit"] == sys.argv[2]), ""))' internal/community/kits/shapes.json "$k")
+    case $k in frk) ref=$FRK_PIN ;; dd) ref=$DD_PIN ;; wia) ref=$WIA_PIN ;; esac
     have=$(sha256sum < "$WORK/pinned/$k.sql" | cut -c1-64)
+    # a pin moved in this tree before its baseline is said as that, never as a moved tag
+    [[ -z $url || $url == *"@$ref" ]] || envfail "shapes.json was made at $url, the pin is $ref: run the baseline (kitwatch.sh -baseline, or the workflow's baseline=true dispatch) and commit its shapes.json"
     [[ -z $want || $want == "$have" ]] || envfail "the pinned $k file is not the one shapes.json was made from (sha256 $have, shapes.json $want): its tag moved - pin its commit and re-baseline"
   done
 fi

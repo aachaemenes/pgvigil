@@ -1841,5 +1841,23 @@
     "items": [
       "5000"
     ]
+  },
+  {
+    "name": "pmMonitorProgramName",
+    "go_file": "internal/mssql/activity.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Common/MonitorApplicationNames.cs",
+    "follows": "3.13.0 (aa2aec5990eb), MonitorApplicationNames' program-name prefix and LIKE pattern (SessionStatsCollector's exclusion)",
+    "begin": "public const string SqlProgramNamePrefix",
+    "end": "SqlProgramNamePrefix + \"%\";"
+  },
+  {
+    "name": "pmRingBufferTarget",
+    "go_file": "internal/mssql/xe.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/RingBufferTarget.cs",
+    "follows": "3.13.0 (aa2aec5990eb), RingBufferTarget's ring_buffer clause (max_memory 4096; max_events_limit 1000-10000, default 1000)",
+    "begin": "public const int DefaultMaxEvents",
+    "end": "+ \"\\n)\";"
   }
 ]
