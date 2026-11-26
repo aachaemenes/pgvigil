@@ -55,7 +55,18 @@ SRV=""; MADE_CT=""; HOLD=(); KS_WHY=""
 FRK_REPO=BrentOzarULTD/SQL-Server-First-Responder-Kit; FRK_FILE=Install-All-Scripts.sql
 FRK_PIN=20261114          # 8.35 (@VersionDate 20261114); newest = the latest release's tag
 DD_REPO=erikdarlingdata/DarlingData; DD_FILE=Install-All/DarlingData.sql
-DD_PIN=205fc5137eb0       # 2026-11-01 (@version_date 20261101); newest = the default branch's head
+# DarlingData's pin moves to a candidate commit only when all four are shown, each by a run or a read of the source:
+#  (1) the candidate is a published release's own commit: the release's tag, read on upstream, names that commit;
+#  (2) every DarlingData entry of ports.json is decided at the candidate: its block's sum taken by kitshape from the
+#      candidate's file and set beside the stored one - equal, and its follows names its procedure's version line in
+#      that file; unequal, and the block is read: the same meaning (its anchors read again) or the port follows it,
+#      its row red first. ports.json never names two versions of one procedure under one pin;
+#  (3) every form parameter that differs between the pinned pass and the candidate's pass is decided from the
+#      candidate's source by writeParam's rule (internal/web/q_community.go): a parameter that writes is taken off
+#      the form, one that only reads stays;
+#  (4) the pinned pass at the candidate runs every DarlingData tool through pgvigil with exit 0, and the baseline
+#      (shapes.json, the stored samples) is taken again at the new pin.
+DD_PIN=bf5a0666c2b5       # the release Updates_20261201 (published 2026-11-23; @version_date 20261201); newest = the default branch's head
 WIA_REPO=amachanic/sp_whoisactive; WIA_FILE=sp_WhoIsActive.sql
 WIA_PIN=20260409          # v2200.20260409; newest = the latest release's tag
 PM_REPO=erikdarlingdata/PerformanceMonitor
@@ -156,7 +167,7 @@ if [[ -n ${KITWATCH_PLANT:-} ]]; then
     preset-rename) plant "$P/dd.sql" '/^    dbo\.sp_IndexCleanup$/,/^GO$/s/@database_name\b/@kitwatch_db_planted/g' '@kitwatch_db_planted' ;;
     new-param)    plant "$P/frk.sql" '/^ALTER PROCEDURE dbo\.sp_BlitzWho $/{n;s/@Help TINYINT = 0 ,/@Help TINYINT = 0 , @KitwatchPlanted INT = 0 ,/}' '@KitwatchPlanted INT = 0' ;;
     help-layout)  plant "$P/dd.sql" '/^    dbo\.sp_PressureDetector$/,/^ *description =$/s/^\( *\)description =$/\1explanation_planted =/' 'explanation_planted =' ;;
-    sibling-call) plant "$P/dd.sql" "/^    dbo\\.sp_PressureDetector\$/,/@version_date = '20261101';/s/@version_date = '20261101';/&\\nEXECUTE (N'EXECUTE dbo.sp_BlitzWho @VersionCheckMode = 1;'); \\/* kitwatch: sibling call *\\//" 'kitwatch: sibling call' ;;
+    sibling-call) plant "$P/dd.sql" "/^    dbo\\.sp_PressureDetector\$/,/@version_date = '[0-9]\{8\}';/s/@version_date = '[0-9]\{8\}';/&\\nEXECUTE (N'EXECUTE dbo.sp_BlitzWho @VersionCheckMode = 1;'); \\/* kitwatch: sibling call *\\//" 'kitwatch: sibling call' ;;
     version-unspaced) plant "$P/dd.sql" "s/@version = '\([0-9][0-9.]*\)'/@version='\1'/g" "@version='" ;;   # production's read
     missing-state|port-edit|collector-norepo) ;;   # set further on: a MARK no tool holds (once the setup library is read), a port's file (once fetched)
     cut-frk)      head -c "$(( $(wc -c < "$P/frk.sql") / 2 ))" "$P/frk.sql" > "$P/frk.cut" && mv "$P/frk.cut" "$P/frk.sql"
