@@ -263,3 +263,15 @@ func TestCommunitySamples(t *testing.T) {
 		}
 	}
 }
+
+// A parameter that only reads stays on the form: sp_QuickieStore 6.12's @plan_parsing shreds each plan into the
+// session's own temporary tables and returns one more result set (it is refused with @log_to_table), so writeParam
+// keeps it; @log_to_table, which writes a table, is taken out.
+func TestWriteParamKeepsAReadingParameter(t *testing.T) {
+	if writeParam.MatchString("@plan_parsing") {
+		t.Error("@plan_parsing taken out of the form: it writes no table")
+	}
+	if !writeParam.MatchString("@log_to_table") {
+		t.Error("@log_to_table left on the form: it writes a table")
+	}
+}

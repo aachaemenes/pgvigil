@@ -53,9 +53,22 @@ SRV=""; MADE_CT=""; HOLD=(); KS_WHY=""
 
 # ---- the URLs: every source in one block (a 404 or a refusal = exit 3 naming the URL) ------------------------------
 FRK_REPO=BrentOzarULTD/SQL-Server-First-Responder-Kit; FRK_FILE=Install-All-Scripts.sql
-FRK_PIN=20260708          # 8.34 (@VersionDate 20260702); newest = the latest release's tag
+FRK_PIN=20261114          # 8.35 (@VersionDate 20261114); newest = the latest release's tag
 DD_REPO=erikdarlingdata/DarlingData; DD_FILE=Install-All/DarlingData.sql
-DD_PIN=205fc5137eb0       # 2026-11-01 (@version_date 20261101); newest = the default branch's head
+# DarlingData's pin moves to a candidate commit only when all four are shown, each by a run or a read of the source:
+#  (1) the candidate is a published release's own commit: the release's tag, read on upstream, names that commit;
+#  (2) every DarlingData entry of ports.json is decided at the candidate: its block's sum taken by kitshape from the
+#      candidate's file and set beside the stored one - equal, and its follows names its procedure's version line in
+#      that file; unequal, and the block is read: the same meaning (its anchors read again) or the port follows it,
+#      its row red first. ports.json never names two versions of one procedure under one pin;
+#  (3) every form parameter that differs between the pinned pass and the candidate's pass is decided from the
+#      candidate's source by writeParam's rule (internal/web/q_community.go): a parameter that writes is taken off
+#      the form, one that only reads stays;
+#  (4) the pinned pass at the candidate runs every DarlingData tool through pgvigil with exit 0, and the baseline
+#      (shapes.json, the stored samples) is taken again at the new pin.
+# That baseline (shapes.json, kits.go's entries, the stored samples) is taken in the commit right after the pin's;
+# until it lands, a check-mode run refuses at its own line ('shapes.json was made at ...') with exit 3.
+DD_PIN=bf5a0666c2b5       # the release Updates_20261201 (published 2026-11-23; @version_date 20261201); newest = the default branch's head
 WIA_REPO=amachanic/sp_whoisactive; WIA_FILE=sp_WhoIsActive.sql
 WIA_PIN=20260409          # v2200.20260409; newest = the latest release's tag
 PM_REPO=erikdarlingdata/PerformanceMonitor
@@ -64,7 +77,7 @@ PM_REPO=erikdarlingdata/PerformanceMonitor
 # for this server AND these, so a kit that drops one is a BREAK (TestPinnedShapes holds this line to the code)
 KW_PRESETS="sp_IndexCleanup:@database_name sp_HumanEventsBlockViewer:@session_name sp_QuickieStore:@database_name"
 export KW_PRESETS
-PM_PIN=65bdb5f946f7       # 3.12.0's XE sessions (ports only, nothing installed); newest = the default branch's head
+PM_PIN=aa2aec5990eb       # 3.13.0's XE sessions (ports only, nothing installed); newest = the default branch's head
 
 envfail() {
   printf 'KITWATCH could not run: %s\n' "$1" > "$OUT/report.txt"
@@ -126,7 +139,11 @@ raw "$FRK_REPO" "$FRK_PIN" "$FRK_FILE" "$WORK/pinned/frk.sql"; raw "$DD_REPO" "$
 if [[ $MODE == check && -f internal/community/kits/shapes.json ]]; then
   for k in frk dd wia; do
     want=$(python3 -c 'import json,sys; print(next((x.get("sha256", "") for x in json.load(open(sys.argv[1]))["kits"] if x["kit"] == sys.argv[2]), ""))' internal/community/kits/shapes.json "$k")
+    url=$(python3 -c 'import json,sys; print(next((x.get("url", "") for x in json.load(open(sys.argv[1]))["kits"] if x["kit"] == sys.argv[2]), ""))' internal/community/kits/shapes.json "$k")
+    case $k in frk) ref=$FRK_PIN ;; dd) ref=$DD_PIN ;; wia) ref=$WIA_PIN ;; esac
     have=$(sha256sum < "$WORK/pinned/$k.sql" | cut -c1-64)
+    # a pin moved in this tree before its baseline is said as that, never as a moved tag
+    [[ -z $url || $url == *"@$ref" ]] || envfail "shapes.json was made at $url, the pin is $ref: run the baseline (kitwatch.sh -baseline, or the workflow's baseline=true dispatch) and commit its shapes.json"
     [[ -z $want || $want == "$have" ]] || envfail "the pinned $k file is not the one shapes.json was made from (sha256 $have, shapes.json $want): its tag moved - pin its commit and re-baseline"
   done
 fi
@@ -152,7 +169,7 @@ if [[ -n ${KITWATCH_PLANT:-} ]]; then
     preset-rename) plant "$P/dd.sql" '/^    dbo\.sp_IndexCleanup$/,/^GO$/s/@database_name\b/@kitwatch_db_planted/g' '@kitwatch_db_planted' ;;
     new-param)    plant "$P/frk.sql" '/^ALTER PROCEDURE dbo\.sp_BlitzWho $/{n;s/@Help TINYINT = 0 ,/@Help TINYINT = 0 , @KitwatchPlanted INT = 0 ,/}' '@KitwatchPlanted INT = 0' ;;
     help-layout)  plant "$P/dd.sql" '/^    dbo\.sp_PressureDetector$/,/^ *description =$/s/^\( *\)description =$/\1explanation_planted =/' 'explanation_planted =' ;;
-    sibling-call) plant "$P/dd.sql" "/^    dbo\\.sp_PressureDetector\$/,/@version_date = '20261101';/s/@version_date = '20261101';/&\\nEXECUTE (N'EXECUTE dbo.sp_BlitzWho @VersionCheckMode = 1;'); \\/* kitwatch: sibling call *\\//" 'kitwatch: sibling call' ;;
+    sibling-call) plant "$P/dd.sql" "/^    dbo\\.sp_PressureDetector\$/,/@version_date = '[0-9]\{8\}';/s/@version_date = '[0-9]\{8\}';/&\\nEXECUTE (N'EXECUTE dbo.sp_BlitzWho @VersionCheckMode = 1;'); \\/* kitwatch: sibling call *\\//" 'kitwatch: sibling call' ;;
     version-unspaced) plant "$P/dd.sql" "s/@version = '\([0-9][0-9.]*\)'/@version='\1'/g" "@version='" ;;   # production's read
     missing-state|port-edit|collector-norepo) ;;   # set further on: a MARK no tool holds (once the setup library is read), a port's file (once fetched)
     cut-frk)      head -c "$(( $(wc -c < "$P/frk.sql") / 2 ))" "$P/frk.sql" > "$P/frk.cut" && mv "$P/frk.cut" "$P/frk.sql"
