@@ -66,6 +66,8 @@ DD_REPO=erikdarlingdata/DarlingData; DD_FILE=Install-All/DarlingData.sql
 #      the form, one that only reads stays;
 #  (4) the pinned pass at the candidate runs every DarlingData tool through pgvigil with exit 0, and the baseline
 #      (shapes.json, the stored samples) is taken again at the new pin.
+# That baseline (shapes.json, kits.go's entries, the stored samples) is taken in the commit right after the pin's;
+# until it lands, a check-mode run refuses at its own line ('shapes.json was made at ...') with exit 3.
 DD_PIN=bf5a0666c2b5       # the release Updates_20261201 (published 2026-11-23; @version_date 20261201); newest = the default branch's head
 WIA_REPO=amachanic/sp_whoisactive; WIA_FILE=sp_WhoIsActive.sql
 WIA_PIN=20260409          # v2200.20260409; newest = the latest release's tag

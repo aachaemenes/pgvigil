@@ -144,8 +144,8 @@ var errorLogMatches = []errorLogMatch{
 // The noise list: what sp_LogHunter deletes after its search (its LIKE patterns as at DarlingData 6.12, here as
 // lower-case prefixes, parts, whole lines and two patterns with a wildcard inside). Its 'Severity: 1[0-8]' pattern is
 // the error line's own rule below: an error under severity 17 is kept only when its message matched. Its rule that a
-// row the caller's own @custom_message search found stays has no counterpart here: pgvigil runs the canned searches
-// alone.
+// row the caller's own @custom_message search found stays (is_custom = 0) is v.custom below: a line the instance's own
+// strings found is kept whatever the noise list says.
 var (
 	errorLogNoisePrefixes = lowerAll([]string{
 		"DBCC TRACEON 3604", "DBCC TRACEOFF 3604", "This instance of SQL Server has been using a process ID of",
